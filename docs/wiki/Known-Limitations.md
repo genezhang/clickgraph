@@ -108,6 +108,8 @@ ClickGraph is designed for **analytical queries** over existing ClickHouse data,
 
 ### ❌ Not Yet Implemented
 
+A read query outside what ClickGraph translates is refused with a `Not supported: …` error naming the construct (HTTP 400, a Bolt client error); it is not answered by another pipeline. A procedure `CALL` is supported as a standalone statement only; inside a query or a UNION it is refused too.
+
 **Advanced Patterns:**
 - ❌ Relationship property constraints in patterns: `()-[r {since: 2020}]->()`
 - ❌ Variable-length paths inside pattern comprehensions

@@ -1,7 +1,6 @@
 //! Lowering tests: the SQL each lowered construct produces, and
 //! `Unsupported` for what is not lowered yet. Row-level correctness is
-//! checked against Neo4j by the oracle (`scripts/oracle/run_corpus.py` with
-//! `CLICKGRAPH_BOUND_PLAN=on`).
+//! checked against Neo4j by the oracle (`scripts/oracle/run_corpus.py`).
 
 use std::collections::HashMap;
 

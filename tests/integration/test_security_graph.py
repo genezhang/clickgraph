@@ -391,10 +391,10 @@ class TestSyntaxErrors:
     """Tests that should return syntax errors (400 or 500)."""
     
     def test_missing_return(self):
-        """Query without RETURN - ClickGraph auto-adds RETURN *."""
+        """Query without RETURN is a syntax error, as in Neo4j."""
         response = execute_cypher("MATCH (u:User)")
-        # ClickGraph accepts this and returns all properties
-        assert response.status_code == 200
+        assert response.status_code == 400
+        assert "RETURN" in response.text
     
     def test_invalid_relationship_syntax(self):
         """Invalid relationship syntax - --> without brackets."""

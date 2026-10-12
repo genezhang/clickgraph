@@ -86,7 +86,7 @@ pub fn evaluate_optional_match_clause<'a>(
     crate::debug_print!("🔔 DEBUG OPTIONAL_MATCH: Enabled optional match mode");
 
     // A path variable of an OPTIONAL MATCH is bound only on the bound-plan
-    // path (`CLICKGRAPH_BOUND_PLAN`, P-4c S6); this planner has no NULL path.
+    // path (P-4c S6); this planner has no NULL path.
     if optional_match_clause
         .path_patterns
         .iter()

@@ -363,10 +363,10 @@ fn rename(
         }) => {
             let column = match column {
                 PropertyValue::Column(c) => PropertyValue::Column(c),
-                other => {
-                    return Err(BindError::Unsupported(format!(
-                        "computed property access {other:?}"
-                    )))
+                _ => {
+                    return Err(BindError::Unsupported(
+                        "a computed property access".to_string(),
+                    ))
                 }
             };
             LogicalExpr::PropertyAccessExp(PropertyAccess {

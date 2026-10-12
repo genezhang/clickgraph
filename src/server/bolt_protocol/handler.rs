@@ -3116,6 +3116,12 @@ impl BoltHandler {
             Err(crate::translate::TranslateError::Invalid(e)) => {
                 return Err(BoltError::query_error(format!("Invalid query: {}", e)));
             }
+            Err(crate::translate::TranslateError::Unsupported(e)) => {
+                return Err(BoltError::not_implemented(e));
+            }
+            Err(crate::translate::TranslateError::Internal(e)) => {
+                return Err(BoltError::internal(e));
+            }
         };
         // Extract return metadata for result transformation
         let return_metadata = match translation.return_metadata() {

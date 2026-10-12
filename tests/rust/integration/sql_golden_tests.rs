@@ -2137,6 +2137,8 @@ fn seam_translate(
         TranslateError::Planning(e) => format!("plan: {e:?}"),
         TranslateError::Render(e) => format!("render: {e:?}"),
         TranslateError::Invalid(e) => format!("query: {e}"),
+        TranslateError::Unsupported(e) => format!("not supported: {e}"),
+        TranslateError::Internal(e) => format!("internal error: {e}"),
     })
 }
 

@@ -2376,8 +2376,10 @@ differential. The routing switch is
 - `shadow` translates with both paths and records differences in tests;
 - `on` routes supported queries to the new path.
 
-The default stayed `off` until slice 10, which made it `on` (`off` remains
-the opt-out until slice 11 deletes the legacy path).
+The default stayed `off` until slice 10, which made it `on`. Slice 11's
+cutover (S11j) removed the switch: ClickHouse reads go through the bound
+plan only, and what it does not lower is an error; other dialects keep the
+legacy fallback until their coverage (S12).
 
 | # | Slice | Acceptance | Closes |
 |---|---|---|---|
@@ -4301,6 +4303,48 @@ slice that will handle it.
       relationship or map (read as its internal tuple: now refused, a list
       comprehension returns them) and repeated parameters (accepted, the
       last shadowing: now "already declared", as ClickHouse).
+  - [x] **S11j: the ClickHouse cutover.** A ClickHouse read the bound plan
+    does not lower is an error (`TranslateError::Unsupported`: HTTP 400
+    "Not supported: …", Bolt a client error, the library "Not supported:
+    …"), never the legacy pipeline; text the clause-list parser rejects
+    is a syntax error on every dialect (a query without RETURN, which the
+    legacy pipeline answered with the matched nodes: user 2026-10-11). The
+    switch `CLICKGRAPH_BOUND_PLAN` is gone; `ReadOptions::bound_plan =
+    Off` reaches the legacy pipeline for its own tests until it is
+    deleted. What still reaches it: other dialects
+    (`SqlDialect::reads_fall_back_to_legacy`) and the embedded write path's
+    read part (no query text). Entry points answer standalone procedures
+    and reject SET / DELETE before translating; a statement that is not a
+    read reaching it (`BindError::NotARead`, or text only the legacy parser
+    reads: a CALL inside a query or a UNION, CREATE) is "Not supported" on
+    ClickHouse (`translate::not_a_read`).
+    - Acceptance: full live suite on the cutover build: 4827 passed (the 9
+      multi-tenant failures predate S10a). Tests changed to the new
+      answers: a query without RETURN, shortestPath from a node to itself
+      (errors, user 2026-10-11). Corpus 1442 lowered; scorecard verdicts
+      unchanged (4 queries Neo4j rejects that legacy answered now error on
+      ClickGraph too: NEO_ERROR 15 → 11, BOTH_ERROR 14 → 18). Embedded /
+      tool / client crates, the embedded chdb e2e tests and the Python
+      bindings pass but for failures that main has too.
+    - Review polish: a refusal names the construct (`not_translated`
+      drops the plan's wording and slice tags; Bolt
+      `Neo.ClientError.Statement.FeatureNotSupported`), a broken invariant
+      is `TranslateError::Internal` (HTTP 500, Bolt a database error); a
+      CALL / updating statement the clause-list parser does not read
+      (`CALL p() YIELD x WHERE …`) is not a syntax error: the server answers
+      it as a standalone procedure (found by a census of the wiki's 815
+      Cypher examples; the procedure route ignoring the WHERE predates it:
+      #1411). Second review: a CALL inside a query or a UNION and CREATE
+      reached the legacy pipeline (the CALL dropped: `MATCH (u) CALL
+      db.labels() YIELD label RETURN count(*)` gave 30, not 60; a library
+      CALL gave `WHERE false`; CREATE a 500): now "Not supported" on
+      ClickHouse. Also: `id(r)` over several types names that limit; an
+      inner export query's internal error is 500; `not_translated` keeps
+      backticked text and nested `internal:` reasons. Bolt failure codes
+      reach 5.7+ drivers once they carry GQL fields (#1368, #1389). Rerun on
+      main with S11k–S11n: live suite 4826 passed (the 9 multi-tenant
+      failures, plus `test_filter_early_vs_late`, a timing ratio that is
+      flaky on main too); corpus 1442; scorecard verdicts unchanged.
   - **User decisions (2026-10-11)** on what S11 does not lower: a
     relationship without `edge_id` keeps its ends as its identity (#1356;
     define `edge_id` to tell parallel rows apart); an undeclared property

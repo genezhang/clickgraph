@@ -1,5 +1,10 @@
 ## [Unreleased]
 
+### ⚠️ Behaviour changes
+
+- **ClickHouse reads go through the bound plan only (P-4c S11j).** A read query the bound plan does not translate is now an error ("Not supported: …": HTTP 400, a Bolt client error, an `Err` in the library) instead of being handed to the legacy pipeline. They include shapes Neo4j also refuses (a property of a variable-length relationship's list, shortestPath from a node to itself), undeclared properties of nodes embedded in edge tables, `type()` of a named shortest path's relationship list, `[x IN nodes(p) | …]` over a shortest path, and `edges(p)`; the error names the construct. On Bolt its code is `Neo.ClientError.Statement.FeatureNotSupported` (Bolt 5.7+ drivers show it once failures carry GQL status fields, #1368). A query that is not a read reaching the read path (a procedure `CALL` inside a query or a UNION, write clauses) is also "Not supported"; the legacy pipeline dropped the CALL or failed with a 500. A standalone `CALL` is answered by the server as before. Some of these the legacy pipeline answered wrongly (`head(collect(a))` and `startNode(r)` as ids, `labels()` of an unmatched node as a label). The `CLICKGRAPH_BOUND_PLAN` switch is removed. Other SQL dialects (Databricks) keep the legacy fallback until their coverage is complete.
+- **A query without RETURN is a syntax error**, as in Neo4j (`MATCH (u:User)` used to return the matched nodes).
+
 ### 🐛 Bug Fixes
 
 - **An excluded column of an auto-discovered table was still readable.** With `auto_discover_columns: true` the discovered and declared properties are all the element's properties, but the legacy planner's fallback (an undeclared property reads the same-named column) still served `exclude_columns` entries and unknown names. Such a name is now unknown and reads as NULL, as in Cypher (and as the bound-plan path already did): `NodeSchema`/`RelationshipSchema` carry `closed_properties`, set when the columns were discovered, and `ViewResolver` resolves an unmapped property of a closed element to NULL. Elements without discovery keep the identity fallback. `RETURN n` never included excluded columns.

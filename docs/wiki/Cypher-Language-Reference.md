@@ -906,7 +906,6 @@ RETURN u.name, f.name
 
 A `WITH` may likewise be followed by any sequence of `MATCH`, `OPTIONAL MATCH` and `UNWIND` clauses, for example `WITH a MATCH (a)-->(b) MATCH (b)-->(c)` or `WITH a UNWIND l1 AS x UNWIND l2 AS y`.
 
-These forms run on the default query path (`CLICKGRAPH_BOUND_PLAN`, on unless set to `off`). With it off, they are parse errors.
 
 ---
 

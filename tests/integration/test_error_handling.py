@@ -37,7 +37,7 @@ class TestMalformedQueries:
         assert "error" in response or "errors" in response or response.get("status") == "error"
     
     def test_missing_return_clause(self, simple_graph):
-        """Test query without RETURN clause - now auto-returns matched nodes."""
+        """Test query without RETURN clause: a syntax error, as in Neo4j."""
         response = execute_cypher(
             """
             MATCH (a:TestUser)
@@ -47,10 +47,9 @@ class TestMalformedQueries:
             raise_on_error=False
         )
         
-        # ClickGraph now auto-returns matched nodes when RETURN is missing
-        # This is valid behavior (similar to Neo4j Browser)
         assert isinstance(response, dict)
-        assert "results" in response  # Should return results, not error
+        assert "error" in response or "errors" in response or response.get("status") == "error"
+        assert "RETURN" in str(response)
     
     def test_unmatched_parentheses(self, simple_graph):
         """Test query with unmatched parentheses."""

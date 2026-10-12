@@ -7,10 +7,11 @@
 //! * `labels`: label inference over a clause's pattern.
 //! * [`lower`]: bound plan -> `RenderPlan`, printed by
 //!   `render_plan_to_sql_plain`, and the result shape Bolt / graph output
-//!   read (S4–S5: MATCH, OPTIONAL MATCH, WITH and RETURN on the standard
-//!   layout; everything else falls back to the legacy pipeline).
+//!   read; what it does not lower is `LowerError::Unsupported`.
 //!
-//! Routing is in `crate::translate` (`CLICKGRAPH_BOUND_PLAN=on`).
+//! Routing is in `crate::translate`: ClickHouse reads go through the bound
+//! plan only (S11j); other dialects fall back to the legacy pipeline
+//! for what it does not lower.
 
 pub mod binder;
 mod expr;

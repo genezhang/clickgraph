@@ -265,11 +265,14 @@ fn unions() {
 }
 
 #[test]
-fn unsupported_constructs_fall_back() {
-    for q in ["CALL db.labels()"] {
+fn statements_that_are_not_reads_are_left_to_their_entry_points() {
+    for q in [
+        "CALL db.labels()",
+        "MATCH (a:User) SET a.name = 'x' RETURN a",
+    ] {
         match bind(q) {
-            Err(e) if e.is_unsupported() => {}
-            other => panic!("{q}: expected Unsupported, got {other:?}"),
+            Err(BindError::NotARead(_)) => {}
+            other => panic!("{q}: expected NotARead, got {other:?}"),
         }
     }
 }
