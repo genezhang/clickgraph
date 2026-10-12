@@ -68,8 +68,8 @@ graph_schema:
       database: ldbc
       table: Message
       node_id: id
-      label_column: type  # Polymorphic: type='Post' or type='Comment'
-      label_value: "Post|Comment"  # Values in type column that represent Message
+      # Every row is a Message (a Post or a Comment, `type`). No label column:
+      # `label_value` is one value, and "Post|Comment" matched no row.
       property_mappings:
         id: id
         creationDate: creationDate

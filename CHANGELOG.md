@@ -7,6 +7,8 @@
 
 ### 🐛 Bug Fixes
 
+- **LDBC schema: `Message` matched no node.** `benchmarks/ldbc_snb/schemas/ldbc_snb_complete.yaml` and `ldbc_snb_embedded.yaml` declared `label_column: type` with `label_value: "Post|Comment"`, a single value that no row holds. So every `(m:Message)` pattern returned nothing once reads went through the bound plan; the legacy pipeline had ignored the label column. Every row of the Message table is a Message, so the label column is removed.
+
 - **Embedded writes: `DELETE … RETURN` re-matched after the delete.** `MATCH (n) … DELETE n RETURN count(n)` returned 0. It now follows Neo4j: the RETURN reads the records as they were, so `count(n)` is the number deleted. A deleted node returned whole has no properties. Reading a deleted node's properties or labels fails with Neo4j's "… has been deleted in this transaction", before anything is deleted. This also covers the same node read through another variable, or a node that another record deletes. A deleted node inside a list, map, `collect()` or path, or a pattern read after the DELETE, is refused.
 - **Embedded writes: `SET … RETURN` re-matched after the write.** `MATCH (n) WHERE n.x = 1 SET n.x = 2 RETURN n` returned no rows, where Neo4j returns the updated records. A SET or REMOVE of a property the MATCH reads, followed by RETURN, is now refused before anything is written, as is one after a MATCH with SKIP or LIMIT. Other `SET / REMOVE … RETURN` statements return the updated values.
 - **Embedded writes: `MATCH … CREATE (n:L {…})` created one node however many records matched.** It now creates one node per record, as Cypher does, with values that can read the record (`CREATE (c:Copy {id: a.id + '_copy'})`), and none when nothing matches.

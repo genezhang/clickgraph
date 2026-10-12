@@ -4373,6 +4373,40 @@ slice that will handle it.
         a negative number failed in a grouping key (Code 44; now signed).
         Filed: the legacy fallback's `count(DISTINCT)` of a list of
         relationships (#1375).
+  - [ ] **S11o: the official LDBC queries (found 2026-10-12, after S11j).**
+    The census corpus is harvested from the Python tests, which hold no
+    official LDBC query: the cutover census never saw them. A review of
+    the Databricks cutover (S14a, #1446) found 10 that the legacy pipeline
+    translated and the bound plan does not (on ClickHouse since S11j), and
+    the Neo4j Browser's node expand (`ORDER BY id(o)`, an unlabeled `o`).
+    - [x] **S11o1: the queries in the corpus.**
+      `scripts/dev/corpus_add_ldbc.py` adds the 41 official queries
+      (`ldbc_official`, their parameters substituted, the schema
+      `ldbc_snb_complete.yaml`) and the Browser's expand query
+      (`social_integration`); `census_only.txt` keeps them out of the
+      legacy pipeline's corpus sweep. Census: 1466 lowered on both dialects
+      (24 of the 42). Not lowered: 7 the legacy pipeline cannot read either
+      (GDS / APOC procedures, `CALL { … }` subqueries, BI 19 / 20's syntax),
+      and the 11 the next slices take.
+      - Run on the SF1-sized `ldbc` database against the legacy pipeline's
+        SQL: the schema's `Message` had `label_column: type`, `label_value:
+        "Post|Comment"`, one value no row holds: every `Message` matched
+        nothing on the bound plan (the legacy pipeline ignored the column).
+        Fixed in `ldbc_snb_complete.yaml` and `ldbc_snb_embedded.yaml` (every
+        row of the table is a Message; `ldbc_snb.yaml` / `_mini` had it
+        commented out already). After it, of the 24: 12 equal; IC 12 equal
+        but for `collect(DISTINCT)`'s order; 8 the legacy SQL fails (BI 3,
+        11, 12, 17, IC 4, IS 6, 7); BI 6 one more on every row on the legacy
+        pipeline (it counts the NULL `like` of an OPTIONAL MATCH);
+        IC 1 fails on the bound plan (a list of mixed types as a grouping
+        key: Code 44); BI 1, BI 9, IS 2 differ by the schema's model: it
+        declares `Message`, `Post` and `Comment` as three labels over three
+        tables (the Message table holds the others' rows), so a Post is no
+        Message (`message:Comment` false, BI 9's `(post:Post)<-[:REPLY_OF*0..]-
+        (reply:Message)` matches nothing) and an unlabeled message is each
+        of its rows (IS 2). Neo4j's LDBC graph gives a Post both labels.
+    - [ ] **S11o2…: the 11 not lowered**, IC 1's grouping key, and how the
+      LDBC schema models Message.
 - [ ] **S12: Databricks coverage.** The bound plan lowers on Databricks what
   it lowers on ClickHouse, so the legacy pipeline can go on every dialect.
   Each `FunctionMapper` spelling that is `None` on Databricks (`unwind`,

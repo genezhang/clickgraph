@@ -92,8 +92,8 @@ graph_schema:
       table: Message
       node_id: id
       source: "table_function:(SELECT id, creationDate, locationIP, browserUsed, content, length, imageFile, language, 'Post' AS type FROM file('__DATA_DIR__/dynamic/Post/part_0_0.snappy.parquet', 'Parquet') UNION ALL SELECT id, creationDate, locationIP, browserUsed, content, length, '' AS imageFile, '' AS language, 'Comment' AS type FROM file('__DATA_DIR__/dynamic/Comment/part_0_0.snappy.parquet', 'Parquet'))"
-      label_column: type
-      label_value: "Post|Comment"
+      # Every row is a Message (a Post or a Comment, `type`). No label column:
+      # `label_value` is one value, and "Post|Comment" matched no row.
       property_mappings:
         id: id
         creationDate: creationDate
