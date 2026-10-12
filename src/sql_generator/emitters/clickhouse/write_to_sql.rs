@@ -47,10 +47,17 @@ fn push_sql(plan: &WriteRenderPlan, out: &mut Vec<String>) {
 pub fn check_sql(op: &crate::render_plan::write_render::CheckOp) -> String {
     let ids = render_id_source(&op.source);
     match &op.within {
-        Some(t) => format!(
-            "SELECT 1 AS hit FROM `{}`.`{}` WHERE `{}` IN {ids} LIMIT 1",
-            t.database, t.table, t.column
-        ),
+        Some(t) => {
+            let unless: String = t
+                .unless
+                .iter()
+                .map(|(c, s)| format!(" AND NOT `{c}` IN {}", render_id_source(s)))
+                .collect();
+            format!(
+                "SELECT 1 AS hit FROM `{}`.`{}` WHERE `{}` IN {ids}{unless} LIMIT 1",
+                t.database, t.table, t.column
+            )
+        }
         None => format!("SELECT 1 AS hit FROM {ids} AS __cg_ids LIMIT 1"),
     }
 }

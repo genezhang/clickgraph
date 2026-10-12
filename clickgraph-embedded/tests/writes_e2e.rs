@@ -290,3 +290,86 @@ fn delete_of_a_connected_node_is_refused() {
         1
     );
 }
+
+/// DETACH DELETE of one node and DELETE of another in one statement: the
+/// second's only relationship is the first's, which the statement deletes
+/// (Neo4j checks at commit: it succeeds); with another relationship it
+/// fails, and nothing changes.
+#[test]
+fn detach_and_delete_in_one_statement() {
+    let Some(conn) = conn() else { return };
+    person(&conn, "sf1", 40);
+    person(&conn, "sf2", 40);
+    knows(&conn, "sf1", "sf2");
+    conn.query(
+        "MATCH (a:Person {person_id: 'sf1'})-[:KNOWS]->(b:Person {person_id: 'sf2'}) \
+         DETACH DELETE a DELETE b",
+    )
+    .expect("b's only relationship is a's");
+    assert_eq!(
+        count(
+            &conn,
+            "MATCH (a:Person) WHERE a.person_id IN ['sf1', 'sf2'] RETURN count(a) AS c"
+        ),
+        0
+    );
+    person(&conn, "sg1", 40);
+    person(&conn, "sg2", 40);
+    person(&conn, "sg3", 40);
+    knows(&conn, "sg1", "sg2");
+    knows(&conn, "sg3", "sg2");
+    let err = conn
+        .query(
+            "MATCH (a:Person {person_id: 'sg1'})-[:KNOWS]->(b:Person {person_id: 'sg2'}) \
+             DETACH DELETE a DELETE b",
+        )
+        .expect_err("b also has sg3's relationship");
+    assert!(err.to_string().contains("still has relationships"), "{err}");
+    assert_eq!(
+        count(
+            &conn,
+            "MATCH (a:Person) WHERE a.person_id IN ['sg1', 'sg2'] RETURN count(a) AS c"
+        ),
+        2
+    );
+}
+
+/// Cypher sets a value once per record: a SET reading the node's own
+/// property of a node in several records is refused (one UPDATE would set
+/// it once); a constant one is the same either way.
+#[test]
+fn set_of_a_node_in_several_records() {
+    let Some(conn) = conn() else { return };
+    for id in ["sh0", "sh1", "sh2"] {
+        person(&conn, id, 40);
+    }
+    knows(&conn, "sh1", "sh0");
+    knows(&conn, "sh2", "sh0");
+    let err = conn
+        .query(
+            "MATCH (u:Person)-[:KNOWS]->(t:Person) WHERE t.person_id = 'sh0' \
+             SET t.name = t.name + 'x'",
+        )
+        .expect_err("t is in two records");
+    assert!(
+        err.to_string().contains("several of the MATCH's records"),
+        "{err}"
+    );
+    conn.query(
+        "MATCH (u:Person)-[:KNOWS]->(t:Person) WHERE t.person_id = 'sh0' SET t.name = 'same'",
+    )
+    .expect("a constant");
+    let mut result = conn
+        .query("MATCH (a:Person) WHERE a.person_id = 'sh0' RETURN a.name AS n")
+        .expect("read back");
+    assert_eq!(
+        result.next().unwrap().get("n").unwrap().as_str(),
+        Some("same")
+    );
+    // A list comprehension's variable is the value's own.
+    conn.query(
+        "MATCH (a:Person) WHERE a.person_id = 'sh1' \
+         SET a.name = toString(size([x IN [1, 2, 3] WHERE x > 1]))",
+    )
+    .expect("a comprehension");
+}

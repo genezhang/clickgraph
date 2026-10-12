@@ -108,6 +108,10 @@ pub struct CheckTable {
     pub database: String,
     pub table: String,
     pub column: String,
+    /// Rows the statement deletes (another node's DETACH DELETE: their
+    /// column in the ids): not counted.
+    #[serde(default)]
+    pub unless: Vec<(String, RowSource)>,
 }
 
 /// Where the IDs in the WHERE clause of `Update` / `Delete` come from.

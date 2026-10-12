@@ -32,16 +32,18 @@ pub struct IdentityRows {
 }
 
 /// The identities of node `var` in the records of `stmt`'s read part
-/// (`stmt.plan`, no projection). `None` when the node matches nothing.
+/// (`stmt.plan`, no projection): each once with `distinct`, else one per
+/// record. `None` when the node matches nothing.
 pub fn lower_identities(
     stmt: &BoundStatement,
     schema: &GraphSchema,
     options: &LowerOptions,
     var: VarId,
+    distinct: bool,
 ) -> Result<Option<IdentityRows>, LowerError> {
     match schema.lowering_view() {
-        Some(read) => identities_over(stmt, &read, options, var),
-        None => identities_over(stmt, schema, options, var),
+        Some(read) => identities_over(stmt, &read, options, var, distinct),
+        None => identities_over(stmt, schema, options, var, distinct),
     }
 }
 
@@ -50,6 +52,7 @@ fn identities_over(
     schema: &GraphSchema,
     options: &LowerOptions,
     var: VarId,
+    distinct: bool,
 ) -> Result<Option<IdentityRows>, LowerError> {
     let constraints = constraint_reads(stmt, schema);
     let demand = demand(stmt, &constraints);
@@ -71,7 +74,7 @@ fn identities_over(
     };
     let labeled = matches!(l.scans.get(&var), Some(Scan::Labels { .. }));
     let mut body = Body {
-        distinct: true,
+        distinct,
         ..Body::default()
     };
     let mut columns = Vec::new();
@@ -108,9 +111,15 @@ pub fn lower_write_value(
     if !subquery_vars(value).is_empty() {
         return unsupported("a SET value that reads a pattern");
     }
+    let local = |v: VarId| {
+        matches!(
+            stmt.binding(v).source,
+            crate::bound_plan::types::BindingSource::Local
+        )
+    };
     if referenced_names(value, false)
         .iter()
-        .any(|n| parse_var(n).is_some_and(|v| v != var))
+        .any(|n| parse_var(n).is_some_and(|v| v != var && !local(v)))
     {
         return unsupported("a SET value that reads another variable");
     }

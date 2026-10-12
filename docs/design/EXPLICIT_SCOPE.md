@@ -4649,6 +4649,21 @@ slice that will handle it.
       legacy parser cannot read (two SET clauses). Five chdb end-to-end
       tests of these shapes pass; #1436 re-diagnosed (the schema declares
       no property types: its columns are strings).
+    - Second review, against the Neo4j oracle: Cypher sets a value once
+      per record (`MATCH (u)-[:K]->(t) SET t.age = t.age + 1` over 3
+      records: 103), so a SET whose value reads its node fails when the
+      node is in several records (`repeated`: a non-DISTINCT identity
+      read, `GROUP BY … HAVING count() > 1`; one UPDATE would set it once);
+      a SET clause's items all read the row before it (Neo4j: `SET n.a =
+      1, n.b = n.a` leaves `b` NULL), as one UPDATE does. A DELETE's
+      relationship check does not count rows a DETACH DELETE of the same
+      statement deletes (`CheckTable::unless`; Neo4j checks at commit). A
+      polymorphic edge table's ends are any label (`$any`): DETACH DELETE
+      refused, a plain DELETE checks both its end columns. A list
+      comprehension's variable in a SET value is the value's own. Not
+      checked: an FK edge's relationships (Decision 0.6: FK-edge writes are
+      out of scope), so a plain DELETE of a node an FK edge references
+      leaves the reference.
 
 ## Appendix A — post-assembly repair passes (48, plus CTE flattening, at `e1241a9c`)
 

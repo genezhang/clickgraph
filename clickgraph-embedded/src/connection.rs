@@ -1546,11 +1546,22 @@ async fn read_ids(
         }
     }
     let ops = flatten(plan);
-    let mut ids: HashMap<String, Vec<RenderExpr>> = HashMap::new();
+    // Every Read: the operations', and a check's exclusions.
+    let mut reads: Vec<&String> = Vec::new();
     for op in &ops {
-        let Some(RowSource::Read(sql)) = source(op) else {
-            continue;
-        };
+        if let Some(RowSource::Read(sql)) = source(op) {
+            reads.push(sql);
+        }
+        if let WriteRenderPlan::Check(c) = op {
+            for (_, s) in c.within.iter().flat_map(|t| &t.unless) {
+                if let RowSource::Read(sql) = s {
+                    reads.push(sql);
+                }
+            }
+        }
+    }
+    let mut ids: HashMap<String, Vec<RenderExpr>> = HashMap::new();
+    for sql in reads {
         if ids.contains_key(sql) {
             continue;
         }
@@ -1590,7 +1601,22 @@ async fn read_ids(
         ids.insert(sql.clone(), values);
     }
     let mut out = Vec::new();
-    for op in ops {
+    for mut op in ops {
+        // A check's exclusions: all their ids (none: no exclusion).
+        if let WriteRenderPlan::Check(c) = &mut op {
+            if let Some(t) = &mut c.within {
+                t.unless = std::mem::take(&mut t.unless)
+                    .into_iter()
+                    .filter_map(|(column, s)| match s {
+                        RowSource::Read(sql) => {
+                            let read = &ids[&sql];
+                            (!read.is_empty()).then(|| (column, RowSource::Ids(read.clone())))
+                        }
+                        s => Some((column, s)),
+                    })
+                    .collect();
+            }
+        }
         let Some(RowSource::Read(sql)) = source(&op) else {
             out.push(op);
             continue;
@@ -1636,7 +1662,8 @@ async fn execute_write(
             continue;
         };
         let hit = match (&check.source, &check.within) {
-            (RowSource::Ids(ids), None) => !ids.is_empty(),
+            (RowSource::Ids(ids), _) if ids.is_empty() => false,
+            (RowSource::Ids(_), None) => true,
             _ => !executor
                 .execute_json(&check_sql(check), None)
                 .await
