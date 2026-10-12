@@ -242,6 +242,16 @@ pub(crate) trait FunctionMapper: Send + Sync {
     /// Both spellings preserve element-wise ordering and equality.
     fn tuple_constructor(&self) -> &'static str;
 
+    /// A lambda over `params` with body `body` (SQL), as a higher-order
+    /// function's argument (`ch.arrayMap(x -> x * 2, l)`, P-4c S11n). CH and
+    /// Spark: `x -> body`, `(x, y) -> body`.
+    fn lambda(&self, params: &[String], body: &str) -> String {
+        match params {
+            [one] => format!("{one} -> {body}"),
+            _ => format!("({}) -> {body}", params.join(", ")),
+        }
+    }
+
     /// The modifier reading a table's merged rows (`use_final`), after its
     /// alias in SQL the lowering writes as text. CH: ` FINAL`. A dialect
     /// without it reads the table as it is: empty.

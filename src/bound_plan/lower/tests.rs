@@ -5787,3 +5787,24 @@ graph_schema:
         other => panic!("expected the constraint refused, got {other:?}"),
     }
 }
+
+/// S11n: a lambda written as a higher-order function's argument (the
+/// `ch.*` passthrough) is the dialect's lambda over its local parameters,
+/// which shadow variables of the same name.
+#[test]
+fn lambdas_of_higher_order_functions() {
+    has(
+        "RETURN ch.arrayMap((x, y) -> x + y, [1, 2], [10, 20]) AS s",
+        &[r#"arrayMap((v0, v1) -> v0 + v1, [1, 2], [10, 20]) AS "s""#],
+    );
+    has(
+        "MATCH (u:User) WITH collect(u.user_id) AS ids \
+         RETURN ch.arrayMap(x -> x * 2, ch.arrayFilter(n -> n > 3, ids)) AS big",
+        &["arrayMap(v2 -> v2 * 2, arrayFilter(v3 -> v3 > 3, w1.v1))"],
+    );
+    // A parameter named as a node shadows it.
+    has(
+        "MATCH (u:User) RETURN ch.arrayFilter(u -> u > 1, [1, 2]) AS l",
+        &["arrayFilter(v1 -> v1 > 1, [1, 2])"],
+    );
+}

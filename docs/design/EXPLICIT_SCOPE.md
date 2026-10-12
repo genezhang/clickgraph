@@ -4286,6 +4286,21 @@ slice that will handle it.
       read in an aggregating WITH's own WHERE / ORDER BY reading the key
       ungrouped (ClickHouse Code 215: now `any()` of it, as the map is
       read). Rerun: 18 shapes equal to Neo4j.
+  - [x] **S11n: lambdas of higher-order functions.** A lambda written as
+    a function's argument (`ch.arrayFilter(x -> x > 5, l)`, the documented
+    ClickHouse passthrough) is the dialect's lambda
+    (`FunctionMapper::lambda`) over the binder's local parameters (which
+    shadow variables of the same name). It was refused; the legacy
+    pipeline answered the wiki's examples (found by a census of the wiki's
+    Cypher examples before the cutover).
+    - Acceptance: the wiki's 18 `ch.*` lambda examples give the legacy
+      pipeline's results (the ones over properties the benchmark schema
+      lacks fail on both).
+    - Adversarial review (about 230 shapes against legacy on three
+      schemas, the server, Databricks): fixed a body giving a node,
+      relationship or map (read as its internal tuple: now refused, a list
+      comprehension returns them) and repeated parameters (accepted, the
+      last shadowing: now "already declared", as ClickHouse).
   - **User decisions (2026-10-11)** on what S11 does not lower: a
     relationship without `edge_id` keeps its ends as its identity (#1356;
     define `edge_id` to tell parallel rows apart); an undeclared property
