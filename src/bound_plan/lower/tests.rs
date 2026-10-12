@@ -5807,4 +5807,21 @@ fn lambdas_of_higher_order_functions() {
         "MATCH (u:User) RETURN ch.arrayFilter(u -> u > 1, [1, 2]) AS l",
         &["arrayFilter(v1 -> v1 > 1, [1, 2])"],
     );
+    // Its value is read as a value: a node, relationship or map the body
+    // gives would be read as its tuple (S11n review).
+    for q in [
+        "MATCH (a:User) RETURN ch.arrayMap(x -> a, [1]) AS r",
+        "MATCH (a:User)-[f:FOLLOWS]->(b:User) RETURN ch.arrayMap(x -> f, [1]) AS r",
+        "MATCH (a:User) RETURN ch.arrayMap(x -> [a], [1]) AS r",
+        "MATCH p = (a:User)-[:FOLLOWS*1..2]->(b:User) RETURN ch.arrayMap(x -> nodes(p), [1]) AS r",
+        "MATCH (a:User) WITH collect(a) AS us RETURN ch.arrayMap(x -> us, [1]) AS r",
+        "MATCH (a:User) RETURN ch.arrayMap(x -> {k: x}, [1]) AS r",
+    ] {
+        not_lowered(q, "as a lambda's value");
+    }
+    // Its properties and identity are values.
+    has(
+        "MATCH (a:User) RETURN ch.arrayMap(x -> a.name, [1]) AS r",
+        &["arrayMap(v1 -> v0.full_name, [1])"],
+    );
 }
