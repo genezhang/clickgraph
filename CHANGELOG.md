@@ -2,7 +2,7 @@
 
 ### 🚀 Features
 
-- **Union labels.** A schema can declare a label that the nodes of other labels also carry, under `union_labels:` (`- label: Message` with `labels: [Post, Comment]`), as in Neo4j's LDBC graph where every Post and every Comment is also a Message. `(m:Message)` matches both, `m:Comment` tests the node's own label, and `labels(m)` lists `['Post', 'Message']`. The LDBC schema `ldbc_snb_complete.yaml` now models Message this way; its three separate labels over overlapping tables made a Post no Message, so BI 1, BI 9 and IS 2 answered differently from Neo4j. See `docs/schema-reference.md`.
+- **Union labels.** A schema can declare a label that the nodes of other labels also carry, under `union_labels:` (`- label: Message` with `labels: [Post, Comment]`), as in Neo4j's LDBC graph where every Post and every Comment is also a Message. `(m:Message)` matches both, `m:Comment` tests the node's own label, and `labels(m)` lists `['Post', 'Message']`. The LDBC schema `ldbc_snb_complete.yaml` now models Message this way, and also Place (City, Country, Continent) and Organisation (Company, University). Its separate labels over overlapping tables had made a Post no Message and a City no Place: BI 1, BI 9 and IS 2 answered differently from Neo4j, and `(city:City)-[:IS_PART_OF]->(country:Country)` (IC 3) matched nothing. See `docs/schema-reference.md`.
 
 ### ⚠️ Behaviour changes
 

@@ -96,19 +96,6 @@ graph_schema:
         url: url
 
     # -------------------------------------------------------------------------
-    # Place - geographic location (City, Country, Continent)
-    # -------------------------------------------------------------------------
-    - label: Place
-      database: ldbc
-      table: Place
-      node_id: id
-      property_mappings:
-        id: id
-        name: name
-        url: url
-        type: type
-
-    # -------------------------------------------------------------------------
     # Specific place types (using same table with type filter)
     # Note: For queries that specifically need City/Country/Continent
     # -------------------------------------------------------------------------
@@ -141,19 +128,6 @@ graph_schema:
         id: id
         name: name
         url: url
-
-    # -------------------------------------------------------------------------
-    # Organisation - University or Company
-    # -------------------------------------------------------------------------
-    - label: Organisation
-      database: ldbc
-      table: Organisation
-      node_id: id
-      property_mappings:
-        id: id
-        name: name
-        url: url
-        type: type
 
     - label: University
       database: ldbc
@@ -425,26 +399,24 @@ graph_schema:
       to_node: TagClass
 
     # -------------------------------------------------------------------------
-    # Place IS_PART_OF Place (City -> Country -> Continent)
+    # City IS_PART_OF Country, Country IS_PART_OF Continent (one table: a
+    # Place's ids are unique, so each definition joins its own rows)
     # -------------------------------------------------------------------------
     - type: IS_PART_OF
       database: ldbc
       table: Place_isPartOf_Place
       from_id: Place1Id
       to_id: Place2Id
-      from_node: Place
-      to_node: Place
+      from_node: City
+      to_node: Country
 
-    # -------------------------------------------------------------------------
-    # Organisation IS_LOCATED_IN Place
-    # -------------------------------------------------------------------------
-    - type: IS_LOCATED_IN
+    - type: IS_PART_OF
       database: ldbc
-      table: Organisation_isLocatedIn_Place
-      from_id: OrganisationId
-      to_id: PlaceId
-      from_node: Organisation
-      to_node: Place
+      table: Place_isPartOf_Place
+      from_id: Place1Id
+      to_id: Place2Id
+      from_node: Country
+      to_node: Continent
 
     # -------------------------------------------------------------------------
     # Company IS_LOCATED_IN Country
@@ -507,3 +479,10 @@ graph_schema:
   union_labels:
     - label: Message
       labels: [Post, Comment]
+    # Place: every City, Country and Continent is a Place; Organisation: every
+    # Company and University (the Place / Organisation tables hold all of them,
+    # each label's rows by `type`).
+    - label: Place
+      labels: [City, Country, Continent]
+    - label: Organisation
+      labels: [Company, University]

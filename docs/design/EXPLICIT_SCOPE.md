@@ -4472,7 +4472,18 @@ slice that will handle it.
         (now Neo4j's type mismatch), and a relationship value used as a node
         matched nothing; the tie is `expr::NODE_TIE(node, value)`, lowered
         only for a value known to hold a node.
-    - [ ] **S11o4…: the 7 not lowered** (a node as an operand or a value,
+    - [x] **S11o4: LDBC's Place and Organisation as union labels.** The
+      same model as S11o2's Message: `ldbc_snb_complete.yaml` declared
+      `Place` beside `City` / `Country` / `Continent` (and `Organisation`
+      beside `Company` / `University`) over one table, so a City was no
+      Place, and `IS_PART_OF` was defined Place → Place only:
+      `(city:City)-[:IS_PART_OF]->(country:Country)` (IC 3) matched
+      nothing. Now `Place: [City, Country, Continent]`, `Organisation:
+      [Company, University]`; `IS_PART_OF` City → Country and Country →
+      Continent (the one table: a place's id is unique, so each definition
+      joins its own rows); `IS_LOCATED_IN` Organisation → Place dropped
+      (Company → Country and University → City stay).
+    - [ ] **S11o5…: the 7 not lowered** (a node as an operand or a value,
       `head()` of a map, a subquery in a list comprehension, a path in other
       positions, a property of a value, the Browser's `id()`), IC 1's
       grouping key, BI 17's time.
