@@ -11,6 +11,8 @@
 
 ### 🐛 Bug Fixes
 
+- **`p IS NULL` of a path was "Not supported".** It is now true where an OPTIONAL MATCH left the path unmatched (LDBC IC 13).
+
 - **`collect(CASE … THEN null ELSE [..] END)` kept an empty list for each NULL** (`[[]]` where Neo4j returns `[]`), and failed when the lists mixed value types. A list of mixed values used as a grouping key failed on ClickHouse (Code 44). Both now work; LDBC IC 1 lowers.
 
 - **OPTIONAL MATCH after a WITH that collects could drop matches.** On ClickHouse, a WITH's CTE that is read twice is evaluated twice, and `collect()` can come back in a different order each time. An OPTIONAL MATCH joined its matches on the collected list as well as on the WITH's keys, so in LDBC IC 5 a forum with 93 posts reported 30. The join now uses the keys only, since they determine the aggregated values.

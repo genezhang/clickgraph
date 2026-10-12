@@ -572,6 +572,33 @@ impl Lowerer<'_> {
                 return self.identity_comparison(a, b, op.operator == O::Equal);
             }
         }
+        // `p IS [NOT] NULL` of a path of the relation: NULL where an
+        // OPTIONAL MATCH left it so, exactly where a node of it is (LDBC
+        // IC 13: `CASE path IS NULL WHEN true THEN -1 …`).
+        if let (O::IsNull | O::IsNotNull, [LogicalExpr::TableAlias(lx::TableAlias(n))]) =
+            (op.operator, op.operands.as_slice())
+        {
+            let path = parse_var(n)
+                .filter(|v| matches!(self.binding(*v).kind, BindingKind::Path))
+                .and_then(|v| self.paths.get(&v));
+            if let Some(path) = path {
+                let null = op.operator == O::IsNull;
+                let mut tests = Vec::new();
+                for v in &path.nodes {
+                    tests.push(match self.identity(*v)? {
+                        Some(id) => super::null_test(&self.presence(*v, &id), null),
+                        // A node that matches nothing: always NULL.
+                        None => RenderExpr::Literal(Literal::Boolean(null)),
+                    });
+                }
+                return Ok(match null {
+                    true => super::or_all(tests),
+                    false => {
+                        super::and_all(tests).unwrap_or(RenderExpr::Literal(Literal::Boolean(true)))
+                    }
+                });
+            }
+        }
         // `x IN …` of nodes or relationships, by identity.
         if let (O::In | O::NotIn, [x, list]) = (op.operator, op.operands.as_slice()) {
             let negated = op.operator == O::NotIn;
