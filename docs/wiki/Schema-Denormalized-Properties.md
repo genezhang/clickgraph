@@ -141,6 +141,27 @@ RETURN dest.city
 #           ^^^^ Uses DestCityName column from flights table
 ```
 
+### One Value per Node
+
+A node has one value of each property. The schema says `city` is the airport's property, so every row that holds an airport's `code` must hold the same `city`. Rows that agree are one node, and any of them gives its value.
+
+Rows of one id that hold **several** values of a property mean the property is not the node's. For example, a connection log that declares `port` on an `IP` node, while each connection carries its own port. It can also mean the id columns do not identify the node. A query that reads such a property from the node's rows (`MATCH (a:IP) RETURN a.port`, or a whole node `RETURN a`) fails with:
+
+```
+ClickGraph: rows of one :IP node hold several values of its property port: the property is not the node's, or its id columns do not identify it
+```
+
+The query does not pick one of the values arbitrarily. Declare such a column on the relationship instead (`property_mappings` of the edge).
+
+A pattern that reads the node from a relationship's row (`MATCH (a:IP)-[r:ACCESSED]->(b) RETURN a.port`) reads that row's column, with no check.
+
+To find such properties before a query does, run `cg schema validate --data` against ClickHouse. By default it checks a sample: one node id in 100, all rows of each, at most 1,000,000 rows of each table. A sample can miss an id, but it never reports a consistent one; `--full` checks every row.
+
+```bash
+cg --clickhouse http://localhost:8123 schema validate zeek.yaml --data
+#   :IP property port: the rows of 2 node id(s) hold several values (e.g. id ('192.168.1.10'))
+```
+
 ---
 
 ## Table Schema Design

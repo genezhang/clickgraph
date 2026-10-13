@@ -31,6 +31,18 @@ impl FunctionMapper for ClickhouseFunctionMapper {
         format!("anyIfOrNull({value}, NOT isNull({value}))")
     }
 
+    fn one_value(&self, value: &str, message: &str) -> String {
+        // `uniqUpTo(1)` counts up to two distinct values in constant memory;
+        // of their hashes, so that every type (a `Map`, a `Variant`) counts
+        // and a NaN is the one value it is. `throwIf` is 0 unless it throws:
+        // the element of a one-element array keeps the value's type.
+        let message = message.replace('\\', "\\\\").replace('\'', "\\'");
+        format!(
+            "arrayElement([{}], 1 + throwIf(uniqUpToIf(1)(cityHash64({value}), NOT isNull({value})) > 1, '{message}'))",
+            self.any_non_null(value)
+        )
+    }
+
     fn arrays_overlap(&self) -> &'static str {
         "hasAny"
     }

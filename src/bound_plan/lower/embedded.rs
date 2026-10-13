@@ -152,10 +152,11 @@ impl<'s> Lowerer<'s> {
     ///   `p__cg{k}` (source `k`; NULL in other sources' rows), so that each
     ///   source's column keeps its own type;
     /// * `{name}`: one row per non-NULL id, each property the value of its
-    ///   sources' columns (`any`: the rows of one id hold one value), read
-    ///   through `FunctionMapper::one_type_guard` when several sources hold
-    ///   it (on each row, before `any`): an error unless their types differ
-    ///   only in what changes no value.
+    ///   sources' columns (`FunctionMapper::one_value`: an error when the
+    ///   rows of one id hold several, #531), read through
+    ///   `FunctionMapper::one_type_guard` when several sources hold it (on
+    ///   each row, before the aggregate): an error unless their types
+    ///   differ only in what changes no value.
     fn node_relation_ctes(
         &mut self,
         name: &str,
@@ -271,7 +272,17 @@ impl<'s> Lowerer<'s> {
                         ),
                     },
                 };
-            items.push(select(RenderExpr::Raw(mapper.any_non_null(&value)), p));
+            // A node has one value of a property: rows of one id that hold
+            // several are no node's, an error (#531), not any of them.
+            let message = format!(
+                "ClickGraph: rows of one :{} node hold several values of its property {p}: \
+                 the property is not the node's, or its id columns do not identify it",
+                relation.label
+            );
+            items.push(select(
+                RenderExpr::Raw(mapper.one_value(&value, &message)),
+                p,
+            ));
         }
         let not_null: Vec<String> = ids
             .iter()

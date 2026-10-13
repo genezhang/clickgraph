@@ -118,10 +118,29 @@ enum SchemaCommands {
         format: String,
     },
 
-    /// Validate a schema YAML file (structural check, no ClickHouse needed)
+    /// Validate a schema YAML file (structural check, no ClickHouse needed;
+    /// `--data` also checks the data in ClickHouse)
     Validate {
         /// Path to schema YAML file (uses --schema if not provided)
         file: Option<String>,
+
+        /// Also check, in ClickHouse (--clickhouse), that the rows of each
+        /// node embedded in edge tables hold one value of each property
+        /// per node id (a query reading a property they do not is an error)
+        #[arg(long)]
+        data: bool,
+
+        /// With --data: check one node id in N (all rows of each) …
+        #[arg(long, default_value_t = 100)]
+        sample: u64,
+
+        /// … reading at most this many rows of each table
+        #[arg(long, default_value_t = 1_000_000)]
+        max_rows: u64,
+
+        /// With --data: check every node id and every row
+        #[arg(long)]
+        full: bool,
     },
 
     /// Discover schema via LLM assistance. Default targets ClickHouse;
@@ -207,13 +226,29 @@ async fn main() -> Result<()> {
             SchemaCommands::Show { format } => {
                 commands::schema::run_show(&format, &cfg)?;
             }
-            SchemaCommands::Validate { file } => {
+            SchemaCommands::Validate {
+                file,
+                data,
+                sample,
+                max_rows,
+                full,
+            } => {
                 let path = file.or_else(|| cfg.schema_path.clone()).ok_or_else(|| {
                     anyhow::anyhow!(
                         "No schema file specified. Use --schema or provide a file argument."
                     )
                 })?;
                 commands::schema::run_validate_schema(&path)?;
+                if data {
+                    let sampling = match full {
+                        true => None,
+                        false => Some(commands::schema::Sampling {
+                            one_in: sample.max(1),
+                            max_rows: max_rows.max(1),
+                        }),
+                    };
+                    commands::schema::run_validate_data(&path, sampling, &cfg).await?;
+                }
             }
             SchemaCommands::Discover {
                 database,

@@ -41,6 +41,10 @@ cg schema show --schema mydb_schema.yaml
 
 # Validate the generated schema
 cg schema validate mydb_schema.yaml
+
+# Also check the data: the rows of each node embedded in edge tables hold
+# one value of each property per node id (sampled; --full for all rows)
+cg --clickhouse http://localhost:8123 schema validate mydb_schema.yaml --data
 ```
 
 Or configure credentials once in `~/.config/cg/config.toml`:

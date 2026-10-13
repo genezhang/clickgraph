@@ -4250,6 +4250,46 @@ fn embedded_property_skips_variant_nulls() {
     assert!(!got.contains(" any("), "{got}");
 }
 
+/// #531: the rows of one id of an embedded node holding several values of a
+/// property are no node's: an error naming the label and the property, not
+/// any of the values (a value's hash counted, up to two, on ClickHouse;
+/// `count(DISTINCT)` on Spark). The id is read as before.
+#[test]
+fn embedded_property_of_several_values_is_an_error() {
+    let message = "ClickGraph: rows of one :Airport node hold several values of its property city";
+    let got = squash(
+        &translate_bound_plan(
+            "MATCH (a:Airport) RETURN a.city AS c",
+            &embedded_schema(),
+            &ReadOptions::default(),
+        )
+        .unwrap()
+        .sql,
+    );
+    assert!(got.contains("arrayElement([anyIfOrNull("), "{got}");
+    assert!(
+        got.contains("1 + throwIf(uniqUpToIf(1)(cityHash64("),
+        "{got}"
+    );
+    assert!(got.contains(message), "{got}");
+    let got = squash(
+        &databricks_sql("MATCH (a:Airport) RETURN a.city AS c", &embedded_schema()).unwrap(),
+    );
+    assert!(got.contains("CASE WHEN count(DISTINCT "), "{got}");
+    assert!(got.contains(&format!("raise_error('{message}")), "{got}");
+    // The id is the group's key, not a property's aggregate.
+    let got = squash(
+        &translate_bound_plan(
+            "MATCH (i:IP) RETURN i.ip AS ip",
+            &embedded_schema(),
+            &ReadOptions::default(),
+        )
+        .unwrap()
+        .sql,
+    );
+    assert!(!got.contains("throwIf(uniqUpToIf"), "{got}");
+}
+
 /// S12a review: Spark `sequence` is never empty (`sequence(1, 0)` is
 /// `[1, 0]`): `range` is empty when its step leads away from its end, each
 /// argument bound once;

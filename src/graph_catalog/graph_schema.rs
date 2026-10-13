@@ -748,6 +748,11 @@ impl GraphSchema {
         self.node_relations.get(table)
     }
 
+    /// Every node relation, by the name it is read under.
+    pub fn node_relations(&self) -> impl Iterator<Item = (&String, &NodeRelation)> {
+        self.node_relations.iter()
+    }
+
     /// P-4c S8b: the schema with each label whose nodes are embedded in
     /// edge tables (a denormalized node: `from_node_properties` /
     /// `to_node_properties` over the table of an edge it is an end of) read

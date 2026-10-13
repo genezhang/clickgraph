@@ -421,6 +421,16 @@ impl FunctionMapper for DatabricksFunctionMapper {
         format!("any_value({value}, true)")
     }
 
+    fn one_value(&self, value: &str, message: &str) -> String {
+        // `raise_error` is evaluated on the groups of several values only;
+        // its NULL takes the value's type. `count(DISTINCT)` skips NULLs.
+        let message = message.replace('\\', "\\\\").replace('\'', "\\'");
+        format!(
+            "CASE WHEN count(DISTINCT {value}) > 1 THEN raise_error('{message}') ELSE {} END",
+            self.any_non_null(value)
+        )
+    }
+
     fn graph_values(&self) -> Option<super::GraphValues> {
         fn struct_text(tuple: &str, arity: usize) -> String {
             let fields: Vec<String> = (1..=arity).map(|i| format!("_{i}: STRING")).collect();
