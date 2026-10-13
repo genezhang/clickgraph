@@ -132,6 +132,8 @@ impl ProcedureRegistry {
             Arc::new(dbms_stubs::show_current_user),
         );
         registry.register("dbms.procedures", Arc::new(dbms_stubs::list_procedures));
+        // cypher-shell calls it on connect (#1476).
+        registry.register("db.ping", Arc::new(dbms_stubs::ping));
         registry.register("dbms.functions", Arc::new(dbms_stubs::list_functions));
         registry.register("dbms.info", Arc::new(dbms_stubs::info));
 
@@ -172,8 +174,8 @@ mod tests {
     #[test]
     fn test_registry_creation() {
         let registry = ProcedureRegistry::new();
-        // 17 procedures (6 core + 2 apoc + 6 dbms stubs + 3 Browser-compat probes)
-        assert_eq!(registry.names().len(), 17);
+        // 18 procedures (6 core + 2 apoc + 6 dbms stubs + db.ping + 3 Browser-compat probes)
+        assert_eq!(registry.names().len(), 18);
 
         // Verify all expected procedures are registered
         assert!(registry.contains("db.labels"));
@@ -193,14 +195,33 @@ mod tests {
         assert!(registry.contains("db.schema.visualization"));
         assert!(registry.contains("db.indexes"));
         assert!(registry.contains("dbms.licenseAgreementDetails"));
+        assert!(registry.contains("db.ping"));
+    }
+
+    /// #1476: as Neo4j's, one row `success: true` (cypher-shell's connect).
+    #[test]
+    fn db_ping_answers_success() {
+        let registry = ProcedureRegistry::new();
+        let Some(ping) = registry.get("db.ping") else {
+            panic!("db.ping is registered");
+        };
+        let rows = ping(&GraphSchema::build(
+            1,
+            "db".to_string(),
+            HashMap::new(),
+            HashMap::new(),
+        ))
+        .unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].get("success"), Some(&serde_json::json!(true)));
     }
 
     #[test]
     fn test_registry_register_and_lookup() {
         let mut registry = ProcedureRegistry::new();
 
-        // Should already have 17 built-in procedures
-        assert_eq!(registry.names().len(), 17);
+        // Should already have 18 built-in procedures
+        assert_eq!(registry.names().len(), 18);
 
         // Register a dummy procedure
         let dummy_proc: ProcedureFn = Arc::new(|_schema| {
@@ -214,7 +235,7 @@ mod tests {
 
         assert!(registry.contains("test.procedure"));
         assert!(registry.get("test.procedure").is_some());
-        assert_eq!(registry.names().len(), 18); // 17 built-in + 1 test
+        assert_eq!(registry.names().len(), 19); // 18 built-in + 1 test
     }
 
     #[test]

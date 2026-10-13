@@ -2391,6 +2391,15 @@ CALL dbms.components()
 - Tool integration (Neo4j Browser, Neodash)
 - Diagnostic information
 
+#### db.ping()
+
+Whether the server answers: one row, `success: true`, as Neo4j's. `cypher-shell` calls it when it connects (run the server with `--neo4j-compat-mode` for it).
+
+```cypher
+CALL db.ping()
+// success: true
+```
+
 ---
 
 ### Schema Selection for Procedures
