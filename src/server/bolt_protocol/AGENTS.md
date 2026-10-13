@@ -92,18 +92,19 @@ Client                          BoltHandler                    ClickHouse
 
 | File | Lines | Responsibility |
 |---|---|---|
-| `mod.rs` | 384 | Module root. Constants (`BOLT_VERSION_*`, `SUPPORTED_VERSIONS`), `ConnectionState` enum, `BoltContext`, `BoltConfig`, `BoltServer`, version negotiation utils. |
-| `handler.rs` | 1826 | **Core orchestrator.** Handles every Bolt message type (HELLO, LOGON, RUN, PULL, BEGIN, COMMIT, ROUTE, etc.). Contains `execute_cypher_query()` which runs the full parse→plan→SQL→execute→transform pipeline. Parameter substitution for `id()` predicates. |
-| `result_transformer.rs` | 2146 | **Largest file.** `ReturnItemMetadata` (from `ReadTranslation::return_metadata()`, the bound plan's result shape) classifies return items as Node/Relationship/Path/Scalar/IdFunction/Graph. `transform_row()` converts flat ClickHouse rows into packstream-encoded graph objects. Handles fixed-hop paths, VLP paths, multi-label scans, UNION path JSON format, polymorphic edges. |
-| `graph_objects.rs` | 717 | `Node`, `Relationship`, `Path` structs with `to_packstream()` methods. Custom packstream encoding helpers (`encode_integer`, `encode_string`, `encode_properties_map`, `encode_json_value`). |
-| `connection.rs` | 605 | `BoltConnection<S>` — wire-level I/O. Handshake (magic preamble + version negotiation), chunked message reading/writing, packstream message parsing/serialization. Generic over `AsyncRead + AsyncWrite`. |
+| `mod.rs` | 405 | Module root. Constants (`BOLT_VERSION_*`, `SUPPORTED_VERSIONS`), `ConnectionState` enum, `BoltContext`, `BoltConfig`, `BoltServer`, version negotiation utils. |
+| `handler.rs` | 3646 | **Core orchestrator, largest file.** Handles every Bolt message type (HELLO, LOGON, RUN, PULL, BEGIN, COMMIT, ROUTE, etc.). Contains `execute_cypher_query()` which runs the parse→translate (`translate.rs`)→execute→transform pipeline. |
+| `result_transformer.rs` | 3185 |  `ReturnItemMetadata` (from `ReadTranslation::return_metadata()`, the bound plan's result shape) classifies return items as Node/Relationship/Path/Scalar/IdFunction/Graph. `transform_row()` converts flat ClickHouse rows into packstream-encoded graph objects. Handles fixed-hop paths, VLP paths, multi-label scans, UNION path JSON format, polymorphic edges. |
+| `graph_objects.rs` | 918 | `Node`, `Relationship`, `Path` structs with `to_packstream()` methods. Custom packstream encoding helpers (`encode_integer`, `encode_string`, `encode_properties_map`, `encode_json_value`). |
+| `connection.rs` | 668 | `BoltConnection<S>` — wire-level I/O. Handshake (magic preamble + version negotiation), chunked message reading/writing, packstream message parsing/serialization. Generic over `AsyncRead + AsyncWrite`. |
+| `graph_values.rs` | 255 | The bound plan's graph values (nodes, relationships, paths in Neo4j's JSON form) decoded into Bolt graph objects. |
 | `id_mapper.rs` | 757 | Deterministic 53-bit ID mapping; `resolve_node_id` (an integer `id()` value → label and key, for the bound plan). Label-encoded IDs (6 bits label code + 47 bits id value). Session cache with cross-session chaining via `ACTIVE_SESSION_CACHES` global registry. |
-| `messages.rs` | 563 | `BoltMessage` and `BoltValue` types. Message constructors (hello, run, pull, success, failure, record). Field extractors for auth tokens, database, query, parameters, tenant_id, role, view_parameters. |
-| `auth.rs` | 402 | `AuthScheme`, `AuthToken`, `AuthenticatedUser`, `Authenticator`. SHA-256 password hashing, static user database. Auth disabled by default for development. |
-| `errors.rs` | 214 | `BoltError` enum with Neo4j-compatible error codes (`Neo.ClientError.*`, `Neo.TransientError.*`). `is_recoverable()` method. |
-| `websocket.rs` | 157 | `WebSocketBoltAdapter` — wraps `WebSocketStream<TcpStream>` to implement `AsyncRead + AsyncWrite`, enabling Bolt-over-WebSocket (for browser-based clients). |
+| `messages.rs` | 562 | `BoltMessage` and `BoltValue` types. Message constructors (hello, run, pull, success, failure, record). Field extractors for auth tokens, database, query, parameters, tenant_id, role, view_parameters. |
+| `auth.rs` | 401 | `AuthScheme`, `AuthToken`, `AuthenticatedUser`, `Authenticator`. SHA-256 password hashing, static user database. Auth disabled by default for development. |
+| `errors.rs` | 213 | `BoltError` enum with Neo4j-compatible error codes (`Neo.ClientError.*`, `Neo.TransientError.*`). `is_recoverable()` method. |
+| `websocket.rs` | 156 | `WebSocketBoltAdapter` — wraps `WebSocketStream<TcpStream>` to implement `AsyncRead + AsyncWrite`, enabling Bolt-over-WebSocket (for browser-based clients). |
 
-**Total: ~7,600 lines**
+**Total: ~11,200 lines**
 
 ## 4. Bolt Protocol State Machine
 

@@ -70,7 +70,9 @@ matters — tests should not depend on specific code assignments.
 
 | Utility | Used by |
 |---------|---------|
+| `cte_column_naming` | `bound_plan/lower/mod.rs` |
 | `id_encoding` | `server/bolt_protocol/id_mapper.rs`, `server/graph_catalog.rs` |
+| `sql_literal` | `sql_generator/emitters/clickhouse/to_sql_query.rs`, `render_plan/filter_sql.rs` |
 | `serde_arc` | `query_planner/logical_expr/mod.rs` |
 
 ## Public API

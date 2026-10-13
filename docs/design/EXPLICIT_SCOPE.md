@@ -5219,9 +5219,14 @@ slice that will handle it.
     - [x] **S14c7: the entry points and the docs.** The `id()` AST rewrite
       (`ast_transform`, `transform_id_functions`) goes: every caller used
       its output only to classify the statement (read / write / CALL), which
-      it does not change (it rewrites WHERE / ORDER BY expressions and only
-      reads the id mapper); the bound plan reads ids itself through
-      `id_mapper::resolve_node_id` (moved there). The regex `id_rewriter.rs`,
+      it does not change (it rewrote WHERE / ORDER BY expressions, injected
+      labels and could copy the query into one UNION branch per label of an
+      `id()` list, each branch the main query's clauses; it only read the id
+      mapper); the bound plan reads ids itself through
+      `id_mapper::resolve_node_id` (moved there). The one consequence: over
+      Bolt, a procedure call filtered by `id(x) IN` ids of several labels
+      was planned as a UNION of one identical procedure branch per label;
+      now it is one call. The regex `id_rewriter.rs`,
       `cte_naming` and `src/testing/` (not compiled: not in `lib.rs`) go with
       four uncompiled test files of the legacy APIs. `include_plan` stays
       (the `/sql` API's field: the result's shape since S14c1). The docs

@@ -230,9 +230,9 @@ pub struct QueryRequest {
 
 ### Upstream (this module calls)
 - `open_cypher_parser` — parse Cypher queries
-- `query_planner` — logical planning (`evaluate_read_statement`, `evaluate_call_query`)
-- `render_plan` — logical plan → render plan conversion
-- `clickhouse_query_generator` — render plan → SQL string
+- `translate` — the read seam (`translate_read`: bind, lower, print SQL)
+- `query_planner` — statement classification, `evaluate_call_query` (PageRank's arguments)
+- `sql_generator` — PageRank SQL, dialects
 - `graph_catalog` — schema types and config parsing
 - `procedures` — procedure execution (schema_info, etc.)
 - `config` — `ServerConfig` from CLI/env

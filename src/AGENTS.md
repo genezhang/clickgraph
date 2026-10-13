@@ -67,8 +67,9 @@ Declares all top-level modules and provides debug macros:
 
 ```rust
 pub mod utils;
-pub mod clickhouse_query_generator;
+pub mod bound_plan;
 pub mod config;
+pub mod executor;
 pub mod graph_catalog;
 pub mod open_cypher_parser;
 pub mod packstream;
@@ -76,14 +77,16 @@ pub mod procedures;
 pub mod query_planner;
 pub mod render_plan;
 pub mod server;
+pub mod sql_generator;
+pub mod translate;
+// deprecated alias
+pub use crate::sql_generator::emitters::clickhouse as clickhouse_query_generator;
 ```
 
 **Debug macros**:
 - `debug_print!(...)` — `eprintln!` only in debug builds, zero-cost in release
 - `debug_println!(...)` — `println!` only in debug builds, zero-cost in release
 
-**Note**: The `testing` module is NOT declared here — it's only reachable from
-test code within submodules.
 
 ### main.rs — Binary Entry Point
 

@@ -1255,7 +1255,7 @@ git push origin fix/descriptive-bug-name
 - **Alias propagation**: Check the binder's scopes (`bound_plan/binder.rs`)
 - **Property mapping**: Verify schema lookups in `graph_catalog/`
 - **SQL generation**: Debug the lowering (`bound_plan/lower/`) with `sql_only`
-- **Type resolution**: Check the binder's types (`bound_plan/types.rs`) and `type_inference.rs`
+- **Type resolution**: Check the binder's types (`bound_plan/types.rs`); at SQL printing, `sql_generator/emitters/clickhouse/type_inference.rs`
 - **NULL handling**: Review LEFT JOIN logic for OPTIONAL MATCH
 
 ---

@@ -229,7 +229,7 @@ When populated, this takes precedence over the legacy `match_clauses` / `optiona
 |----------------|--------------|
 | `server/handlers.rs` | `parse_cypher_statement()`, `strip_comments()` — HTTP query entry point |
 | `server/bolt_protocol/handler.rs` | `parse_cypher_statement()` — Bolt protocol entry point |
-| `query_planner/types.rs` | Statement classification (`get_query_type`: read / CALL / write) |
+| `query_planner/mod.rs` | Statement classification (`get_query_type`: read / CALL / write) |
 | `query_planner/logical_expr/` | `Expression`, `Operator`, `Literal` for logical expression modeling |
 | `bound_plan/` | The clause-list AST (`clause_list`) the binder reads |
 | `render_plan/` | `Direction` for SQL generation |

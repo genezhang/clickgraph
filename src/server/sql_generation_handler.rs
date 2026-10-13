@@ -371,9 +371,8 @@ async fn sql_generation_handler_inner(
         // The same conversion the cache key used.
         let view_parameter_values = vp_strings.clone();
 
-        // Same pre-pass and pipeline as `/query`, so this endpoint returns
-        // the SQL `/query` would run: the id() rewrite, then the translate
-        // seam (which runs the analyzer passes this endpoint used to skip).
+        // The same translate seam as `/query`, so this endpoint returns the
+        // SQL `/query` would run (`id()` values read through this mapper).
         use crate::server::bolt_protocol::id_mapper::IdMapper;
         let mut id_mapper = IdMapper::new();
         id_mapper.set_scope(Some(schema_name.to_string()), None);

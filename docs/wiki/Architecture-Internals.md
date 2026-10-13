@@ -199,9 +199,9 @@ pub struct RelationshipDefinition {
 - `bolt_protocol/` - Neo4j Bolt protocol implementation
   - `connection.rs` - Connection state management
   - `messages.rs` - Bolt message types
-  - `packstream.rs` - PackStream encoding/decoding
   - `auth.rs` - Authentication handlers
 - `clickhouse_client.rs` - ClickHouse connection pooling
+- `../packstream/` - PackStream encoding/decoding (vendored)
 
 **HTTP API**:
 ```rust
@@ -213,12 +213,8 @@ pub async fn execute_query(
     // 1. Parse Cypher
     let ast = parse_cypher(&request.query)?;
     
-    // 2. Plan & optimize
-    let logical_plan = plan_query(ast, &app_state.schema)?;
-    let optimized_plan = optimize(logical_plan)?;
-    
-    // 3. Generate SQL
-    let sql = generate_sql(optimized_plan)?;
+    // 2. Bind, lower and print SQL (translate.rs, the one read seam)
+    let sql = translate_read(ast, &schema, options)?.sql;
     
     // 4. Execute on ClickHouse
     let rows = app_state.clickhouse_client.query(&sql).await?;
@@ -278,18 +274,9 @@ QueryAst {
 }
 ```
 
-**4. View Resolution**
-```rust
-// Map "User" label → schema node definition
-let user_node = schema.views[0].nodes.get("User")?;
-// → source_table: "users_bench"
-// → property_mappings: { name: "full_name", user_id: "user_id", ... }
+**4. Schema Lookup**
 
-// Map "FOLLOWS" type → schema relationship definition
-let follows_rel = schema.views[0].relationships.get("FOLLOWS")?;
-// → source_table: "user_follows_bench"
-// → from_property: "follower_id", to_property: "followed_id"
-```
+The schema maps `User` to its table (`users_bench`) and properties to columns (`name` → `full_name`), and `FOLLOWS` to its table (`user_follows_bench`) and endpoint columns (`follower_id` → `followed_id`).
 
 **5. Binding and Lowering**
 
@@ -350,7 +337,7 @@ pub enum Expression {
 
 **Implement Function Logic**:
 ```rust
-// src/clickhouse_query_generator/function_generator.rs
+// src/sql_generator/emitters/clickhouse/function_registry.rs (illustrative)
 
 pub fn generate_custom_function(
     name: &str,
@@ -402,7 +389,7 @@ Expression::Function {
 
 **2. Generate ClickHouse SQL**:
 ```rust
-// function_generator.rs
+// function_registry.rs (illustrative)
 "levenshtein" => {
     format!("editDistance({}, {})", 
         generate_expression(&args[0])?,
