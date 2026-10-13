@@ -321,8 +321,6 @@ pub enum Operator {
     IsNotNull,
 }
 
-impl Operator {}
-
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct OperatorApplication {
     pub operator: Operator,

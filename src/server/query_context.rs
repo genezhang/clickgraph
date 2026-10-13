@@ -72,18 +72,15 @@ pub struct QueryContext {
     pub reduce_binder_types:
         HashMap<String, crate::sql_generator::emitters::clickhouse::type_inference::RenderType>,
 
-    /// Alias → node label mapping built from the render plan's FROM/JOIN tables.
-    /// Used by `n.id` pseudo-property resolution to find the correct schema node_id
-    /// column for a given table alias when the variable registry is not populated
-    /// (simple queries without WITH clauses).
+    /// Alias → node label mapping built from the render plan's FROM/JOIN tables
+    /// (type inference reads a column's declared type through it).
     pub alias_label_map: HashMap<String, String>,
 
     /// Names of CTE output columns that hold an array/collection value (produced
     /// by a `collect`/`groupArray` aggregate or a list literal). Set once during
     /// render_plan_to_sql(). Lets the Databricks `size()` render dispatch pick
     /// Spark `size` (collection) vs `length` (string) when the argument is a
-    /// carried-forward collection column whose type the variable registry does
-    /// not track (e.g. `WITH collect(post) AS posts`).
+    /// carried-forward collection column (e.g. `WITH collect(post) AS posts`).
     pub array_cte_columns: HashSet<String>,
 
     /// S1 stats-informed planning: per-table row-count snapshot for this query
@@ -431,18 +428,7 @@ pub fn get_array_cte_columns() -> std::collections::HashSet<String> {
 /// tables (`set_alias_label_map`); `None` when the alias is not a node's.
 pub fn get_node_label_for_alias(alias: &str) -> Option<String> {
     QUERY_CONTEXT
-        .try_with(|ctx| {
-            let ctx = ctx.borrow();
-            // First: alias→label map built from actual FROM/JOIN table names at render time.
-            // This is ground truth for the current SQL branch — the alias IS this table.
-            // Checked first because the variable registry may carry stale labels from a
-            // different branch (e.g., VLP context has `b → Post`, but FOLLOWS branch has
-            // `b → social.users → User`).
-            if let Some(label) = ctx.alias_label_map.get(alias) {
-                return Some(label.clone());
-            }
-            None
-        })
+        .try_with(|ctx| ctx.borrow().alias_label_map.get(alias).cloned())
         .ok()
         .flatten()
 }

@@ -9,9 +9,7 @@ mod view_table_ref;
 use render_expr::{ColumnAlias, OperatorApplication, RenderExpr};
 
 pub use cte_generation::CteGenerationContext;
-pub use cte_manager::{
-    CteColumnMetadata, CteError, CteGenerationResult, CteManager, VlpEndpointInfo,
-};
+pub use cte_manager::{CteError, CteGenerationResult, CteManager};
 pub use filter_pipeline::CategorizedFilters;
 pub use from_table::FromTable;
 pub use view_table_ref::ViewTableRef;
@@ -91,8 +89,6 @@ pub struct Join {
     #[serde(default)]
     pub use_final: bool,
 }
-
-impl Join {}
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub enum JoinType {

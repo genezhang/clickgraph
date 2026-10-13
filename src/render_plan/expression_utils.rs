@@ -36,8 +36,6 @@ pub fn references_alias(expr: &RenderExpr, alias: &str) -> bool {
                     .as_ref()
                     .is_some_and(|else_expr| references_alias(else_expr, alias))
         }
-        // EXISTS subqueries don't reference aliases in the outer scope directly
-        // PatternCount is a self-contained subquery, no outer alias references
         // ReduceExpr may contain aliases in its sub-expressions
         RenderExpr::ReduceExpr(reduce) => {
             references_alias(&reduce.initial_value, alias)
@@ -67,7 +65,7 @@ pub fn references_alias(expr: &RenderExpr, alias: &str) -> bool {
             references_alias(array, alias)
                 || from.as_ref().is_some_and(|f| references_alias(f, alias))
                 || to.as_ref().is_some_and(|t| references_alias(t, alias))
-        } // CteEntityRef doesn't reference aliases directly - it references CTE columns
+        }
     }
 }
 

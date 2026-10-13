@@ -106,7 +106,7 @@ pub fn infer_render_type(expr: &RenderExpr) -> Option<RenderType> {
         // ---- Everything else: unknown (conservative) ----
         // Column (bare, no alias→label), TableAlias, ColumnAlias, Parameter,
         // Raw, Star, MapLiteral, Case, ReduceExpr, ArraySubscript (element type
-        // unknown), CteEntityRef.
+        // unknown).
         //
         // NOTE (#969): a `reduce()` lambda binder DOES have a known type inside
         // its body, but it is deliberately NOT surfaced here. This shared

@@ -198,18 +198,10 @@ fn render_expr_inline(expr: &crate::render_plan::render_expr::RenderExpr) -> Str
         RenderExpr::Column(c) => c.raw().to_string(),
         RenderExpr::TableAlias(a) => a.0.clone(),
         RenderExpr::ColumnAlias(a) => a.0.clone(),
-        // Fall back to the canonical renderer (Path A, `RenderExpr::to_sql`)
-        // for anything we don't handle explicitly — arithmetic / property-ref
-        // SET RHS (`SET a.age = a.age + 1`, `SET a.x = a.y`), nested exprs, etc.
-        // Path A is the superset renderer and runs under the executor's
-        // task-local schema context (connection.rs installs it around
-        // `write_render_to_sql`), so it correctly resolves the generic `.id`
-        // pseudo-property to the schema's node_id column even when that column
-        // is renamed (e.g. `user_id`) — the previous fallback (the now-deleted
-        // `render_expr_to_sql_string`) emitted a literal `a.id` that referenced
-        // a non-existent column (part of #411). For all other reachable write
-        // payloads Path A is byte-identical to the old fallback (proven across
-        // arithmetic / property-ref / scalar-fn / nested shapes).
+        // The shared printer for anything else. The bound write plan
+        // (`bound_plan/write.rs`) builds only `Raw` texts and literals; a
+        // property access prints its column as given (the lowering resolves
+        // columns, the printer does not).
         _ => expr.to_sql(),
     }
 }

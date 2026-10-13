@@ -5188,8 +5188,11 @@ slice that will handle it.
       `Cte` and `Join` lose the fields no code read (`variable_registry`,
       the VLP metadata, `fixed_path_info`, `pre_filter`, `graph_rel`, …),
       `RenderExpr` the variants nothing built (`ExistsSubquery`,
-      `InSubquery`, `PatternCount`, `CteEntityRef`), `typed_variable` and
-      the legacy join context (its VLP constants kept). Found by removing
+      `InSubquery`, `PatternCount`, `CteEntityRef`), `CteGenerationResult`
+      the column / endpoint metadata only the legacy CTE conversion read,
+      `typed_variable` and the legacy join context (its VLP constants
+      kept). `QueryContext.table_stats` is still fetched and attached but
+      read by nothing (the stats decision). Found by removing
       what no code references (pub items included) until none remained.
       - The corpus goldens byte-identical, census 1477, the ratchet's
         decreases recorded, chdb `writes_e2e` 18/20 (#1436).

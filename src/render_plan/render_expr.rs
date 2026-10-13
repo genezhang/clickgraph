@@ -78,14 +78,7 @@ pub enum RenderRewrite {
 /// `match … _ => expr.clone()` `RenderExpr` rewriters whose catch-alls silently
 /// dropped rewrites inside `List`/`Case`/`ArraySubscript`/`ReduceExpr`/… wrappers.
 ///
-/// DESCENT POLICY: recurses into value-carrying wrappers only. It does NOT
-/// descend into `InSubquery`/`ExistsSubquery` (a correlated subquery owns a
-/// separate FROM/alias scope — blindly rewriting into it is a different, riskier
-/// operation) nor `PatternCount` (carries a structural `pattern` + validated SQL
-/// cache; not descended until #613 makes rewriters recurse into the pattern) nor
-/// `CteEntityRef` — those are cloned, matching every current caller's intent. A
-/// rewriter that DOES want to enter a subquery must handle it explicitly in `f`
-/// before returning Recurse.
+/// DESCENT POLICY: recurses into value-carrying wrappers; leaves are cloned.
 pub fn map_render_expr<F>(expr: &RenderExpr, f: &mut F) -> RenderExpr
 where
     F: FnMut(&RenderExpr) -> RenderRewrite,
@@ -96,9 +89,8 @@ where
     }
 }
 
-/// Rebuild `expr` by recursing `f` into each value-wrapper child; clone leaves,
-/// subqueries, `PatternCount`, and `CteEntityRef` (see [`map_render_expr`]
-/// descent policy). EXHAUSTIVE — no `_` catch-all, so a new [`RenderExpr`]
+/// Rebuild `expr` by recursing `f` into each value-wrapper child; clone leaves
+/// (see [`map_render_expr`] descent policy). EXHAUSTIVE — no `_` catch-all, so a new [`RenderExpr`]
 /// variant fails to compile here until its child structure is spelled out.
 pub fn map_render_expr_children<F>(expr: &RenderExpr, f: &mut F) -> RenderExpr
 where
@@ -157,10 +149,8 @@ where
             to: to.as_ref().map(|x| Box::new(map_render_expr(x, f))),
         },
 
-        // Leaves + deliberately-not-descended nodes (subqueries own a separate
-        // scope; PatternCount carries a pattern + validated SQL cache, not
-        // descended until #613). NO `_` catch-all — every variant is named so a
-        // new one forces a compile error here.
+        // Leaves. NO `_` catch-all — every variant is named so a new one
+        // forces a compile error here.
         RenderExpr::PropertyAccessExp(_)
         | RenderExpr::Literal(_)
         | RenderExpr::Raw(_)
@@ -195,11 +185,7 @@ pub enum MutVisit {
 /// returns `Recurse` for wrappers; descent is centralized and exhaustive.
 ///
 /// DESCENT POLICY mirrors [`map_render_expr`]: descends into value-carrying
-/// wrappers only. It does NOT descend into `InSubquery`/`ExistsSubquery`
-/// (correlated subqueries own a separate FROM/alias scope), `PatternCount`
-/// (structural pattern + validated SQL cache), or `CteEntityRef`. A caller that
-/// wants to enter a subquery must handle it explicitly in `f` before returning
-/// `Recurse`.
+/// wrappers only.
 pub fn visit_render_expr_mut<F>(expr: &mut RenderExpr, f: &mut F)
 where
     F: FnMut(&mut RenderExpr) -> MutVisit,
@@ -210,9 +196,8 @@ where
     }
 }
 
-/// Recurse `f` into each value-wrapper child of `expr` in place. Leaves,
-/// subqueries, `PatternCount`, and `CteEntityRef` are not descended (see
-/// [`visit_render_expr_mut`] descent policy). EXHAUSTIVE — no `_` catch-all, so
+/// Recurse `f` into each value-wrapper child of `expr` in place. Leaves are not
+/// descended (see [`visit_render_expr_mut`] descent policy). EXHAUSTIVE — no `_` catch-all, so
 /// a new [`RenderExpr`] variant fails to compile here until its child structure
 /// is spelled out.
 pub fn descend_render_expr_mut<F>(expr: &mut RenderExpr, f: &mut F)
@@ -276,10 +261,8 @@ where
             }
         }
 
-        // Leaves + deliberately-not-descended nodes (subqueries own a separate
-        // scope; PatternCount carries a pattern + validated SQL cache, not
-        // descended until #613). NO `_` catch-all — every variant is named so a
-        // new one forces a compile error here.
+        // Leaves. NO `_` catch-all — every variant is named so a new one
+        // forces a compile error here.
         RenderExpr::PropertyAccessExp(_)
         | RenderExpr::Literal(_)
         | RenderExpr::Raw(_)
@@ -644,10 +627,7 @@ mod tests {
         );
     }
 
-    /// Descent policy: subqueries own a separate scope and are NOT recursed
-    /// into. `map_render_expr_children` clones `InSubquery`/`ExistsSubquery`
-    /// intact (verified structurally here via the exhaustive leaf arm; the full
-    /// subquery-rendering path is covered byte-identically by the corpus).
+    /// `Replace` returns the replacement without descending into the node.
     #[test]
     fn map_render_expr_replace_stops() {
         let hit = std::cell::Cell::new(0);
@@ -753,7 +733,7 @@ mod tests {
     }
 
     /// Descent policy parity with `map_render_expr`: `Stop` handles a node
-    /// without descending into its children; subqueries are NOT descended.
+    /// without descending into its children.
     #[test]
     fn visit_render_expr_mut_stop_skips_children() {
         let mut expr = RenderExpr::List(vec![rprop("c1")]);

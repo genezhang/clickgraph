@@ -632,10 +632,8 @@ fn render_constant_in_list(op: &OperatorApplication, rendered: &[String]) -> Opt
 /// Cypher text (a bare `posts` and a bare `name` both render as a column ref).
 /// So the default stays the string-safe `length` and this returns `Some("size")`
 /// only when the argument is a *detected* collection: an inline list literal, a
-/// `collect`/`groupArray` aggregate, or a variable the registry typed as a
-/// collection (e.g. `WITH collect(post) AS posts`). Schemas that need `size()`
-/// over a non-obvious collection should declare the column's array type so the
-/// registry resolves it. Returns `None` outside Databricks (CH unchanged).
+/// `collect`/`groupArray` aggregate, or a CTE column known to hold a
+/// collection (e.g. `WITH collect(post) AS posts`). Returns `None` outside Databricks (CH unchanged).
 fn databricks_size_name(
     arg: Option<&RenderExpr>,
     dialect: crate::sql_generator::SqlDialect,
@@ -1275,8 +1273,8 @@ pub fn render_plan_parts_plain(mut plan: RenderPlan) -> (Vec<PlainCte>, String) 
     );
     flatten_all_ctes(&mut plan);
     // The Databricks `size()` render picks Spark `size` for a list-valued
-    // column (see `databricks_size_name`); a lowered plan has no variable
-    // registry, so its list columns are read off the plan itself.
+    // column (see `databricks_size_name`); the plan's list columns are read
+    // off the plan itself.
     struct ArrayColsGuard(HashSet<String>);
     impl Drop for ArrayColsGuard {
         fn drop(&mut self) {
@@ -2393,8 +2391,6 @@ impl RenderExpr {
                                 "IS NOT NULL"
                             };
 
-                            // Look up the actual column name from the JOIN metadata (populated during rendering)
-                            // This ensures we use the CORRECT column for the SPECIFIC relationship table
                             // Not a relationship — likely a node alias from OPTIONAL MATCH
                             // (e.g., CASE WHEN c IS NULL ... where c is a Comment node).
                             // Resolve to the node's ID column for the null check.
