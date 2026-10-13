@@ -29,6 +29,11 @@
 //! A NULL shared node or relationship is in no match (`Q`'s MATCH requires it
 //! not NULL), so its row gets false / 0 / `[]`, as in Neo4j.
 //!
+//! A pattern predicate of a list comprehension's element is a members
+//! subquery (S11o9, `SubqueryKind::Members`): the nodes in the element's
+//! place, looked for from the elements of the comprehension's list when it
+//! has one ([`Lowerer::members_drive`]), which `x IN` reads.
+//!
 //! Not lowered yet: a subquery reading a path, a variable-length
 //! relationship's list or a carried list of nodes; a pattern comprehension
 //! of nodes, relationships, paths or maps; a subquery in the ORDER BY / WHERE
@@ -38,14 +43,16 @@
 
 use std::collections::{BTreeSet, HashMap};
 
+use crate::graph_catalog::graph_schema::NodeSchema;
 use crate::query_planner::logical_expr::{self as lx, LogicalExpr};
 use crate::render_plan::render_expr::{
     AggregateFnCall, Literal, Operator, OperatorApplication, RenderExpr, ScalarFnCall,
 };
-use crate::render_plan::{Cte, CteContent, JoinType, RenderPlan};
+use crate::render_plan::{ArrayJoin, Cte, CteContent, JoinType, RenderPlan};
 use crate::sql_generator::emitters::clickhouse::to_sql_query::render_expr_to_sql_plain;
 use crate::sql_generator::function_mapper::current_function_mapper;
 
+use super::elements::{slot, Elem};
 use super::unwind::Kind;
 use super::{
     col_at, conjuncts, empty_plan, eq, is_constant, join, parse_var, property_refs, reads_only,
@@ -53,7 +60,7 @@ use super::{
     LowerError, Lowerer, Scan, Segment,
 };
 use crate::bound_plan::expr::{subquery_var, subquery_vars};
-use crate::bound_plan::types::{BoundOp, BoundPattern, Subquery, SubqueryKind, VarId};
+use crate::bound_plan::types::{BindingKind, BoundOp, BoundPattern, Subquery, SubqueryKind, VarId};
 
 /// The column of a subquery's grouped matches holding its count or list.
 const VALUE: &str = "__value";
@@ -207,7 +214,7 @@ impl<'s> Lowerer<'s> {
         }
         let projection = match &sq.kind {
             SubqueryKind::Collect(p) => Some(p),
-            SubqueryKind::Exists | SubqueryKind::Count => None,
+            SubqueryKind::Exists | SubqueryKind::Count | SubqueryKind::Members { .. } => None,
         };
         // The shared variables: the pattern's, bound before.
         let mut shared: Vec<VarId> = Vec::new();
@@ -304,7 +311,18 @@ impl<'s> Lowerer<'s> {
             .iter()
             .flat_map(conjuncts)
             .any(|c| reads_only(c, &anchor_aliases) && !table_aliases(c).is_empty());
-        let anchored = where_only.is_empty()
+        // A pattern predicate's nodes in a list comprehension's element's
+        // place: looked for from its list's elements (S11o9).
+        let members = match &sq.kind {
+            SubqueryKind::Members { node, of: Some(of) } => match self.members_from(*node, of) {
+                MembersFrom::Elements(a) => Some(a),
+                MembersFrom::Nowhere => return self.subquery_constant(sq),
+                MembersFrom::Graph => None,
+            },
+            _ => None,
+        };
+        let anchored = members.is_none()
+            && where_only.is_empty()
             && shared.iter().all(|v| {
                 matches!(
                     self.scans.get(v),
@@ -338,7 +356,7 @@ impl<'s> Lowerer<'s> {
         let correlation = if anchored {
             self.anchor_correlation(pattern, &shared, &read_props, &mut q)?
         } else {
-            self.subquery_drive(&shared, &where_only, &read_props, &mut q)?
+            self.subquery_drive(&shared, &where_only, &read_props, members.as_ref(), &mut q)?
         };
         let outer = self.swap_segment(q);
         let inner = self.subquery_inner(pattern, predicate.as_ref(), &correlation, sq);
@@ -407,7 +425,7 @@ impl<'s> Lowerer<'s> {
             SubqueryKind::Exists => or_else(Literal::Boolean(false)),
             SubqueryKind::Count => or_else(Literal::Integer(0)),
             // A row that joins no group reads the empty list.
-            SubqueryKind::Collect(_) => {
+            SubqueryKind::Collect(_) | SubqueryKind::Members { .. } => {
                 let Some(spelling) = current_function_mapper().lists() else {
                     return unsupported("a pattern comprehension in this SQL dialect");
                 };
@@ -429,7 +447,7 @@ impl<'s> Lowerer<'s> {
         let value = match &sq.kind {
             SubqueryKind::Exists => RenderExpr::Literal(Literal::Boolean(false)),
             SubqueryKind::Count => RenderExpr::Literal(Literal::Integer(0)),
-            SubqueryKind::Collect(_) => RenderExpr::List(Vec::new()),
+            SubqueryKind::Collect(_) | SubqueryKind::Members { .. } => RenderExpr::List(Vec::new()),
         };
         self.values.insert(sq.var, value);
         Ok(())
@@ -446,6 +464,7 @@ impl<'s> Lowerer<'s> {
         shared: &[VarId],
         where_only: &[VarId],
         read_props: &[(VarId, String)],
+        members: Option<&MembersAnchor<'s>>,
         q: &mut Segment<'s>,
     ) -> Result<Vec<Correlated>, LowerError> {
         self.finish_relation()?;
@@ -502,6 +521,9 @@ impl<'s> Lowerer<'s> {
                 body.select.push(item);
             }
             q.scans.insert(*v, scan);
+        }
+        if let Some(a) = members {
+            self.members_drive(a, &d, &mut body, &mut correlation, q)?;
         }
         if body.select.is_empty() {
             body.select
@@ -608,9 +630,142 @@ impl<'s> Lowerer<'s> {
                     Some(kind),
                 )
             }
+            // Each matched node's label and identity, once, as
+            // `in_members` reads them.
+            SubqueryKind::Members { node: m, .. } => {
+                let Some(spelling) = current_function_mapper().lists() else {
+                    return unsupported(
+                        "a pattern predicate in a list comprehension in this SQL dialect",
+                    );
+                };
+                let fields: Vec<String> = match (self.scans.get(m), self.identity(*m)?) {
+                    // A node of several labels: its label is its identity's
+                    // first column.
+                    (Some(Scan::Labels { .. }), Some(id)) => id,
+                    (Some(Scan::Node { label, .. }), Some(id)) => {
+                        std::iter::once(RenderExpr::Literal(Literal::String(label.clone())))
+                            .chain(id)
+                            .collect()
+                    }
+                    _ => return Ok(None),
+                }
+                .iter()
+                .map(render_expr_to_sql_plain)
+                .collect();
+                (
+                    RenderExpr::Raw((spelling.distinct)(&(spelling.collect_all)(&(spelling
+                        .tuple)(
+                        &fields
+                    )))),
+                    None,
+                )
+            }
         };
         body.select.push(select(value, VALUE));
         Ok(Some((self.render(body), kind)))
+    }
+
+    /// How the nodes `m` of a members subquery are looked for (S11o9), `of`
+    /// the comprehension's list: from its elements when they are nodes of
+    /// one label and nothing of `m` but its identity is read; of no match
+    /// when `m` cannot have their label (the element is none of them).
+    fn members_from(&self, m: VarId, of: &'s LogicalExpr) -> MembersFrom<'s> {
+        let Kind::List(element) = self.kind(of) else {
+            return MembersFrom::Graph;
+        };
+        let Kind::Element(Elem::Node(label)) = *element else {
+            return MembersFrom::Graph;
+        };
+        let BindingKind::Node { labels } = &self.binding(m).kind else {
+            return MembersFrom::Graph;
+        };
+        if !labels.contains(&label) {
+            return MembersFrom::Nowhere;
+        }
+        let read = self
+            .demand
+            .get(&m)
+            .is_some_and(|ps| ps.iter().any(|p| !p.starts_with('#')));
+        match self.schema.node_schema_opt(&label) {
+            Some(schema) if !read && schema.is_standard_own_table() => {
+                MembersFrom::Elements(MembersAnchor {
+                    node: m,
+                    of,
+                    label,
+                    schema,
+                })
+            }
+            _ => MembersFrom::Graph,
+        }
+    }
+
+    /// The drive `D` of a members subquery reads its list's elements: a row
+    /// per element (the list's distinct identities), whose identity is node
+    /// `m`'s in `Q`; and `D` and the rows are joined by a hash of the list
+    /// (as well as the correlation), so each row's group holds the matches
+    /// among the elements of rows with the same list. Of its identities,
+    /// distinct and sorted: the same however a re-evaluated `collect()`
+    /// orders it (ClickHouse evaluates a CTE per read). Two lists of the
+    /// same hash share a group: an element of the one that is a match of
+    /// the other is a match (of the same correlation), so `x IN` it still
+    /// answers right.
+    fn members_drive(
+        &mut self,
+        a: &MembersAnchor<'s>,
+        d: &str,
+        body: &mut Body,
+        correlation: &mut Vec<Correlated>,
+        q: &mut Segment<'s>,
+    ) -> Result<(), LowerError> {
+        let Some(spelling) = current_function_mapper().lists() else {
+            return unsupported("a pattern predicate in a list comprehension in this SQL dialect");
+        };
+        const E: &str = "__cg_e";
+        const ELEMENT: &str = "__cg_member";
+        const KEY: &str = "__cg_members";
+        let elem = Elem::Node(a.label.clone());
+        let id: Vec<String> = self
+            .elem_identity(&RenderExpr::Raw(E.to_string()), &elem)?
+            .iter()
+            .map(render_expr_to_sql_plain)
+            .collect();
+        let list = render_expr_to_sql_plain(&self.expr(a.of, &HashMap::new())?);
+        let ids = (spelling.distinct)(&(spelling.map)(E, &(spelling.tuple)(&id), &list));
+        let key = RenderExpr::Raw((spelling.fingerprint)(&(spelling.sorted)(&ids)));
+        body.select.push(select(key.clone(), KEY));
+        correlation.push(Correlated {
+            column: KEY.to_string(),
+            outer: key,
+            inner: col_at(d, KEY),
+            null_safe: false,
+        });
+        body.array_join.push(ArrayJoin {
+            expression: RenderExpr::Raw(ids),
+            alias: ELEMENT.to_string(),
+            position: None,
+        });
+        let mut physical = HashMap::new();
+        for (i, c) in a.schema.id_physical_columns().into_iter().enumerate() {
+            let name = format!("{}__{c}", a.node);
+            body.select.push(select(
+                slot(&RenderExpr::Raw(ELEMENT.to_string()), i)?,
+                &name,
+            ));
+            physical.insert(c, name);
+        }
+        q.scans.insert(
+            a.node,
+            Scan::Node {
+                schema: a.schema,
+                label: a.label.clone(),
+                at: At::Exported {
+                    alias: d.to_string(),
+                    physical,
+                    props: HashMap::new(),
+                },
+            },
+        );
+        Ok(())
     }
 
     /// Split a MATCH's WHERE: the conjuncts that read no subquery, and those
@@ -634,6 +789,24 @@ impl<'s> Lowerer<'s> {
     }
 }
 
+/// How a members subquery's nodes are looked for ([`Lowerer::members_from`]).
+enum MembersFrom<'s> {
+    Elements(MembersAnchor<'s>),
+    /// It has none (`x IN` it is false).
+    Nowhere,
+    /// Its matches in the whole graph.
+    Graph,
+}
+
+/// A members subquery's node looked for from its list's elements, nodes of
+/// one label ([`Lowerer::members_drive`]).
+struct MembersAnchor<'s> {
+    node: VarId,
+    of: &'s LogicalExpr,
+    label: String,
+    schema: &'s NodeSchema,
+}
+
 /// What a subquery's placeholder is, for `Lowerer::kind`: a list's element
 /// kind is known once the subquery is applied.
 pub(super) fn placeholder_kind(lowerer: &Lowerer<'_>, e: &LogicalExpr) -> Option<Kind> {
@@ -645,5 +818,7 @@ pub(super) fn placeholder_kind(lowerer: &Lowerer<'_>, e: &LogicalExpr) -> Option
         SubqueryKind::Collect(_) => lowerer
             .var_kind(v)
             .unwrap_or_else(|| Kind::List(Box::new(Kind::Unknown))),
+        // Read by `x IN` only (`Lowerer::in_members`).
+        SubqueryKind::Members { .. } => Kind::List(Box::new(Kind::Unknown)),
     })
 }

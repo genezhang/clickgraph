@@ -322,6 +322,10 @@ impl FunctionMapper for ClickhouseFunctionMapper {
                 format!("(SELECT groupArray({t}) FROM {table} AS {alias} WHERE 0)")
             },
             distinct: |l| format!("arrayDistinct({l})"),
+            contains: |l, x| format!("has({l}, {x})"),
+            intersect: |a, b| format!("arrayIntersect({a}, {b})"),
+            sorted: |l| format!("arraySort({l})"),
+            fingerprint: |v| format!("cityHash64({v})"),
             map_keys: |m| format!("mapKeys({m})"),
             // A `Map(String, Dynamic)`, as a graph value's (S6c): each value
             // keeps its type, maps of any keys are of one type, and the

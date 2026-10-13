@@ -156,6 +156,11 @@ pub fn infer_list_element_type(expr: &RenderExpr) -> Option<RenderType> {
 /// Classify a function call by its registry [`FnReturnKind`], recursing for the
 /// polymorphic kinds.
 fn infer_fn_call(name: &str, args: &[RenderExpr]) -> Option<RenderType> {
+    // Rendered as its epoch-millis value as it is (`to_sql_query.rs`): not a
+    // DateTime, so a component of it converts it first.
+    if epoch_millis_datetime(name, args).is_some() {
+        return None;
+    }
     match function_return_kind(&name.to_lowercase()) {
         FnReturnKind::Str => Some(RenderType::String),
         FnReturnKind::Int => Some(RenderType::Integer),
@@ -170,6 +175,20 @@ fn infer_fn_call(name: &str, args: &[RenderExpr]) -> Option<RenderType> {
         // Element type of a list arg (head/last) — unknowable at render time.
         FnReturnKind::ElementOfArg0 => None,
         FnReturnKind::Unknown => None,
+    }
+}
+
+/// `datetime({epochMillis: x})`: `x`, which it renders as (the epoch
+/// milliseconds as they are, the representation of schemas storing them so).
+pub fn epoch_millis_datetime<'e>(name: &str, args: &'e [RenderExpr]) -> Option<&'e RenderExpr> {
+    match args {
+        [RenderExpr::MapLiteral(entries)] if name.eq_ignore_ascii_case("datetime") => {
+            match entries.as_slice() {
+                [(key, value)] if key.eq_ignore_ascii_case("epochmillis") => Some(value),
+                _ => None,
+            }
+        }
+        _ => None,
     }
 }
 
@@ -411,6 +430,18 @@ mod tests {
         assert_eq!(
             infer_render_type(&sfn("datetime", vec![lit_str("2024-06-15")])),
             Some(RenderType::DateTime)
+        );
+        // `datetime({epochMillis: x})` renders as `x` (LDBC IC 10): not a
+        // DateTime, so `.month` of it converts it first.
+        assert_eq!(
+            infer_render_type(&sfn(
+                "datetime",
+                vec![RenderExpr::MapLiteral(vec![(
+                    "epochMillis".to_string(),
+                    lit_int(0)
+                )])]
+            )),
+            None
         );
     }
 

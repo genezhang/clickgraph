@@ -42,6 +42,10 @@ pub(crate) enum RawKind {
     Count,
     /// A pattern comprehension.
     Collect,
+    /// The nodes of a pattern predicate's matches in a list comprehension's
+    /// element's place (its projection names them), for `x IN` (S11o9);
+    /// `predicate`: of a pattern used as a predicate.
+    Members { predicate: bool },
 }
 
 /// A subquery expression taken out of its expression.
@@ -52,6 +56,10 @@ pub(crate) struct RawSubquery<'a> {
     /// A pattern comprehension's projection (also of one under `size()`,
     /// bound for its errors only).
     pub projection: Option<Expression<'a>>,
+    /// [`RawKind::Members`]: the list of the comprehension whose element
+    /// the predicate reads, bound in the enclosing scope (its matches are
+    /// looked for from its elements), when it reads no local.
+    pub elements: Option<Expression<'a>>,
 }
 
 /// Resolves the names an expression may reference, and allocates bindings for
@@ -74,7 +82,7 @@ pub(crate) fn bind_expr(
     env: &mut dyn NameEnv,
 ) -> Result<LogicalExpr, BindError> {
     let mut ast = ast.clone();
-    hoist_subqueries(&mut ast, env, false)?;
+    hoist_subqueries(&mut ast, env, &[])?;
     let converted = LogicalExpr::try_from(ast)
         .map_err(|e| BindError::Unsupported(format!("expression: {e}")))?;
     let mut locals: Vec<(String, VarId)> = Vec::new();
@@ -133,12 +141,17 @@ fn ast_children<'e, 'a>(e: &'e Expression<'a>) -> Vec<&'e Expression<'a>> {
 }
 
 /// Replace every subquery expression of `e` by its placeholder, binding it
-/// through `env`. `in_lambda`: `e` is inside a list comprehension, `reduce`
-/// or lambda.
-fn hoist_subqueries(
-    e: &mut Expression<'_>,
+/// through `env`. `locals`: the names a list comprehension, `reduce` or
+/// lambda around `e` binds. A subquery reading none of them is bound as
+/// any (its value is the same for every element); a pattern predicate
+/// whose only one is a node of its pattern, `x` (LDBC IC 10's
+/// `[p IN posts WHERE (p)-[:HAS_TAG]->()<-[:HAS_INTEREST]-(person)]`), is
+/// `x IN` the nodes in `x`'s place of the pattern's matches
+/// ([`SubqueryKind::Members`], S11o9). Others are not lowered.
+fn hoist_subqueries<'a>(
+    e: &mut Expression<'a>,
     env: &mut dyn NameEnv,
-    in_lambda: bool,
+    locals: &[Local<'a>],
 ) -> Result<(), BindError> {
     let raw = match e {
         Expression::ExistsExpression(_) | Expression::PatternComprehension(_) => true,
@@ -161,10 +174,33 @@ fn hoist_subqueries(
         _ => false,
     };
     if raw {
-        if in_lambda {
-            return Err(BindError::Unsupported(
-                "a subquery expression inside a list comprehension, reduce or lambda".to_string(),
-            ));
+        let mut used = Vec::new();
+        ast_names(e, &mut used);
+        let mut read: Vec<&str> = locals
+            .iter()
+            .map(|l| l.name)
+            .filter(|l| used.contains(l))
+            .collect();
+        read.dedup();
+        if !read.is_empty() {
+            let Some((x, mut sq)) = element_membership(e, &read) else {
+                return Err(BindError::Unsupported(
+                    "a subquery expression inside a list comprehension, reduce or lambda"
+                        .to_string(),
+                ));
+            };
+            // The innermost `x`'s list.
+            sq.elements = locals
+                .iter()
+                .rev()
+                .find(|l| l.name == x)
+                .and_then(|l| l.list.clone());
+            let var = env.subquery(sq)?;
+            *e = Expression::OperatorApplicationExp(ast::OperatorApplication {
+                operator: ast::Operator::In,
+                operands: vec![Expression::Variable(x), placeholder(var)],
+            });
+            return Ok(());
         }
         let taken = std::mem::replace(e, Expression::Literal(ast::Literal::Null));
         let sq = match taken {
@@ -173,18 +209,21 @@ fn hoist_subqueries(
                 pattern: x.pattern,
                 where_: x.where_clause.map(|w| w.conditions),
                 projection: None,
+                elements: None,
             },
             Expression::PathPattern(pattern) => RawSubquery {
                 kind: RawKind::Predicate,
                 pattern,
                 where_: None,
                 projection: None,
+                elements: None,
             },
             Expression::PatternComprehension(pc) => RawSubquery {
                 kind: RawKind::Collect,
                 pattern: *pc.pattern,
                 where_: pc.where_clause.map(|w| *w),
                 projection: Some(*pc.projection),
+                elements: None,
             },
             Expression::FunctionCallExp(mut f) => {
                 let exists = f.name.eq_ignore_ascii_case("exists");
@@ -198,12 +237,14 @@ fn hoist_subqueries(
                         pattern,
                         where_: None,
                         projection: None,
+                        elements: None,
                     },
                     Some(Expression::PatternComprehension(pc)) => RawSubquery {
                         kind: RawKind::Count,
                         pattern: *pc.pattern,
                         where_: pc.where_clause.map(|w| *w),
                         projection: Some(*pc.projection),
+                        elements: None,
                     },
                     _ => {
                         return Err(BindError::Unsupported(
@@ -219,67 +260,83 @@ fn hoist_subqueries(
             }
         };
         let var = env.subquery(sq)?;
-        *e = Expression::FunctionCallExp(ast::FunctionCall {
-            name: SUBQUERY_FN.to_string(),
-            args: vec![Expression::Literal(ast::Literal::Integer(i64::from(var.0)))],
-        });
+        *e = placeholder(var);
         return Ok(());
     }
+    let with = |names: &[&'a str], list: Option<Expression<'a>>| -> Vec<Local<'a>> {
+        let mut inner = locals.to_vec();
+        inner.extend(names.iter().map(|&name| Local {
+            name,
+            list: list.clone(),
+        }));
+        inner
+    };
     match e {
         Expression::ReduceExp(r) => {
-            hoist_subqueries(&mut r.initial_value, env, in_lambda)?;
-            hoist_subqueries(&mut r.list, env, in_lambda)?;
-            hoist_subqueries(&mut r.expression, env, true)
+            hoist_subqueries(&mut r.initial_value, env, locals)?;
+            hoist_subqueries(&mut r.list, env, locals)?;
+            let inner = with(&[r.accumulator, r.variable], None);
+            hoist_subqueries(&mut r.expression, env, &inner)
         }
-        Expression::Lambda(l) => hoist_subqueries(&mut l.body, env, true),
+        Expression::Lambda(l) => {
+            let inner = with(&l.params, None);
+            hoist_subqueries(&mut l.body, env, &inner)
+        }
         Expression::ListComprehension(lc) => {
-            hoist_subqueries(&mut lc.list_expr, env, in_lambda)?;
+            // Its list as written, when it reads no local and no subquery.
+            let mut names = Vec::new();
+            ast_names(&lc.list_expr, &mut names);
+            let list = (!has_subquery(&lc.list_expr)
+                && !locals.iter().any(|l| names.contains(&l.name)))
+            .then(|| (*lc.list_expr).clone());
+            hoist_subqueries(&mut lc.list_expr, env, locals)?;
+            let inner = with(&[lc.variable], list);
             if let Some(w) = lc.where_clause.as_mut() {
-                hoist_subqueries(w, env, true)?;
+                hoist_subqueries(w, env, &inner)?;
             }
             if let Some(p) = lc.projection.as_mut() {
-                hoist_subqueries(p, env, true)?;
+                hoist_subqueries(p, env, &inner)?;
             }
             Ok(())
         }
         Expression::List(xs) => xs
             .iter_mut()
-            .try_for_each(|x| hoist_subqueries(x, env, in_lambda)),
+            .try_for_each(|x| hoist_subqueries(x, env, locals)),
         Expression::FunctionCallExp(f) => f
             .args
             .iter_mut()
-            .try_for_each(|x| hoist_subqueries(x, env, in_lambda)),
+            .try_for_each(|x| hoist_subqueries(x, env, locals)),
         Expression::OperatorApplicationExp(op) => op
             .operands
             .iter_mut()
-            .try_for_each(|x| hoist_subqueries(x, env, in_lambda)),
+            .try_for_each(|x| hoist_subqueries(x, env, locals)),
         Expression::Case(c) => {
             if let Some(x) = c.expr.as_mut() {
-                hoist_subqueries(x, env, in_lambda)?;
+                hoist_subqueries(x, env, locals)?;
             }
             for (w, t) in c.when_then.iter_mut() {
-                hoist_subqueries(w, env, in_lambda)?;
-                hoist_subqueries(t, env, in_lambda)?;
+                hoist_subqueries(w, env, locals)?;
+                hoist_subqueries(t, env, locals)?;
             }
             if let Some(x) = c.else_expr.as_mut() {
-                hoist_subqueries(x, env, in_lambda)?;
+                hoist_subqueries(x, env, locals)?;
             }
             Ok(())
         }
         Expression::MapLiteral(entries) => entries
             .iter_mut()
-            .try_for_each(|(_, v)| hoist_subqueries(v, env, in_lambda)),
+            .try_for_each(|(_, v)| hoist_subqueries(v, env, locals)),
         Expression::ArraySubscript { array, index } => {
-            hoist_subqueries(array, env, in_lambda)?;
-            hoist_subqueries(index, env, in_lambda)
+            hoist_subqueries(array, env, locals)?;
+            hoist_subqueries(index, env, locals)
         }
         Expression::ArraySlicing { array, from, to } => {
-            hoist_subqueries(array, env, in_lambda)?;
+            hoist_subqueries(array, env, locals)?;
             if let Some(x) = from.as_mut() {
-                hoist_subqueries(x, env, in_lambda)?;
+                hoist_subqueries(x, env, locals)?;
             }
             if let Some(x) = to.as_mut() {
-                hoist_subqueries(x, env, in_lambda)?;
+                hoist_subqueries(x, env, locals)?;
             }
             Ok(())
         }
@@ -291,6 +348,185 @@ fn hoist_subqueries(
         | Expression::PathPattern(_)
         | Expression::ExistsExpression(_)
         | Expression::PatternComprehension(_) => Ok(()),
+    }
+}
+
+/// A name a list comprehension, `reduce` or lambda binds; a list
+/// comprehension's with its list when that reads no such name and no
+/// subquery ([`RawSubquery::elements`]).
+#[derive(Clone)]
+struct Local<'a> {
+    name: &'a str,
+    list: Option<Expression<'a>>,
+}
+
+/// The name a pattern predicate's element takes in its membership rewrite
+/// ([`element_membership`]).
+pub(crate) const MEMBER: &str = "__cg_member";
+
+/// A pattern predicate (`(x)-[…]->(…)`, `exists(…)`, `EXISTS { … }`) whose
+/// only name of `read` (a lambda's) is `x`, a node of its pattern and
+/// nowhere else: `x`, and the subquery of the nodes `m` in its place
+/// (`(m)-[…]->(…)`, `m`: [`MEMBER`]) whose value `x IN` reads.
+fn element_membership<'a>(
+    e: &Expression<'a>,
+    read: &[&'a str],
+) -> Option<(&'a str, RawSubquery<'a>)> {
+    let [x] = read else {
+        return None;
+    };
+    let predicate = matches!(e, Expression::PathPattern(_));
+    let (pattern, where_) = match e {
+        Expression::PathPattern(p @ PathPattern::ConnectedPattern(_)) => (p.clone(), None),
+        Expression::ExistsExpression(x) => (
+            x.pattern.clone(),
+            x.where_clause.as_ref().map(|w| w.conditions.clone()),
+        ),
+        Expression::FunctionCallExp(f) if f.name.eq_ignore_ascii_case("exists") => {
+            match f.args.as_slice() {
+                [Expression::PathPattern(p)] => (p.clone(), None),
+                _ => return None,
+            }
+        }
+        _ => return None,
+    };
+    // `x` a node of the pattern, read nowhere else (its WHERE, a property
+    // map, a relationship).
+    if let Some(w) = &where_ {
+        let mut names = Vec::new();
+        ast_names(w, &mut names);
+        if names.contains(x) {
+            return None;
+        }
+    }
+    let PathPattern::ConnectedPattern(steps) = &pattern else {
+        return None;
+    };
+    let mut seen = false;
+    for step in steps {
+        if step.relationship.name == Some(*x)
+            || property_names(step.relationship.properties.as_ref()).contains(x)
+        {
+            return None;
+        }
+        for node in [&step.start_node, &step.end_node] {
+            let n = node.borrow();
+            if property_names(n.properties.as_ref()).contains(x) {
+                return None;
+            }
+            seen |= n.name == Some(*x);
+        }
+    }
+    let mut names = Vec::new();
+    ast_names(e, &mut names);
+    if !seen || names.contains(&MEMBER) {
+        return None;
+    }
+    // A copy of the pattern, `x` named `m` (its nodes are shared between
+    // steps: one `Rc` each, copied once).
+    let mut copied: Vec<(
+        *const (),
+        std::rc::Rc<std::cell::RefCell<ast::NodePattern<'a>>>,
+    )> = Vec::new();
+    let mut copy = |n: &std::rc::Rc<std::cell::RefCell<ast::NodePattern<'a>>>| {
+        let key = std::rc::Rc::as_ptr(n).cast::<()>();
+        if let Some((_, c)) = copied.iter().find(|(k, _)| *k == key) {
+            return c.clone();
+        }
+        let mut node = n.borrow().clone();
+        if node.name == Some(*x) {
+            node.name = Some(MEMBER);
+        }
+        let c = std::rc::Rc::new(std::cell::RefCell::new(node));
+        copied.push((key, c.clone()));
+        c
+    };
+    let renamed = steps
+        .iter()
+        .map(|s| ast::ConnectedPattern {
+            start_node: copy(&s.start_node),
+            relationship: s.relationship.clone(),
+            end_node: copy(&s.end_node),
+        })
+        .collect();
+    Some((
+        x,
+        RawSubquery {
+            kind: RawKind::Members { predicate },
+            pattern: PathPattern::ConnectedPattern(renamed),
+            where_,
+            projection: Some(Expression::Variable(MEMBER)),
+            elements: None,
+        },
+    ))
+}
+
+/// The placeholder call reading subquery `var`'s value.
+fn placeholder<'a>(var: VarId) -> Expression<'a> {
+    Expression::FunctionCallExp(ast::FunctionCall {
+        name: SUBQUERY_FN.to_string(),
+        args: vec![Expression::Literal(ast::Literal::Integer(i64::from(var.0)))],
+    })
+}
+
+/// The names a property map's values read.
+fn property_names<'a>(props: Option<&Vec<ast::Property<'a>>>) -> Vec<&'a str> {
+    let mut out = Vec::new();
+    for p in props.into_iter().flatten() {
+        if let ast::Property::PropertyKV(kv) = p {
+            ast_names(&kv.value, &mut out);
+        }
+    }
+    out
+}
+
+/// Every variable name an AST expression reads, its patterns' included.
+fn ast_names<'a>(e: &Expression<'a>, out: &mut Vec<&'a str>) {
+    fn pattern<'a>(p: &PathPattern<'a>, out: &mut Vec<&'a str>) {
+        let node = |n: &ast::NodePattern<'a>, out: &mut Vec<&'a str>| {
+            out.extend(n.name);
+            out.extend(property_names(n.properties.as_ref()));
+        };
+        match p {
+            PathPattern::Node(n) => node(n, out),
+            PathPattern::ConnectedPattern(steps) => {
+                for s in steps {
+                    node(&s.start_node.borrow(), out);
+                    node(&s.end_node.borrow(), out);
+                    out.extend(s.relationship.name);
+                    out.extend(property_names(s.relationship.properties.as_ref()));
+                }
+            }
+            // Its pattern's names (S11o9 review: a shortestPath reading a
+            // comprehension's element read none, and bound as a constant).
+            PathPattern::ShortestPath(inner) | PathPattern::AllShortestPaths(inner) => {
+                pattern(inner, out)
+            }
+        }
+    }
+    match e {
+        Expression::Variable(n) => out.push(n),
+        Expression::PropertyAccessExp(pa) => out.push(pa.base),
+        Expression::LabelExpression { variable, .. } => out.push(variable),
+        Expression::PathPattern(p) => pattern(p, out),
+        Expression::ExistsExpression(x) => {
+            pattern(&x.pattern, out);
+            if let Some(w) = &x.where_clause {
+                ast_names(&w.conditions, out);
+            }
+        }
+        Expression::PatternComprehension(pc) => {
+            pattern(&pc.pattern, out);
+            if let Some(w) = &pc.where_clause {
+                ast_names(w, out);
+            }
+            ast_names(&pc.projection, out);
+        }
+        _ => {
+            for c in ast_children(e) {
+                ast_names(c, out);
+            }
+        }
     }
 }
 

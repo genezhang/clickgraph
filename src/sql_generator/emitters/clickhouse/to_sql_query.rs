@@ -8804,12 +8804,10 @@ impl RenderExpr {
                 }
 
                 // Special handling for datetime({epochMillis: x}) -> identity pass-through
-                if fn_name_lower == "datetime" && fn_call.args.len() == 1 {
-                    if let RenderExpr::MapLiteral(entries) = &fn_call.args[0] {
-                        if entries.len() == 1 && entries[0].0.to_lowercase() == "epochmillis" {
-                            return entries[0].1.to_sql();
-                        }
-                    }
+                if let Some(millis) =
+                    super::type_inference::epoch_millis_datetime(&fn_call.name, &fn_call.args)
+                {
+                    return millis.to_sql();
                 }
 
                 // Native-function pass-through, keyed by the active dialect

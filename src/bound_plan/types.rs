@@ -267,6 +267,16 @@ pub enum SubqueryKind {
     /// A pattern comprehension: this expression of each match, in a list
     /// (NULLs kept). Bound in the subquery's scope.
     Collect(LogicalExpr),
+    /// A pattern predicate of a list comprehension's element `x`, as `x IN`
+    /// this (S11o9): the nodes in `x`'s place of the matches, `node` of the
+    /// subquery's. `x IN` it is false for a NULL `x` (as the predicate of a
+    /// NULL node is, Neo4j) and of no match. `of`: the comprehension's list,
+    /// bound in the enclosing scope, when it reads no local: only its
+    /// elements are looked for.
+    Members {
+        node: VarId,
+        of: Option<LogicalExpr>,
+    },
 }
 
 /// A subquery expression (§4.12): a MATCH correlated with the record it is

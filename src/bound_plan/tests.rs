@@ -666,12 +666,28 @@ fn subquery_scoping_rules() {
         panic!()
     };
     assert!(matches!(&**input, BoundOp::Filter { .. }), "{input:?}");
-    // Not bound yet: in a comprehension (it could read the element), in a
-    // property map.
-    assert!(
-        bind("MATCH (a:User) RETURN [x IN [a] WHERE (x)-[:FOLLOWS]->()] AS l")
-            .is_err_and(|e| e.is_unsupported())
+    // In a comprehension, a pattern predicate of its element: the nodes in
+    // the element's place, looked for from its list's (S11o9).
+    let s = ok("MATCH (a:User) RETURN [x IN [a] WHERE (x)-[:FOLLOWS]->()] AS l");
+    let a = named(&s, "a")[0].id;
+    let [Subquery {
+        kind: SubqueryKind::Members { of: Some(of), .. },
+        correlation,
+        ..
+    }] = s.subqueries.as_slice()
+    else {
+        panic!("{:?}", s.subqueries)
+    };
+    assert_eq!(
+        of,
+        &LogicalExpr::List(vec![LogicalExpr::TableAlias(TableAlias(a.name()))])
     );
+    assert_eq!(correlation, &vec![a]);
+    // Not bound yet: reading the element otherwise, in a property map.
+    assert!(bind(
+        "MATCH (a:User) RETURN [x IN [a] WHERE EXISTS { (x)-->(y) WHERE y.age > x.age }] AS l"
+    )
+    .is_err_and(|e| e.is_unsupported()));
     assert!(bind("MATCH (a:User {age: size((:User)-->())}) RETURN a")
         .is_err_and(|e| e.is_unsupported()));
 }

@@ -428,6 +428,10 @@ impl FunctionMapper for DatabricksFunctionMapper {
             },
             // `array_distinct` keeps each element where it first occurs.
             distinct: |l| format!("array_distinct({l})"),
+            contains: |l, x| format!("array_contains({l}, {x})"),
+            intersect: |a, b| format!("array_intersect({a}, {b})"),
+            sorted: |l| format!("array_sort({l})"),
+            fingerprint: |v| format!("xxhash64({v})"),
             // A VARIANT object's keys, sorted (its order).
             map_keys: |m| format!("map_keys(CAST({m} AS MAP<STRING, VARIANT>))"),
             // A VARIANT object: each value keeps its type, maps of any keys

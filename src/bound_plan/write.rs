@@ -532,7 +532,10 @@ impl Exposure<'_> {
                 match self.stmt.subqueries.iter().find(|s| s.var == v) {
                     Some(s) => match &s.kind {
                         SubqueryKind::Collect(e) => self.exposes(e, false),
-                        SubqueryKind::Exists | SubqueryKind::Count => false,
+                        // Read by `x IN` only: a boolean.
+                        SubqueryKind::Exists
+                        | SubqueryKind::Count
+                        | SubqueryKind::Members { .. } => false,
                     },
                     None => true,
                 }

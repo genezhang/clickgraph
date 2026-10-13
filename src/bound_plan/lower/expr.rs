@@ -41,7 +41,7 @@ use super::elements::Elem;
 use super::unwind::{comprehension, Comprehension, Kind};
 use super::{parse_var, unsupported, At, LowerError, Lowerer, Scan};
 use crate::bound_plan::expr::subquery_var;
-use crate::bound_plan::types::{BindingKind, BindingSource, VarId};
+use crate::bound_plan::types::{BindingKind, BindingSource, SubqueryKind, VarId};
 
 type Items = HashMap<VarId, RenderExpr>;
 
@@ -533,6 +533,9 @@ impl Lowerer<'_> {
         if kind == Kind::Null || matches!(list, RenderExpr::Literal(Literal::Null)) {
             return Ok(RenderExpr::Literal(Literal::Null));
         }
+        self.local_lists
+            .borrow_mut()
+            .insert(x, render_expr_to_sql_plain(&list));
         let (spell, body) = match how {
             Comprehension::Filter => (spelling.filter, self.expr(body, items)?),
             Comprehension::Map => (spelling.map, self.element(body, items)?),
@@ -646,6 +649,12 @@ impl Lowerer<'_> {
         // `x IN …` of nodes or relationships, by identity.
         if let (O::In | O::NotIn, [x, list]) = (op.operator, op.operands.as_slice()) {
             let negated = op.operator == O::NotIn;
+            if let Some((sq, m)) = self.members_subquery(list) {
+                if negated {
+                    return unsupported("internal: NOT IN of a pattern predicate's nodes");
+                }
+                return self.in_members(x, list, (sq, m), items);
+            }
             let element = |e: &LogicalExpr| {
                 self.entity(e).is_some() || matches!(self.kind(e), Kind::Element(_))
             };
@@ -942,6 +951,108 @@ impl Lowerer<'_> {
             m.list_size(&list_sql),
             if negated { "true" } else { "false" },
             x_absent.join(" OR ")
+        ))))
+    }
+
+    /// The subquery `list` reads the value of when it is one of the nodes of
+    /// a pattern predicate's matches ([`SubqueryKind::Members`]), and its
+    /// node.
+    fn members_subquery(&self, list: &LogicalExpr) -> Option<(VarId, VarId)> {
+        let v = subquery_var(list)?;
+        match self.subqueries.iter().find(|s| s.var == v)?.kind {
+            SubqueryKind::Members { node, .. } => Some((v, node)),
+            _ => None,
+        }
+    }
+
+    /// `x IN` the nodes `m` of subquery `sq`'s matches (S11o9: a pattern
+    /// predicate of a list comprehension's element `x`): whether `x`, a node
+    /// of one label, is one of them, by its label and key. False for a NULL
+    /// `x` (Neo4j: the predicate of a NULL node is false) and of no match.
+    fn in_members(
+        &self,
+        x: &LogicalExpr,
+        list: &LogicalExpr,
+        (sq, m): (VarId, VarId),
+        items: &Items,
+    ) -> Result<RenderExpr, LowerError> {
+        let never = || Ok(RenderExpr::Literal(Literal::Boolean(false)));
+        // Its label, identity and the columns NULL when it is.
+        let (label, x_id, absent) =
+            match self.entity(x) {
+                Some(v) => match self.scans.get(&v) {
+                    Some(Scan::Node { label, .. }) => {
+                        let Some(id) = self.identity(v)? else {
+                            return never();
+                        };
+                        let absent = self.presence(v, &id);
+                        (label.clone(), id, absent)
+                    }
+                    Some(Scan::Impossible) => return never(),
+                    _ => return unsupported(
+                        "a pattern predicate in a list comprehension of a node of several labels",
+                    ),
+                },
+                None => match self.kind(x) {
+                    Kind::Element(elem @ Elem::Node(_)) => {
+                        let Elem::Node(label) = &elem else {
+                            return unsupported("internal: not a node");
+                        };
+                        let id = self.elem_identity(&self.expr(x, items)?, &elem)?;
+                        let absent = elem_presence(&id, &elem);
+                        (label.clone(), id, absent)
+                    }
+                    _ => return unsupported(
+                        "a pattern predicate in a list comprehension of an element that is not \
+                         a node of one label",
+                    ),
+                },
+            };
+        if matches!(self.values.get(&sq), Some(RenderExpr::List(v)) if v.is_empty()) {
+            return never();
+        }
+        let BindingKind::Node { labels } = &self.binding(m).kind else {
+            return unsupported("internal: a pattern predicate's element that is not a node");
+        };
+        if !labels.contains(&label) {
+            return never();
+        }
+        let Some(spelling) = current_function_mapper().lists() else {
+            return unsupported("a pattern predicate in a list comprehension in this SQL dialect");
+        };
+        // A match's tuple: its label, then its identity.
+        let probe = |id: &[RenderExpr]| {
+            let mut fields = vec![render_expr_to_sql_plain(&RenderExpr::Literal(
+                Literal::String(label.clone()),
+            ))];
+            fields.extend(id.iter().map(render_expr_to_sql_plain));
+            (spelling.tuple)(&fields)
+        };
+        let mut members = render_expr_to_sql_plain(&self.expr(list, items)?);
+        // Of a comprehension's element: those of its list's elements, once
+        // per row (rather than each element searching every match).
+        let local = match x {
+            LogicalExpr::TableAlias(a) => parse_var(&a.0),
+            _ => None,
+        };
+        if let (Some(elements), Kind::Element(elem)) = (
+            local.and_then(|v| self.local_lists.borrow().get(&v).cloned()),
+            self.kind(x),
+        ) {
+            const E: &str = "__cg_e";
+            let id = self.elem_identity(&RenderExpr::Raw(E.to_string()), &elem)?;
+            let probes = (spelling.map)(E, &probe(&id), &elements);
+            members = (spelling.intersect)(&members, &probes);
+        }
+        let found = (spelling.contains)(&members, &probe(&x_id));
+        let absent: Vec<String> = absent
+            .iter()
+            .map(|c| format!("{} IS NULL", render_expr_to_sql_plain(c)))
+            .collect();
+        let m = current_function_mapper();
+        Ok(RenderExpr::Raw(m.cast_bool(&format!(
+            "CASE WHEN {} THEN false WHEN {found} THEN true ELSE false END",
+            absent.join(" OR ")
         ))))
     }
 

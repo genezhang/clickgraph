@@ -335,6 +335,7 @@ impl Query<'_> {
             map_keys: HashMap::new(),
             kinds: HashMap::new(),
             local_kinds: RefCell::new(HashMap::new()),
+            local_lists: RefCell::new(HashMap::new()),
             collect_order: None,
             one_row: true,
             identities: Vec::new(),
@@ -634,6 +635,9 @@ struct Lowerer<'s> {
     /// in as [`Lowerer::kind`] reads the comprehension (variables are unique
     /// per query, so one map serves every scope).
     local_kinds: RefCell<HashMap<VarId, unwind::Kind>>,
+    /// Each comprehension parameter's list, as SQL, while the comprehension
+    /// is lowered (`Lowerer::in_members`).
+    local_lists: RefCell<HashMap<VarId, String>>,
     /// While a projection over rows in an order is lowered: the rows'
     /// number in that order, which `collect()` lists its values in.
     collect_order: Option<RenderExpr>,
@@ -7104,8 +7108,11 @@ fn demand(stmt: &BoundStatement, extra: &[LogicalExpr]) -> HashMap<VarId, BTreeS
     // where it is applied.
     for sq in &stmt.subqueries {
         op_exprs(&sq.plan, &mut all);
-        if let SubqueryKind::Collect(p) = &sq.kind {
-            all.push(p);
+        match &sq.kind {
+            SubqueryKind::Collect(p) => all.push(p),
+            // Its list, read where it is applied (`subquery.rs`).
+            SubqueryKind::Members { of: Some(of), .. } => all.push(of),
+            _ => {}
         }
     }
     // A WITH item that passes a variable through reads nothing of it: what

@@ -4577,8 +4577,47 @@ slice that will handle it.
         its tuple (now not lowered); the properties carried for a node of
         several labels were keys a query could name (`m['n.name']`): they
         are named with a NUL now (`collected_key`).
-    - [ ] **S11o9: the last not lowered**: a pattern predicate in a list
-      comprehension (IC 10); BI 17's time.
+    - [x] **S11o9: a pattern predicate of a list comprehension's element**
+      (IC 10's `[p IN posts WHERE (p)-[:HAS_TAG]->()<-[:HAS_INTEREST]-
+      (person)]`). A subquery in a comprehension, `reduce` or lambda that
+      reads none of its locals is one value per row. A pattern predicate
+      whose only local is a node `x` of its pattern (not in its WHERE or a
+      property map, not a relationship) binds as `x IN` a
+      `SubqueryKind::Members` subquery: the nodes in `x`'s place (renamed
+      `m`) of the matches, correlated as any subquery. `x IN` it compares
+      `(label, identity)` tuples (`in_members`), and is false for a NULL
+      `x` (Neo4j: `EXISTS { (null)-->() }` is false) and when `m` cannot
+      have `x`'s label. When the comprehension's list reads no local, the
+      subquery records it (`of`), and its drive is a row per distinct
+      element of each row's list (`ARRAY JOIN`), with `m` read from the
+      element's identity. The drive and the rows also join on a hash of
+      the list's sorted, distinct identities, which is stable when
+      ClickHouse re-evaluates a `collect()` in another order (not when a
+      re-evaluated `LIMIT` without ORDER BY keeps other rows: #1395, as
+      for any drive). Two lists
+      sharing a hash only merge matches, and a merged match is a match of
+      the element. The matches are thus among each row's elements: IC 10
+      runs in 0.5 s on the SF1 `ldbc` database, and the whole-graph
+      `[p IN posts WHERE …]` over every person in 3 s (whole-graph members
+      lists ran out of memory). Otherwise the matches are the whole
+      graph's, intersected once per row with the comprehension's list
+      (`FunctionMapper` `intersect` / `contains`). Also fixed:
+      `datetime({epochMillis: x})` read inline was typed a DateTime by the
+      render classifier, so `.month` of it skipped the conversion (Code
+      43). One helper, `epoch_millis_datetime`, now serves both the
+      renderer and the classifier. IC 10 equals a hand-written query on
+      SF1; the probes (Posts, Comments of several-label `m`, NOT,
+      uncorrelated patterns, whole graph) equal hand-written SQL on
+      ClickHouse and Spark; 13 edge shapes equal Neo4j (oracle).
+      - Adversarial review (about 60 shapes on the oracle, plus composite-id,
+        polymorphic and denormalized schemas, all equal). Fixed: a
+        `shortestPath` / `allShortestPaths` in a subquery read no name
+        (`ast_names`), so one reading the element was bound as a constant,
+        `x` a new or the outer variable (wrong counts). It now reads the
+        element, and is not lowered. Recorded on #1395: a drive over a
+        `LIMIT` without ORDER BY.
+    - [ ] **S11o10: BI 17's time** (two variable-length paths; over 300 s
+      on SF1, legacy refused it).
 - [ ] **S12: Databricks coverage.** The bound plan lowers on Databricks what
   it lowers on ClickHouse, so the legacy pipeline can go on every dialect.
   Each `FunctionMapper` spelling that is `None` on Databricks (`unwind`,
