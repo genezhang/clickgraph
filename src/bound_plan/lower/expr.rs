@@ -486,7 +486,8 @@ impl Lowerer<'_> {
                 return unsupported("a planner-internal expression")
             }
             // Subquery expressions are bound as `Subquery`s (S9); these
-            // are the legacy planner's forms.
+            // are what conversion makes of a pattern the binder did not take
+            // out (a node or shortestPath pattern as a value).
             LogicalExpr::PathPattern(_)
             | LogicalExpr::PatternCount(_)
             | LogicalExpr::PatternComprehension(_) => {

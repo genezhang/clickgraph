@@ -658,13 +658,13 @@ pub enum ShortestPathMode {
     AllShortest,
 }
 
-// Conversion from logical plan's ShortestPathMode to SQL generator's ShortestPathMode
+// Conversion from the hop spec's ShortestPathMode to the generator's
 impl From<crate::render_plan::variable_length::ShortestPathMode> for ShortestPathMode {
     fn from(mode: crate::render_plan::variable_length::ShortestPathMode) -> Self {
-        use crate::render_plan::variable_length::ShortestPathMode as LogicalMode;
+        use crate::render_plan::variable_length::ShortestPathMode as SpecMode;
         match mode {
-            LogicalMode::Shortest => ShortestPathMode::Shortest,
-            LogicalMode::AllShortest => ShortestPathMode::AllShortest,
+            SpecMode::Shortest => ShortestPathMode::Shortest,
+            SpecMode::AllShortest => ShortestPathMode::AllShortest,
         }
     }
 }
@@ -5406,14 +5406,6 @@ mod tests {
             !sql.contains("NOT has(vp.path_nodes,"),
             "mixed range VLP must no longer enforce node-uniqueness; got:\n{sql}"
         );
-    }
-
-    #[test]
-    fn test_fixed_length_spec() {
-        let spec = VariableLengthSpec::fixed(2);
-        assert_eq!(spec.effective_min_hops(), 2);
-        assert_eq!(spec.max_hops, Some(2));
-        assert!(!spec.is_single_hop());
     }
 
     #[test]

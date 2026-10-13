@@ -127,8 +127,8 @@ fn check_bare_pattern_guardrail(
     Ok(())
 }
 
-/// The legacy lowering of a bare pattern: `LogicalExpr::PathPattern` (consumed by the NOT-pattern
-/// anti-join path).
+/// A node or shortestPath pattern used as a value: `LogicalExpr::PathPattern`, which the binder
+/// refuses.
 fn bare_path_pattern_expr(
     pp: open_cypher_parser::ast::PathPattern<'_>,
 ) -> Result<LogicalExpr, errors::LogicalExprError> {
@@ -142,17 +142,10 @@ impl<'a> TryFrom<open_cypher_parser::ast::OperatorApplication<'a>> for OperatorA
     fn try_from(
         value: open_cypher_parser::ast::OperatorApplication<'a>,
     ) -> Result<Self, Self::Error> {
-        let is_not = matches!(value.operator, open_cypher_parser::ast::Operator::Not);
         let operands = value
             .operands
             .into_iter()
-            .map(|operand| match operand {
-                // `NOT (a)-[:R]->(b)`: the established anti-join lowering
-                open_cypher_parser::ast::Expression::PathPattern(pp) if is_not => {
-                    bare_path_pattern_expr(pp)
-                }
-                other => LogicalExpr::try_from(other),
-            })
+            .map(LogicalExpr::try_from)
             .collect::<Result<Vec<_>, _>>()?;
         Ok(OperatorApplication {
             operator: Operator::from(value.operator),
@@ -518,11 +511,15 @@ impl<'a> std::convert::TryFrom<open_cypher_parser::ast::Expression<'a>> for Logi
             )),
             // The binder takes a relationship pattern (`WHERE (a)-[:R]->()`) and an
             // `EXISTS { … }` out of their expression before converting it
-            // (`bound_plan::expr::hoist_subqueries`).
+            // (`bound_plan::expr::hoist_subqueries`); one is left only inside a
+            // pattern's property map (`(a {name: EXISTS { … }})`), a pattern the
+            // binder refuses as a value.
             Expression::PathPattern(open_cypher_parser::ast::PathPattern::ConnectedPattern(_))
             | Expression::ExistsExpression(_) => {
                 Err(errors::LogicalExprError::UnsupportedExpression(
-                    "internal: a subquery expression the binder did not take out".to_string(),
+                    "a graph pattern inside an expression (EXISTS, pattern predicate, \
+                     size(pattern), pattern comprehension)"
+                        .to_string(),
                 ))
             }
             Expression::PathPattern(pp) => bare_path_pattern_expr(pp),

@@ -634,6 +634,27 @@ mod tests {
         );
     }
 
+    /// A subquery inside a pattern's property map, which the binder does not
+    /// take out of its expression, is not supported, not an internal error
+    /// (S14c6 review).
+    #[test]
+    fn a_subquery_in_a_pattern_property_map_is_not_supported() {
+        let schema = social();
+        for q in [
+            "MATCH (a:User) WHERE (a {name: EXISTS { (a)-[:FOLLOWS]->() }}) RETURN a.name",
+            "MATCH (a:User) RETURN size((a {name: (a)-[:FOLLOWS]->()})) AS n",
+            "MATCH (a:User) WHERE NOT (a {name: EXISTS { (a)-[:FOLLOWS]->() }}) RETURN a.name",
+            "MATCH (a:User), (b:User) \
+             RETURN shortestPath((a)-[:FOLLOWS {x: EXISTS { (a)-[:FOLLOWS]->() }}]-(b))",
+        ] {
+            let got = crate::clickhouse_query_generator::cypher_to_sql(q, &schema);
+            assert!(
+                matches!(&got, Err(e) if e.starts_with("Not supported: ")),
+                "{q}: {got:?}"
+            );
+        }
+    }
+
     /// A refusal reads as the construct, without the plan's wording; a
     /// broken invariant is an internal error (S11j review).
     #[test]

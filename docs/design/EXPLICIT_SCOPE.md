@@ -5205,8 +5205,9 @@ slice that will handle it.
       `include_plan` text of a CALL prints them), and `LogicalExpr`'s
       `ExistsSubquery` / `InSubquery` / `CteEntityRef` (the binder takes
       every `EXISTS { … }` and relationship pattern out of an expression
-      before converting it, so their conversion was unreachable; it is now
-      an internal error). `VariableLengthSpec` / `ShortestPathMode` move to
+      before converting it, so their conversion was unreachable, except
+      inside a pattern's property map, `(a {name: EXISTS { … }})`, which
+      stays "not supported"). `VariableLengthSpec` / `ShortestPathMode` move to
       `render_plan/variable_length.rs`, the name counters (`generate_id`,
       `generate_cte_id`, `reset_all_counters`) to `query_context`. Fields
       no code read go (`Union.is_cypher_union`, `both_endpoint_sql`,

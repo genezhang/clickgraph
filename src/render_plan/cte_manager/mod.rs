@@ -1502,7 +1502,7 @@ impl VariableLengthCteStrategy {
             CteError::SchemaValidationError("Schema required for VLP generation".into())
         })?;
 
-        // Convert ShortestPathMode from logical plan type if present
+        // The generator's ShortestPathMode, if any
         let shortest_path_mode = context
             .shortest_path_mode
             .as_ref()

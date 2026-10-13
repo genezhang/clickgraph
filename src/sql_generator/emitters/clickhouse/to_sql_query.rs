@@ -3192,10 +3192,7 @@ impl RenderExpr {
             | RenderExpr::ArraySlicing { .. }
             | RenderExpr::MapLiteral(_)
             | RenderExpr::ReduceExpr(_) => strip_table_alias_everywhere(self).to_sql(),
-            // For other expression types (including `InSubquery`/
-            // `ExistsSubquery` — see the `strip_table_alias_everywhere` doc
-            // comment on why those two are deliberately left alone), delegate
-            // to regular to_sql.
+            // Other expression types: regular to_sql.
             _ => self.to_sql(),
         }
     }
@@ -3286,15 +3283,8 @@ fn strip_table_alias_everywhere(expr: &RenderExpr) -> RenderExpr {
             list: Box::new(strip_table_alias_everywhere(&reduce.list)),
             expression: Box::new(strip_table_alias_everywhere(&reduce.expression)),
         }),
-        // Other variants (Literal, Column, Parameter, `InSubquery`/
-        // `ExistsSubquery` correlated subqueries, pattern counts, CTE entity
-        // refs, ...) either carry no table-alias-qualified property access at
-        // this level or embed a full nested query scope of their own (a
-        // correlated subquery's OWN FROM/JOINs establish separate aliasing —
-        // blindly text-stripping into it is a materially different, riskier
-        // change than rewriting a plain expression tree) and are left
-        // unchanged, matching prior behavior. See #535 for the known
-        // remaining gap on those two subquery variants.
+        // Other variants (Literal, Column, Parameter, ...) carry no
+        // table-alias-qualified property access at this level.
         _ => expr.clone(),
     }
 }

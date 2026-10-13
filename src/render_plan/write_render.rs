@@ -1,6 +1,5 @@
-//! Write-side render plan: data model produced by Phase 2 from
-//! `LogicalPlan::Create / SetProperties / Delete / Remove`, consumed by
-//! `clickhouse_query_generator::write_to_sql`.
+//! Write-side render plan: data model produced by `bound_plan/write.rs`,
+//! consumed by `clickhouse_query_generator::write_to_sql`.
 //!
 //! Writes are terminal — they do not compose into SELECT / JOIN structure
 //! the way reads do. So instead of extending `RenderPlan` with optional

@@ -232,7 +232,7 @@ pub fn generate_id() -> String {
 /// reset used to rewind the counters of other requests being translated
 /// concurrently, so the same `t{N}` could be issued twice in one query.
 pub fn reset_all_counters() {
-    if !crate::server::query_context::reset_query_counters() {
+    if !reset_query_counters() {
         ALIAS_COUNTER.store(1, Ordering::SeqCst);
         CTE_COUNTER.store(1, Ordering::SeqCst);
     }
