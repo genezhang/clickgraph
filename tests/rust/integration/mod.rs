@@ -3,24 +3,11 @@
 //! These tests verify that components work together correctly with real dependencies.
 
 mod binder_corpus;
-mod browser_expand_tests;
-mod browser_interaction_tests;
-pub(crate) mod browser_test_schemas;
 mod clause_list_parity;
-mod complex_feature_tests;
 mod corpus_sweep;
-mod cross_schema_pattern_tests;
-mod cte_column_aliasing_tests;
 #[cfg(feature = "databricks")]
 mod databricks_introspect_tests;
-mod ldbc_regression_tests;
 mod metrics_endpoint_tests;
-mod parameter_function_test;
-mod path_variable_tests;
-mod skip_offset_tests;
 mod sql_generation_handler_comment_tests;
-mod sql_golden_tests;
-mod stats_anchor_golden_tests;
 mod translate_seam_endpoint_tests;
 mod with_cte_column_refs;
-mod with_where_having_tests;

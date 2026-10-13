@@ -491,13 +491,9 @@ pub async fn query_handler(
         let export_sql = with_query_context(context, async {
             crate::server::query_context::set_current_schema(Arc::new(graph_schema.clone()));
 
-            let inner_sql = translate_cypher_to_sql(
-                &inner_query,
-                &graph_schema,
-                &schema_name_for_export,
-                app_state.config.max_cte_depth,
-            )
-            .map_err(|e| (inner_read_status(&e), e))?;
+            let inner_sql =
+                translate_cypher_to_sql(&inner_query, &graph_schema, &schema_name_for_export)
+                    .map_err(|e| (inner_read_status(&e), e))?;
 
             crate::procedures::apoc_export::build_export_sql(
                 &inner_sql,
@@ -697,7 +693,6 @@ pub async fn query_handler(
                     &export_args.cypher_query,
                     &graph_schema,
                     &schema_name_for_export,
-                    app_state.config.max_cte_depth,
                 )
                 .map_err(|e| (inner_read_status(&e), e))?;
                 crate::procedures::apoc_export::build_export_sql(
@@ -1535,11 +1530,7 @@ async fn query_handler_inner(
             let read_options = crate::translate::ReadOptions {
                 tenant_id: payload.tenant_id.clone(),
                 view_parameter_values,
-                max_inferred_types: payload.max_inferred_types,
-                where_label_constraints: None,
-                max_cte_depth: app_state.config.max_cte_depth,
-                cypher: Some(clean_query.clone()),
-                bound_plan: None,
+                cypher: clean_query.clone(),
                 id_mapper: Some(id_mapper.clone()),
                 neo4j_compat: None,
             };
@@ -1563,11 +1554,6 @@ async fn query_handler_inner(
             };
             let translation = match translated {
                 Ok(t) => t,
-                Err(crate::translate::TranslateError::Planning(e)) => {
-                    metrics.planning_time = planning_start.elapsed().as_secs_f64();
-                    // Return 400 for planning errors (both sql_only and normal mode)
-                    return Err((StatusCode::BAD_REQUEST, format!("Planning error: {}", e)));
-                }
                 Err(crate::translate::TranslateError::Invalid(e)) => {
                     metrics.planning_time = planning_start.elapsed().as_secs_f64();
                     // Invalid Cypher, as Neo4j rejects it: the client's.
@@ -1585,14 +1571,6 @@ async fn query_handler_inner(
                         format!("Internal error: {}", e),
                     ));
                 }
-                Err(crate::translate::TranslateError::Render(e)) => {
-                    metrics.planning_time = planning_start.elapsed().as_secs_f64();
-                    // Return 500 for render errors (internal error)
-                    return Err((
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        format!("Render error: {}", e),
-                    ));
-                }
             };
             metrics.planning_time = translation.timings.planning.as_secs_f64();
             metrics.render_time = translation.timings.render.as_secs_f64();
@@ -1602,7 +1580,6 @@ async fn query_handler_inner(
             id_number_columns = translation
                 .shape
                 .iter()
-                .flatten()
                 .filter(|c| matches!(c.kind, crate::bound_plan::lower::ResultKind::RelId))
                 .map(|c| c.name.clone())
                 .collect();
@@ -1638,13 +1615,7 @@ async fn query_handler_inner(
 
             // Graph format builds nodes and edges from the result shape.
             let graph_ctx = if output_format == OutputFormat::Graph {
-                let metadata = translation.return_metadata().map_err(|e| {
-                    (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        format!("Failed to extract return metadata for graph output: {}", e),
-                    )
-                })?;
-                Some((metadata, graph_schema))
+                Some((translation.return_metadata(), graph_schema))
             } else {
                 None
             };
@@ -2210,18 +2181,17 @@ pub async fn get_schema_handler(
 /// Translate a Cypher query string into ClickHouse SQL.
 ///
 /// Used by export procedures to compile the inner Cypher query.
-/// Runs the full pipeline: parse → plan → render → SQL generate.
+/// Runs the read seam (`translate::translate_inner_read`).
 fn translate_cypher_to_sql(
     cypher: &str,
     graph_schema: &GraphSchema,
     schema_name: &str,
-    max_cte_depth: u32,
 ) -> Result<String, String> {
     log::debug!(
         "Translating inner Cypher query for schema '{}'",
         schema_name
     );
-    crate::translate::translate_inner_read(cypher, graph_schema, max_cte_depth)
+    crate::translate::translate_inner_read(cypher, graph_schema)
 }
 
 /// The status of an inner query's translation error: a broken invariant is

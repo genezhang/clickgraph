@@ -5110,21 +5110,36 @@ slice that will handle it.
         setting) are a second pass, locked as `{dialect}_compat` where they
         differ (35 per dialect). A golden of no entry, or a panic, fails
         the sweep.
-    - [ ] **S14c1: the legacy translate route and its tests.** `cypher`
-      required in `ReadOptions`; `BoundPlanMode`, `Route::Legacy`,
-      `TranslateError::{Planning, Render}`, `where_label_constraints`,
-      `cypher_to_sql_legacy` / `cypher_to_sql_read_only`, the
-      `SqlEmitter` facade, `extract_return_metadata`; the legacy-only
-      tests (`sql_golden_tests` and `golden/sql_ir`, `ldbc_regression`,
-      `complex_feature`, the browser, cross-schema, parameter, SKIP, WITH
-      and path test files, the `render_plan/tests` that call the legacy
-      route); the legacy modules made `pub(crate)` so the build lists the
-      dead set; `ExecutorKind` / `WriteGuardError` and
-      `get_query_type` / `QueryType` moved to homes outside the planner.
-      `normalize` / `normalize_golden_text` move to `corpus_sweep` before
-      `sql_golden_tests` goes. The 29 parse-error goldens per dialect lock
-      the legacy parser's text, which the read seam still answers with
-      (`translate_text_read`): retiring that parse changes them.
+    - [x] **S14c1: the legacy translate route and its tests.**
+      `ReadOptions::cypher` is required (a `String`): no caller reaches the
+      legacy pipeline (`translate_in_context` is the bound plan alone).
+      Gone: `BoundPlanMode`, `Route`, `ReadTranslation::{logical_plan,
+      plan_ctx, route}` (`shape` is a `Vec`, `return_metadata` infallible),
+      `TranslateError::{Planning, Render}`, the options only legacy read
+      (`max_inferred_types`, `where_label_constraints`, `max_cte_depth`),
+      `cypher_to_sql_legacy` / `cypher_to_sql_read_only` / `generate_sql`
+      and the depth argument of the library's `cypher_to_sql*`, the
+      `SqlEmitter` facade, `extract_return_metadata` and its helpers,
+      Bolt's second `id()` rewrite pass (it fed only the WHERE label
+      constraints). The legacy-only tests: `sql_golden_tests` and
+      `golden/sql_ir` (578), 11 integration files over the legacy route
+      (`ldbc_regression`, `complex_feature`, the two browser files and
+      their schemas, cross-schema, parameter, SKIP, WITH, path, CTE
+      aliasing, stats anchor), 15 `render_plan/tests` files (some calling
+      a local legacy helper named `cypher_to_sql`), the legacy halves of
+      the `translate.rs` tests; a schema-validation test moved to
+      `graph_catalog/config.rs`; `normalize` moved to `corpus_sweep`.
+      `include_plan` (HTTP `/query/sql`) shows the result shape (it showed
+      the legacy plan, `Empty` since S11j).
+      - The corpus goldens byte-identical, census 1477, ratchet unchanged.
+      - Dead set (the legacy modules narrowed to `pub(crate)` locally;
+        not committed, CI denies warnings): ~415 items, `analyzer` 224,
+        `logical_plan` 80, `render_plan` 73, `optimizer` 36. The legacy
+        tests of legacy modules (`write_sql_tests`,
+        `denormalized_property_tests`, `polymorphic_edge_tests`) go with
+        their modules (S14c2, S14c3). The 29 parse-error goldens per
+        dialect lock the legacy parser's text, which the read seam still
+        answers with (`translate_text_read`).
     - [ ] **S14c2: the legacy write planner** (`write_plan_builder`,
       `write_clause_builder`, the rest of `write_guard`, the write
       `LogicalPlan` variants).

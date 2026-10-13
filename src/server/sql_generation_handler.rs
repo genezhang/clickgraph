@@ -23,7 +23,7 @@ use super::{
 
 /// Handler for POST /query/sql - Generate SQL without execution (production API)
 pub async fn sql_generation_handler(
-    State(app_state): State<Arc<AppState>>,
+    State(_app_state): State<Arc<AppState>>,
     Json(payload): Json<SqlGenerationRequest>,
 ) -> Result<Json<SqlGenerationResponse>, (StatusCode, Json<SqlGenerationError>)> {
     // Like `/query`: the whole request runs in its own task-local query
@@ -32,13 +32,12 @@ pub async fn sql_generation_handler(
     // concurrent requests rewound each other's generated aliases.
     with_query_context(
         QueryContext::new(None),
-        sql_generation_handler_inner(app_state, payload),
+        sql_generation_handler_inner(payload),
     )
     .await
 }
 
 async fn sql_generation_handler_inner(
-    app_state: Arc<AppState>,
     payload: SqlGenerationRequest,
 ) -> Result<Json<SqlGenerationResponse>, (StatusCode, Json<SqlGenerationError>)> {
     let start_time = Instant::now();
@@ -397,8 +396,7 @@ async fn sql_generation_handler_inner(
         let ast_arena = ast_transform::StringArena::new();
         let read_options = crate::translate::ReadOptions {
             view_parameter_values,
-            max_cte_depth: app_state.config.max_cte_depth,
-            cypher: Some(clean_query.to_string()),
+            cypher: clean_query.to_string(),
             id_mapper: Some(id_mapper.clone()),
             ..Default::default()
         };
@@ -428,12 +426,6 @@ async fn sql_generation_handler_inner(
                 // A query Neo4j also rejects is the client's error (400), as
                 // on `/query`.
                 let (status, error_type) = match e {
-                    crate::translate::TranslateError::Planning(_) => {
-                        (StatusCode::INTERNAL_SERVER_ERROR, "PlanningError")
-                    }
-                    crate::translate::TranslateError::Render(_) => {
-                        (StatusCode::INTERNAL_SERVER_ERROR, "RenderError")
-                    }
                     crate::translate::TranslateError::Invalid(_) => {
                         (StatusCode::BAD_REQUEST, "QueryError")
                     }
@@ -459,17 +451,13 @@ async fn sql_generation_handler_inner(
         let sql_gen_time = (translation.timings.render + translation.timings.sql_generation)
             .as_secs_f64()
             * 1000.0;
-        let crate::translate::ReadTranslation {
-            sql: ch_query,
-            logical_plan,
-            ..
-        } = translation;
-
+        // The result's shape: each RETURN item's kind and columns.
         let plan_str = if payload.include_plan.unwrap_or(false) {
-            Some(format!("{:#?}", logical_plan))
+            Some(format!("{:#?}", translation.shape))
         } else {
             None
         };
+        let ch_query = translation.sql;
 
         (ch_query, plan_str, planning_time, sql_gen_time)
     } else {

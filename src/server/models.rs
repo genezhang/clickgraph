@@ -19,8 +19,9 @@ pub struct QueryRequest {
     pub view_parameters: Option<HashMap<String, Value>>,
     /// ClickHouse role name for RBAC via SET ROLE (requires database-managed users with granted roles)
     pub role: Option<String>,
-    /// Maximum number of inferred edge types for generic patterns like `[*1]` (default: 4)
-    /// Set higher for GraphRAG use cases with many edge types. Reasonable values: 4-20.
+    /// Ignored (P-4c S14c1): it capped the legacy planner's inferred edge
+    /// types; the bound plan reads every type a pattern can have. Accepted
+    /// so existing clients' requests still parse.
     pub max_inferred_types: Option<usize>,
 }
 
@@ -194,7 +195,8 @@ pub struct SqlGenerationResponse {
     /// Query metadata
     pub metadata: SqlGenerationMetadata,
 
-    /// Logical plan (if include_plan=true)
+    /// The result's shape, each RETURN item's kind and columns (if
+    /// include_plan=true; it was the legacy pipeline's logical plan)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub logical_plan: Option<String>,
 

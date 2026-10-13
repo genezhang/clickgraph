@@ -1,9 +1,0 @@
-WITH with_ns_cte_0 AS (SELECT 
-      collect_list(u.full_name) AS `ns`
-FROM social.users_bench AS u
-WHERE u.full_name = 'NOBODY'
-)
-SELECT 
-      try_element_at(ns.ns, 1) AS `h`, 
-      try_element_at(ns.ns, -1) AS `l`
-FROM with_ns_cte_0 AS ns

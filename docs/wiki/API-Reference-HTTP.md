@@ -324,7 +324,7 @@ Content-Type: application/json
 - `parameters` (object, optional): Query parameters for `$param` placeholders
 - `view_parameters` (object, optional): Parameters for parameterized views
 - `role` (string, optional): ClickHouse role for RBAC
-- `include_plan` (boolean, optional): Include logical plan in response (default: false)
+- `include_plan` (boolean, optional): Include the result shape (each RETURN item's kind and columns) in response (default: false)
 
 **Response:**
 ```json

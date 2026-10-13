@@ -142,7 +142,7 @@ Content-Type: application/json
 - `role` (string, optional): ClickHouse RBAC role name (adds `SET ROLE` to SQL array)
 - `schema_name` (string, optional): Graph schema to use (defaults to `"default"`)
 - `target_database` (string, optional): Target SQL dialect (defaults to `"clickhouse"`)
-- `include_plan` (boolean, optional): Include logical plan in response (defaults to `false`)
+- `include_plan` (boolean, optional): Include the result shape (each RETURN item's kind and columns) in response (defaults to `false`)
 
 **Response Format:**
 ```http
@@ -189,7 +189,7 @@ Content-Type: application/json
   - `planning_time_ms` (number): Time to plan query
   - `sql_generation_time_ms` (number): Time to generate SQL
   - `total_time_ms` (number): Total translation time
-- `logical_plan` (string, optional): Logical plan representation (when `include_plan=true`)
+- `logical_plan` (string, optional): The result shape, each RETURN item's kind and columns (when `include_plan=true`)
 
 **Example Usage:**
 

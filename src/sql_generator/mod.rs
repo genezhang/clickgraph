@@ -1,22 +1,10 @@
-//! SQL generation — dialect-aware entry point.
-//!
-//! This module is the gradual replacement for `clickhouse_query_generator`. It
-//! introduces a `SqlEmitter` trait that lets the SQL layer be swapped per
-//! target database (ClickHouse today; Databricks/Spark SQL planned — see
-//! `docs/design/DELTAGRAPH_PLAN.md`).
-//!
-//! ## Phase 0.1 status
-//! The trait is in place but the only emitter (`ClickhouseEmitter`) currently
-//! delegates to the existing `clickhouse_query_generator` so behavior is
-//! unchanged. The trait surface is `pub(crate)` so it can evolve freely in
-//! subsequent phases without forming a semver commitment to external users —
-//! only `SqlDialect` and `generate_sql` are public.
+//! SQL generation: the dialect ([`SqlDialect`]), the per-dialect function
+//! spellings ([`function_mapper`]) and the printer (`emitters`), which the
+//! bound plan's lowering reads through the task-local `QueryContext`'s
+//! dialect.
 
-use crate::render_plan::RenderPlan;
 use serde::{Deserialize, Serialize};
 
-pub(crate) mod clickhouse;
-pub(crate) mod databricks;
 pub(crate) mod emitters;
 pub(crate) mod function_mapper;
 pub(crate) mod passthrough;
@@ -49,10 +37,8 @@ pub enum SqlDialect {
     #[serde(rename = "sqlite")]
     SQLite,
 
-    /// Databricks SQL Warehouse / Spark SQL. The emitter is not yet
-    /// implemented — `emitter_for(SqlDialect::Databricks)` will panic.
-    /// The [`FunctionMapper`] (see [`function_mapper::for_dialect`]) IS
-    /// implemented and locked in by unit tests.
+    /// Databricks SQL Warehouse / Spark SQL, through its
+    /// [`FunctionMapper`] (see [`function_mapper::for_dialect`]).
     ///
     /// [`FunctionMapper`]: function_mapper::FunctionMapper
     #[serde(rename = "databricks")]
@@ -115,37 +101,6 @@ pub fn portable_sql(sql: &str, dialect: SqlDialect) -> String {
         }
         _ => sql.to_string(),
     }
-}
-
-/// Renders a `RenderPlan` into SQL text for a target dialect.
-///
-/// `pub(crate)` because the method surface will widen in later phases
-/// (function mapping, recursive CTE shape, quote rules, NULL semantics).
-/// External consumers should call the free function [`generate_sql`] instead.
-pub(crate) trait SqlEmitter: Send + Sync {
-    fn emit(&self, plan: RenderPlan, max_cte_depth: u32) -> String;
-}
-
-/// Returns a borrowed static emitter for the given dialect.
-///
-/// No heap allocation: each emitter is a zero-sized type held in a `static`.
-pub(crate) fn emitter_for(dialect: SqlDialect) -> &'static dyn SqlEmitter {
-    static CLICKHOUSE: clickhouse::ClickhouseEmitter = clickhouse::ClickhouseEmitter;
-    static DATABRICKS: databricks::DatabricksEmitter = databricks::DatabricksEmitter;
-    match dialect {
-        SqlDialect::ClickHouse => &CLICKHOUSE,
-        SqlDialect::Databricks => &DATABRICKS,
-        d => unimplemented!("SQL emitter for dialect {:?} is not yet implemented", d),
-    }
-}
-
-/// Convenience: render a plan using the default dialect (ClickHouse).
-///
-/// Existing call sites in `clickhouse_query_generator::generate_sql` continue
-/// to work unchanged; new call sites should prefer this entry point so the
-/// dialect can be chosen at runtime in a future phase.
-pub fn generate_sql(plan: RenderPlan, max_cte_depth: u32) -> String {
-    emitter_for(SqlDialect::default()).emit(plan, max_cte_depth)
 }
 
 #[cfg(test)]

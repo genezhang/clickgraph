@@ -49,8 +49,6 @@ use clickgraph::{
     translate::{translate_read, ReadOptions, TranslateError},
 };
 
-use crate::sql_golden_tests::{normalize, normalize_golden_text};
-
 #[derive(Debug, serde::Deserialize)]
 struct CorpusEntry {
     schema: String,
@@ -185,8 +183,7 @@ async fn try_render(
                     statement,
                     &schema,
                     ReadOptions {
-                        max_cte_depth: 100,
-                        cypher: Some(cleaned.to_string()),
+                        cypher: cleaned.to_string(),
                         // The server's options (Neo4j-compat, Bolt's ids).
                         neo4j_compat: Some(compat),
                         id_mapper: compat.then(IdMapper::new),
@@ -196,20 +193,14 @@ async fn try_render(
                 .map(|t| {
                     // The result's shape (how the rows are read: HTTP,
                     // Bolt), locked with its SQL as comment lines.
-                    let shape: String = match &t.shape {
-                        Some(columns) => columns
-                            .iter()
-                            .map(|c| {
-                                format!("\n-- column {}: {:?} {:?}", c.name, c.kind, c.columns)
-                            })
-                            .collect(),
-                        None => "\n-- no shape".to_string(),
-                    };
+                    let shape: String = t
+                        .shape
+                        .iter()
+                        .map(|c| format!("\n-- column {}: {:?} {:?}", c.name, c.kind, c.columns))
+                        .collect();
                     format!("{}{shape}", t.sql)
                 })
                 .map_err(|e| match e {
-                    TranslateError::Planning(e) => format!("plan error: {e}"),
-                    TranslateError::Render(e) => format!("render error: {e}"),
                     TranslateError::Invalid(e) => format!("query error: {e}"),
                     TranslateError::Unsupported(e) => format!("not supported: {e}"),
                     TranslateError::Internal(e) => format!("internal error: {e}"),
@@ -390,5 +381,67 @@ async fn corpus_sweep() {
         "{} corpus golden mismatch(es):\n{}",
         mismatches.len(),
         mismatches.join("\n")
+    );
+}
+
+/// Anonymize the two process-global counters whose values vary with test
+/// ordering/concurrency: `ALIAS_COUNTER` (anonymous rel aliases `t{n}`) and
+/// `CTE_COUNTER` (`cte{n}`). Each is remapped by first appearance, so goldens
+/// are deterministic while structure (which alias joins where) is preserved.
+///
+/// CAUTION: this is text-blind — it rewrites any `t<digits>`/`cte<digits>`
+/// token, including ones inside string literals or a schema column literally
+/// named `t5`. Today the corpus contains no such token (verified), but if you
+/// add a query whose SQL contains a non-counter `t<n>`/`cte<n>`, tighten this
+/// (e.g. scope to the alias-defining position) so a real regression in that
+/// token can't be silently normalized away.
+///
+/// `pub(crate)` (not private): the P0.6 corpus sweep (`corpus_sweep.rs`, same
+/// `integration` test binary) reuses this exact anonymization for its own,
+/// much larger corpus — see docs/design/REFACTORING_SAFETY_PLAN.md §3.2.
+pub(crate) fn normalize(sql: &str) -> String {
+    fn remap(input: &str, pattern: &str, prefix: &str) -> String {
+        let re = regex::Regex::new(pattern).unwrap();
+        let mut seen: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+        let mut next = 0usize;
+        for m in re.find_iter(input) {
+            seen.entry(m.as_str().to_string()).or_insert_with(|| {
+                let p = format!("{prefix}{next}");
+                next += 1;
+                p
+            });
+        }
+        re.replace_all(input, |c: &regex::Captures| seen[&c[0].to_string()].clone())
+            .into_owned()
+    }
+    let s = remap(sql, r"\bt\d+\b", "t");
+    let s = remap(&s, r"\bcte\d+\b", "cte");
+    // The generic `\bt\d+\b` remap above cannot reach the `t<n>` render counter
+    // inside a `pattern_union_t<n>` CTE name: the `t` is preceded by `_` (a word
+    // char), so there is no word boundary before it. Left un-anonymized, that
+    // global counter leaks into the golden and makes the render order-dependent
+    // (byte-stable alone, but not across a full sweep). Anonymize it explicitly.
+    remap(&s, r"pattern_union_t\d+", "pattern_union_t")
+}
+
+/// Normalize checked-in snapshot text so Git checkout line endings do not
+/// change the meaning of a golden comparison on Windows.
+pub(crate) fn normalize_golden_text(text: &str) -> String {
+    text.replace("\r\n", "\n").replace('\r', "\n")
+}
+
+#[test]
+fn normalizes_golden_line_endings_without_changing_content() {
+    assert_eq!(
+        normalize_golden_text("SELECT 1\nSELECT 2\n"),
+        "SELECT 1\nSELECT 2\n"
+    );
+    assert_eq!(
+        normalize_golden_text("SELECT 1\r\nSELECT 2\r\n"),
+        "SELECT 1\nSELECT 2\n"
+    );
+    assert_eq!(
+        normalize_golden_text("SELECT 1\rSELECT 2\r"),
+        "SELECT 1\nSELECT 2\n"
     );
 }
