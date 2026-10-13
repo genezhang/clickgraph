@@ -542,6 +542,8 @@ let f:    Option<f64>   = row[2].as_f64();
 let b:    Option<bool>  = row[3].as_bool();
 ```
 
+A node or relationship returned whole comes back in one of two forms. When the pattern gives it one label or type (`MATCH (u:User) RETURN u`), it is one column per property (`u.name`, `u.user_id`, …). Otherwise (an unlabeled node, a relationship of several types) the column holds a `Value::Map` in Neo4j's JSON form: `{elementId, labels, properties}` for a node, `{elementId, startNodeElementId, endNodeElementId, type, properties}` for a relationship. A path is a `Value::List` of its nodes and relationships in turn. `result_display::format_value` prints such a node as `(:Label {prop: val})` and a relationship as `[:TYPE {prop: val}]`.
+
 ### `SystemConfig`
 
 ```rust
