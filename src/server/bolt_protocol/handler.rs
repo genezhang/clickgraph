@@ -1330,6 +1330,17 @@ impl BoltHandler {
     }
 
     /// Handle RUN message (execute Cypher query)
+    /// A query error answered as a FAILURE (the client RESETs and the
+    /// connection stays usable), not returned as a connection error.
+    fn query_failure(&self, message: String) -> Vec<BoltMessage> {
+        let error = BoltError::query_error(message);
+        vec![BoltMessage::failure(
+            error.error_code().to_string(),
+            error.to_string(),
+            self.negotiated_version(),
+        )]
+    }
+
     async fn handle_run(&mut self, message: BoltMessage) -> BoltResult<Vec<BoltMessage>> {
         // Verify connection state
         {
@@ -1581,23 +1592,45 @@ impl BoltHandler {
                 .unwrap_or("5.8.0")
                 .to_string();
 
-            let row: Vec<BoltValue> = vec![
-                BoltValue::Json(serde_json::Value::String("Neo4j Kernel".to_string())),
-                BoltValue::Json(serde_json::json!([version])),
-                BoltValue::Json(serde_json::Value::String("community".to_string())),
-            ];
+            let row: HashMap<String, serde_json::Value> = HashMap::from([
+                ("name".to_string(), serde_json::json!("Neo4j Kernel")),
+                ("versions".to_string(), serde_json::json!([version])),
+                ("edition".to_string(), serde_json::json!("community")),
+            ]);
+            // What follows the CALL (the Browser's `UNWIND versions AS version
+            // RETURN …`; #1411) is applied as for any procedure.
+            let tail = match open_cypher_parser::parse_cypher_statement(&query) {
+                Ok((_, stmt)) => {
+                    crate::procedures::executor::apply_statement_tail(vec![row], &query, 0)
+                        .map(|rows| (rows, crate::procedures::executor::statement_columns(&stmt)))
+                }
+                Err(_) if q_norm == "CALL DBMS.COMPONENTS" => Ok((vec![row], None)),
+                Err(e) => Err(format!("Statement parsing failed: {}", e)),
+            };
+            let (rows, fields) = match tail {
+                Ok(tail) => tail,
+                Err(e) => return Ok(self.query_failure(e)),
+            };
+            let fields = fields
+                .unwrap_or_else(|| ["name", "versions", "edition"].map(String::from).to_vec());
+            let rows: Vec<Vec<BoltValue>> = rows
+                .iter()
+                .map(|r| {
+                    fields
+                        .iter()
+                        .map(|f| BoltValue::Json(r.get(f).cloned().unwrap_or_default()))
+                        .collect()
+                })
+                .collect();
 
             {
                 let mut context = lock_context!(self.context);
                 context.set_state(ConnectionState::Streaming);
             }
-            self.cached_results = Some(vec![row]);
+            self.cached_results = Some(rows);
 
             let mut result_metadata = HashMap::new();
-            result_metadata.insert(
-                "fields".to_string(),
-                serde_json::json!(["name", "versions", "edition"]),
-            );
+            result_metadata.insert("fields".to_string(), serde_json::json!(fields));
             result_metadata.insert("result_consumed_after".to_string(), serde_json::json!(-1));
             return Ok(vec![BoltMessage::success(result_metadata)]);
         }
@@ -1617,6 +1650,17 @@ impl BoltHandler {
             || q_norm.starts_with("CALL DB.SCHEMA.VISUALIZATION ");
         if is_schema_viz {
             log::info!("🔍 Building CALL db.schema.visualization() virtual graph");
+
+            // Its row holds graph values, which nothing after the CALL reads
+            // here (#1411).
+            if let Ok((_, stmt)) = open_cypher_parser::parse_cypher_statement(&query) {
+                if let Err(e) = crate::procedures::executor::fixed_procedure_tail_refused(
+                    &stmt,
+                    Some(&["nodes", "relationships"]),
+                ) {
+                    return Ok(self.query_failure(e));
+                }
+            }
 
             let effective_schema = schema_name.as_deref().unwrap_or("default").to_string();
             let schema_guard = crate::server::GLOBAL_SCHEMAS
@@ -2455,15 +2499,12 @@ impl BoltHandler {
             };
             let is_procedure = crate::procedures::is_procedure_only_statement(&parsed_stmt);
             let is_union = crate::procedures::is_procedure_union_query(&parsed_stmt);
-            if let CypherStatement::Query { query: q, .. } = &parsed_stmt {
-                if is_procedure
-                    && q.call_clause
-                        .as_ref()
-                        .is_some_and(|c| crate::procedures::is_sql_procedure(c.procedure_name))
-                {
-                    crate::procedures::executor::sql_procedure_tail_refused(&parsed_stmt)
-                        .map_err(BoltError::query_error)?;
-                }
+            if is_procedure
+                && crate::procedures::executor::called(&parsed_stmt)
+                    .is_some_and(|(name, _)| crate::procedures::is_sql_procedure(name))
+            {
+                crate::procedures::executor::sql_procedure_tail_refused(&parsed_stmt)
+                    .map_err(BoltError::query_error)?;
             }
 
             log::debug!("Query execution using schema: {}", effective_schema);

@@ -2141,13 +2141,14 @@ These procedures introspect the currently selected graph schema and return metad
 CALL db.labels() YIELD label WHERE label STARTS WITH 'P' RETURN label ORDER BY label LIMIT 5
 ```
 
-- `YIELD` picks the procedure's columns; a name that is not one of them is an error.
+- `YIELD` picks the procedure's columns; a name that is not one of them, or named twice, is an error. Clauses after the CALL need it.
 - `WHERE` takes comparisons, `AND` / `OR` / `NOT`, `IN`, `IS [NOT] NULL` and `STARTS WITH` / `ENDS WITH` / `CONTAINS`, with Cypher's NULL rules.
 - `RETURN` takes the yielded columns, map and list literals, slices, and `collect()` / `count()` over all the rows.
+- `UNWIND` takes a yielded list (`CALL dbms.components() YIELD name, versions UNWIND versions AS version RETURN name, version`).
 - `ORDER BY`, `SKIP` and `LIMIT` follow the RETURN.
-- `UNION ALL` joins such statements.
+- `UNION ALL` joins such statements; their columns must have the same names.
 
-What it does not evaluate is an error ("Not supported: …"), never ignored: `WITH`, `UNWIND`, `RETURN DISTINCT`, `UNION` without `ALL`, a returned column beside an aggregate (a grouping key), other aggregates and functions. A procedure call inside a query that reads the graph (`MATCH … CALL …`) is not supported either. The search and export procedures (`db.index.vector.queryNodes`, `db.index.fulltext.queryNodes`, `apoc.export.*`) return their rows as the CALL yields them; nothing may follow their `YIELD`.
+What it does not evaluate is an error ("Not supported: …"), never ignored: `WITH`, `RETURN DISTINCT`, `UNION` without `ALL`, a returned column beside an aggregate (a grouping key), other aggregates and functions. A procedure call inside a query that reads the graph (`MATCH … CALL …`) is not supported either. The search and export procedures (`db.index.vector.queryNodes`, `db.index.fulltext.queryNodes`, `apoc.export.*`) return their rows as the CALL yields them: the search procedures yield `node, score` (both), export yields nothing, and nothing may follow. Over Bolt, `db.schema.visualization()` is the same (`nodes, relationships`).
 
 #### db.labels()
 

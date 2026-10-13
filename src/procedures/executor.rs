@@ -250,19 +250,30 @@ pub async fn execute_procedure_query(
     apply_query_tail(raw_results, query)
 }
 
-/// Refuse what follows the YIELD of a procedure answered by its own SQL
-/// (vector / fulltext search, export): that SQL is built from the call's
-/// arguments alone, so a WHERE, RETURN or UNION after it would be dropped
-/// (#1411).
-pub fn sql_procedure_tail_refused(stmt: &CypherStatement<'_>) -> Result<(), String> {
+/// The procedure a statement calls and the columns it yields.
+pub fn called<'s, 'a>(
+    stmt: &'s CypherStatement<'a>,
+) -> Option<(&'a str, Option<&'s Vec<&'a str>>)> {
+    match stmt {
+        CypherStatement::ProcedureCall(pc) => Some((pc.procedure_name, pc.yield_items.as_ref())),
+        CypherStatement::Query { query, .. } => query
+            .call_clause
+            .as_ref()
+            .map(|c| (c.procedure_name, c.yield_items.as_ref())),
+        CypherStatement::CopyTo(_) => None,
+    }
+}
+
+/// The clauses after a CALL … YIELD, by name, that a statement has.
+fn tail_clauses(stmt: &CypherStatement<'_>) -> Vec<&'static str> {
     let CypherStatement::Query {
         query,
         union_clauses,
     } = stmt
     else {
-        return Ok(());
+        return Vec::new();
     };
-    let clauses = [
+    [
         (query.where_clause.is_some(), "WHERE"),
         (query.with_clause.is_some(), "WITH"),
         (!query.unwind_clauses.is_empty(), "UNWIND"),
@@ -271,24 +282,99 @@ pub fn sql_procedure_tail_refused(stmt: &CypherStatement<'_>) -> Result<(), Stri
         (query.skip_clause.is_some(), "SKIP"),
         (query.limit_clause.is_some(), "LIMIT"),
         (!union_clauses.is_empty(), "UNION"),
-    ];
-    match clauses.iter().find(|(present, _)| *present) {
-        Some((_, clause)) => {
-            let name = query
-                .call_clause
-                .as_ref()
-                .map_or("the procedure", |c| c.procedure_name);
-            Err(format!(
-                "Not supported: {clause} after {name} (its rows are returned as the CALL yields them)"
-            ))
+    ]
+    .into_iter()
+    .filter_map(|(present, clause)| present.then_some(clause))
+    .collect()
+}
+
+/// Refuse what a procedure answered other than by the registry cannot apply:
+/// any clause after its YIELD, and a YIELD other than its whole row (#1411).
+/// `outputs`: the columns its row is, in any order; `None` for a row that is
+/// not yielded column by column (export's summary).
+pub fn fixed_procedure_tail_refused(
+    stmt: &CypherStatement<'_>,
+    outputs: Option<&[&str]>,
+) -> Result<(), String> {
+    let Some((name, yielded)) = called(stmt) else {
+        return Ok(());
+    };
+    if let Some(clause) = tail_clauses(stmt).first() {
+        return Err(format!(
+            "Not supported: {clause} after {name} (its rows are returned as the CALL yields them)"
+        ));
+    }
+    if let Some(yielded) = yielded {
+        let whole = outputs.is_some_and(|outputs| {
+            let mut a: Vec<&str> = yielded.clone();
+            let mut b: Vec<&str> = outputs.to_vec();
+            a.sort_unstable();
+            b.sort_unstable();
+            a == b
+        });
+        if !whole {
+            return Err(match outputs {
+                Some(outputs) => format!(
+                    "Not supported: YIELD of other than {} from {name}",
+                    outputs.join(", ")
+                ),
+                None => format!("Not supported: YIELD from {name}"),
+            });
         }
-        None => Ok(()),
+    }
+    Ok(())
+}
+
+/// Refuse what follows the YIELD of a procedure answered by its own SQL
+/// (vector / fulltext search, export): that SQL is built from the call's
+/// arguments alone, so a WHERE, RETURN or UNION after it would be dropped,
+/// and its row is not narrowed to the yielded columns (#1411).
+pub fn sql_procedure_tail_refused(stmt: &CypherStatement<'_>) -> Result<(), String> {
+    let outputs: Option<&[&str]> = match called(stmt) {
+        Some((name, _)) if crate::procedures::apoc_export::is_export_procedure(name) => None,
+        _ => Some(&["node", "score"]),
+    };
+    fixed_procedure_tail_refused(stmt, outputs)
+}
+
+/// The columns branch 0 of a procedure-only statement returns, when its text
+/// says them (its RETURN's names, or its YIELD's).
+pub fn statement_columns(stmt: &CypherStatement<'_>) -> Option<Vec<String>> {
+    match stmt {
+        CypherStatement::Query { query, .. } => output_columns(query),
+        CypherStatement::ProcedureCall(pc) => pc
+            .yield_items
+            .as_ref()
+            .map(|y| y.iter().map(|c| c.to_string()).collect()),
+        CypherStatement::CopyTo(_) => None,
+    }
+}
+
+fn output_columns(
+    query: &crate::open_cypher_parser::ast::OpenCypherQueryAst<'_>,
+) -> Option<Vec<String>> {
+    match &query.return_clause {
+        Some(r) => Some(
+            r.return_items
+                .iter()
+                .map(|item| {
+                    item.alias
+                        .or(item.original_text)
+                        .unwrap_or("?column?")
+                        .to_string()
+                })
+                .collect(),
+        ),
+        None => query
+            .call_clause
+            .as_ref()
+            .and_then(|c| c.yield_items.as_ref())
+            .map(|y| y.iter().map(|c| c.to_string()).collect()),
     }
 }
 
 /// Apply the tail of branch `branch` (0: the first query, then each UNION ALL
 /// arm) of the procedure-only `statement` to the rows its procedure returned.
-/// A standalone procedure call has none.
 pub fn apply_statement_tail(
     rows: Vec<HashMap<String, serde_json::Value>>,
     statement: &str,
@@ -309,6 +395,19 @@ pub fn apply_statement_tail(
             }) {
                 return Err("Not supported: UNION of procedure calls (UNION ALL is)".to_string());
             }
+            let sorted = |q| {
+                output_columns(q).map(|mut c| {
+                    c.sort();
+                    c
+                })
+            };
+            let first = sorted(query);
+            if union_clauses.iter().any(|u| sorted(&u.query) != first) {
+                return Err(
+                    "All sub queries in an UNION must have the same return column names"
+                        .to_string(),
+                );
+            }
             let query = match branch {
                 0 => query,
                 n => {
@@ -320,21 +419,58 @@ pub fn apply_statement_tail(
             };
             apply_query_tail(rows, query)
         }
-        CypherStatement::ProcedureCall(_) | CypherStatement::CopyTo(_) => Ok(rows),
+        CypherStatement::ProcedureCall(pc) => match &pc.yield_items {
+            Some(columns) => project_yield(rows, columns),
+            None => Ok(rows),
+        },
+        CypherStatement::CopyTo(_) => Ok(rows),
     }
 }
 
+/// Narrow the procedure's rows to the YIELD's columns.
+fn project_yield(
+    rows: Vec<HashMap<String, serde_json::Value>>,
+    columns: &[&str],
+) -> ProcedureResult {
+    if let Some((_, c)) = columns
+        .iter()
+        .enumerate()
+        .find(|(i, x)| columns[..*i].contains(x))
+    {
+        return Err(format!("Variable `{c}` already declared"));
+    }
+    // A column no row has is not one of the procedure's; one some rows
+    // lack is NULL there.
+    if let Some(unknown) = columns
+        .iter()
+        .find(|c| !rows.is_empty() && rows.iter().all(|row| !row.contains_key(**c)))
+    {
+        return Err(format!("Unknown procedure output: `{unknown}`"));
+    }
+    Ok(rows
+        .into_iter()
+        .map(|mut row| {
+            columns
+                .iter()
+                .map(|c| {
+                    let value = row.remove(*c).unwrap_or(serde_json::Value::Null);
+                    (c.to_string(), value)
+                })
+                .collect()
+        })
+        .collect())
+}
+
 /// Apply what follows `CALL … YIELD` in a procedure-only query to the
-/// procedure's rows: the YIELD's columns, the WHERE, the RETURN, ORDER BY,
-/// SKIP and LIMIT. A clause this does not evaluate is refused, never dropped
-/// (#1411).
+/// procedure's rows: the YIELD's columns, the WHERE, UNWIND, the RETURN,
+/// ORDER BY, SKIP and LIMIT. A clause this does not evaluate is refused, never
+/// dropped (#1411).
 pub fn apply_query_tail(
     rows: Vec<HashMap<String, serde_json::Value>>,
     query: &crate::open_cypher_parser::ast::OpenCypherQueryAst<'_>,
 ) -> ProcedureResult {
     let unevaluated = [
         (query.with_clause.is_some(), "WITH"),
-        (!query.unwind_clauses.is_empty(), "UNWIND"),
         (
             query.return_clause.as_ref().is_some_and(|r| r.distinct),
             "RETURN DISTINCT",
@@ -343,36 +479,44 @@ pub fn apply_query_tail(
     if let Some((_, clause)) = unevaluated.iter().find(|(present, _)| *present) {
         return Err(format!("Not supported: {clause} after a procedure call"));
     }
+    if let Some(names) = output_columns(query) {
+        if let Some((_, name)) = names
+            .iter()
+            .enumerate()
+            .find(|(i, x)| names[..*i].contains(x))
+        {
+            return Err(format!(
+                "Multiple result columns with the same name are not supported: `{name}`"
+            ));
+        }
+    }
 
     let mut rows = rows;
-    if let Some(columns) = query
+    match query
         .call_clause
         .as_ref()
         .and_then(|c| c.yield_items.as_ref())
     {
-        // A column no row has is not one of the procedure's; one some rows
-        // lack is NULL there.
-        if let Some(unknown) = columns
-            .iter()
-            .find(|c| !rows.is_empty() && rows.iter().all(|row| !row.contains_key(**c)))
-        {
-            return Err(format!("Unknown procedure output: `{unknown}`"));
+        Some(columns) => rows = project_yield(rows, columns)?,
+        None => {
+            if query.where_clause.is_some()
+                || !query.unwind_clauses.is_empty()
+                || query.return_clause.is_some()
+                || query.order_by_clause.is_some()
+            {
+                return Err(
+                    "Procedure call inside a query does not support naming results \
+                     implicitly (name explicitly using `YIELD` instead)"
+                        .to_string(),
+                );
+            }
         }
-        rows = rows
-            .into_iter()
-            .map(|mut row| {
-                columns
-                    .iter()
-                    .map(|c| {
-                        let value = row.remove(*c).unwrap_or(serde_json::Value::Null);
-                        (c.to_string(), value)
-                    })
-                    .collect()
-            })
-            .collect();
     }
     if let Some(where_clause) = &query.where_clause {
         rows = crate::procedures::return_evaluator::apply_where(rows, &where_clause.conditions)?;
+    }
+    for unwind in &query.unwind_clauses {
+        rows = crate::procedures::return_evaluator::apply_unwind(rows, unwind)?;
     }
     // The records a RETURN returned each row from, for ORDER BY
     let mut inputs = None;
@@ -845,5 +989,73 @@ mod tests {
                 "{err}"
             );
         }
+    }
+
+    #[test]
+    fn names_neo4j_rejects_are_errors() {
+        for (q, msg) in [
+            ("CALL db.labels() YIELD label, label RETURN label", "already declared"),
+            ("CALL db.labels() YIELD label, label", "already declared"),
+            ("CALL db.labels() YIELD label RETURN label AS a, label AS a", "same name"),
+            ("CALL db.labels() RETURN label", "YIELD"),
+            ("CALL db.labels() YIELD label RETURN label UNION ALL CALL db.labels() YIELD label RETURN label AS l", "same return column names"),
+            ("CALL db.labels() YIELD bogus", "Unknown procedure output"),
+        ] {
+            let err = tail(labels(), q).unwrap_err();
+            assert!(err.contains(msg), "{q}: {err}");
+        }
+    }
+
+    #[test]
+    fn a_yield_that_ends_the_statement_narrows_the_rows() {
+        let input = vec![HashMap::from([
+            ("a".to_string(), serde_json::json!(1)),
+            ("b".to_string(), serde_json::json!(2)),
+        ])];
+        let out = tail(input, "CALL p() YIELD b").unwrap();
+        assert_eq!(
+            out,
+            [HashMap::from([("b".to_string(), serde_json::json!(2))])]
+        );
+    }
+
+    #[test]
+    fn unwind_gives_a_row_per_element() {
+        let input = vec![HashMap::from([
+            ("name".to_string(), serde_json::json!("Neo4j Kernel")),
+            (
+                "versions".to_string(),
+                serde_json::json!(["5.8.0", "5.9.0"]),
+            ),
+            ("edition".to_string(), serde_json::json!("community")),
+        ])];
+        let q = "CALL dbms.components() YIELD name, versions, edition \
+                 UNWIND versions AS version RETURN name, version, edition";
+        assert_eq!(
+            column(tail(input.clone(), q), "version"),
+            [serde_json::json!("5.8.0"), serde_json::json!("5.9.0")]
+        );
+        assert_eq!(
+            statement_columns(&parse(q)).unwrap(),
+            ["name", "version", "edition"]
+        );
+        let q = "CALL dbms.components() YIELD name, versions UNWIND name AS n RETURN n";
+        assert_eq!(
+            column(tail(input, q), "n"),
+            [serde_json::json!("Neo4j Kernel")]
+        );
+    }
+
+    #[test]
+    fn a_yield_from_a_sql_procedure_is_its_whole_row() {
+        let call = "CALL db.index.vector.queryNodes('idx', 5, [1.0, 2.0])";
+        assert!(sql_procedure_tail_refused(&parse(&format!("{call} YIELD score, node"))).is_ok());
+        assert!(sql_procedure_tail_refused(&parse(call)).is_ok());
+        let err = sql_procedure_tail_refused(&parse(&format!("{call} YIELD score"))).unwrap_err();
+        assert!(err.starts_with("Not supported: YIELD"), "{err}");
+        let export = "CALL apoc.export.csv.query('MATCH (u:User) RETURN u.name', 'u.csv', {})";
+        assert!(sql_procedure_tail_refused(&parse(export)).is_ok());
+        let err = sql_procedure_tail_refused(&parse(&format!("{export} YIELD file"))).unwrap_err();
+        assert!(err.starts_with("Not supported: YIELD"), "{err}");
     }
 }

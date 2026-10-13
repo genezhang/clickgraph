@@ -10,6 +10,7 @@
 
 use crate::open_cypher_parser::ast::{
     Expression, Literal, Operator, OperatorApplication, OrderByClause, OrerByOrder, ReturnClause,
+    UnwindClause,
 };
 use serde_json::Value as JsonValue;
 use std::cmp::Ordering;
@@ -369,6 +370,33 @@ pub fn apply_where(
         }
     }
     Ok(kept)
+}
+
+/// One record per element of the UNWIND's list for each record, the element
+/// bound to its alias; none for an empty list or NULL; the record itself with
+/// a value that is not a list.
+pub fn apply_unwind(
+    results: Vec<HashMap<String, JsonValue>>,
+    unwind: &UnwindClause,
+) -> Result<Vec<HashMap<String, JsonValue>>, String> {
+    let mut out = Vec::new();
+    for record in results {
+        if record.contains_key(unwind.alias) {
+            return Err(format!("Variable `{}` already declared", unwind.alias));
+        }
+        let context = EvalContext::with_variables(record.clone());
+        let elements = match evaluate_expr(&unwind.expression, &context)? {
+            JsonValue::Array(items) => items,
+            JsonValue::Null => Vec::new(),
+            other => vec![other],
+        };
+        for element in elements {
+            let mut row = record.clone();
+            row.insert(unwind.alias.to_string(), element);
+            out.push(row);
+        }
+    }
+    Ok(out)
 }
 
 /// Whether a RETURN aggregates (one record for all the rows).
