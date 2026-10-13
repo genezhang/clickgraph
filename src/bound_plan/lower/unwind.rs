@@ -391,7 +391,7 @@ impl<'s> Lowerer<'s> {
                         Kind::List(k)
                             if !matches!(*k, Kind::Element(_))
                                 && super::null_list::null_as_empty()
-                                && f.args.first().is_some_and(|a| {
+                                && super::null_list::min_max_arg(f).is_some_and(|a| {
                                     matches!(
                                         self.list_null(a, &HashMap::new()),
                                         Ok(super::null_list::ListNull::When(_))

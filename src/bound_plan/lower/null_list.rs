@@ -643,17 +643,8 @@ impl Lowerer<'_> {
     ) -> Result<Option<(RenderExpr, RenderExpr)>, LowerError> {
         use crate::render_plan::render_expr::AggregateFnCall;
         let name = f.name.to_ascii_lowercase();
-        if !matches!(name.as_str(), "min" | "max") {
+        let Some(arg) = min_max_arg(f) else {
             return Ok(None);
-        }
-        let arg = match f.args.as_slice() {
-            [LogicalExpr::OperatorApplicationExp(op) | LogicalExpr::Operator(op)]
-                if op.operator == lx::Operator::Distinct && op.operands.len() == 1 =>
-            {
-                &op.operands[0]
-            }
-            [one] => one,
-            _ => return Ok(None),
         };
         if !matches!(self.kind(arg), Kind::List(_)) || self.holds_elements(arg) {
             return Ok(None);
@@ -687,5 +678,21 @@ impl Lowerer<'_> {
             operands: vec![counted, RenderExpr::Literal(Literal::Integer(0))],
         });
         Ok(Some((none, held)))
+    }
+}
+
+/// The list `min(l)` / `max(l)` (DISTINCT or not) is of, as an argument.
+pub(super) fn min_max_arg(f: &lx::AggregateFnCall) -> Option<&LogicalExpr> {
+    if !matches!(f.name.to_ascii_lowercase().as_str(), "min" | "max") {
+        return None;
+    }
+    match f.args.as_slice() {
+        [LogicalExpr::OperatorApplicationExp(op) | LogicalExpr::Operator(op)]
+            if op.operator == lx::Operator::Distinct && op.operands.len() == 1 =>
+        {
+            Some(&op.operands[0])
+        }
+        [one] => Some(one),
+        _ => None,
     }
 }

@@ -5681,15 +5681,6 @@ impl<'s> Lowerer<'s> {
             let list_null = match self.kind(&it.expr) {
                 unwind::Kind::List(_) => match self.list_null(&it.expr, &HashMap::new())? {
                     null_list::ListNull::Never => Some(None),
-                    // Of an aggregate's group, not a value of it (but
-                    // `min` / `max` of lists, `Lowerer::min_max_list`).
-                    null_list::ListNull::When(_)
-                        if it.aggregate
-                            && !matches!(&it.expr, LogicalExpr::AggregateFnCall(f)
-                                if matches!(f.name.to_ascii_lowercase().as_str(), "min" | "max")) =>
-                    {
-                        None
-                    }
                     null_list::ListNull::When(c) => Some(Some(c)),
                     null_list::ListNull::Unknown => None,
                 },
