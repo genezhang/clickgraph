@@ -5,23 +5,16 @@ use std::collections::HashMap;
 use crate::clickhouse_query_generator::variable_length_cte::WeightCteConfig;
 use crate::clickhouse_query_generator::NodeProperty;
 use crate::graph_catalog::config::Identifier;
-use crate::graph_catalog::expression_parser::PropertyValue;
 use crate::graph_catalog::graph_schema::GraphSchema;
 use crate::query_planner::logical_plan::LogicalPlan;
 use crate::query_planner::logical_plan::ShortestPathMode;
 use crate::query_planner::logical_plan::VariableLengthSpec;
-use crate::render_plan::render_expr::RenderExpr;
 
 /// Context for CTE generation - holds property requirements and other metadata
 #[derive(Debug, Clone, Default)]
 pub struct CteGenerationContext {
-    /// WHERE filter expression to apply to variable-length CTEs
-    filter_expr: Option<RenderExpr>,
     /// Graph schema for this query (enables multi-schema support)
     schema: Option<GraphSchema>,
-    /// Fixed-length path inline JOINs (from_table, from_alias, joins)
-    /// Key: "start_alias-end_alias" for the GraphRel pattern
-    fixed_length_joins: HashMap<String, (String, String, Vec<super::Join>)>,
     /// Variable length specification for the path pattern
     pub spec: VariableLengthSpec,
     /// Path variable name (e.g., "p" in `MATCH p = (a)-[*]->(b)`)
@@ -135,28 +128,6 @@ impl CteGenerationContext {
 
     pub(crate) fn schema(&self) -> Option<&GraphSchema> {
         self.schema.as_ref()
-    }
-
-    /// Read accessor for the WHERE filter. Currently unused: `with_filter`
-    /// (live, called from `cte_extraction`) populates `filter_expr`, but no
-    /// consumer reads it back yet. Kept as the paired getter for that field.
-    #[allow(dead_code)]
-    pub(crate) fn get_filter(&self) -> Option<&RenderExpr> {
-        self.filter_expr.as_ref()
-    }
-
-    /// Retrieve fixed-length path inline JOINs if available. Currently unused:
-    /// `set_fixed_length_joins` (live, called from `cte_extraction`) populates
-    /// `fixed_length_joins`, but no consumer reads it back yet. Kept as the
-    /// paired getter for that field.
-    #[allow(dead_code)]
-    pub(crate) fn get_fixed_length_joins(
-        &self,
-        start_alias: &str,
-        end_alias: &str,
-    ) -> Option<&(String, String, Vec<super::Join>)> {
-        let key = format!("{}-{}", start_alias, end_alias);
-        self.fixed_length_joins.get(&key)
     }
 }
 
@@ -361,118 +332,6 @@ pub fn map_property_to_column_with_relationship_context(
             let _ = writeln!(file, "ERROR: {}", msg);
         }
         msg
-    })?;
-
-    Ok(column.raw().to_string())
-}
-
-/// Like `map_property_to_column_with_relationship_context` but preserves
-/// the `PropertyValue` variant (Column vs Expression). Use this when the
-/// caller needs to generate correct SQL for expression-based mappings.
-pub fn map_property_to_property_value(
-    property: &str,
-    node_label: &str,
-) -> Result<PropertyValue, String> {
-    let current_schema = crate::server::query_context::get_current_schema_with_fallback();
-    let schema = current_schema.as_ref().ok_or_else(|| {
-        format!(
-            "No schema available for property '{}' on node '{}'",
-            property, node_label
-        )
-    })?;
-
-    let node_schema = schema
-        .all_node_schemas()
-        .get(node_label)
-        .ok_or_else(|| format!("Node label '{}' not found in schema", node_label))?;
-
-    node_schema
-        .property_mappings
-        .get(property)
-        .cloned()
-        .ok_or_else(|| {
-            format!(
-                "Property '{}' not found for node label '{}'",
-                property, node_label
-            )
-        })
-}
-
-/// Like `map_property_to_property_value` but for relationship properties.
-pub fn map_rel_property_to_property_value(
-    property: &str,
-    relationship_type: &str,
-) -> Result<PropertyValue, String> {
-    let current_schema = crate::server::query_context::get_current_schema_with_fallback();
-    let schema = current_schema.as_ref().ok_or_else(|| {
-        format!(
-            "No schema available for property '{}' on rel '{}'",
-            property, relationship_type
-        )
-    })?;
-
-    let rel_schema = schema
-        .get_rel_schema(relationship_type)
-        .map_err(|e| format!("Relationship type '{}' not found: {}", relationship_type, e))?;
-
-    rel_schema
-        .property_mappings
-        .get(property)
-        .cloned()
-        .ok_or_else(|| {
-            format!(
-                "Property '{}' not found for relationship type '{}'",
-                property, relationship_type
-            )
-        })
-}
-
-/// Map a relationship property to its corresponding column name in the schema.
-/// This is the relationship equivalent of map_property_to_column_with_schema.
-///
-/// # Arguments
-/// * `property` - The Cypher property name (e.g., "since_date")
-/// * `relationship_type` - The relationship type (e.g., "FRIENDS_WITH")
-/// * `schema_name` - Optional explicit schema name (uses task-local context if None)
-///
-/// # Returns
-/// * `Ok(column_name)` - The mapped column name (e.g., "since")
-/// * `Err(msg)` - If the relationship type or property is not found
-pub fn map_relationship_property_to_column(
-    property: &str,
-    relationship_type: &str,
-    _schema_name: Option<&str>,
-) -> Result<String, String> {
-    // Get schema from task-local context, falling back to GLOBAL_SCHEMAS for tests
-    let current_schema = crate::server::query_context::get_current_schema_with_fallback();
-    let schema = current_schema.as_deref().ok_or_else(|| {
-        format!(
-            "No schema available for relationship property '{}' on type '{}'",
-            property, relationship_type
-        )
-    })?;
-
-    // Get the relationship schema
-    let rel_schema = schema
-        .get_relationships_schema_opt(relationship_type)
-        .ok_or_else(|| {
-            format!(
-                "Relationship type '{}' not found in schema",
-                relationship_type
-            )
-        })?;
-
-    // Look up the property in property_mappings
-    let column = rel_schema.property_mappings.get(property).ok_or_else(|| {
-        // Sorted so the error text is stable across processes (HashMap keys).
-        let mut available: Vec<String> = rel_schema.property_mappings.keys().cloned().collect();
-        available.sort();
-        format!(
-            "Property '{}' not found in relationship type '{}'. Available properties: {}",
-            property,
-            relationship_type,
-            available.join(", ")
-        )
     })?;
 
     Ok(column.raw().to_string())

@@ -13,7 +13,6 @@ pub mod join_context;
 pub mod logical_expr;
 pub mod logical_plan;
 pub mod transformed;
-pub mod typed_variable;
 pub mod types;
 
 pub fn get_query_type(query_ast: &OpenCypherQueryAst) -> QueryType {

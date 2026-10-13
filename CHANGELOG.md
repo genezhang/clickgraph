@@ -14,6 +14,8 @@
 
 ### 🧹 Infrastructure
 
+- **The shared printer and IR lose the legacy pipeline's leftovers** (P-4c S14c5, ~5k lines): the name-keyed column resolution and the plain-render flag, 24 query-context registries nothing wrote any more, the `RenderPlan` / `Cte` / `Join` fields and `RenderExpr` variants only the legacy renderer used. The corpus SQL goldens are byte-identical.
+
 - **The legacy planner and renderer are gone** (P-4c S14c3, ~146k lines): the analyzer, optimizer and plan context, the clause builders, the RenderPlan composition (plan builders, WITH→CTE, the repair passes) and the legacy SQL renderer. Every query has been translated by the bound plan since the cutovers; the corpus SQL goldens are byte-identical. `CLICKGRAPH_STATS_ENABLED` is now read by nothing (only the legacy planner's join ordering read the stats).
 
 - **The legacy write planner is gone** (P-4c S14c2): `write_plan_builder`, `write_clause_builder` and `write_guard` (~3k lines). Embedded writes have been planned by `bound_plan::write` since S14b; the chdb-only gate (`ExecutorKind`) moved into `clickgraph-embedded`.

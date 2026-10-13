@@ -12,12 +12,10 @@ use crate::graph_catalog::{
     config::Identifier, graph_schema::GraphSchema, EdgeAccessStrategy, JoinStrategy,
     NodeAccessStrategy, PatternSchemaContext,
 };
-use crate::query_planner::join_context::{VLP_END_ID_COLUMN, VLP_START_ID_COLUMN};
 use crate::query_planner::logical_plan::VariableLengthSpec;
 use crate::render_plan::cte_generation::CteGenerationContext;
 use crate::render_plan::errors::RenderBuildError;
 use crate::render_plan::filter_pipeline::CategorizedFilters;
-use crate::render_plan::filter_sql::collect_parameters_from_filters;
 
 /// Dialect-correct array literal. CH: `[a, b]`. Spark: `array(a, b)`.
 /// Thin shorthand over `FunctionMapper::array_literal` — CTE generation
@@ -62,194 +60,13 @@ pub enum CteError {
     RenderBuildError(#[from] RenderBuildError),
 }
 
-/// Metadata for a column in a generated CTE
-///
-/// This provides complete information for mapping Cypher property accesses to CTE columns
-/// WITHOUT heuristics or underscore splitting.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct CteColumnMetadata {
-    /// The column name in the CTE (e.g., "end_id", "end_city")
-    pub cte_column_name: String,
-    /// The Cypher alias this column belongs to (e.g., "u2")
-    pub cypher_alias: String,
-    /// The Cypher property name from schema (e.g., "city", "email", "name")
-    pub cypher_property: String,
-    /// The actual DB column name from schema (e.g., "city", "email_address", "full_name")
-    pub db_column: String,
-    /// Whether this is an ID column (used for GROUP BY)
-    pub is_id_column: bool,
-    /// The VLP position (Start or End) for VLP CTEs
-    pub vlp_position: Option<VlpColumnPosition>,
-}
-
-/// Position indicator for VLP CTE columns
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub enum VlpColumnPosition {
-    Start,
-    End,
-}
-
-/// VLP endpoint metadata for converting CteGenerationResult to Cte
-#[derive(Debug, Clone, Default)]
-pub struct VlpEndpointInfo {
-    /// Internal start node alias used in CTE (e.g., "start_node")
-    pub start_alias: String,
-    /// Internal end node alias used in CTE (e.g., "end_node")
-    pub end_alias: String,
-    /// Start node table name
-    pub start_table: String,
-    /// End node table name
-    pub end_table: String,
-    /// Original Cypher alias for start node
-    pub cypher_start_alias: String,
-    /// Original Cypher alias for end node
-    pub cypher_end_alias: String,
-    /// Start node ID column name
-    pub start_id_col: String,
-    /// End node ID column name
-    pub end_id_col: String,
-    /// Path variable name (e.g., "p" in `MATCH p = (a)-[*]->(b)`)
-    pub path_variable: Option<String>,
-}
-
 /// Result of CTE SQL generation
 #[derive(Debug, Clone)]
 pub struct CteGenerationResult {
     pub sql: String,
-    pub parameters: Vec<String>,
     pub cte_name: String,
-    pub recursive: bool,
-    /// The table alias used in FROM clause (e.g., "t" for VLP CTEs)
-    pub from_alias: String,
-    /// Metadata for all columns in the CTE
-    pub columns: Vec<CteColumnMetadata>,
-    /// VLP endpoint info (for conversion to Cte)
-    pub vlp_endpoint: Option<VlpEndpointInfo>,
     /// Filters that should be applied to outer SELECT (e.g., end_node_filters for denormalized VLP)
     pub outer_where_filters: Option<String>,
-}
-
-impl CteGenerationResult {
-    /// Get the ID column for a given Cypher alias
-    pub fn get_id_column_for_alias(&self, alias: &str) -> Option<&CteColumnMetadata> {
-        self.columns
-            .iter()
-            .find(|c| c.cypher_alias == alias && c.is_id_column)
-    }
-
-    /// Get all columns for a given Cypher alias
-    pub fn get_columns_for_alias(&self, alias: &str) -> Vec<&CteColumnMetadata> {
-        self.columns
-            .iter()
-            .filter(|c| c.cypher_alias == alias)
-            .collect()
-    }
-
-    /// Get the FROM alias to use when referencing this CTE's columns
-    pub fn get_from_alias(&self) -> &str {
-        &self.from_alias
-    }
-
-    /// Build column metadata for VLP CTE columns
-    ///
-    /// VLP CTEs generate columns like: start_id, end_id, start_city, end_city, etc.
-    /// This creates the metadata mapping those back to Cypher aliases.
-    pub fn build_vlp_column_metadata(
-        left_alias: &str,
-        right_alias: &str,
-        properties: &[NodeProperty],
-        id_column: &str,
-    ) -> Vec<CteColumnMetadata> {
-        let mut columns = Vec::new();
-
-        // Add start node ID column
-        columns.push(CteColumnMetadata {
-            cte_column_name: VLP_START_ID_COLUMN.to_string(),
-            cypher_alias: left_alias.to_string(),
-            cypher_property: id_column.to_string(),
-            db_column: id_column.to_string(),
-            is_id_column: true,
-            vlp_position: Some(VlpColumnPosition::Start),
-        });
-
-        // Add end node ID column
-        columns.push(CteColumnMetadata {
-            cte_column_name: VLP_END_ID_COLUMN.to_string(),
-            cypher_alias: right_alias.to_string(),
-            cypher_property: id_column.to_string(),
-            db_column: id_column.to_string(),
-            is_id_column: true,
-            vlp_position: Some(VlpColumnPosition::End),
-        });
-
-        // Add property columns for both start and end nodes
-        for prop in properties {
-            // Skip ID column as it's already added
-            if prop.alias == id_column {
-                continue;
-            }
-
-            // Use property names directly from schema - NO SPLITTING!
-            // prop.alias: Cypher property name (e.g., "email", "full_name")
-            // prop.column_name: DB column name (e.g., "email_address", "full_name")
-            let cypher_property_name = &prop.alias;
-            let db_column_name = &prop.column_name;
-
-            // Start node property (only for properties belonging to start node)
-            if prop.cypher_alias == left_alias {
-                columns.push(CteColumnMetadata {
-                    cte_column_name: format!("start_{}", cypher_property_name),
-                    cypher_alias: left_alias.to_string(),
-                    cypher_property: cypher_property_name.clone(),
-                    db_column: db_column_name.clone(),
-                    is_id_column: false,
-                    vlp_position: Some(VlpColumnPosition::Start),
-                });
-            }
-
-            // End node property (only for properties belonging to end node)
-            if prop.cypher_alias == right_alias {
-                columns.push(CteColumnMetadata {
-                    cte_column_name: format!("end_{}", cypher_property_name),
-                    cypher_alias: right_alias.to_string(),
-                    cypher_property: cypher_property_name.clone(),
-                    db_column: db_column_name.clone(),
-                    is_id_column: false,
-                    vlp_position: Some(VlpColumnPosition::End),
-                });
-            }
-        }
-
-        columns
-    }
-
-    /// Convert CteGenerationResult to Cte struct for downstream use
-    pub fn to_cte(&self) -> crate::render_plan::Cte {
-        use crate::render_plan::{Cte, CteContent};
-
-        if let Some(ref endpoint) = self.vlp_endpoint {
-            Cte::new_vlp(
-                self.cte_name.clone(),
-                CteContent::RawSql(self.sql.clone()),
-                self.recursive,
-                endpoint.start_alias.clone(),
-                endpoint.end_alias.clone(),
-                endpoint.start_table.clone(),
-                endpoint.end_table.clone(),
-                endpoint.cypher_start_alias.clone(),
-                endpoint.cypher_end_alias.clone(),
-                endpoint.start_id_col.clone(),
-                endpoint.end_id_col.clone(),
-                endpoint.path_variable.clone(),
-            )
-        } else {
-            Cte::new(
-                self.cte_name.clone(),
-                CteContent::RawSql(self.sql.clone()),
-                self.recursive,
-            )
-        }
-    }
 }
 
 /// Main entry point for CTE generation across all schema variations
@@ -319,17 +136,6 @@ impl CteManager {
     /// Get the current context (for incremental building)
     pub fn context(&self) -> &CteGenerationContext {
         &self.context
-    }
-
-    /// Update context with new information
-    pub fn with_context_update<F>(self, updater: F) -> Self
-    where
-        F: FnOnce(CteGenerationContext) -> CteGenerationContext,
-    {
-        Self {
-            context: updater(self.context),
-            ..self
-        }
     }
 }
 
@@ -567,92 +373,9 @@ impl DenormalizedCteStrategy {
             }
         };
 
-        // Build column metadata for denormalized schema
-        let mut columns = Vec::new();
-
-        // #678: resolve the endpoint's logical node_id property name (e.g. `code`)
-        // rather than hardcoding the placeholder `"id"`. The shared
-        // `build_vlp_column_metadata` (used by every OTHER strategy) sets the id
-        // column's `cypher_property` to the real logical id name; only the denorm
-        // builder hand-rolled it to `"id"`. That mismatch made the #620/#677 VLP
-        // WITH-item id pre-pass (which fires when `prop_access.column ==
-        // cypher_property`) miss `WITH a.code AS x` over a denorm VLP, so it fell
-        // through to the blind prefix rewriter → `t.start_code` (a column the CTE
-        // never projects; it projects `start_id`/`end_id`) → Code 47.
-        // Composite ids stay `"id"` (loud), per #683-r2 / #605 composite discipline.
-        let start_id_prop = self
-            .denorm_node_id_property_name()
-            .unwrap_or_else(|| "id".to_string());
-        let end_id_prop = start_id_prop.clone();
-
-        // Add start node ID column
-        columns.push(CteColumnMetadata {
-            cte_column_name: VLP_START_ID_COLUMN.to_string(),
-            cypher_alias: self.pattern_ctx.left_node_alias.clone(),
-            cypher_property: start_id_prop,
-            db_column: self.from_col.clone(),
-            is_id_column: true,
-            vlp_position: Some(VlpColumnPosition::Start),
-        });
-
-        // Add end node ID column
-        columns.push(CteColumnMetadata {
-            cte_column_name: VLP_END_ID_COLUMN.to_string(),
-            cypher_alias: self.pattern_ctx.right_node_alias.clone(),
-            cypher_property: end_id_prop,
-            db_column: self.to_col.clone(),
-            is_id_column: true,
-            vlp_position: Some(VlpColumnPosition::End),
-        });
-
-        // Add property columns - for denormalized, properties need start_/end_ prefixes
-        for prop in properties {
-            // Determine prefix based on which endpoint this property belongs to
-            let position = if prop.cypher_alias == self.pattern_ctx.left_node_alias {
-                VlpColumnPosition::Start
-            } else {
-                VlpColumnPosition::End
-            };
-            let prefix = match position {
-                VlpColumnPosition::Start => "start_",
-                VlpColumnPosition::End => "end_",
-            };
-
-            // 🔧 FIX: For denormalized VLP, CTE columns must have start_/end_ prefixes
-            // This allows the VLP rewrite to correctly map origin.city → t.start_OriginCityName
-            let cte_column_name = format!("{}{}", prefix, prop.column_name);
-
-            columns.push(CteColumnMetadata {
-                cte_column_name,                         // e.g., "start_OriginCityName"
-                cypher_alias: prop.cypher_alias.clone(), // e.g., "origin"
-                cypher_property: prop.alias.clone(),     // e.g., "city"
-                db_column: prop.column_name.clone(),     // e.g., "OriginCityName"
-                is_id_column: false,
-                vlp_position: Some(position),
-            });
-        }
-
-        // Build VLP endpoint info for denormalized (edge table is the only table)
-        let vlp_endpoint = VlpEndpointInfo {
-            start_alias: "start_node".to_string(),
-            end_alias: "end_node".to_string(),
-            start_table: self.table.clone(),
-            end_table: self.table.clone(),
-            cypher_start_alias: self.pattern_ctx.left_node_alias.clone(),
-            cypher_end_alias: self.pattern_ctx.right_node_alias.clone(),
-            start_id_col: self.from_col.clone(),
-            end_id_col: self.to_col.clone(),
-            path_variable: None,
-        };
-
         Ok(CteGenerationResult {
             sql,
-            parameters: collect_parameters_from_filters(filters),
             cte_name,
-            recursive: true,
-            from_alias: crate::server::query_context::vlp_from_alias(),
-            columns,
-            vlp_endpoint: Some(vlp_endpoint),
             // ⚠️ CRITICAL: For denormalized VLP, end_node_filters must be applied in outer SELECT
             outer_where_filters: filters.end_sql.clone(),
         })
@@ -2029,35 +1752,9 @@ impl VariableLengthCteStrategy {
             }
         };
 
-        // Build column metadata
-        let columns = CteGenerationResult::build_vlp_column_metadata(
-            &self.pattern_ctx.left_node_alias,
-            &self.pattern_ctx.right_node_alias,
-            properties,
-            &self.start_id_col,
-        );
-
-        // Build VLP endpoint info
-        let vlp_endpoint = VlpEndpointInfo {
-            start_alias: "start_node".to_string(),
-            end_alias: "end_node".to_string(),
-            start_table: self.start_table.clone(),
-            end_table: self.end_table.clone(),
-            cypher_start_alias: self.pattern_ctx.left_node_alias.clone(),
-            cypher_end_alias: self.pattern_ctx.right_node_alias.clone(),
-            start_id_col: self.start_id_col.clone(),
-            end_id_col: self.end_id_col.clone(),
-            path_variable: context.path_variable.clone(),
-        };
-
         Ok(CteGenerationResult {
             sql,
-            parameters: vec![],
             cte_name,
-            recursive: true,
-            from_alias: crate::server::query_context::vlp_from_alias(),
-            columns,
-            vlp_endpoint: Some(vlp_endpoint),
             outer_where_filters: None,
         })
     }
@@ -2856,7 +2553,6 @@ mod tests {
         let generation_result = result.unwrap();
 
         // Check basic properties
-        assert!(generation_result.recursive);
         assert!(generation_result.cte_name.starts_with("vlp_f1_"));
         assert!(!generation_result.sql.is_empty());
         // WITH RECURSIVE is added by Ctes::to_sql() at the top level, not in generator output

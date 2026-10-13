@@ -31,7 +31,7 @@
     ┌──────────────────────────────────────────────────────────────┐
     │               Shared Infrastructure                         │
     │                                                              │
-    │  query_context.rs (403)  — task-local per-query state       │
+    │  query_context.rs (482)  — task-local per-query state       │
     │  query_cache.rs   (581)  — LRU cache for SQL templates      │
     │  parameter_substitution.rs (368) — $param → SQL escaping    │
     │  graph_catalog.rs (858)  — schema init/load/validate        │
@@ -91,7 +91,7 @@ handlers.rs::query_handler()
 | `sql_generation_handler.rs` | 425 | `POST /query/sql` — translate-only endpoint, no ClickHouse execution, structured error responses |
 | `graph_catalog.rs` | 858 | Schema lifecycle: `initialize_global_schema`, `load_schema_from_content`, `get_graph_schema_by_name`, DB fallback, schema validation, `monitor_schema_updates` |
 | `query_cache.rs` | 581 | LRU cache: `QueryCache`, `QueryCacheKey`, `ReplanOption` (CYPHER replan=force/skip), `CacheMetrics`, schema-scoped invalidation |
-| `query_context.rs` | 456 | **Task-local context** via `tokio::task_local!`: schema, denormalized aliases, relationship columns, CTE property mappings, multi-type VLP aliases, **VariableRegistry** (PR #120) |
+| `query_context.rs` | 482 | **Task-local context** via `tokio::task_local!`: dialect, schema, per-query id counters, reduce binder types, the alias → label map, list-valued CTE columns, table stats |
 | `parameter_substitution.rs` | 368 | `substitute_parameters()`, `find_unsubstituted_parameter()`, SQL injection prevention via string escaping |
 | `models.rs` | 300 | `QueryRequest`, `OutputFormat` (incl. `Graph`), `SqlDialect`, `SqlGenerationRequest/Response`, `SqlOnlyResponse`, `GraphNode`, `GraphEdge`, `GraphQueryResponse`, `QueryStats` |
 | `graph_output.rs` | 100 | `transform_to_graph()` — converts flat JSON rows to deduplicated `(Vec<GraphNode>, Vec<GraphEdge>)` by reusing the translation's `return_metadata()` and Bolt's `transform_to_node`/`transform_to_relationship` |
@@ -199,14 +199,15 @@ pub struct AppState {
 ### QueryContext (per-request, task-local)
 ```rust
 pub struct QueryContext {
+    pub dialect: SqlDialect,
     pub schema_name: Option<String>,
     pub schema: Option<Arc<GraphSchema>>,
-    pub denormalized_aliases: HashMap<String, String>,
-    pub relationship_columns: HashMap<String, (String, String)>,
-    pub multi_type_vlp_aliases: HashMap<String, String>,
-    // PR #120: Task-local VariableRegistry for scope-aware property resolution
-    // Set/get via set_current_registry() / get_current_registry()
-    // Per-CTE save/restore in Cte::to_sql()
+    pub reduce_binder_types: HashMap<String, RenderType>, // #969
+    pub alias_label_map: HashMap<String, String>,         // type inference
+    pub array_cte_columns: HashSet<String>,               // Databricks size()
+    pub table_stats: Option<Arc<TableStatsSnapshot>>,
+    pub alias_counter: u32,
+    pub cte_counter: u32,
 }
 ```
 
@@ -252,7 +253,7 @@ pub struct QueryRequest {
 | `connection_pool.rs` | 1 (#[ignore]) | Pool creation, role isolation |
 | `parameter_substitution.rs` | 8 | Escaping, substitution, SQL injection prevention |
 | `query_cache.rs` | 5 | LRU eviction, schema invalidation, metrics, replan parsing |
-| `query_context.rs` | 2 | Task-local isolation, denormalized aliases |
+| `query_context.rs` | 1 | Task-local isolation |
 
 ### Integration Tests
 - `tests/integration/` — E2E tests via HTTP API
@@ -335,8 +336,8 @@ Neo4j Browser/Driver → TCP or WebSocket
   flow (cache lookup, schema resolution, parameter substitution order) can break query semantics.
 - **graph_catalog.rs** — Schema initialization has multiple fallback paths (YAML → DB → empty).
   Changing initialization order can leave `GLOBAL_SCHEMAS` unset.
-- **query_context.rs** — The `task_local!` pattern is subtle. Adding new fields requires updating
-  `set_all_render_contexts()` and `clear_all_render_contexts()`.
+- **query_context.rs** — The `task_local!` pattern is subtle: a query's state lives in its
+  task's context (`with_query_context`), never in a global.
 - **bolt_protocol/result_transformer.rs** — 2145 lines, the most complex Bolt file. Transforms
   flat rows to graph objects with label inference, element_id generation, and VLP path reconstruction.
 

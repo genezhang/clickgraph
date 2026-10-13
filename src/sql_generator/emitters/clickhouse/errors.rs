@@ -65,14 +65,4 @@ impl ClickhouseQueryGeneratorError {
         let ctx = context.into();
         ClickhouseQueryGeneratorError::SchemaError(format!("{}\n  Context: {}", msg, ctx))
     }
-
-    /// Create a ColumnNotFound error with context
-    pub fn column_not_found_with_context(
-        column: impl Into<String>,
-        context: impl Into<String>,
-    ) -> Self {
-        let col = column.into();
-        let ctx = context.into();
-        ClickhouseQueryGeneratorError::ColumnNotFound(format!("{} ({})", col, ctx))
-    }
 }

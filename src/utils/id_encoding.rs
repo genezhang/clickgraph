@@ -158,30 +158,6 @@ impl IdEncoding {
         value > 0 && (value >> ID_BITS) > 0
     }
 
-    /// Get the label name for an encoded ID using the global registry
-    ///
-    /// # Arguments
-    /// * `encoded_id` - The encoded 64-bit ID
-    ///
-    /// # Returns
-    /// Some((label, raw_id)) if the ID is encoded and label is found
-    /// None if the ID is not encoded or label not in registry
-    pub fn decode_with_label(encoded_id: i64) -> Option<(String, i64)> {
-        if !Self::is_encoded(encoded_id) {
-            return None;
-        }
-
-        let (label_code, id_value) = Self::decode(encoded_id);
-
-        if let Ok(registry) = LABEL_CODE_REGISTRY.read() {
-            if let Some(label) = registry.get_label(label_code) {
-                return Some((label, id_value));
-            }
-        }
-
-        None
-    }
-
     /// Register a label and get its code (thread-safe)
     ///
     /// # Arguments

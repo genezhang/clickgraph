@@ -112,23 +112,9 @@ pub enum NodeAccessStrategy {
 }
 
 impl NodeAccessStrategy {
-    /// Returns the table/alias to use for property access
-    pub fn property_source_alias(&self) -> Option<&str> {
-        match self {
-            NodeAccessStrategy::OwnTable { table, .. } => Some(table),
-            NodeAccessStrategy::EmbeddedInEdge { edge_alias, .. } => Some(edge_alias),
-            NodeAccessStrategy::Virtual { .. } => None,
-        }
-    }
-
     /// Returns true if this node requires a JOIN
     pub fn requires_join(&self) -> bool {
         matches!(self, NodeAccessStrategy::OwnTable { .. })
-    }
-
-    /// Returns true if node data comes from edge table
-    pub fn is_embedded(&self) -> bool {
-        matches!(self, NodeAccessStrategy::EmbeddedInEdge { .. })
     }
 
     /// Get property mapping for a given property name
@@ -139,18 +125,6 @@ impl NodeAccessStrategy {
                 properties.get(prop_name).map(|s| s.as_str())
             }
             NodeAccessStrategy::Virtual { .. } => None,
-        }
-    }
-
-    /// Get all property mappings as a vector of (property_name, column_name) tuples
-    pub fn get_all_properties(&self) -> Vec<(String, String)> {
-        match self {
-            NodeAccessStrategy::OwnTable { properties, .. }
-            | NodeAccessStrategy::EmbeddedInEdge { properties, .. } => properties
-                .iter()
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect(),
-            NodeAccessStrategy::Virtual { .. } => Vec::new(),
         }
     }
 }
@@ -513,41 +487,6 @@ impl JoinStrategy {
             self,
             JoinStrategy::SingleTableScan { .. } | JoinStrategy::CoupledSameRow { .. }
         )
-    }
-
-    /// Which node position this strategy roots the FROM clause at when neither
-    /// endpoint is already bound (the "first pattern" / `(false, false)` case in
-    /// `generate_pattern_joins`).
-    ///
-    /// This is the node that becomes the `from_marker` — the preserved/anchor
-    /// side of the pattern. It is NOT always the left node: an `FkEdgeJoin`
-    /// where the edge table IS the *right* node table (e.g. `AUTHORED` mapped to
-    /// `posts` with `to_node = Post`) roots FROM at the *right* node and JOINs
-    /// the left node onto it.
-    ///
-    /// Returns `None` for edge-rooted strategies (denormalized / mixed / coupled
-    /// / edge-to-edge), where the FROM marker is the relationship table itself
-    /// rather than a node — those use a separate OPTIONAL-MATCH anchor mechanism
-    /// (standalone denorm-scan CTEs), so callers should fall back to their
-    /// default (left-node) assumption.
-    pub fn natural_from_node_position(&self) -> Option<NodePosition> {
-        match self {
-            // (false, false) emits `from_marker(left)`, then JOIN edge + right.
-            JoinStrategy::Traditional { .. } => Some(NodePosition::Left),
-            // Fk-edge: `join_side` names the node that needs a JOIN, so the
-            // OTHER node is the edge table and roots FROM.
-            //   join_side = Left  → right node IS the edge table → FROM = right
-            //   join_side = Right → left node IS the edge table  → FROM = left
-            JoinStrategy::FkEdgeJoin { join_side, .. } => Some(match join_side {
-                NodePosition::Left => NodePosition::Right,
-                NodePosition::Right => NodePosition::Left,
-            }),
-            // Edge-rooted strategies: FROM is the relationship table, not a node.
-            JoinStrategy::SingleTableScan { .. }
-            | JoinStrategy::MixedAccess { .. }
-            | JoinStrategy::EdgeToEdge { .. }
-            | JoinStrategy::CoupledSameRow { .. } => None,
-        }
     }
 
     /// Returns a human-readable description
@@ -1187,21 +1126,6 @@ impl PatternSchemaContext {
     // Convenience Methods
     // ========================================================================
 
-    /// Returns true if this pattern is fully denormalized (no JOINs needed)
-    pub fn is_fully_denormalized(&self) -> bool {
-        matches!(self.join_strategy, JoinStrategy::SingleTableScan { .. })
-    }
-
-    /// Returns true if either node is polymorphic ($any)
-    pub fn has_polymorphic_node(&self) -> bool {
-        self.left_is_polymorphic || self.right_is_polymorphic
-    }
-
-    /// Returns true if this is a coupled edge pattern
-    pub fn is_coupled(&self) -> bool {
-        self.coupled_context.is_some()
-    }
-
     /// Get a summary string for debugging
     pub fn debug_summary(&self) -> String {
         format!(
@@ -1228,176 +1152,6 @@ impl PatternSchemaContext {
     // ========================================================================
     // Property Resolution Helper Methods (Phase 1A)
     // ========================================================================
-
-    /// Get the NodeAccessStrategy for a given node alias
-    ///
-    /// # Arguments
-    /// * `node_alias` - The query alias for the node (e.g., "a", "user1")
-    ///
-    /// # Returns
-    /// - `Some(&NodeAccessStrategy)` if the alias matches left or right node
-    /// - `None` if the alias doesn't match this pattern
-    pub fn get_node_strategy(&self, node_alias: &str) -> Option<&NodeAccessStrategy> {
-        if node_alias == self.left_node_alias {
-            Some(&self.left_node)
-        } else if node_alias == self.right_node_alias {
-            Some(&self.right_node)
-        } else {
-            None
-        }
-    }
-
-    /// Get property column name for a node
-    ///
-    /// # Arguments
-    /// * `node_alias` - The query alias for the node (e.g., "a", "user1")
-    /// * `prop_name` - The Cypher property name (e.g., "name", "city")
-    ///
-    /// # Returns
-    /// - `Some(column_name)` if the node is part of this pattern and has the property
-    /// - `None` if the node doesn't match or property doesn't exist
-    pub fn get_node_property(&self, node_alias: &str, prop_name: &str) -> Option<String> {
-        self.get_node_strategy(node_alias)?
-            .get_property_column(prop_name)
-            .map(|s| s.to_string())
-    }
-
-    /// Get property column name for the edge/relationship
-    ///
-    /// # Arguments
-    /// * `prop_name` - The Cypher property name (e.g., "since", "weight")
-    ///
-    /// # Returns
-    /// - `Some(column_name)` if the edge has the property
-    /// - `None` if property doesn't exist
-    pub fn get_edge_property(&self, prop_name: &str) -> Option<String> {
-        self.edge
-            .get_property_column(prop_name)
-            .map(|s| s.to_string())
-    }
-
-    /// Get the table/alias to use when accessing properties for a node
-    ///
-    /// # Arguments
-    /// * `node_alias` - The query alias for the node (e.g., "a", "user1")
-    ///
-    /// # Returns
-    /// - For OwnTable: the node's table name
-    /// - For EmbeddedInEdge: the edge alias (properties come from edge table)
-    /// - For Virtual or unknown: None
-    pub fn get_node_source_alias(&self, node_alias: &str) -> Option<String> {
-        self.get_node_strategy(node_alias)?
-            .property_source_alias()
-            .map(|s| s.to_string())
-    }
-
-    /// Get the table alias for the edge/relationship
-    ///
-    /// # Returns
-    /// The relationship alias from the query (e.g., "r", "follows")
-    pub fn get_edge_source_alias(&self) -> String {
-        self.rel_alias.clone()
-    }
-
-    /// Columns of the edge row that are EDGE-OWNED for reference-rewriting
-    /// purposes: the edge's own property columns, the `to_id` column, and the
-    /// embedded TO-node property columns (which live on the edge row and must
-    /// keep OPTIONAL NULL-extension semantics).
-    ///
-    /// Used by the OPTIONAL-denorm anchor rewrite guard (#475 review): on a
-    /// coupled cross-table schema the anchor node table and the edge table
-    /// are different physical tables, so a db-column NAME collision (e.g.
-    /// anchor `seen: ts` on conn_log vs edge `timestamp: ts` on dns_log)
-    /// must not re-attribute an edge-owned reference to the anchor's scan
-    /// CTE. The from-side columns are deliberately NOT included: on the edge
-    /// row they carry the anchor's join key, and rewriting them to the
-    /// anchor CTE is the established (pre-#475) behavior.
-    pub fn edge_owned_columns(&self) -> std::collections::HashSet<String> {
-        let mut cols: std::collections::HashSet<String> = std::collections::HashSet::new();
-        match &self.edge {
-            EdgeAccessStrategy::SeparateTable {
-                to_id, properties, ..
-            }
-            | EdgeAccessStrategy::Polymorphic {
-                to_id, properties, ..
-            } => {
-                cols.insert(to_id.clone());
-                cols.extend(properties.values().cloned());
-            }
-            EdgeAccessStrategy::FkEdge { fk_column, .. } => {
-                cols.insert(fk_column.clone());
-            }
-        }
-        if let NodeAccessStrategy::EmbeddedInEdge {
-            properties,
-            is_from_node: false,
-            ..
-        } = &self.right_node
-        {
-            cols.extend(properties.values().cloned());
-        }
-        cols
-    }
-
-    /// Get the node position for a given alias
-    ///
-    /// # Arguments
-    /// * `node_alias` - The query alias for the node
-    ///
-    /// # Returns
-    /// - `Some(NodePosition::Left)` if this is the left/from node
-    /// - `Some(NodePosition::Right)` if this is the right/to node
-    /// - `None` if the alias doesn't match this pattern
-    pub fn get_node_position(&self, node_alias: &str) -> Option<NodePosition> {
-        if node_alias == self.left_node_alias {
-            Some(NodePosition::Left)
-        } else if node_alias == self.right_node_alias {
-            Some(NodePosition::Right)
-        } else {
-            None
-        }
-    }
-}
-
-/// Select the node-properties map for whichever side of a denormalized edge
-/// `ViewScan` a node occupies: `from_node_properties` for the FROM/origin
-/// side, `to_node_properties` for the TO/destination side.
-///
-/// Centralizes this FROM/TO selection as a schema-catalog API (CLAUDE.md
-/// rule 7 — axis-dispatch) so render code doesn't repeat the raw
-/// `from_node_properties`/`to_node_properties` branch inline at each call
-/// site. Added for #506 (incoming-direction OPTIONAL MATCH on a
-/// denormalized schema needs the anchor's TO-side properties, since
-/// CLAUDE.md rule 4's anchor-aware FROM/JOIN reversal can place the anchor
-/// on the edge's TO side even though it's structurally `GraphRel.right`).
-pub fn edge_side_node_properties(
-    view_scan: &crate::query_planner::logical_plan::ViewScan,
-    is_from_side: bool,
-) -> Option<&HashMap<String, crate::graph_catalog::expression_parser::PropertyValue>> {
-    if is_from_side {
-        view_scan.from_node_properties.as_ref()
-    } else {
-        view_scan.to_node_properties.as_ref()
-    }
-}
-
-/// Is this `ViewScan` a denormalized (virtual/embedded) node or edge scan?
-///
-/// Schema-catalog dispatch point (CLAUDE.md rule 7) for the plan-level
-/// `ViewScan.is_denormalized` flag, so callers outside `graph_catalog` route
-/// through this function instead of testing the raw field directly.
-pub fn scan_denormalized_flag(view_scan: &crate::query_planner::logical_plan::ViewScan) -> bool {
-    view_scan.is_denormalized
-}
-
-/// Is this `GraphNode` marked as denormalized (its properties live on an edge
-/// table rather than a dedicated node table)?
-///
-/// Schema-catalog dispatch point (CLAUDE.md rule 7) for the plan-level
-/// `GraphNode.is_denormalized` flag, so callers outside `graph_catalog` route
-/// through this function instead of testing the raw field directly.
-pub fn node_denormalized_flag(graph_node: &crate::query_planner::logical_plan::GraphNode) -> bool {
-    graph_node.is_denormalized
 }
 
 // ============================================================================

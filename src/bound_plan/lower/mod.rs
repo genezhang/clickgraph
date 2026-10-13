@@ -6769,11 +6769,6 @@ fn join(table_name: String, alias: &str) -> Join {
         table_alias: alias.to_string(),
         joining_on: Vec::new(),
         join_type: JoinType::Join,
-        pre_filter: None,
-        from_id_column: None,
-        to_id_column: None,
-        graph_rel: None,
-        is_cartesian: false,
         use_final: false,
     }
 }
@@ -6806,9 +6801,6 @@ fn empty_plan() -> RenderPlan {
         skip: SkipItem(None),
         limit: LimitItem(None),
         union: UnionItems(None),
-        fixed_path_info: None,
-        is_multi_label_scan: false,
-        variable_registry: None,
     }
 }
 
@@ -6890,13 +6882,7 @@ fn read_aliases(e: &RenderExpr) -> Option<Vec<String>> {
             read.push(t.0.clone());
             MutVisit::Stop
         }
-        RenderExpr::Raw(_)
-        | RenderExpr::Column(_)
-        | RenderExpr::ColumnAlias(_)
-        | RenderExpr::InSubquery(_)
-        | RenderExpr::ExistsSubquery(_)
-        | RenderExpr::PatternCount(_)
-        | RenderExpr::CteEntityRef(_) => {
+        RenderExpr::Raw(_) | RenderExpr::Column(_) | RenderExpr::ColumnAlias(_) => {
             opaque = true;
             MutVisit::Stop
         }
