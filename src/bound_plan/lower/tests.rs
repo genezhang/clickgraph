@@ -4856,6 +4856,26 @@ fn in_a_list_expression_is_three_valued() {
             "THEN NULL ELSE true END",
         ],
     );
+    // A filter's `x IN l` (through ANDs only) is ClickHouse's own: NULL and
+    // false drop the row alike, and a walk's start reads it (review).
+    has(
+        "MATCH (u:User) WHERE u.age > 1 AND u.user_id IN [y IN [1, null] | y] \
+         AND NOT u.user_id IN [y IN [2] | y] RETURN u.name",
+        &[
+            "v0.user_id IN arrayMap(v1 -> v1, [1, NULL])",
+            "NOT CAST(CASE WHEN (arrayMap(v2 -> v2, [2])) IS NULL",
+        ],
+    );
+    has(
+        "MATCH (a:User)-[:FOLLOWS*1..3]->(b:User) WHERE a.user_id IN $ids RETURN count(*)",
+        &["WHERE (start_node.user_id IN $ids)"],
+    );
+    // A NULL value is not looked up (Spark refuses a NULL-typed one).
+    has(
+        "RETURN null IN [y IN [1] | y] AS a",
+        &["CASE WHEN (arrayMap(v0 -> v0, [1])) IS NULL THEN NULL \
+           WHEN length(arrayMap(v0 -> v0, [1])) = 0 THEN false ELSE NULL END"],
+    );
     // `null IN []` is false; `x IN null` is NULL.
     has(
         "UNWIND [2, null] AS x RETURN x IN [] AS a, NOT x IN [] AS b, x IN null AS c",

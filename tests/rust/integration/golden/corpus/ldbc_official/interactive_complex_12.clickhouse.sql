@@ -102,7 +102,7 @@ JOIN ldbc.Comment_replyOf_Post AS v9 ON v9.CommentId = v8.id
 JOIN ldbc.Post AS v10 ON v9.PostId = v10.id
 JOIN ldbc.Post_hasTag_Tag AS v11 ON v11.PostId = v10.id
 JOIN ldbc.Tag AS v12 ON v11.TagId = v12.id
-WHERE (v4.id = 14 AND CAST(CASE WHEN (w5.v3) IS NULL THEN NULL WHEN length(w5.v3) = 0 THEN false WHEN (v12.id) IS NULL THEN NULL WHEN has(w5.v3, v12.id) THEN true WHEN length(arrayFilter(__cg_in -> __cg_in IS NULL, w5.v3)) > 0 THEN NULL ELSE false END AS Nullable(Bool)))
+WHERE (v4.id = 14 AND has(w5.v3, v12.id))
 GROUP BY v6.id, v6.firstName, v6.lastName
 ORDER BY count(DISTINCT v8.id) DESC NULLS FIRST, toInt64(v6.id) ASC
 LIMIT 20
