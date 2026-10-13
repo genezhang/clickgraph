@@ -542,10 +542,14 @@ fn parse_list_comp_inner_expr<'a>(
                         if *token != "]" && input[i..].len() >= token.len() {
                             let candidate = &input[i..i + token.len()];
                             if candidate.eq_ignore_ascii_case(token) {
-                                // Ensure it's a word boundary (not part of a larger identifier)
-                                let before_ok =
-                                    i == 0 || !input.as_bytes()[i - 1].is_ascii_alphanumeric();
-                                let after_ok = i + token.len() >= input.len()
+                                // A keyword is a word (not part of a larger
+                                // identifier); `|` stops wherever it is (`x>1|x`).
+                                let word = token.starts_with(|c: char| c.is_ascii_alphabetic());
+                                let before_ok = !word
+                                    || i == 0
+                                    || !input.as_bytes()[i - 1].is_ascii_alphanumeric();
+                                let after_ok = !word
+                                    || i + token.len() >= input.len()
                                     || !input.as_bytes()[i + token.len()].is_ascii_alphanumeric();
                                 if before_ok && after_ok {
                                     // Found stop token at position i
@@ -2356,6 +2360,30 @@ mod tests {
         } else {
             panic!("Expected ListComprehension, got {:?}", expr);
         }
+    }
+
+    #[test]
+    fn test_list_comprehension_pipe_without_spaces() {
+        // `|` next to a name or a number, as Neo4j takes it
+        for input in [
+            "[x IN list|x * 2]",
+            "[x IN [1, 2]|x]",
+            "[x IN range(1, 3) WHERE x>1|x]",
+        ] {
+            let (remaining, expr) = parse_expression(input).unwrap();
+            assert_eq!(remaining, "", "{input}");
+            let Expression::ListComprehension(lc) = &expr else {
+                panic!("{input}: expected ListComprehension, got {:?}", expr);
+            };
+            assert!(lc.projection.is_some(), "{input}");
+        }
+        // A keyword is still a word: `WHEREx` is a name.
+        let (_, expr) = parse_expression("[x IN WHEREx]").unwrap();
+        let Expression::ListComprehension(lc) = &expr else {
+            panic!("expected ListComprehension, got {:?}", expr);
+        };
+        assert!(matches!(&*lc.list_expr, Expression::Variable("WHEREx")));
+        assert!(lc.where_clause.is_none());
     }
 
     #[test]
