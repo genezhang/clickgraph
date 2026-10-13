@@ -88,6 +88,10 @@ pub fn format_value(val: &Value) -> String {
         Value::Timestamp(t) => format!("'{t}'"),
         Value::UUID(u) => format!("'{u}'"),
         Value::Map(m) => {
+            // A node or relationship as the engine returns it.
+            if let Some(s) = format_graph_value(m) {
+                return s;
+            }
             // Detect ClickGraph packed node format: {__label__: "A", properties: "{...}"}
             if m.iter().any(|(k, _)| k == "__label__") {
                 return format_packed_node_value(m);
@@ -104,6 +108,89 @@ pub fn format_value(val: &Value) -> String {
                 .collect();
             format!("{{{}}}", s.join(", "))
         }
+    }
+}
+
+/// Format a node or relationship in the Neo4j JSON form the engine returns
+/// (`{elementId, labels, properties}` / `{elementId, startNodeElementId,
+/// endNodeElementId, type, properties}`) as `(:Label {prop: val})` /
+/// `[:TYPE {prop: val}]`; `None` for any other map.
+fn format_graph_value(m: &[(String, Value)]) -> Option<String> {
+    let get = |key: &str| m.iter().find(|(k, _)| k == key).map(|(_, v)| v);
+    let has_exactly =
+        |keys: &[&str]| m.len() == keys.len() && keys.iter().all(|k| get(k).is_some());
+    let Some(Value::Map(props)) = get("properties") else {
+        return None;
+    };
+    let mut visible: Vec<_> = props
+        .iter()
+        // Only the TCK's id property: the element's ids are outside `properties`,
+        // so a property named `from_id` or `_version` is the user's.
+        .filter(|(k, v)| k != "_tck_id" && !v.is_null())
+        .collect();
+    visible.sort_by(|(a, _), (b, _)| a.cmp(b));
+    let props = if visible.is_empty() {
+        String::new()
+    } else {
+        let pairs: Vec<String> = visible
+            .iter()
+            .map(|(k, v)| format!("{k}: {}", format_property(v)))
+            .collect();
+        format!("{{{}}}", pairs.join(", "))
+    };
+    let join = |head: String| match (head.is_empty(), props.is_empty()) {
+        (_, true) => head,
+        (true, false) => props.clone(),
+        (false, false) => format!("{head} {props}"),
+    };
+
+    if has_exactly(&["elementId", "labels", "properties"]) {
+        let Some(Value::List(labels)) = get("labels") else {
+            return None;
+        };
+        let mut head = String::new();
+        for label in labels {
+            let label = label.as_str()?;
+            // __Unlabeled is a synthetic schema label for nodes with no user-visible label
+            if label != "__Unlabeled" {
+                head.push_str(&format!(":{label}"));
+            }
+        }
+        return Some(format!("({})", join(head)));
+    }
+    if has_exactly(&[
+        "elementId",
+        "startNodeElementId",
+        "endNodeElementId",
+        "type",
+        "properties",
+    ]) {
+        let rel_type = get("type")?.as_str()?;
+        return Some(format!("[{}]", join(format!(":{rel_type}"))));
+    }
+    None
+}
+
+/// Format a property value of a graph value as it is: a string stays a quoted
+/// string (no list or number read into its text, as `format_value` and
+/// `format_map_value` do for the legacy pipeline's stringified values).
+fn format_property(v: &Value) -> String {
+    match v {
+        Value::String(s) => format!("'{}'", s.replace('\\', "\\\\").replace('\'', "\\'")),
+        Value::List(items) => {
+            let parts: Vec<String> = items.iter().map(format_property).collect();
+            format!("[{}]", parts.join(", "))
+        }
+        Value::Map(m) => {
+            let mut pairs: Vec<_> = m.iter().collect();
+            pairs.sort_by(|(a, _), (b, _)| a.cmp(b));
+            let parts: Vec<String> = pairs
+                .iter()
+                .map(|(k, v)| format!("{k}: {}", format_property(v)))
+                .collect();
+            format!("{{{}}}", parts.join(", "))
+        }
+        other => format_value(other),
     }
 }
 
@@ -775,6 +862,77 @@ mod tests {
     #[test]
     fn test_format_value_null() {
         assert_eq!(format_value(&Value::Null), "null");
+    }
+
+    fn map(pairs: Vec<(&str, Value)>) -> Value {
+        Value::Map(pairs.into_iter().map(|(k, v)| (k.to_string(), v)).collect())
+    }
+
+    fn node(labels: &[&str], props: Vec<(&str, Value)>) -> Value {
+        map(vec![
+            ("elementId", Value::string("A:1-")),
+            (
+                "labels",
+                Value::List(labels.iter().map(|l| Value::string(*l)).collect()),
+            ),
+            ("properties", map(props)),
+        ])
+    }
+
+    #[test]
+    fn a_node_value_is_formatted_as_a_node() {
+        let n = node(
+            &["A", "B"],
+            vec![
+                ("num", Value::Int64(1)),
+                ("_tck_id", Value::string("x")),
+                ("name", Value::string("")),
+                ("from_id", Value::Int64(7)),
+                ("s", Value::string("[1, 2]")),
+                ("m", map(vec![("k", Value::string("1"))])),
+                ("l", Value::List(vec![Value::string("it's")])),
+            ],
+        );
+        assert_eq!(
+            format_value(&n),
+            "(:A:B {from_id: 7, l: ['it\\'s'], m: {k: '1'}, name: '', num: 1, s: '[1, 2]'})"
+        );
+        assert_eq!(format_value(&node(&["A"], vec![])), "(:A)");
+        let unlabeled = node(&["__Unlabeled"], vec![("name", Value::string("x1"))]);
+        assert_eq!(format_value(&unlabeled), "({name: 'x1'})");
+        assert_eq!(format_value(&node(&["__Unlabeled"], vec![])), "()");
+    }
+
+    #[test]
+    fn a_relationship_value_is_formatted_as_a_relationship() {
+        let rel = |props| {
+            map(vec![
+                ("elementId", Value::string("T1:1->2-")),
+                ("endNodeElementId", Value::string("X:2-")),
+                ("properties", map(props)),
+                ("startNodeElementId", Value::string("A:1-")),
+                ("type", Value::string("T1")),
+            ])
+        };
+        assert_eq!(format_value(&rel(vec![])), "[:T1]");
+        assert_eq!(
+            format_value(&rel(vec![("id", Value::Int64(0))])),
+            "[:T1 {id: 0}]"
+        );
+    }
+
+    #[test]
+    fn another_map_stays_a_map() {
+        let m = map(vec![
+            ("elementId", Value::string("A:1-")),
+            ("labels", Value::List(vec![Value::string("A")])),
+            ("properties", map(vec![])),
+            ("other", Value::Int64(1)),
+        ]);
+        assert_eq!(
+            format_value(&m),
+            "{elementId: 'A:1-', labels: ['A'], other: 1, properties: {}}"
+        );
     }
 
     #[test]
