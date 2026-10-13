@@ -539,31 +539,31 @@ fn parse_list_comp_inner_expr<'a>(
                 // Only check keyword stops at depth 0
                 if depth_bracket == 0 && depth_paren == 0 {
                     for token in stop_at {
-                        if *token != "]" && input[i..].len() >= token.len() {
-                            let candidate = &input[i..i + token.len()];
-                            if candidate.eq_ignore_ascii_case(token) {
-                                // A keyword is a word (not part of a larger
-                                // identifier); `|` stops wherever it is (`x>1|x`).
-                                let word = token.starts_with(|c: char| c.is_ascii_alphabetic());
-                                let before_ok = !word
-                                    || i == 0
-                                    || !input.as_bytes()[i - 1].is_ascii_alphanumeric();
-                                let after_ok = !word
-                                    || i + token.len() >= input.len()
-                                    || !input.as_bytes()[i + token.len()].is_ascii_alphanumeric();
-                                if before_ok && after_ok {
-                                    // Found stop token at position i
-                                    let expr_str = input[..i].trim_end();
-                                    let remaining = &input[i..];
-                                    let (leftover, expr) = parse_expression(expr_str)?;
-                                    if !leftover.trim().is_empty() {
-                                        return Err(nom::Err::Error(Error::new(
-                                            input,
-                                            ErrorKind::TakeWhile1,
-                                        )));
-                                    }
-                                    return Ok((remaining, expr));
+                        // Bytes: `i` may be inside a character of a name (`lé`).
+                        let candidate = bytes.get(i..i + token.len());
+                        if *token != "]"
+                            && candidate.is_some_and(|c| c.eq_ignore_ascii_case(token.as_bytes()))
+                        {
+                            // A keyword is a word (not part of a larger
+                            // identifier: `a_where_b`, `léwhere`); `|` stops
+                            // wherever it is (`x>1|x`).
+                            let name = |b: u8| b.is_ascii_alphanumeric() || b == b'_' || b >= 0x80;
+                            let word = token.starts_with(|c: char| c.is_ascii_alphabetic());
+                            let before_ok = !word || i == 0 || !name(bytes[i - 1]);
+                            let after_ok =
+                                !word || bytes.get(i + token.len()).is_none_or(|&b| !name(b));
+                            if before_ok && after_ok {
+                                // Found stop token at position i
+                                let expr_str = input[..i].trim_end();
+                                let remaining = &input[i..];
+                                let (leftover, expr) = parse_expression(expr_str)?;
+                                if !leftover.trim().is_empty() {
+                                    return Err(nom::Err::Error(Error::new(
+                                        input,
+                                        ErrorKind::TakeWhile1,
+                                    )));
                                 }
+                                return Ok((remaining, expr));
                             }
                         }
                     }
@@ -2377,7 +2377,20 @@ mod tests {
             };
             assert!(lc.projection.is_some(), "{input}");
         }
-        // A keyword is still a word: `WHEREx` is a name.
+        // A keyword is still a word: `WHEREx` and `a_where_b` are names.
+        let (remaining, expr) = parse_expression("[x IN a_where_b | x]").unwrap();
+        assert_eq!(remaining, "");
+        let Expression::ListComprehension(lc) = &expr else {
+            panic!("expected ListComprehension, got {:?}", expr);
+        };
+        assert!(matches!(&*lc.list_expr, Expression::Variable("a_where_b")));
+        // A name of other than ASCII letters is no stop either, and is read
+        // without a panic (`i` inside a character).
+        for input in ["[x IN léwhere | x]", "[x IN lé WHERE x > 0]"] {
+            if let Ok((_, Expression::ListComprehension(lc))) = parse_expression(input) {
+                assert!(lc.where_clause.is_none() || input.contains(" WHERE "));
+            }
+        }
         let (_, expr) = parse_expression("[x IN WHEREx]").unwrap();
         let Expression::ListComprehension(lc) = &expr else {
             panic!("expected ListComprehension, got {:?}", expr);
