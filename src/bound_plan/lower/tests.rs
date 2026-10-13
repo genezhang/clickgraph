@@ -4254,7 +4254,7 @@ fn embedded_property_skips_variant_nulls() {
 /// property are no node's. By default any of the values is read (main's
 /// SQL); checked (`check_node_properties`), they are an error naming the
 /// label and the property, counted by DISTINCT's keys (up to two hashes on
-/// ClickHouse, `count(DISTINCT)` on Spark). The id is read as before.
+/// ClickHouse, their `min` and `max` on Spark). The id is read as before.
 #[test]
 fn embedded_property_of_several_values_is_an_error_when_checked() {
     let message = "ClickGraph: rows of one :Airport node hold several values of its property city";
@@ -4278,15 +4278,17 @@ fn embedded_property_of_several_values_is_an_error_when_checked() {
     let got = read("MATCH (a:Airport) RETURN a.city AS c", &checked);
     assert!(got.contains("arrayElement([anyIfOrNull("), "{got}");
     assert!(
-        got.contains("1 + throwIf(uniqUpToIf(1)(cityHash64(tuple(multiIf(dynamicType("),
+        got.contains(
+            "1 + throwIf(uniqUpToIf(1)(cityHash64(tuple(multiIf(replaceRegexpOne(dynamicType("
+        ),
         "{got}"
     );
     assert!(got.contains(message), "{got}");
     // The id is the group's key, not a property's aggregate.
     let got = read("MATCH (i:IP) RETURN i.ip AS ip", &checked);
     assert!(!got.contains("throwIf(uniqUpToIf"), "{got}");
-    // Spark: DISTINCT's keys of the non-NULL values (a VARIANT has no
-    // DISTINCT of its own).
+    // Spark: the least and greatest of DISTINCT's keys of the non-NULL
+    // values (a VARIANT has no DISTINCT of its own).
     use crate::server::query_context::{set_current_schema, with_query_context_sync, QueryContext};
     let ctx = QueryContext {
         dialect: crate::sql_generator::SqlDialect::Databricks,
@@ -4299,7 +4301,8 @@ fn embedded_property_of_several_values_is_an_error_when_checked() {
             .map(|t| squash(&t.sql))
     })
     .unwrap();
-    assert!(got.contains("CASE WHEN count(DISTINCT CASE WHEN "), "{got}");
+    assert!(got.contains("CASE WHEN min(CASE WHEN "), "{got}");
+    assert!(got.contains(") <> max(CASE WHEN "), "{got}");
     assert!(got.contains("schema_of_variant("), "{got}");
     assert!(got.contains(&format!("raise_error('{message}")), "{got}");
 }
@@ -4600,7 +4603,7 @@ fn a_union_reads_each_arm_from_its_own_cte() {
     let got = squash(&sql("RETURN 1 AS a UNION RETURN 1.0 AS a"));
     assert!(
         got.contains(
-            r#"SELECT any(w3.__cg_c0) AS "a" FROM with_w3 AS w3 GROUP BY tuple(multiIf(dynamicType(CAST(w3.__cg_c0, 'Dynamic')) = 'None', '', "#
+            r#"SELECT any(w3.__cg_c0) AS "a" FROM with_w3 AS w3 GROUP BY tuple(multiIf(replaceRegexpOne(dynamicType(CAST(w3.__cg_c0, 'Dynamic')), '^LowCardinality\\((.*)\\)$', '\\1') = 'None', '', "#
         ) && got.ends_with(r#"toString(w3.__cg_c0)))"#),
         "{got}"
     );
@@ -4736,7 +4739,7 @@ fn a_union_keeps_elements_apart_by_identity() {
             && sql.contains(r#"w2.__cg_w2_k0 AS "__cg_k0" FROM with_w2 AS w2"#)
             // Grouped by every column's key and the identity.
             && sql.contains(r#"SELECT any(w3.__cg_c0) AS "k.from_id","#)
-            && sql.contains(r#"GROUP BY tuple(multiIf(dynamicType(CAST(w3.__cg_c0, "#)
+            && sql.contains(r#"GROUP BY tuple(multiIf(replaceRegexpOne(dynamicType(CAST(w3.__cg_c0, "#)
             && sql.ends_with(r#"toString(w3.__cg_c3))), w3.__cg_k0"#),
         "{sql}"
     );
@@ -4975,7 +4978,7 @@ fn a_null_list_is_told_by_its_source() {
     ));
     assert!(got.contains(r#"any([v0.full_name]) AS "__o0""#), "{got}");
     assert!(
-        !got.contains("GROUP BY tuple(multiIf(dynamicType(CAST(any("),
+        !got.contains("GROUP BY tuple(multiIf(replaceRegexpOne(dynamicType(CAST(any("),
         "{got}"
     );
     assert!(!got.contains("toString([v0.full_name]))), any("), "{got}");
@@ -6685,7 +6688,7 @@ fn a_collect_of_lists_or_null_and_a_list_grouping_key() {
         "MATCH (u:User) WITH [u.name, u.age] AS l, count(*) AS c RETURN l, c",
     ));
     assert!(
-        got.contains("GROUP BY tuple(multiIf(dynamicType(CAST("),
+        got.contains("GROUP BY tuple(multiIf(replaceRegexpOne(dynamicType(CAST("),
         "{got}"
     );
 }

@@ -163,7 +163,9 @@ ClickGraph: rows of one :IP node hold several values of its property port: the p
 This covers the property itself and a whole node (`RETURN a`). A query that reads only the id is not affected.
 - **Which reads fail:** ClickHouse checks the values while it groups the node's rows, so a query can fail because of a node it does not return (`... LIMIT 2` may or may not fail, depending on the plan). A query that reads only nodes whose rows agree returns their values or that error; it never returns a wrong value.
 - **What isn't checked:** a pattern that reads the node from a relationship's row (`MATCH (a:IP)-[r:ACCESSED]->(b) RETURN a.port`) reads that row's column, with no check.
-- **Spark:** a `Map` property is not supported with the check.
+- **Spark:** a `Map` property is not supported with the check, and the check makes reads of such nodes several times slower than without it.
+- **Where it can be turned on:** the server and `cg` only; the embedded library and its bindings read any of the values.
+- **Validate vs `cg query`:** `cg schema validate --data` reads tables as the server does, with `FINAL` on ReplacingMergeTree-like engines. `cg query` does not detect engines, so on such a table with unmerged versions the two can disagree.
 
 ---
 

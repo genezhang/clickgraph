@@ -91,7 +91,11 @@ pub async fn run_validate_data(
         .to_graph_schema_with_client(&client)
         .await
         .map_err(|e| anyhow!("Schema build error: {}", e))?;
-    let Some(schema) = schema.with_node_relations() else {
+    // The schema the lowering reads (`GraphSchema::lowering_view`).
+    let Some(schema) = schema
+        .lowering_view()
+        .filter(|s| s.node_relations().next().is_some())
+    else {
         println!("data: no node is embedded in edge tables; nothing to check");
         return Ok(());
     };
@@ -103,56 +107,41 @@ pub async fn run_validate_data(
         None => println!("data: checking every node id"),
     }
     let mut failed = Vec::new();
+    let mut errors = Vec::new();
     for (_, relation) in schema.node_relations() {
+        let label = &relation.label;
         let sql = match several_values_sql(relation, sampling.as_ref()) {
             Ok(Some(sql)) => sql,
-            Ok(None) => continue,
+            Ok(None) => {
+                println!("  :{label} has no property besides its id; nothing to check");
+                continue;
+            }
             Err(skip) => {
-                println!("  :{} not checked: {}", relation.label, skip);
+                println!("  :{label} not checked: {skip}");
                 continue;
             }
         };
-        // The client reads `?` as a bound argument (`??` is a `?`).
-        let mut lines = client
-            .query(&sql.replace('?', "??"))
-            .fetch_bytes("JSONEachRow")
-            .map_err(|e| anyhow!(":{}: {}", relation.label, e))?
-            .lines();
-        let mut found = Vec::new();
-        let mut checked = 0;
-        while let Some(line) = lines
-            .next_line()
-            .await
-            .map_err(|e| anyhow!(":{}: {}", relation.label, e))?
-        {
-            let row: serde_json::Value = serde_json::from_str(&line)?;
-            let (Some(property), Some(ids), Some(id)) = (
-                row["property"].as_str(),
-                row["ids"].as_u64(),
-                row["id"].as_str(),
-            ) else {
-                return Err(anyhow!(":{}: unexpected row {}", relation.label, line));
-            };
-            let (property, id) = (property.to_string(), id.to_string());
-            match property.is_empty() {
-                true => checked = ids,
-                false => found.push((property, ids, id)),
+        let (checked, found) = match several_values(&client, &sql).await {
+            Ok(r) => r,
+            Err(e) => {
+                println!("  :{label} not checked: {e}");
+                errors.push(format!(":{label}"));
+                continue;
             }
-        }
-        match (found.is_empty(), checked) {
-            (true, 0) => println!(
-                "  :{} not checked: the sample holds no node id (use --sample 1 or --full)",
-                relation.label
+        };
+        match (found.is_empty(), checked, &sampling) {
+            (true, 0, Some(_)) => println!(
+                "  :{label} not checked: the sample holds no node id (use --sample 1 or --full)"
             ),
-            (true, _) => println!("  :{} OK ({} node id(s) checked)", relation.label, checked),
+            (true, 0, None) => println!("  :{label} has no node; nothing to check"),
+            (true, _, _) => println!("  :{label} OK ({checked} node id(s) checked)"),
             _ => {}
         }
         for (property, ids, id) in found {
             println!(
-                "  :{} property {}: the rows of {} node id(s) hold several values (e.g. id {})",
-                relation.label, property, ids, id
+                "  :{label} property {property}: the rows of {ids} node id(s) hold several values (e.g. id {id})"
             );
-            failed.push(format!(":{}.{}", relation.label, property));
+            failed.push(format!(":{label}.{property}"));
         }
     }
     if !failed.is_empty() {
@@ -164,7 +153,40 @@ pub async fn run_validate_data(
             failed.join(", ")
         ));
     }
+    if !errors.is_empty() {
+        return Err(anyhow!("ClickHouse failed checking {}", errors.join(", ")));
+    }
     Ok(())
+}
+
+/// Runs a [`several_values_sql`] query: how many ids it checked, and each
+/// property the rows of some id disagree on (how many ids, one of them).
+async fn several_values(
+    client: &clickhouse::Client,
+    sql: &str,
+) -> Result<(u64, Vec<(String, u64, String)>)> {
+    // The client reads `?` as a bound argument (`??` is a `?`).
+    let mut lines = client
+        .query(&sql.replace('?', "??"))
+        .fetch_bytes("JSONEachRow")?
+        .lines();
+    let mut found = Vec::new();
+    let mut checked = 0;
+    while let Some(line) = lines.next_line().await? {
+        let row: serde_json::Value = serde_json::from_str(&line)?;
+        let (Some(property), Some(ids), Some(id)) = (
+            row["property"].as_str(),
+            row["ids"].as_u64(),
+            row["id"].as_str(),
+        ) else {
+            return Err(anyhow!("unexpected row {line}"));
+        };
+        match property.is_empty() {
+            true => checked = ids,
+            false => found.push((property.to_string(), ids, id.to_string())),
+        }
+    }
+    Ok((checked, found))
 }
 
 /// `cg schema discover` — LLM-assisted schema discovery.

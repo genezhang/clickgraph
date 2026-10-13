@@ -59,7 +59,12 @@ struct Cli {
     /// Fail a query reading a property of a node embedded in edge tables
     /// when the rows of one node id hold several values of it (#531);
     /// without it any one of the values is read
-    #[arg(long, env = "CG_CHECK_NODE_PROPERTIES", global = true)]
+    #[arg(
+        long,
+        env = "CG_CHECK_NODE_PROPERTIES",
+        global = true,
+        value_parser = clap::builder::FalseyValueParser::new()
+    )]
     check_node_properties: bool,
 
     #[command(subcommand)]
@@ -137,11 +142,11 @@ enum SchemaCommands {
         data: bool,
 
         /// With --data: check one node id in N (all rows of each) …
-        #[arg(long, default_value_t = 100)]
+        #[arg(long, default_value_t = 100, value_parser = clap::value_parser!(u64).range(1..))]
         sample: u64,
 
         /// … reading at most this many rows of each table
-        #[arg(long, default_value_t = 1_000_000)]
+        #[arg(long, default_value_t = 1_000_000, value_parser = clap::value_parser!(u64).range(1..))]
         max_rows: u64,
 
         /// With --data: check every node id and every row
@@ -250,8 +255,8 @@ async fn main() -> Result<()> {
                     let sampling = match full {
                         true => None,
                         false => Some(clickgraph::graph_catalog::node_property_check::Sampling {
-                            one_in: sample.max(1),
-                            max_rows: max_rows.max(1),
+                            one_in: sample,
+                            max_rows,
                         }),
                     };
                     commands::schema::run_validate_data(&path, sampling, &cfg).await?;

@@ -243,7 +243,12 @@ impl FunctionMapper for ClickhouseFunctionMapper {
             // `toJSONString` quotes a 64-bit integer as a string under
             // `output_format_json_quote_64bit_integers`. NULL is one group.
             distinct_key: |v| {
-                let ty = format!("dynamicType(CAST({v}, 'Dynamic'))");
+                // A `LowCardinality` value is its inner type's (`Float64`
+                // 1.5 and `LowCardinality(Float64)` 1.5 are one value).
+                let ty = format!(
+                    "replaceRegexpOne(dynamicType(CAST({v}, 'Dynamic')), \
+                     '^LowCardinality\\\\((.*)\\\\)$', '\\\\1')"
+                );
                 // `Int[0-9]`: not an `Interval…`.
                 let number = format!("match({ty}, '^(U?Int[0-9]|Float|BFloat|Decimal)')");
                 let string =
@@ -474,7 +479,7 @@ mod tests {
             panic!("ClickHouse has a Cypher UNION");
         };
         let key = (u.distinct_key)("x");
-        let ty = "dynamicType(CAST(x, 'Dynamic'))";
+        let ty = r"replaceRegexpOne(dynamicType(CAST(x, 'Dynamic')), '^LowCardinality\\((.*)\\)$', '\\1')";
         let zone = format!("extract({ty}, '''([^'']*)''')");
         for part in [
             format!("match({ty}, '^(U?Int[0-9]|Float|BFloat|Decimal)'), 'n'"),
@@ -487,10 +492,10 @@ mod tests {
             format!("startsWith({ty}, 'Time'), 'Time', {ty})"),
             r"replaceRegexpOne(replaceRegexpOne(toString(x), '(\\.[0-9]*[1-9])0+$', '\\1'), '\\.0+$', '')"
                 .to_string(),
-            "ifNull(toString(toUnixTimestamp64Micro(accurateCastOrNull(if(startsWith(\
-             dynamicType(CAST(x, 'Dynamic')), 'DateTime'), CAST(x, 'Dynamic'), NULL), \
-             'DateTime64(6, ''UTC'')'))), '')"
-                .to_string(),
+            format!(
+                "ifNull(toString(toUnixTimestamp64Micro(accurateCastOrNull(if(startsWith(\
+                 {ty}, 'DateTime'), CAST(x, 'Dynamic'), NULL), 'DateTime64(6, ''UTC'')'))), '')"
+            ),
         ] {
             assert!(key.contains(&part), "missing `{part}` in\n{key}");
         }

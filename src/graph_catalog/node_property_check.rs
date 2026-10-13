@@ -181,7 +181,7 @@ mod tests {
             .unwrap()
             .unwrap();
         for part in [
-            "SELECT tuple(cityHash64(tuple(multiIf(dynamicType(CAST(e.org, 'Dynamic'))",
+            "SELECT tuple(cityHash64(tuple(multiIf(replaceRegexpOne(dynamicType(CAST(e.org, 'Dynamic'))",
             "tuple(toString(e.org)) AS id_text, if(isNull(e.org_city), NULL, cityHash64(tuple(",
             "CAST(NULL, 'Nullable(UInt64)') AS h1 FROM db.fl AS e FINAL WHERE NOT isNull(e.dst) AND (",
             ") % 10 = 0 LIMIT 500",

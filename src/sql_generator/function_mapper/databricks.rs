@@ -423,14 +423,15 @@ impl FunctionMapper for DatabricksFunctionMapper {
 
     fn one_value(&self, value: &str, message: &str) -> Option<String> {
         // `raise_error` is evaluated on the groups of several values only;
-        // its NULL takes the value's type. Counted by DISTINCT's keys
-        // (`variant_key`: a VARIANT has no DISTINCT of its own); a NULL
-        // value is its key `':'`, not counted.
+        // its NULL takes the value's type. DISTINCT's keys (`variant_key`: a
+        // VARIANT has no DISTINCT of its own) of the non-NULL values differ
+        // when their least and greatest do: `min` / `max` (a `count(DISTINCT)`
+        // per property expands the rows once each, review).
         let key = (self.cypher_union()?.distinct_key)(value);
+        let key = format!("CASE WHEN {value} IS NOT NULL THEN {key} END");
         let message = message.replace('\\', "\\\\").replace('\'', "\\'");
         Some(format!(
-            "CASE WHEN count(DISTINCT CASE WHEN {value} IS NOT NULL THEN {key} END) > 1 \
-             THEN raise_error('{message}') ELSE {} END",
+            "CASE WHEN min({key}) <> max({key}) THEN raise_error('{message}') ELSE {} END",
             self.any_non_null(value)
         ))
     }
