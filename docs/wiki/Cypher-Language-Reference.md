@@ -369,6 +369,18 @@ WHERE u.nickname IS NULL
 WHERE u.email IS NOT NULL
 ```
 
+**A NULL list on ClickHouse.** ClickHouse has no NULL array. Where ClickGraph knows when a list is NULL — a CASE's `null` (or missing) branch, `split()` of a NULL literal or of a CASE's null branch, a list a WITH carries, and `tail()` / `reverse()` / a slice / a comprehension / `+` / `coalesce()` of those — the operations that tell NULL from `[]` answer as Neo4j does: `IS [NOT] NULL`, `size()`, `isEmpty()`, `head()` / `last()` / `l[i]`, `coalesce()`, `count()`, `collect()`, `min()` / `max()`, `+`, `IN`, comparisons, `reduce()`, `ORDER BY` (NULL last), UNWIND, grouping and DISTINCT — also after a WITH (which carries the condition beside the list) and inside an OPTIONAL MATCH or a subquery — and a returned NULL list is `null`:
+
+```cypher
+UNWIND [1, 2] AS x
+WITH split(CASE WHEN x > 1 THEN 'a,b' END, ',') AS l
+RETURN l, l IS NULL AS n, size(l) AS sz, coalesce(l, ['d']) AS c
+-- null,       true,  null, ["d"]
+-- ["a", "b"], false, 2,    ["a", "b"]
+```
+
+Used anywhere else (a map's value, a list's element, another function's argument), a list is what ClickHouse makes of it, as before: a CASE of lists that is NULL is a `Variant` (NULL where returned, refused where an array function reads it, and on ClickHouse 25, where `use_variant_as_common_type` is off). A list whose NULL source is not known (`split()` of a column that may be NULL, an array property of a node an OPTIONAL MATCH left NULL, an UNWIND of a list of lists, a map's value) is read as ClickHouse holds it. Spark has NULL lists of its own.
+
 ### Logical Operators
 
 ```cypher

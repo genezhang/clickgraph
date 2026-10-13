@@ -496,6 +496,15 @@ pub(crate) struct Lists {
     pub intersect: fn(&str, &str) -> String,
     /// The list `{0}` in ascending order.
     pub sorted: fn(&str) -> String,
+    /// The list `{1}` as a result column, NULL where `{0}` holds: a NULL
+    /// list may be held as `[]` (`bound_plan::lower::null_list`), and is
+    /// returned as NULL.
+    pub null_list: fn(&str, &str) -> String,
+    /// The dialect has no NULL list: one is held as `[]` (ClickHouse).
+    pub null_as_empty: bool,
+    /// An aggregate `{0}` (`min`, `max`) of the group's values of `{1}` for
+    /// which `{2}` holds.
+    pub aggregate_if: fn(&str, &str, &str) -> String,
     /// A 64-bit hash of the value `{0}` (a list of tuples).
     pub fingerprint: fn(&str) -> String,
 }

@@ -228,7 +228,15 @@ impl Kind {
                         .collect(),
                 )
             }
-            // A list that may be NULL: a ClickHouse array is never NULL.
+            // A list of values that may be NULL: on ClickHouse held as `[]`
+            // where it is (`null_list.rs`), which what reads it tells by its
+            // source. (A dialect with NULL lists reads it as it is.)
+            (Kind::Null, Kind::List(k)) | (Kind::List(k), Kind::Null)
+                if !matches!(*k, Kind::Element(_)) && super::null_list::null_as_empty() =>
+            {
+                Kind::List(k)
+            }
+            // A list of nodes or relationships that may be NULL.
             _ => Kind::Unknown,
         }
     }
@@ -349,7 +357,8 @@ impl<'s> Lowerer<'s> {
                     | "floor" | "round" | "sign" | "sqrt" | "exp" | "log" | "log10" | "rand"
                     | "tolower" | "toupper" | "trim" | "ltrim" | "rtrim" | "substring"
                     | "replace" | "left" | "right" | "type" => Kind::Scalar,
-                    "tail" => match arg(0) {
+                    // (`reverse()` of a string is a string.)
+                    "tail" | "reverse" => match arg(0) {
                         l @ Kind::List(_) => l,
                         _ => Kind::Unknown,
                     },
@@ -377,6 +386,20 @@ impl<'s> Lowerer<'s> {
                     "count" | "sum" | "avg" => Kind::Scalar,
                     "min" | "max" => match arg {
                         Kind::Scalar | Kind::Boolean | Kind::Null => Kind::Scalar,
+                        // Of lists of values that may be NULL (ClickHouse,
+                        // `null_list.rs`): a list, NULL of a group of none.
+                        Kind::List(k)
+                            if !matches!(*k, Kind::Element(_))
+                                && super::null_list::null_as_empty()
+                                && super::null_list::min_max_arg(f).is_some_and(|a| {
+                                    matches!(
+                                        self.list_null(a, &HashMap::new()),
+                                        Ok(super::null_list::ListNull::When(_))
+                                    )
+                                }) =>
+                        {
+                            Kind::List(k)
+                        }
                         _ => Kind::Unknown,
                     },
                     _ => Kind::Unknown,
@@ -535,8 +558,13 @@ impl<'s> Lowerer<'s> {
         };
         // An expression can still be refused (a node in a list), and can be
         // NULL by the schema (a property of an element that matches nothing).
-        let probe = self.expr(expr, &HashMap::new())?;
-        if empty || matches!(probe, RenderExpr::Literal(Literal::Null)) {
+        // (A NULL list held as `[]`: no rows, as of NULL.)
+        let probe = self.held_list(expr, &HashMap::new())?;
+        // (`split(null, …)` lowers to `[]`, `null_list.rs`.)
+        if empty
+            || matches!(&probe, RenderExpr::Literal(Literal::Null))
+            || matches!(&probe, RenderExpr::List(xs) if xs.is_empty())
+        {
             self.empty = true;
             self.values.insert(var, RenderExpr::Literal(Literal::Null));
             return Ok(());
@@ -552,8 +580,12 @@ impl<'s> Lowerer<'s> {
         if ordered && !self.one_row {
             self.number_rows()?;
         }
-        let e = self.expr(expr, &HashMap::new())?;
-        let e = self.split_of_null(expr, e, &spelling)?;
+        let e = self.held_list(expr, &HashMap::new())?;
+        // (A NULL `split()` whose NULL `null_list.rs` does not know: no rows.)
+        let e = match self.list_null(expr, &HashMap::new())? {
+            super::null_list::ListNull::Unknown => self.split_of_null(expr, e, &spelling)?,
+            _ => e,
+        };
         let element = kind.element();
         let list = match kind {
             Kind::List(_) => e,

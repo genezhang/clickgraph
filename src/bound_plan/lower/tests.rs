@@ -4110,14 +4110,10 @@ fn an_unwind_of_what_is_not_a_list() {
         "MATCH (c:Nope) UNWIND c.tags AS x RETURN count(*)",
         &["WHERE false"],
     );
-    // Elements that are all NULL: the value is NULL (ClickHouse cannot
-    // project the element of an `Array(Nothing)`).
+    // An empty list carried by a WITH: no rows.
     has(
         "WITH [] AS l UNWIND l AS x RETURN count(x)",
-        &[
-            "ARRAY JOIN [] AS __cg_element",
-            "CASE WHEN count(*) >= 0 THEN 0 ELSE 0 END",
-        ],
+        &["CASE WHEN count(*) >= 0 THEN 0 ELSE 0 END", "WHERE false"],
     );
     has(
         "UNWIND 5 AS x RETURN x",
@@ -4833,6 +4829,117 @@ fn comprehension_parameters_compare_as_values() {
     );
 }
 
+/// #1377 / #1364 / #1454 (user 2026-10-13): ClickHouse has no NULL array.
+/// Where a list's NULL is known, what tells it from `[]` reads that
+/// condition, the list as it takes it held with `[]` for NULL; a WITH
+/// carries both beside the list as anything else reads it (`{v}__null`,
+/// `{v}__held`); the final RETURN returns NULL where the condition holds.
+#[test]
+fn a_null_list_is_told_by_its_source() {
+    has(
+        "UNWIND [1, 2] AS x WITH x, CASE WHEN x > 1 THEN [x] END AS l \
+         RETURN l, l IS NULL AS n, size(l) AS s, l + [9] AS p, {k: l} AS m",
+        &[
+            r#"CASE WHEN w1.v0 > 1 THEN [w1.v0] END AS "v2""#,
+            r#"CASE WHEN w1.v0 > 1 THEN false ELSE true END AS "v2__null""#,
+            r#"CASE WHEN w1.v0 > 1 THEN [w1.v0] ELSE [] END AS "v2__held""#,
+            r#"if(w2.v2__null, NULL, CAST(w2.v2__held, 'Dynamic')) AS "l""#,
+            r#"w2.v2__null AS "n""#,
+            r#"CASE WHEN w2.v2__null THEN NULL ELSE length(w2.v2__held) END AS "s""#,
+            "arrayFilter(__cg_e -> NOT (w2.v2__null), arrayConcat(w2.v2__held, [9]))",
+            // Anything else reads the list as it always did.
+            r#"map('k', CAST(w2.v2, 'Dynamic')) AS "m""#,
+        ],
+    );
+    // count() / collect() skip it; grouped by it too.
+    has(
+        "UNWIND [1, 2] AS x WITH CASE WHEN x > 1 THEN [x] END AS l \
+         RETURN count(l) AS c, count(DISTINCT l) AS d, collect(l) AS cl",
+        &[
+            r#"count(CASE WHEN w2.v1__null THEN NULL ELSE 1 END) AS "c""#,
+            r#"length(arrayDistinct(groupArrayIf(w2.v1__held, NOT w2.v1__null))) AS "d""#,
+            r#"groupArrayIf((w2.__o0, w2.v1__held), NOT w2.v1__null))), []) AS "cl""#,
+        ],
+    );
+    has(
+        "UNWIND [1, 2] AS x WITH CASE WHEN x > 1 THEN [x] END AS l RETURN l, count(*) AS c",
+        &[
+            r#"any(if(w2.v1__null, NULL, CAST(w2.v1__held, 'Dynamic'))) AS "l""#,
+            "toString(w2.v1__held))), w2.v1__null",
+        ],
+    );
+    // split() of a CASE's NULL: NULL; of a column, as it always was.
+    has(
+        "UNWIND [1, 2] AS x RETURN split(CASE WHEN x > 1 THEN 'a,b' END, ',') IS NULL AS n, \
+         split(toString(x), ',') AS t",
+        &[
+            r#"CASE WHEN w1.v0 > 1 THEN false ELSE true END AS "n""#,
+            r#"splitByChar(',', toString(w1.v0)) AS "t""#,
+        ],
+    );
+    // ORDER BY: NULL last ascending (its condition first); reduce() over
+    // it NULL; carried into an OPTIONAL MATCH and joined on.
+    has(
+        "UNWIND [1, 2] AS x WITH split(CASE WHEN x > 1 THEN 'a,b' END, ',') AS l \
+         RETURN reduce(t = '', y IN l | t + y) AS r ORDER BY l",
+        &[
+            "CASE WHEN w2.v1__null THEN NULL ELSE arrayFold(",
+            "ORDER BY w2.v1__null ASC, w2.v1 ASC",
+        ],
+    );
+    has(
+        "UNWIND [1, 2] AS x WITH x, split(CASE WHEN x > 1 THEN 'a,b' END, ',') AS l \
+         OPTIONAL MATCH (u:User) WHERE u.user_id = 1 AND l IS NULL RETURN x, u.name",
+        &[
+            "d3.v2__null",
+            "(w2.v2__null = o4.v2__null OR (w2.v2__null IS NULL AND o4.v2__null IS NULL))",
+        ],
+    );
+    // A grouping projection's WHERE (HAVING) / ORDER BY read its item's
+    // group: any one of the held lists, and the flag, a key (review).
+    has(
+        "UNWIND [1, 2] AS x WITH CASE WHEN x > 1 THEN [x] END AS l, count(*) AS c \
+         WHERE size(l) > 0 RETURN l, c",
+        &[
+            "HAVING CASE WHEN CASE WHEN w1.v0 > 1 THEN false ELSE true END THEN NULL ELSE \
+           length(any(CASE WHEN w1.v0 > 1 THEN [w1.v0] ELSE [] END)) END > 0",
+        ],
+    );
+    // max() of a group with no list that is not NULL: NULL.
+    has(
+        "UNWIND [1, 2] AS x WITH x % 2 AS g, CASE WHEN x > 5 THEN [x] END AS l \
+         RETURN g, max(l) AS m",
+        &[
+            "if(count(CASE WHEN w2.v2__null THEN NULL ELSE 1 END) = 0, NULL, \
+             CAST(maxIf(w2.v2__held, NOT w2.v2__null), 'Dynamic')) AS \"m\"",
+        ],
+    );
+    // A DISTINCT's sort key of a list item is no grouping key (it is an
+    // `any()`; main failed with it in the GROUP BY).
+    let got = squash(&sql(
+        "MATCH (u:User) WITH DISTINCT [u.name] AS l ORDER BY l LIMIT 2 RETURN l",
+    ));
+    assert!(got.contains(r#"any([v0.full_name]) AS "__o0""#), "{got}");
+    assert!(
+        !got.contains("GROUP BY tuple(multiIf(dynamicType(CAST(any("),
+        "{got}"
+    );
+    assert!(!got.contains("toString([v0.full_name]))), any("), "{got}");
+    // Not held outside a reader: inside a list a NULL stays NULL (review).
+    has(
+        "UNWIND [1, 2] AS x RETURN [CASE WHEN x > 1 THEN [x] END, [5]] AS ll",
+        &["[CASE WHEN w1.v0 > 1 THEN [w1.v0] END, [5]]"],
+    );
+    // A list that is never NULL: no condition.
+    has(
+        "UNWIND [1, 2] AS x WITH collect(x) AS l RETURN l IS NULL AS n, size(l) AS s",
+        &[
+            r#"CAST(false AS Nullable(Bool)) AS "n""#,
+            r#"length(w2.v1) AS "s""#,
+        ],
+    );
+}
+
 /// #1423: `x IN` a list expression is three-valued, as for a list of items
 /// (ClickHouse's `x IN l` is false where an element is NULL): NULL where no
 /// element is `x` and one is NULL, or `x` is NULL and the list is not empty.
@@ -4842,7 +4949,7 @@ fn in_a_list_expression_is_three_valued() {
     has(
         "UNWIND [2] AS x RETURN x IN [y IN [1, null] | y] AS a",
         &[&format!(
-            "CASE WHEN ({l}) IS NULL THEN NULL WHEN length({l}) = 0 THEN false \
+            "CASE WHEN length({l}) = 0 THEN false \
              WHEN (w1.v0) IS NULL THEN NULL WHEN has({l}, w1.v0) THEN true \
              WHEN length(arrayFilter(__cg_in -> __cg_in IS NULL, {l})) > 0 THEN NULL \
              ELSE false END"
@@ -4863,7 +4970,7 @@ fn in_a_list_expression_is_three_valued() {
          AND NOT u.user_id IN [y IN [2] | y] RETURN u.name",
         &[
             "v0.user_id IN arrayMap(v1 -> v1, [1, NULL])",
-            "NOT CAST(CASE WHEN (arrayMap(v2 -> v2, [2])) IS NULL",
+            "NOT CAST(CASE WHEN length(arrayMap(v2 -> v2, [2])) = 0",
         ],
     );
     has(
@@ -4873,8 +4980,12 @@ fn in_a_list_expression_is_three_valued() {
     // A NULL value is not looked up (Spark refuses a NULL-typed one).
     has(
         "RETURN null IN [y IN [1] | y] AS a",
-        &["CASE WHEN (arrayMap(v0 -> v0, [1])) IS NULL THEN NULL \
-           WHEN length(arrayMap(v0 -> v0, [1])) = 0 THEN false ELSE NULL END"],
+        &["CASE WHEN length(arrayMap(v0 -> v0, [1])) = 0 THEN false ELSE NULL END"],
+    );
+    // A NULL list (held as `[]`, `null_list.rs`): NULL by its source.
+    has(
+        "UNWIND [1, 2] AS x WITH x, CASE WHEN x > 1 THEN [x] END AS l RETURN 5 IN l AS i",
+        &["CASE WHEN w2.v2__null THEN NULL WHEN length(w2.v2__held) = 0 THEN false"],
     );
     // `null IN []` is false; `x IN null` is NULL.
     has(

@@ -740,6 +740,7 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-10-13: **P-1: a NULL list told by its source** (#1377 #1364 #1454 #1415; user 2026-10-13: held as `[]`, `IS NULL` / `size` / `coalesce` / `count` / `collect` / `+` / `IN` / `=` / grouping read the NULL's source, `bound_plan/lower/null_list.rs`; a WITH carries `{v}__null`; the final RETURN returns NULL).
 - 2026-10-13: **#1476 `db.ping()`** (cypher-shell connects in `--neo4j-compat-mode`).
 - 2026-10-13: **P-1: #1432 a date is not the string of its text in DISTINCT / UNION** (ClickHouse distinct key: string-like types share a kind, others are their type's; containers follow-up #1482).
 - 2026-10-13: **P-1: #1412 a simple CASE never matches NULL** (`CASE x WHEN w` lowered as `CASE WHEN x = w`, through the lowering's `=`; TCK green).
