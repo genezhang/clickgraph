@@ -7,7 +7,6 @@ name: Auto Approve Documentation Changes
 on:
   pull_request_target:
     types: [opened, synchronize, reopened]
-  status: {}
 
 jobs:
   auto-approve:
@@ -18,21 +17,29 @@ jobs:
       statuses: read
 
     steps:
-    - name: Checkout
-      uses: actions/checkout@v4
-      with:
-        fetch-depth: 0
-
-    - name: Get changed files
+    # No checkout here on purpose. This job runs on pull_request_target with a
+    # write-scoped token, so checking out the fork's head would execute
+    # attacker-controlled content in a privileged context.
+    # File list comes from the API instead, which works for fork and non-fork PRs.
+    - name: Check that only docs/config files changed
       id: changed-files
-      uses: tj-actions/changed-files@v41
-      with:
-        files: |
-          **/*.md
-          **/*.yml
-          **/*.yaml
-          docs/**
-          .github/**
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        PR: ${{ github.event.pull_request.number }}
+      run: |
+        # Renames report only the new path in `filename` (old path in
+        # `previous_filename`), so include both: renaming src/lib.rs to
+        # src/lib.md must not auto-approve.
+        files=$(gh api --paginate "repos/${{ github.repository }}/pulls/$PR/files" --jq '.[] | .filename, (.previous_filename // empty)')
+        echo "Changed files:"
+        echo "$files"
+        if echo "$files" | grep -qE '^\.github/'; then
+          echo "only_changed=false" >> "$GITHUB_OUTPUT"
+        elif echo "$files" | grep -qvE '\.(md|ya?ml)$|^docs/'; then
+          echo "only_changed=false" >> "$GITHUB_OUTPUT"
+        else
+          echo "only_changed=true" >> "$GITHUB_OUTPUT"
+        fi
 
     - name: Label documentation/config changes (NO auto-merge)
       if: steps.changed-files.outputs.only_changed == 'true'
@@ -42,13 +49,12 @@ jobs:
         number: ${{ github.event.pull_request.number }}
         body: |
           🤖 This PR only contains:
-          
+
           - 📝 Documentation changes (`.md` files)
           - ⚙️ Configuration changes (`.yml`/`.yaml` files)
-          - 🔧 CI/CD changes (`.github/` directory)
-          
+
           ✅ Auto-approved by bot, but **manual human review is required** before merge.
-          
+
           Please review the changes and merge manually when ready.
 
   # AUTO-MERGE IS DISABLED
