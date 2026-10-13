@@ -2,8 +2,10 @@ use anyhow::{anyhow, Result};
 use clickgraph::graph_catalog::{
     config::GraphSchemaConfig,
     llm_prompt, merge_batch_yaml,
+    node_property_check::{several_values_sql, Sampling},
     schema_discovery::{IntrospectResponse, SchemaDiscovery},
 };
+use tokio::io::AsyncBufReadExt;
 
 use crate::{
     commands::query::open_for_translation,
@@ -59,6 +61,132 @@ pub fn run_validate_schema(path: &str) -> Result<()> {
         );
     }
     Ok(())
+}
+
+/// `cg schema validate --data` — check, in ClickHouse, that the rows of
+/// each node embedded in edge tables hold one value of each property per
+/// node id (#531). A query reads any of such a property's values, or fails
+/// with `check_node_properties`; this finds such properties first. Sampled,
+/// it reads part of the data, so it can miss an id; it never reports a
+/// consistent one. The schema is read as the server reads it (engines for
+/// FINAL, discovered columns).
+pub async fn run_validate_data(
+    path: &str,
+    sampling: Option<Sampling>,
+    cfg: &CgConfig,
+) -> Result<()> {
+    if matches!(cfg.dialect, DialectArg::Databricks) {
+        return Err(anyhow!("--data checks ClickHouse only"));
+    }
+    let url = cfg.clickhouse_url.clone().ok_or_else(|| {
+        anyhow!("--data reads ClickHouse: pass --clickhouse (or CG_CLICKHOUSE_URL)")
+    })?;
+    let config = GraphSchemaConfig::from_yaml_file(path)
+        .map_err(|e| anyhow!("YAML parse error in '{}': {}", path, e))?;
+    let client = clickhouse::Client::default()
+        .with_url(url)
+        .with_user(&cfg.ch_user)
+        .with_password(&cfg.ch_password);
+    let schema = config
+        .to_graph_schema_with_client(&client)
+        .await
+        .map_err(|e| anyhow!("Schema build error: {}", e))?;
+    // The schema the lowering reads (`GraphSchema::lowering_view`).
+    let Some(schema) = schema
+        .lowering_view()
+        .filter(|s| s.node_relations().next().is_some())
+    else {
+        println!("data: no node is embedded in edge tables; nothing to check");
+        return Ok(());
+    };
+    match &sampling {
+        Some(s) => println!(
+            "data: checking one node id in {} (at most {} rows of each table)",
+            s.one_in, s.max_rows
+        ),
+        None => println!("data: checking every node id"),
+    }
+    let mut failed = Vec::new();
+    let mut errors = Vec::new();
+    for (_, relation) in schema.node_relations() {
+        let label = &relation.label;
+        let sql = match several_values_sql(relation, sampling.as_ref()) {
+            Ok(Some(sql)) => sql,
+            Ok(None) => {
+                println!("  :{label} has no property besides its id; nothing to check");
+                continue;
+            }
+            Err(skip) => {
+                println!("  :{label} not checked: {skip}");
+                continue;
+            }
+        };
+        let (checked, found) = match several_values(&client, &sql).await {
+            Ok(r) => r,
+            Err(e) => {
+                println!("  :{label} not checked: {e}");
+                errors.push(format!(":{label}"));
+                continue;
+            }
+        };
+        match (found.is_empty(), checked, &sampling) {
+            (true, 0, Some(_)) => println!(
+                "  :{label} not checked: the sample holds no node id (use --sample 1 or --full)"
+            ),
+            (true, 0, None) => println!("  :{label} has no node; nothing to check"),
+            (true, _, _) => println!("  :{label} OK ({checked} node id(s) checked)"),
+            _ => {}
+        }
+        for (property, ids, id) in found {
+            println!(
+                "  :{label} property {property}: the rows of {ids} node id(s) hold several values (e.g. id {id})"
+            );
+            failed.push(format!(":{label}.{property}"));
+        }
+    }
+    if !failed.is_empty() {
+        return Err(anyhow!(
+            "a query reading {} reads any one of the values (an error with \
+             --check-node-properties / CLICKGRAPH_CHECK_NODE_PROPERTIES): the property is \
+             not the node's (declare it on the relationship), or the node's id columns do \
+             not identify it",
+            failed.join(", ")
+        ));
+    }
+    if !errors.is_empty() {
+        return Err(anyhow!("ClickHouse failed checking {}", errors.join(", ")));
+    }
+    Ok(())
+}
+
+/// Runs a [`several_values_sql`] query: how many ids it checked, and each
+/// property the rows of some id disagree on (how many ids, one of them).
+async fn several_values(
+    client: &clickhouse::Client,
+    sql: &str,
+) -> Result<(u64, Vec<(String, u64, String)>)> {
+    // The client reads `?` as a bound argument (`??` is a `?`).
+    let mut lines = client
+        .query(&sql.replace('?', "??"))
+        .fetch_bytes("JSONEachRow")?
+        .lines();
+    let mut found = Vec::new();
+    let mut checked = 0;
+    while let Some(line) = lines.next_line().await? {
+        let row: serde_json::Value = serde_json::from_str(&line)?;
+        let (Some(property), Some(ids), Some(id)) = (
+            row["property"].as_str(),
+            row["ids"].as_u64(),
+            row["id"].as_str(),
+        ) else {
+            return Err(anyhow!("unexpected row {line}"));
+        };
+        match property.is_empty() {
+            true => checked = ids,
+            false => found.push((property.to_string(), ids, id.to_string())),
+        }
+    }
+    Ok((checked, found))
 }
 
 /// `cg schema discover` — LLM-assisted schema discovery.

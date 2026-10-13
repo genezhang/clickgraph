@@ -137,6 +137,23 @@ pub fn server_neo4j_compat() -> bool {
     SERVER_NEO4J_COMPAT.get().copied().unwrap_or(false)
 }
 
+/// Process-wide setting: a read of an embedded node's property checks that
+/// the rows of each node id hold one value of it (#531). Set once at server
+/// startup from `CLICKGRAPH_CHECK_NODE_PROPERTIES`, or by `cg
+/// --check-node-properties`; off by default.
+static CHECK_NODE_PROPERTIES: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+
+/// Enable the check of embedded nodes' property values. Idempotent (first
+/// write wins); call once before serving requests.
+pub fn set_check_node_properties(enabled: bool) {
+    let _ = CHECK_NODE_PROPERTIES.set(enabled);
+}
+
+/// Whether reads of embedded nodes' properties are checked (default false).
+pub fn check_node_properties() -> bool {
+    CHECK_NODE_PROPERTIES.get().copied().unwrap_or(false)
+}
+
 impl QueryContext {
     /// Create a new query context with schema name.
     ///

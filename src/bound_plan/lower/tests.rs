@@ -4250,6 +4250,63 @@ fn embedded_property_skips_variant_nulls() {
     assert!(!got.contains(" any("), "{got}");
 }
 
+/// #531: the rows of one id of an embedded node holding several values of a
+/// property are no node's. By default any of the values is read (main's
+/// SQL); checked (`check_node_properties`), they are an error naming the
+/// label and the property, counted by DISTINCT's keys (up to two hashes on
+/// ClickHouse, their `min` and `max` on Spark). The id is read as before.
+#[test]
+fn embedded_property_of_several_values_is_an_error_when_checked() {
+    let message = "ClickGraph: rows of one :Airport node hold several values of its property city";
+    let checked = ReadOptions {
+        check_node_properties: Some(true),
+        ..ReadOptions::default()
+    };
+    let read = |q: &str, options: &ReadOptions| {
+        squash(
+            &translate_bound_plan(q, &embedded_schema(), options)
+                .unwrap()
+                .sql,
+        )
+    };
+    let unchecked = read(
+        "MATCH (a:Airport) RETURN a.city AS c",
+        &ReadOptions::default(),
+    );
+    assert!(!unchecked.contains("throwIf("), "{unchecked}");
+    assert!(unchecked.contains("anyIfOrNull("), "{unchecked}");
+    let got = read("MATCH (a:Airport) RETURN a.city AS c", &checked);
+    assert!(got.contains("arrayElement([anyIfOrNull("), "{got}");
+    assert!(
+        got.contains(
+            "1 + throwIf(uniqUpToIf(1)(cityHash64(tuple(multiIf(replaceRegexpOne(dynamicType("
+        ),
+        "{got}"
+    );
+    assert!(got.contains(message), "{got}");
+    // The id is the group's key, not a property's aggregate.
+    let got = read("MATCH (i:IP) RETURN i.ip AS ip", &checked);
+    assert!(!got.contains("throwIf(uniqUpToIf"), "{got}");
+    // Spark: the least and greatest of DISTINCT's keys of the non-NULL
+    // values (a VARIANT has no DISTINCT of its own).
+    use crate::server::query_context::{set_current_schema, with_query_context_sync, QueryContext};
+    let ctx = QueryContext {
+        dialect: crate::sql_generator::SqlDialect::Databricks,
+        ..QueryContext::default()
+    };
+    let schema = embedded_schema();
+    let got = with_query_context_sync(ctx, || {
+        set_current_schema(std::sync::Arc::new(schema.clone()));
+        translate_bound_plan("MATCH (a:Airport) RETURN a.city AS c", &schema, &checked)
+            .map(|t| squash(&t.sql))
+    })
+    .unwrap();
+    assert!(got.contains("CASE WHEN min(CASE WHEN "), "{got}");
+    assert!(got.contains(") <> max(CASE WHEN "), "{got}");
+    assert!(got.contains("schema_of_variant("), "{got}");
+    assert!(got.contains(&format!("raise_error('{message}")), "{got}");
+}
+
 /// S12a review: Spark `sequence` is never empty (`sequence(1, 0)` is
 /// `[1, 0]`): `range` is empty when its step leads away from its end, each
 /// argument bound once;
@@ -4546,7 +4603,7 @@ fn a_union_reads_each_arm_from_its_own_cte() {
     let got = squash(&sql("RETURN 1 AS a UNION RETURN 1.0 AS a"));
     assert!(
         got.contains(
-            r#"SELECT any(w3.__cg_c0) AS "a" FROM with_w3 AS w3 GROUP BY tuple(multiIf(dynamicType(CAST(w3.__cg_c0, 'Dynamic')) = 'None', '', "#
+            r#"SELECT any(w3.__cg_c0) AS "a" FROM with_w3 AS w3 GROUP BY tuple(multiIf(replaceRegexpOne(dynamicType(CAST(w3.__cg_c0, 'Dynamic')), '^LowCardinality\\((.*)\\)$', '\\1') = 'None', '', "#
         ) && got.ends_with(r#"toString(w3.__cg_c0)))"#),
         "{got}"
     );
@@ -4682,7 +4739,7 @@ fn a_union_keeps_elements_apart_by_identity() {
             && sql.contains(r#"w2.__cg_w2_k0 AS "__cg_k0" FROM with_w2 AS w2"#)
             // Grouped by every column's key and the identity.
             && sql.contains(r#"SELECT any(w3.__cg_c0) AS "k.from_id","#)
-            && sql.contains(r#"GROUP BY tuple(multiIf(dynamicType(CAST(w3.__cg_c0, "#)
+            && sql.contains(r#"GROUP BY tuple(multiIf(replaceRegexpOne(dynamicType(CAST(w3.__cg_c0, "#)
             && sql.ends_with(r#"toString(w3.__cg_c3))), w3.__cg_k0"#),
         "{sql}"
     );
@@ -4921,7 +4978,7 @@ fn a_null_list_is_told_by_its_source() {
     ));
     assert!(got.contains(r#"any([v0.full_name]) AS "__o0""#), "{got}");
     assert!(
-        !got.contains("GROUP BY tuple(multiIf(dynamicType(CAST(any("),
+        !got.contains("GROUP BY tuple(multiIf(replaceRegexpOne(dynamicType(CAST(any("),
         "{got}"
     );
     assert!(!got.contains("toString([v0.full_name]))), any("), "{got}");
@@ -6631,7 +6688,7 @@ fn a_collect_of_lists_or_null_and_a_list_grouping_key() {
         "MATCH (u:User) WITH [u.name, u.age] AS l, count(*) AS c RETURN l, c",
     ));
     assert!(
-        got.contains("GROUP BY tuple(multiIf(dynamicType(CAST("),
+        got.contains("GROUP BY tuple(multiIf(replaceRegexpOne(dynamicType(CAST("),
         "{got}"
     );
 }

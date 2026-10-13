@@ -421,6 +421,21 @@ impl FunctionMapper for DatabricksFunctionMapper {
         format!("any_value({value}, true)")
     }
 
+    fn one_value(&self, value: &str, message: &str) -> Option<String> {
+        // `raise_error` is evaluated on the groups of several values only;
+        // its NULL takes the value's type. DISTINCT's keys (`variant_key`: a
+        // VARIANT has no DISTINCT of its own) of the non-NULL values differ
+        // when their least and greatest do: `min` / `max` (a `count(DISTINCT)`
+        // per property expands the rows once each, review).
+        let key = (self.cypher_union()?.distinct_key)(value);
+        let key = format!("CASE WHEN {value} IS NOT NULL THEN {key} END");
+        let message = message.replace('\\', "\\\\").replace('\'', "\\'");
+        Some(format!(
+            "CASE WHEN min({key}) <> max({key}) THEN raise_error('{message}') ELSE {} END",
+            self.any_non_null(value)
+        ))
+    }
+
     fn graph_values(&self) -> Option<super::GraphValues> {
         fn struct_text(tuple: &str, arity: usize) -> String {
             let fields: Vec<String> = (1..=arity).map(|i| format!("_{i}: STRING")).collect();

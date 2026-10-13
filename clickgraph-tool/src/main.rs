@@ -56,6 +56,17 @@ struct Cli {
     #[arg(long, env = "CG_DIALECT", global = true, value_enum)]
     dialect: Option<DialectArg>,
 
+    /// Fail a query reading a property of a node embedded in edge tables
+    /// when the rows of one node id hold several values of it (#531);
+    /// without it any one of the values is read
+    #[arg(
+        long,
+        env = "CG_CHECK_NODE_PROPERTIES",
+        global = true,
+        value_parser = clap::builder::FalseyValueParser::new()
+    )]
+    check_node_properties: bool,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -118,10 +129,29 @@ enum SchemaCommands {
         format: String,
     },
 
-    /// Validate a schema YAML file (structural check, no ClickHouse needed)
+    /// Validate a schema YAML file (structural check, no ClickHouse needed;
+    /// `--data` also checks the data in ClickHouse)
     Validate {
         /// Path to schema YAML file (uses --schema if not provided)
         file: Option<String>,
+
+        /// Also check, in ClickHouse (--clickhouse), that the rows of each
+        /// node embedded in edge tables hold one value of each property
+        /// per node id (a query reads any one of such a property's values)
+        #[arg(long)]
+        data: bool,
+
+        /// With --data: check one node id in N (all rows of each) …
+        #[arg(long, default_value_t = 100, value_parser = clap::value_parser!(u64).range(1..))]
+        sample: u64,
+
+        /// … reading at most this many rows of each table
+        #[arg(long, default_value_t = 1_000_000, value_parser = clap::value_parser!(u64).range(1..))]
+        max_rows: u64,
+
+        /// With --data: check every node id and every row
+        #[arg(long)]
+        full: bool,
     },
 
     /// Discover schema via LLM assistance. Default targets ClickHouse;
@@ -169,6 +199,7 @@ enum SchemaCommands {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
+    clickgraph::server::query_context::set_check_node_properties(cli.check_node_properties);
     let cfg = CgConfig::load(
         &cli.schema,
         &cli.clickhouse,
@@ -207,13 +238,29 @@ async fn main() -> Result<()> {
             SchemaCommands::Show { format } => {
                 commands::schema::run_show(&format, &cfg)?;
             }
-            SchemaCommands::Validate { file } => {
+            SchemaCommands::Validate {
+                file,
+                data,
+                sample,
+                max_rows,
+                full,
+            } => {
                 let path = file.or_else(|| cfg.schema_path.clone()).ok_or_else(|| {
                     anyhow::anyhow!(
                         "No schema file specified. Use --schema or provide a file argument."
                     )
                 })?;
                 commands::schema::run_validate_schema(&path)?;
+                if data {
+                    let sampling = match full {
+                        true => None,
+                        false => Some(clickgraph::graph_catalog::node_property_check::Sampling {
+                            one_in: sample,
+                            max_rows,
+                        }),
+                    };
+                    commands::schema::run_validate_data(&path, sampling, &cfg).await?;
+                }
             }
             SchemaCommands::Discover {
                 database,

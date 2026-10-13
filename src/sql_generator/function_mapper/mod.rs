@@ -57,6 +57,14 @@ pub(crate) trait FunctionMapper: Send + Sync {
         format!("{}({value})", self.any())
     }
 
+    /// An aggregate of the one value the non-NULL values `{0}` of a group
+    /// hold (NULL when all are NULL), and an error with the text `message`
+    /// when they hold several, as Cypher values (`CypherUnion::distinct_key`,
+    /// DISTINCT's equality): a node's property, read from the rows of its id
+    /// (#531). The value is `any_non_null`'s, of its type. `None`: the
+    /// dialect has no distinct key.
+    fn one_value(&self, value: &str, message: &str) -> Option<String>;
+
     /// The number of elements of the list `{0}`, NULL when it is NULL. CH
     /// `length` (of an array or a string alike).
     fn list_size(&self, list: &str) -> String {

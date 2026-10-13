@@ -1542,6 +1542,7 @@ async fn query_handler_inner(
                 cypher: clean_query.clone(),
                 id_mapper: Some(id_mapper.clone()),
                 neo4j_compat: None,
+                check_node_properties: None,
             };
             let translated = match cypher_statement {
                 Some(statement) => {

@@ -31,6 +31,20 @@ impl FunctionMapper for ClickhouseFunctionMapper {
         format!("anyIfOrNull({value}, NOT isNull({value}))")
     }
 
+    fn one_value(&self, value: &str, message: &str) -> Option<String> {
+        // `uniqUpTo(1)` counts up to two distinct keys in constant memory;
+        // of the hashes of DISTINCT's keys (`-0.0` is `0.0`, a FixedString
+        // its padded text, integers of any width one number). `throwIf` is
+        // 0 unless it throws: the element of a one-element array keeps the
+        // value's type.
+        let key = (self.cypher_union()?.distinct_key)(value);
+        let message = message.replace('\\', "\\\\").replace('\'', "\\'");
+        Some(format!(
+            "arrayElement([{}], 1 + throwIf(uniqUpToIf(1)(cityHash64({key}), NOT isNull({value})) > 1, '{message}'))",
+            self.any_non_null(value)
+        ))
+    }
+
     fn arrays_overlap(&self) -> &'static str {
         "hasAny"
     }
@@ -229,7 +243,12 @@ impl FunctionMapper for ClickhouseFunctionMapper {
             // `toJSONString` quotes a 64-bit integer as a string under
             // `output_format_json_quote_64bit_integers`. NULL is one group.
             distinct_key: |v| {
-                let ty = format!("dynamicType(CAST({v}, 'Dynamic'))");
+                // A `LowCardinality` value is its inner type's (`Float64`
+                // 1.5 and `LowCardinality(Float64)` 1.5 are one value).
+                let ty = format!(
+                    "replaceRegexpOne(dynamicType(CAST({v}, 'Dynamic')), \
+                     '^LowCardinality\\\\((.*)\\\\)$', '\\\\1')"
+                );
                 // `Int[0-9]`: not an `Interval…`.
                 let number = format!("match({ty}, '^(U?Int[0-9]|Float|BFloat|Decimal)')");
                 let string =
@@ -239,10 +258,14 @@ impl FunctionMapper for ClickhouseFunctionMapper {
                     "replaceRegexpOne(replaceRegexpOne(toString({v}), \
                      '(\\\\.[0-9]*[1-9])0+$', '\\\\1'), '\\\\.0+$', '')"
                 );
-                // NULL of a value of another type, not an error.
+                // NULL of a value of another type, not an error: only a
+                // DateTime is cast (`accurateCastOrNull` of a NaN or an
+                // infinite Float throws, and a `multiIf` branch is computed
+                // for every row).
                 let instant = format!(
                     "ifNull(toString(toUnixTimestamp64Micro(accurateCastOrNull(\
-                     CAST({v}, 'Dynamic'), 'DateTime64(6, ''UTC'')'))), '')"
+                     if(startsWith({ty}, 'DateTime'), CAST({v}, 'Dynamic'), NULL), \
+                     'DateTime64(6, ''UTC'')'))), '')"
                 );
                 // `toString` drops a FixedString's trailing zero bytes,
                 // which the output prints: padded back to its width.
@@ -456,7 +479,7 @@ mod tests {
             panic!("ClickHouse has a Cypher UNION");
         };
         let key = (u.distinct_key)("x");
-        let ty = "dynamicType(CAST(x, 'Dynamic'))";
+        let ty = r"replaceRegexpOne(dynamicType(CAST(x, 'Dynamic')), '^LowCardinality\\((.*)\\)$', '\\1')";
         let zone = format!("extract({ty}, '''([^'']*)''')");
         for part in [
             format!("match({ty}, '^(U?Int[0-9]|Float|BFloat|Decimal)'), 'n'"),
@@ -469,9 +492,10 @@ mod tests {
             format!("startsWith({ty}, 'Time'), 'Time', {ty})"),
             r"replaceRegexpOne(replaceRegexpOne(toString(x), '(\\.[0-9]*[1-9])0+$', '\\1'), '\\.0+$', '')"
                 .to_string(),
-            "ifNull(toString(toUnixTimestamp64Micro(accurateCastOrNull(CAST(x, 'Dynamic'), \
-             'DateTime64(6, ''UTC'')'))), '')"
-                .to_string(),
+            format!(
+                "ifNull(toString(toUnixTimestamp64Micro(accurateCastOrNull(if(startsWith(\
+                 {ty}, 'DateTime'), CAST(x, 'Dynamic'), NULL), 'DateTime64(6, ''UTC'')'))), '')"
+            ),
         ] {
             assert!(key.contains(&part), "missing `{part}` in\n{key}");
         }

@@ -141,6 +141,32 @@ RETURN dest.city
 #           ^^^^ Uses DestCityName column from flights table
 ```
 
+### One Value per Node
+
+A node has one value of each property. The schema says `city` is the airport's property, so every row that holds an airport's `code` must hold the same `city`. Rows that agree are one node, and any of them gives its value.
+
+Rows of one id that hold **several** values of a property mean the property is not the node's. For example, a connection log that declares `port` on an `IP` node, while each connection carries its own port. It can also mean the id columns do not identify the node. By default, a query that reads such a property from the node's rows (`MATCH (a:IP) RETURN a.port`) gets any one of the values.
+
+**Finding such properties.** Run `cg schema validate --data` against ClickHouse. By default it checks a sample: one node id in 100, all rows of each, at most 1,000,000 rows of each table. `--sample N` and `--max-rows M` change the sample. A sample can miss an id, but it never reports a consistent one; `--full` checks every row. Values compare as `DISTINCT` compares them: `5` stored as `Int16` and as `Int32` are one value.
+
+```bash
+cg --clickhouse http://localhost:8123 schema validate zeek.yaml --data --full
+#   :IP property port: the rows of 2 node id(s) hold several values (e.g. id ('192.168.1.10'))
+```
+
+**Failing queries instead.** With the server setting `CLICKGRAPH_CHECK_NODE_PROPERTIES=true`, or `cg --check-node-properties`, a query that reads such a property fails instead of reading any one of the values:
+
+```
+ClickGraph: rows of one :IP node hold several values of its property port: the property is not the node's, or its id columns do not identify it
+```
+
+This covers the property itself and a whole node (`RETURN a`). A query that reads only the id is not affected.
+- **Which reads fail:** ClickHouse checks the values while it groups the node's rows, so a query can fail because of a node it does not return (`... LIMIT 2` may or may not fail, depending on the plan). A query that reads only nodes whose rows agree returns their values or that error; it never returns a wrong value.
+- **What isn't checked:** a pattern that reads the node from a relationship's row (`MATCH (a:IP)-[r:ACCESSED]->(b) RETURN a.port`) reads that row's column, with no check.
+- **Spark:** a `Map` property is not supported with the check, and the check makes reads of such nodes several times slower than without it.
+- **Where it can be turned on:** the server and `cg` only; the embedded library and its bindings read any of the values.
+- **Validate vs `cg query`:** `cg schema validate --data` reads tables as the server does, with `FINAL` on ReplacingMergeTree-like engines. `cg query` does not detect engines, so on such a table with unmerged versions the two can disagree.
+
 ---
 
 ## Table Schema Design

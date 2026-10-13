@@ -9,6 +9,7 @@ pub mod expression_parser;
 pub mod filter_parser;
 pub mod graph_schema;
 pub mod llm_prompt;
+pub mod node_property_check;
 pub mod pattern_schema;
 pub mod schema_discovery;
 

@@ -133,6 +133,13 @@ pub struct ServerConfig {
     /// (`CLICKGRAPH_STATS_TTL_SECS`). Default: 300.
     #[serde(default = "default_stats_ttl_secs")]
     pub stats_ttl_secs: u64,
+
+    /// Whether a query reading a property of a node embedded in edge tables
+    /// checks that the rows of each node id hold one value of it, failing
+    /// when they hold several (`CLICKGRAPH_CHECK_NODE_PROPERTIES`, #531).
+    /// Off by default: any one of the values is read.
+    #[serde(default)]
+    pub check_node_properties: bool,
 }
 
 impl Default for ServerConfig {
@@ -159,6 +166,7 @@ impl Default for ServerConfig {
             metrics_query_preview: false,
             stats_enabled: false,
             stats_ttl_secs: 300,
+            check_node_properties: false,
         }
     }
 }
@@ -188,6 +196,7 @@ impl ServerConfig {
             metrics_query_preview: parse_env_var("CLICKGRAPH_METRICS_QUERY_PREVIEW", "false")?,
             stats_enabled: parse_env_var("CLICKGRAPH_STATS_ENABLED", "false")?,
             stats_ttl_secs: parse_env_var("CLICKGRAPH_STATS_TTL_SECS", "300")?,
+            check_node_properties: parse_env_var("CLICKGRAPH_CHECK_NODE_PROPERTIES", "false")?,
         };
 
         config.validate()?;
@@ -222,6 +231,7 @@ impl ServerConfig {
             // Stats knobs are operational and env-only, like the metrics knobs.
             stats_enabled: parse_env_var("CLICKGRAPH_STATS_ENABLED", "false")?,
             stats_ttl_secs: parse_env_var("CLICKGRAPH_STATS_TTL_SECS", "300")?,
+            check_node_properties: parse_env_var("CLICKGRAPH_CHECK_NODE_PROPERTIES", "false")?,
         };
 
         config.validate()?;
@@ -269,6 +279,7 @@ impl ServerConfig {
         self.metrics_query_preview = other.metrics_query_preview;
         self.stats_enabled = other.stats_enabled;
         self.stats_ttl_secs = other.stats_ttl_secs;
+        self.check_node_properties = other.check_node_properties;
     }
 }
 

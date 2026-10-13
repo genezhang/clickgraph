@@ -125,6 +125,9 @@ pub struct LowerOptions {
     /// Neo4j-compat mode: an undeclared property is NULL on every element,
     /// not only on those whose columns were discovered.
     pub neo4j_compat: bool,
+    /// A property of a node embedded in edge tables is an error when the
+    /// rows of one id hold several values of it (#531); off: any of them.
+    pub check_node_properties: bool,
     /// The server's reading of an integer compared with `id(n)`
     /// (`ReadOptions::id_mapper`); `None` (library, `cg`): `id(n)` is the
     /// node's key.
