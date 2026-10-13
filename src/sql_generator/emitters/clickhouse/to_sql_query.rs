@@ -1,5 +1,4 @@
 use crate::{
-    query_planner::logical_plan::LogicalPlan,
     render_plan::{
         render_expr::{
             self, AggregateFnCall, Column, ColumnAlias, Literal, Operator, OperatorApplication,
@@ -1604,18 +1603,10 @@ impl ToSql for FromTableItem {
             // not as a subquery in FROM clause
             sql.push_str(&view_ref.name);
 
-            // Extract the alias - prefer the explicit alias from ViewTableRef,
-            // otherwise try to get it from the source logical plan
-            let alias = if let Some(explicit_alias) = &view_ref.alias {
-                explicit_alias.clone()
-            } else {
-                match view_ref.source.as_ref() {
-                    LogicalPlan::ViewScan(_) => {
-                        // ViewScan fallback - should not reach here if alias is properly set
-                        crate::query_planner::join_context::VLP_CTE_FROM_ALIAS.to_string()
-                    }
-                    _ => crate::query_planner::join_context::VLP_CTE_FROM_ALIAS.to_string(), // Default fallback
-                }
+            // The explicit alias, else the VLP CTE's FROM alias.
+            let alias = match &view_ref.alias {
+                Some(explicit_alias) => explicit_alias.clone(),
+                None => crate::query_planner::join_context::VLP_CTE_FROM_ALIAS.to_string(),
             };
 
             sql.push_str(" AS ");
@@ -3201,10 +3192,7 @@ impl RenderExpr {
             | RenderExpr::ArraySlicing { .. }
             | RenderExpr::MapLiteral(_)
             | RenderExpr::ReduceExpr(_) => strip_table_alias_everywhere(self).to_sql(),
-            // For other expression types (including `InSubquery`/
-            // `ExistsSubquery` — see the `strip_table_alias_everywhere` doc
-            // comment on why those two are deliberately left alone), delegate
-            // to regular to_sql.
+            // Other expression types: regular to_sql.
             _ => self.to_sql(),
         }
     }
@@ -3295,15 +3283,8 @@ fn strip_table_alias_everywhere(expr: &RenderExpr) -> RenderExpr {
             list: Box::new(strip_table_alias_everywhere(&reduce.list)),
             expression: Box::new(strip_table_alias_everywhere(&reduce.expression)),
         }),
-        // Other variants (Literal, Column, Parameter, `InSubquery`/
-        // `ExistsSubquery` correlated subqueries, pattern counts, CTE entity
-        // refs, ...) either carry no table-alias-qualified property access at
-        // this level or embed a full nested query scope of their own (a
-        // correlated subquery's OWN FROM/JOINs establish separate aliasing —
-        // blindly text-stripping into it is a materially different, riskier
-        // change than rewriting a plain expression tree) and are left
-        // unchanged, matching prior behavior. See #535 for the known
-        // remaining gap on those two subquery variants.
+        // Other variants (Literal, Column, Parameter, ...) carry no
+        // table-alias-qualified property access at this level.
         _ => expr.clone(),
     }
 }
@@ -3531,7 +3512,6 @@ mod tests {
 
         fn from_with_final() -> FromTableItem {
             FromTableItem(Some(ViewTableRef {
-                source: std::sync::Arc::new(crate::query_planner::logical_plan::LogicalPlan::Empty),
                 name: "users".to_string(),
                 alias: Some("u".to_string()),
                 use_final: true,
@@ -3580,11 +3560,9 @@ mod tests {
             JoinItems, LimitItem, OrderByItems, SelectItem, SelectItems, SkipItem, Union,
             UnionItems, UnionType, ViewTableRef,
         };
-        use std::sync::Arc;
 
         fn cte_ref(name: &str) -> ViewTableRef {
             ViewTableRef {
-                source: Arc::new(LogicalPlan::Empty),
                 name: name.to_string(),
                 alias: Some("t".to_string()),
                 use_final: false,
@@ -3635,7 +3613,6 @@ mod tests {
         base_plan.union = UnionItems(Some(Union {
             input: vec![branch_1],
             union_type: UnionType::All,
-            is_cypher_union: false,
         }));
 
         flatten_all_ctes(&mut base_plan);

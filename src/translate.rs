@@ -181,7 +181,7 @@ fn translate_in_context(
     options: ReadOptions,
 ) -> Result<ReadTranslation, TranslateError> {
     // Deterministic generated aliases: restart THIS query's counters.
-    crate::query_planner::logical_plan::reset_all_counters();
+    crate::server::query_context::reset_all_counters();
     let start = Instant::now();
     // `id()` comparisons: the bound plan reads them from `cypher` with the
     // server's id mapper (S11e).
@@ -267,7 +267,7 @@ pub fn translate_text_read(
             translate_text_read(cypher, schema, options)
         });
     }
-    crate::query_planner::logical_plan::reset_all_counters();
+    crate::server::query_context::reset_all_counters();
     let start = Instant::now();
     match bound_plan_or_reason(cypher, schema, &options) {
         Ok(bound) => Ok(Some(bound.into_read_translation(start))),
@@ -634,6 +634,27 @@ mod tests {
         );
     }
 
+    /// A subquery inside a pattern's property map, which the binder does not
+    /// take out of its expression, is not supported, not an internal error
+    /// (S14c6 review).
+    #[test]
+    fn a_subquery_in_a_pattern_property_map_is_not_supported() {
+        let schema = social();
+        for q in [
+            "MATCH (a:User) WHERE (a {name: EXISTS { (a)-[:FOLLOWS]->() }}) RETURN a.name",
+            "MATCH (a:User) RETURN size((a {name: (a)-[:FOLLOWS]->()})) AS n",
+            "MATCH (a:User) WHERE NOT (a {name: EXISTS { (a)-[:FOLLOWS]->() }}) RETURN a.name",
+            "MATCH (a:User), (b:User) \
+             RETURN shortestPath((a)-[:FOLLOWS {x: EXISTS { (a)-[:FOLLOWS]->() }}]-(b))",
+        ] {
+            let got = crate::clickhouse_query_generator::cypher_to_sql(q, &schema);
+            assert!(
+                matches!(&got, Err(e) if e.starts_with("Not supported: ")),
+                "{q}: {got:?}"
+            );
+        }
+    }
+
     /// A refusal reads as the construct, without the plan's wording; a
     /// broken invariant is an internal error (S11j review).
     #[test]
@@ -691,7 +712,7 @@ mod tests {
         assert_eq!(clause_list_use_name("MATCH (a) RETRUN a"), None);
     }
 
-    use crate::query_planner::logical_plan::{generate_cte_id, generate_id, reset_all_counters};
+    use crate::server::query_context::{generate_cte_id, generate_id, reset_all_counters};
     use crate::server::query_context::{with_query_context, QueryContext};
 
     /// A translation without a caller-provided context still runs on its own

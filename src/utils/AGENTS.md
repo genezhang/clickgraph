@@ -11,8 +11,7 @@ utils/
 ├── mod.rs          (5 lines)   ← Re-exports submodules
 ├── cte_naming.rs   (230 lines) ← CTE name generation/parsing (single source of truth)
 ├── id_encoding.rs  (277 lines) ← Neo4j-compatible 53-bit ID encoding for Bolt protocol
-├── serde_arc.rs    (20 lines)  ← Serialize/Deserialize for Arc<T>
-└── serde_arc_vec.rs (27 lines) ← Serialize/Deserialize for Vec<Arc<T>>
+└── serde_arc.rs    (20 lines)  ← Serialize/Deserialize for Arc<T>
 ```
 
 **Total**: ~560 lines
@@ -64,10 +63,6 @@ from raw values. Raw `42` stays `42`; encoded User:42 becomes `(1 << 47) | 42`.
 Custom serialize/deserialize for `Arc<T>` — serializes the inner value, deserializes
 and wraps in `Arc::new()`. Used as `#[serde(with = "crate::utils::serde_arc")]`.
 
-### serde_arc_vec.rs — Vec<Arc<T>> Serde Helper
-Custom serialize/deserialize for `Vec<Arc<T>>` — serializes each element's inner value,
-deserializes and wraps each in `Arc::new()`. Used as `#[serde(with = "crate::utils::serde_arc_vec")]`.
-
 ## Critical Invariants
 
 ### 1. CTE Naming is the Single Source of Truth
@@ -91,7 +86,7 @@ matters — tests should not depend on specific code assignments.
 
 **What this module uses**:
 - `lazy_static` — global registry (id_encoding)
-- `serde` — serialization traits (serde_arc, serde_arc_vec)
+- `serde` — serialization traits (serde_arc)
 
 **What uses this module**:
 
@@ -99,8 +94,7 @@ matters — tests should not depend on specific code assignments.
 |---------|---------|
 | `cte_naming` | (no caller since P-4c S14c3; removed in S14c7) |
 | `id_encoding` | `server/bolt_protocol/id_mapper.rs`, `server/graph_catalog.rs` |
-| `serde_arc` | `query_planner/logical_plan/mod.rs`, `query_planner/logical_expr/mod.rs` |
-| `serde_arc_vec` | `query_planner/logical_plan/mod.rs` |
+| `serde_arc` | `query_planner/logical_expr/mod.rs` |
 
 ## Public API
 
@@ -125,7 +119,6 @@ impl IdEncoding {
 
 // Serde helpers (used as #[serde(with = "...")])
 pub mod serde_arc { pub fn serialize/deserialize ... }
-pub mod serde_arc_vec { pub fn serialize/deserialize ... }
 ```
 
 ## Testing Guidance

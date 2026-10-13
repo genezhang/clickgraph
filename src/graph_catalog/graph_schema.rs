@@ -124,14 +124,6 @@ pub struct NodeSchema {
 }
 
 impl NodeSchema {
-    /// Returns property_mappings as a sorted Vec for deterministic iteration.
-    /// Must be used whenever property order affects SQL output (CTE columns, SELECT items, etc.)
-    pub fn sorted_properties(&self) -> Vec<(&String, &PropertyValue)> {
-        let mut props: Vec<_> = self.property_mappings.iter().collect();
-        props.sort_by_key(|(k, _)| k.as_str());
-        props
-    }
-
     /// Determine if FINAL should be used for this node
     pub fn should_use_final(&self) -> bool {
         // 1. Check explicit override (user choice takes precedence)
@@ -198,84 +190,6 @@ impl NodeSchema {
         cols
     }
 
-    /// #529: does this node's physical IDENTITY genuinely depend on which
-    /// role (from/to) it plays in a given relationship direction? True only
-    /// for a denormalized/embedded node (`is_denormalized`) whose
-    /// `from_properties`/`to_properties` disagree on the physical column for
-    /// at least one Cypher property (e.g. Zeek's `IP` node: `ip` maps to
-    /// `id.orig_h` from-side, `id.resp_h` to-side). A denormalized node whose
-    /// from/to maps happen to agree on every property (or a non-denormalized
-    /// node, which has no role-specific maps at all) returns `false` — its
-    /// identity is the same real physical column regardless of role, so
-    /// treating it as role-dependent would be a false positive.
-    ///
-    /// Canonical schema-catalog accessor (axis-dispatch rule, CLAUDE.md §7)
-    /// for callers that need to distinguish "role genuinely matters" from a
-    /// raw `is_denormalized` flag check, which alone conflates the two
-    /// cases above. Introduced for `table_has_role_dependent_denorm_identity`
-    /// (`render_plan/plan_builder_utils.rs`), the #529 shape-1 loud guard.
-    pub fn has_role_dependent_identity(&self) -> bool {
-        self.is_denormalized
-            && match (&self.from_properties, &self.to_properties) {
-                (Some(from_p), Some(to_p)) => from_p
-                    .iter()
-                    .any(|(k, v)| to_p.get(k).is_some_and(|to_v| to_v != v)),
-                _ => false,
-            }
-    }
-
-    /// #529: the SPECIFIC Cypher property names whose physical column
-    /// genuinely differs between this node's from-role and to-role mapping
-    /// (e.g. Zeek's `IP` node: `{"ip"}`, since `ip` maps to `id.orig_h`
-    /// from-side vs. `id.resp_h` to-side — but NOT e.g. a relationship's own
-    /// property like `uid`, which isn't in either map at all and is the same
-    /// physical column regardless of role). Empty whenever
-    /// `has_role_dependent_identity()` is false.
-    ///
-    /// Companion to `has_role_dependent_identity`: that answers "is ANY
-    /// property on this node role-dependent" (yes/no), this answers "WHICH
-    /// ones" — needed by callers that must avoid flagging a reference to a
-    /// DIFFERENT, role-INDEPENDENT property that merely happens to share a
-    /// table with a role-dependent node (e.g. a relationship's own edge_id
-    /// column, resolved via a different alias but the same physical table in
-    /// a coupled/embedded schema).
-    pub fn role_dependent_property_names(&self) -> HashSet<String> {
-        match (&self.from_properties, &self.to_properties) {
-            (Some(from_p), Some(to_p)) => from_p
-                .iter()
-                .filter(|(k, v)| to_p.get(*k).is_some_and(|to_v| to_v != *v))
-                .map(|(k, _)| k.clone())
-                .collect(),
-            _ => HashSet::new(),
-        }
-    }
-
-    /// #529: `role_dependent_property_names()` widened to also include the
-    /// PHYSICAL from/to column names themselves (`id.orig_h`/`id.resp_h` for
-    /// Zeek's `IP` node), not just the Cypher property name (`ip`).
-    ///
-    /// A reference to this node's identity is sometimes already resolved to
-    /// a physical column by the time a caller inspects it — e.g. a bare
-    /// WITH-carried alias whose identity is embedded on a relationship's own
-    /// table resolves straight to `r."id.orig_h"` (`find_id_column_for_alias`
-    /// / `PropertyValue`-level resolution), never passing back through the
-    /// Cypher property name `ip` at all. Checking Cypher names alone would
-    /// miss that reference entirely. Use this widened set when the caller
-    /// can't be sure which form (Cypher property or physical column) a given
-    /// reference has already been resolved to.
-    pub fn role_dependent_identifiers(&self) -> HashSet<String> {
-        let mut out = self.role_dependent_property_names();
-        if let (Some(from_p), Some(to_p)) = (&self.from_properties, &self.to_properties) {
-            for (k, from_v) in from_p {
-                if to_p.get(k).is_some_and(|to_v| to_v != from_v) {
-                    out.insert(from_v.clone());
-                    out.insert(to_p[k].clone());
-                }
-            }
-        }
-        out
-    }
-
     /// #549: merge this node's role-specific denormalized property map
     /// (`from_properties`/`to_properties`) with any ADDITIONAL properties
     /// declared in `property_mappings` that aren't already covered by the
@@ -286,10 +200,8 @@ impl NodeSchema {
     /// `RelationshipSchema::from_node_properties`/`to_node_properties` are
     /// populated FROM this at schema-load time (`graph_catalog::config`'s
     /// `build_relationship_schema`), and virtually every downstream
-    /// property-resolution site (`ViewScan` construction in
-    /// `query_planner::logical_plan::match_clause::view_scan`,
-    /// `PatternSchemaContext::extract_denorm_props`, `properties_builder.rs`'s
-    /// `GraphRel` branch, `filter_tagging.rs`, ...) reads the relationship-level
+    /// property-resolution site (`PatternSchemaContext::extract_denorm_props`,
+    /// ...) reads the relationship-level
     /// field rather than this node-level one — routing the merge through here
     /// ONCE at schema-load time fixes all of them, rather than requiring each
     /// call site to independently remember to also consult
@@ -341,20 +253,6 @@ impl NodeSchema {
                 .or_insert_with(|| prop_value.raw_column_name());
         }
         Some(result)
-    }
-
-    /// The node-level schema `filter:` as carried by a rebuilt plan ViewScan
-    /// (#1125). A DENORMALIZED node returns `None`: its render paths address the
-    /// node through edge / own-table aliases — no `<alias>.` scan exists — so a
-    /// carried filter would render as a dangling identifier. That family's
-    /// dropped schema filter is pre-existing and tracked as #1119; this API
-    /// keeps its behavior unchanged rather than half-fixing it loudly.
-    pub fn carryable_schema_filter(&self) -> Option<SchemaFilter> {
-        if self.is_denormalized {
-            None
-        } else {
-            self.filter.clone()
-        }
     }
 
     /// Check if this engine supports FINAL (regardless of whether we use it by default)
@@ -603,32 +501,6 @@ impl RelationshipSchema {
         self.type_column.is_some()
     }
 
-    /// True when a node labeled `label` can sit on the source (`as_source`) / target side of this
-    /// relationship. A wildcard (`$any`) side accepts every label.
-    pub fn node_label_fits(&self, as_source: bool, label: &str) -> bool {
-        let declared = if as_source {
-            &self.from_node
-        } else {
-            &self.to_node
-        };
-        declared == "$any" || declared.eq_ignore_ascii_case(label)
-    }
-
-    /// The column holding the relationship type on a polymorphic edge table.
-    pub fn type_discriminator(&self) -> Option<&str> {
-        self.type_column.as_deref()
-    }
-
-    /// The column holding the source node's label on a polymorphic edge table, when declared.
-    pub fn from_label_discriminator(&self) -> Option<&str> {
-        self.from_label_column.as_deref()
-    }
-
-    /// The column holding the target node's label on a polymorphic edge table, when declared.
-    pub fn to_label_discriminator(&self) -> Option<&str> {
-        self.to_label_column.as_deref()
-    }
-
     /// True for a **self-referencing FK-edge** — an FK-edge whose from- and
     /// to-node are the same table with no denormalized node properties (e.g.
     /// `(child:Object)-[:PARENT]->(parent:Object)` on one `fs_objects` table, or
@@ -646,43 +518,6 @@ impl RelationshipSchema {
             && self.from_node_table == self.to_node_table
             && self.from_node_properties.is_none()
             && self.to_node_properties.is_none()
-    }
-
-    /// #617: whether the undirected doubled-edge single-walk strategy can be
-    /// applied to this relationship. False when a mapped property TARGETS one
-    /// of the from/to id columns (a per-hop filter on such a property would
-    /// read the orientation-swapped value in reverse rows) or when the table
-    /// itself uses the reserved original-identity column names. Such schemas
-    /// stay on the legacy two-arm path.
-    ///
-    /// Single- AND composite-id edges are both accepted (#583 composite stage):
-    /// the doubled subquery swaps from/to POSITIONALLY (`to_id[i] AS from_id[i]`,
-    /// `from_id[i] AS to_id[i]`), so the from/to keys must have EQUAL arity — a
-    /// mismatched-arity edge (which could not be a same-label self-ref anyway,
-    /// the only shape the #583 cores scope) stays on the legacy two-arm path.
-    pub fn doubled_edge_walk_compatible(&self) -> bool {
-        // Positional from↔to swap requires equal-arity keys.
-        if self.from_id.columns().len() != self.to_id.columns().len() {
-            return false;
-        }
-        let endpoint_cols: Vec<&str> = self
-            .from_id
-            .columns()
-            .into_iter()
-            .chain(self.to_id.columns())
-            .collect();
-        let maps_onto_endpoint = self.property_mappings.values().any(
-            |pv| matches!(pv, PropertyValue::Column(c) if endpoint_cols.contains(&c.as_str())),
-        );
-        let reserved = [DOUBLED_EDGES_ORIG_FROM, DOUBLED_EDGES_ORIG_TO];
-        let reserved_collision =
-            self.column_names
-                .iter()
-                .any(|c| reserved.contains(&c.as_str()))
-                || self.property_mappings.values().any(
-                    |pv| matches!(pv, PropertyValue::Column(c) if reserved.contains(&c.as_str())),
-                );
-        !maps_onto_endpoint && !reserved_collision
     }
 
     /// #617: columns a doubled-edge CTE (each edge emitted in both
@@ -753,28 +588,6 @@ impl RelationshipSchema {
     /// Get the fully qualified table name (database.table)
     pub fn full_table_name(&self) -> String {
         format!("{}.{}", self.database, self.table_name)
-    }
-
-    /// #492 review round 3: sorted `(cypher_name, db_column)` pairs for the
-    /// from- or to-node side of a denormalized relationship. Canonical
-    /// schema-catalog accessor for this edge's own denormalized property maps
-    /// (axis-dispatch: callers must route through this rather than reading
-    /// `from_node_properties`/`to_node_properties` off a `ViewScan` directly).
-    pub fn denorm_side_properties(&self, is_from_node: bool) -> Vec<(String, String)> {
-        let props = if is_from_node {
-            &self.from_node_properties
-        } else {
-            &self.to_node_properties
-        };
-        props
-            .as_ref()
-            .map(|p| {
-                let mut v: Vec<(String, String)> =
-                    p.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
-                v.sort();
-                v
-            })
-            .unwrap_or_default()
     }
 
     /// #529: physical DB columns valid for THIS relationship's own row —
@@ -1908,19 +1721,6 @@ impl GraphSchema {
         schema
     }
 
-    /// Build with vector index configurations only (backward compat)
-    pub fn build_with_vector_indexes(
-        version: u32,
-        database: String,
-        nodes: HashMap<String, NodeSchema>,
-        relationships: HashMap<String, RelationshipSchema>,
-        vector_indexes: BTreeMap<String, VectorIndexConfig>,
-    ) -> GraphSchema {
-        let mut schema = Self::build(version, database, nodes, relationships);
-        schema.vector_indexes = vector_indexes;
-        schema
-    }
-
     /// Build secondary index: relationship type -> list of composite keys
     /// Enables O(1) lookup by type name without iterating through all relationships
     ///
@@ -2629,28 +2429,6 @@ impl GraphSchema {
         None
     }
 
-    /// Get ALL relationship schemas for a simple type name (e.g., "HAS_CREATOR").
-    /// Returns all schemas matching the type, not just the alphabetically first one.
-    /// For composite keys (e.g., "HAS_CREATOR::Comment::Person"), returns a single-element vec.
-    pub fn get_all_rel_schemas_for_type(&self, rel_type: &str) -> Vec<&RelationshipSchema> {
-        // Exact match (composite key)
-        if let Some(schema) = self.relationships.get(rel_type) {
-            return vec![schema];
-        }
-
-        // Simple type name — return ALL matching schemas
-        if !rel_type.contains("::") {
-            if let Some(composite_keys) = self.rel_type_index.get(rel_type) {
-                return composite_keys
-                    .iter()
-                    .filter_map(|key| self.relationships.get(key))
-                    .collect();
-            }
-        }
-
-        vec![]
-    }
-
     /// Get the rel_type_index for debugging purposes
     pub fn get_rel_type_index(&self) -> &BTreeMap<String, Vec<String>> {
         &self.rel_type_index
@@ -2668,77 +2446,6 @@ impl GraphSchema {
             .filter(|key| !key.contains("::"))
             .cloned()
             .collect()
-    }
-
-    /// Get properties for a node label as (property_name, column_or_expr) pairs
-    ///
-    /// Sorted by cypher property name: `property_mappings` is a HashMap, and
-    /// several callers materialize this list directly into SELECT/CTE column
-    /// order, so an unsorted iteration makes the rendered SQL flap across
-    /// processes (#464/#480).
-    pub fn get_node_properties(&self, labels: &[String]) -> Vec<(String, String)> {
-        if let Some(label) = labels.first() {
-            if let Some(node_schema) = self.node_schema_opt(label) {
-                let mut props: Vec<(String, String)> = node_schema
-                    .property_mappings
-                    .iter()
-                    .map(|(prop_name, prop_value)| {
-                        (prop_name.clone(), prop_value.raw().to_string())
-                    })
-                    .collect();
-                props.sort_by(|a, b| a.0.cmp(&b.0));
-                props
-            } else {
-                vec![]
-            }
-        } else {
-            vec![]
-        }
-    }
-
-    /// Get properties for a relationship type as (property_name, column_or_expr) pairs
-    ///
-    /// Sorted by cypher property name for deterministic rendering — see
-    /// `get_node_properties` (#464/#480).
-    pub fn get_relationship_properties(&self, rel_types: &[String]) -> Vec<(String, String)> {
-        if let Some(rel_type) = rel_types.first() {
-            if let Some(rel_schema) = self.get_relationships_schema_opt(rel_type) {
-                let mut props: Vec<(String, String)> = rel_schema
-                    .property_mappings
-                    .iter()
-                    .map(|(prop_name, prop_value)| {
-                        (prop_name.clone(), prop_value.raw().to_string())
-                    })
-                    .collect();
-                props.sort_by(|a, b| a.0.cmp(&b.0));
-                props
-            } else {
-                vec![]
-            }
-        } else {
-            vec![]
-        }
-    }
-
-    /// Get all node schemas with a specific label from all tables
-    /// Returns a vector of (table_name, NodeSchema) pairs
-    /// Used for MULTI_TABLE_LABEL scenarios where same label exists in multiple tables
-    pub fn get_all_node_schemas_for_label(&self, label: &str) -> Vec<(&String, &NodeSchema)> {
-        let mut results = Vec::new();
-
-        // Search composite keys (database::table::label)
-        for (composite_key, schema) in &self.nodes {
-            if composite_key.contains("::") {
-                // This is a composite key
-                let parts: Vec<&str> = composite_key.split("::").collect();
-                if parts.len() == 3 && parts[2] == label {
-                    // Found a match
-                    results.push((composite_key, schema));
-                }
-            }
-        }
-
-        results
     }
 
     pub fn get_denormalized_node_metadata(

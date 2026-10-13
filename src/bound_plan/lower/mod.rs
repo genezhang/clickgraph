@@ -84,7 +84,6 @@ use std::sync::Arc;
 use crate::graph_catalog::config::Identifier;
 use crate::graph_catalog::expression_parser::PropertyValue;
 use crate::graph_catalog::graph_schema::{GraphSchema, NodeSchema, RelationshipSchema};
-use crate::query_planner::logical_plan::LogicalPlan;
 use crate::render_plan::render_expr::{
     visit_render_expr_mut, ColumnAlias, Literal, MutVisit, Operator, OperatorApplication,
     PropertyAccess, RenderCase, RenderExpr, TableAlias,
@@ -1954,7 +1953,6 @@ impl<'s> Lowerer<'s> {
                     distinct: false,
                 },
                 from: FromTableItem(Some(ViewTableRef {
-                    source: Arc::new(LogicalPlan::Empty),
                     name: table,
                     alias: Some(ROW.to_string()),
                     use_final: ns.should_use_final(),
@@ -1967,7 +1965,6 @@ impl<'s> Lowerer<'s> {
             union: UnionItems(Some(Union {
                 input,
                 union_type: UnionType::All,
-                is_cypher_union: false,
             })),
             ..empty_plan()
         };
@@ -2539,7 +2536,6 @@ impl<'s> Lowerer<'s> {
             union: UnionItems(Some(Union {
                 input: vec![row(0), row(1)],
                 union_type: UnionType::All,
-                is_cypher_union: false,
             })),
             ..empty_plan()
         };
@@ -2845,7 +2841,6 @@ impl<'s> Lowerer<'s> {
                     distinct: false,
                 },
                 from: FromTableItem(Some(ViewTableRef {
-                    source: Arc::new(LogicalPlan::Empty),
                     name: table,
                     alias: Some(ROW.to_string()),
                     use_final: rs.should_use_final(),
@@ -2859,7 +2854,6 @@ impl<'s> Lowerer<'s> {
             union: UnionItems(Some(Union {
                 input,
                 union_type: UnionType::All,
-                is_cypher_union: false,
             })),
             ..empty_plan()
         };
@@ -3059,7 +3053,6 @@ impl<'s> Lowerer<'s> {
                     distinct: false,
                 },
                 from: FromTableItem(Some(ViewTableRef {
-                    source: Arc::new(LogicalPlan::Empty),
                     name: table.clone(),
                     alias: Some(ROW.to_string()),
                     use_final: rs.should_use_final(),
@@ -3072,7 +3065,6 @@ impl<'s> Lowerer<'s> {
             union: UnionItems(Some(Union {
                 input: vec![arm(true), arm(false)],
                 union_type: UnionType::All,
-                is_cypher_union: false,
             })),
             ..empty_plan()
         };
@@ -3865,7 +3857,6 @@ impl<'s> Lowerer<'s> {
                     distinct: false,
                 },
                 from: FromTableItem(Some(ViewTableRef {
-                    source: Arc::new(LogicalPlan::Empty),
                     name: table,
                     alias: Some(ROW.to_string()),
                     use_final: ns.should_use_final(),
@@ -3878,7 +3869,6 @@ impl<'s> Lowerer<'s> {
             union: UnionItems(Some(Union {
                 input,
                 union_type: UnionType::All,
-                is_cypher_union: false,
             })),
             ..empty_plan()
         };
@@ -3956,7 +3946,6 @@ impl<'s> Lowerer<'s> {
                     (false, Some((name, a, use_final))) => {
                         let mut rows = empty_plan();
                         rows.from = FromTableItem(Some(ViewTableRef {
-                            source: Arc::new(LogicalPlan::Empty),
                             name,
                             alias: Some(a),
                             use_final,
@@ -5232,7 +5221,6 @@ impl<'s> Lowerer<'s> {
         }
         if self.from.is_none() {
             self.from = Some(ViewTableRef {
-                source: Arc::new(LogicalPlan::Empty),
                 name,
                 alias: Some(alias.clone()),
                 use_final,
@@ -6776,7 +6764,6 @@ fn join(table_name: String, alias: &str) -> Join {
 /// `name AS alias` in a FROM.
 fn table_ref(name: String, alias: &str) -> ViewTableRef {
     ViewTableRef {
-        source: Arc::new(LogicalPlan::Empty),
         name,
         alias: Some(alias.to_string()),
         use_final: false,

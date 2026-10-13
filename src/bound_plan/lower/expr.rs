@@ -482,15 +482,13 @@ impl Lowerer<'_> {
                     current_function_mapper().lambda(&l.params, &render_expr_to_sql_plain(&body)),
                 )
             }
-            LogicalExpr::Raw(_)
-            | LogicalExpr::ColumnAlias(_)
-            | LogicalExpr::Column(_)
-            | LogicalExpr::CteEntityRef(_) => return unsupported("a planner-internal expression"),
+            LogicalExpr::Raw(_) | LogicalExpr::ColumnAlias(_) | LogicalExpr::Column(_) => {
+                return unsupported("a planner-internal expression")
+            }
             // Subquery expressions are bound as `Subquery`s (S9); these
-            // are the legacy planner's forms.
+            // are what conversion makes of a pattern the binder did not take
+            // out (a node or shortestPath pattern as a value).
             LogicalExpr::PathPattern(_)
-            | LogicalExpr::InSubquery(_)
-            | LogicalExpr::ExistsSubquery(_)
             | LogicalExpr::PatternCount(_)
             | LogicalExpr::PatternComprehension(_) => {
                 return unsupported("a graph pattern inside an expression")

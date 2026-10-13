@@ -737,19 +737,13 @@ fn rename(
         // Graph patterns in expressions are hoisted before conversion
         // (`hoist_subqueries`); what is left is not a subquery expression.
         LogicalExpr::PathPattern(_)
-        | LogicalExpr::ExistsSubquery(_)
         | LogicalExpr::PatternCount(_)
-        | LogicalExpr::PatternComprehension(_)
-        | LogicalExpr::InSubquery(_) => {
+        | LogicalExpr::PatternComprehension(_) => {
             return Err(BindError::Unsupported(
                 "a graph pattern inside an expression (EXISTS, pattern predicate, size(pattern), \
                  pattern comprehension)"
                     .to_string(),
             ))
-        }
-        // Produced only by the legacy analyzer, never by AST conversion.
-        LogicalExpr::CteEntityRef(_) => {
-            return Err(BindError::Unsupported("CteEntityRef".to_string()))
         }
     })
 }

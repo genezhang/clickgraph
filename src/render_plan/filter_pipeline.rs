@@ -33,6 +33,4 @@ pub struct CategorizedFilters {
     pub start_sql: Option<String>,
     pub end_sql: Option<String>,
     pub relationship_sql: Option<String>,
-    /// Pre-rendered SQL for [`Self::both_endpoint_filters`] (#1103).
-    pub both_endpoint_sql: Option<String>,
 }

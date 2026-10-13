@@ -1,15 +1,8 @@
-use crate::query_planner::logical_plan::{LogicalPlan, ViewScan};
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
-
-// Import serde_arc module for serialization
-use crate::utils::serde_arc;
 
 /// Represents a reference to a view or table in a render plan
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ViewTableRef {
-    #[serde(with = "serde_arc")]
-    pub source: Arc<LogicalPlan>,
     pub name: String,
     /// The alias to use in SQL (e.g., the Cypher variable name like "u" or "n")
     pub alias: Option<String>,
@@ -18,19 +11,9 @@ pub struct ViewTableRef {
 }
 
 impl ViewTableRef {
-    /// Build table reference with parameterized view syntax if applicable
-    fn build_table_reference(scan: &ViewScan, base_name: &str) -> String {
-        Self::parameterized_name(
-            base_name,
-            scan.view_parameter_names.as_deref(),
-            scan.view_parameter_values.as_ref(),
-        )
-    }
-
     /// `base_name(p = 'v', …)` for a parameterized view, else `base_name`.
-    /// Shared by the legacy `ViewScan` path and the P-4c lowering, which has
-    /// the schema's parameter names and the request's values but no
-    /// `ViewScan`.
+    /// The lowering has the schema's parameter names and the request's
+    /// values.
     pub fn parameterized_name(
         base_name: &str,
         param_names: Option<&[String]>,
@@ -65,22 +48,5 @@ impl ViewTableRef {
 
         // Not a parameterized view - use plain table name
         base_name.to_string()
-    }
-
-    /// Create a new table reference
-    pub fn new_table(scan: ViewScan, name: String) -> Self {
-        let table_ref = Self::build_table_reference(&scan, &name);
-        log::debug!(
-            "ViewTableRef::new_table: base_name={}, table_ref={}",
-            name,
-            table_ref
-        );
-        let use_final = scan.use_final; // Extract before moving scan
-        Self {
-            source: Arc::new(LogicalPlan::ViewScan(Arc::new(scan))),
-            name: table_ref,
-            alias: None,
-            use_final,
-        }
     }
 }

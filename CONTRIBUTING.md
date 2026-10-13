@@ -93,16 +93,15 @@ Keep the first line under 72 characters. Add a body for context when the change 
 ## Architecture Overview
 
 ```
-Cypher Query -> Parse -> Plan -> Optimize -> Render -> Generate SQL -> Execute
+Cypher Query -> Parse -> Bind -> Lower -> Print SQL -> Execute
 ```
 
 | Stage | Module | Purpose |
 |-------|--------|---------|
 | Parse | `src/open_cypher_parser/` | Cypher to AST (nom combinators) |
-| Plan | `src/query_planner/` | AST to LogicalPlan |
-| Optimize | `src/query_planner/optimizer/` | Projection/filter push-down |
-| Render | `src/render_plan/` | LogicalPlan to RenderPlan (CTEs, JOINs) |
-| Generate | `src/clickhouse_query_generator/` | RenderPlan to ClickHouse SQL |
+| Bind | `src/bound_plan/{binder,expr,labels}.rs` | Names to bindings, scopes, label inference |
+| Lower | `src/bound_plan/lower/` | Bound statement to `RenderPlan` (CTEs, JOINs) |
+| Print | `src/sql_generator/emitters/clickhouse/` | `RenderPlan` to SQL |
 | Execute | `src/server/` | HTTP + Bolt servers |
 
 ### Workspace Structure

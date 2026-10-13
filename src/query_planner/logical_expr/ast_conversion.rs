@@ -10,16 +10,12 @@
 
 use std::sync::Arc;
 
-use crate::{
-    open_cypher_parser,
-    query_planner::logical_plan::{Filter, GraphNode, GraphRel, LogicalPlan},
-};
+use crate::open_cypher_parser;
 
 use super::{
-    errors, AggregateFnCall, ConnectedPattern, Direction, ExistsSubquery, LambdaExpr, Literal,
-    LogicalCase, LogicalExpr, NodePattern, Operator, OperatorApplication, PathPattern,
-    PatternCount, Property, PropertyAccess, PropertyKVPair, ReduceExpr, RelationshipPattern,
-    ScalarFnCall, TableAlias,
+    errors, AggregateFnCall, ConnectedPattern, Direction, LambdaExpr, Literal, LogicalCase,
+    LogicalExpr, NodePattern, Operator, OperatorApplication, PathPattern, PatternCount, Property,
+    PropertyAccess, PropertyKVPair, ReduceExpr, RelationshipPattern, ScalarFnCall, TableAlias,
 };
 
 // =============================================================================
@@ -131,8 +127,8 @@ fn check_bare_pattern_guardrail(
     Ok(())
 }
 
-/// The legacy lowering of a bare pattern: `LogicalExpr::PathPattern` (consumed by the NOT-pattern
-/// anti-join path).
+/// A node or shortestPath pattern used as a value: `LogicalExpr::PathPattern`, which the binder
+/// refuses.
 fn bare_path_pattern_expr(
     pp: open_cypher_parser::ast::PathPattern<'_>,
 ) -> Result<LogicalExpr, errors::LogicalExprError> {
@@ -146,17 +142,10 @@ impl<'a> TryFrom<open_cypher_parser::ast::OperatorApplication<'a>> for OperatorA
     fn try_from(
         value: open_cypher_parser::ast::OperatorApplication<'a>,
     ) -> Result<Self, Self::Error> {
-        let is_not = matches!(value.operator, open_cypher_parser::ast::Operator::Not);
         let operands = value
             .operands
             .into_iter()
-            .map(|operand| match operand {
-                // `NOT (a)-[:R]->(b)`: the established anti-join lowering
-                open_cypher_parser::ast::Expression::PathPattern(pp) if is_not => {
-                    bare_path_pattern_expr(pp)
-                }
-                other => LogicalExpr::try_from(other),
-            })
+            .map(LogicalExpr::try_from)
             .collect::<Result<Vec<_>, _>>()?;
         Ok(OperatorApplication {
             operator: Operator::from(value.operator),
@@ -488,177 +477,6 @@ impl<'a> TryFrom<open_cypher_parser::ast::Case<'a>> for LogicalCase {
 }
 
 // =============================================================================
-// EXISTS Subquery Conversions
-// =============================================================================
-
-impl<'a> TryFrom<open_cypher_parser::ast::ExistsSubquery<'a>> for ExistsSubquery {
-    type Error = errors::LogicalExprError;
-
-    fn try_from(exists: open_cypher_parser::ast::ExistsSubquery<'a>) -> Result<Self, Self::Error> {
-        use open_cypher_parser::ast::PathPattern as AstPathPattern;
-
-        let pattern = exists.pattern;
-
-        let base_plan = match pattern {
-            AstPathPattern::Node(node) => Arc::new(LogicalPlan::GraphNode(GraphNode {
-                input: Arc::new(LogicalPlan::Empty),
-                alias: node.name.unwrap_or("").to_string(),
-                label: node.first_label().map(|s| s.to_string()),
-                is_denormalized: false,
-                projected_columns: None,
-                node_types: None,
-            })),
-            AstPathPattern::ConnectedPattern(connected_patterns) => {
-                if connected_patterns.is_empty() {
-                    Arc::new(LogicalPlan::Empty)
-                } else {
-                    // GUARDRAIL (#574): the EXISTS-subquery conversion below only
-                    // builds a single-hop, single-type `GraphRel`. Anything wider
-                    // than that shape — a multi-hop chain, an OR'd relationship
-                    // type list (`[:A|B]`), or a variable-length spec (`*1..2`) —
-                    // would otherwise be SILENTLY narrowed to "first hop, first
-                    // type, single edge" (ground rule 1 violation: dropped
-                    // semantics without any signal). Until EXISTS { ... } routes
-                    // through the same pattern-conversion pipeline as a top-level
-                    // MATCH (which is what would be required to honor these
-                    // shapes), reject loudly instead of guessing.
-                    if connected_patterns.len() > 1 {
-                        return Err(errors::LogicalExprError::UnsupportedExpression(format!(
-                            "(#574) this EXISTS {{ ... }} pattern has a {}-hop \
-                             relationship chain. ClickGraph does not yet convert \
-                             multi-hop EXISTS patterns through the full MATCH \
-                             pipeline, so only the first hop would be checked — \
-                             silently dropping the remaining hops and returning \
-                             wrong results. Workaround: express the extra hops as \
-                             a separate correlated MATCH/WHERE, or restructure the \
-                             query so the whole pattern is a top-level MATCH.",
-                            connected_patterns.len()
-                        )));
-                    }
-                    let cp = &connected_patterns[0];
-                    let rel = &cp.relationship;
-                    if let Some(labels) = rel.labels.as_ref() {
-                        if labels.len() > 1 {
-                            return Err(errors::LogicalExprError::UnsupportedExpression(format!(
-                                "(#574) this EXISTS {{ ... }} pattern has multiple \
-                                 OR'd relationship types ([:{}]). ClickGraph does \
-                                 not yet convert multi-type EXISTS patterns through \
-                                 the full MATCH pipeline, so only the first type \
-                                 would be checked — silently narrowing the relationship \
-                                 set and returning wrong results. Workaround: express \
-                                 this as a top-level MATCH with a WHERE EXISTS-free \
-                                 filter, or as multiple OR'd EXISTS {{ }} blocks, one \
-                                 per relationship type.",
-                                labels.join("|")
-                            )));
-                        }
-                    }
-                    if rel.variable_length.is_some() {
-                        return Err(errors::LogicalExprError::UnsupportedExpression(
-                            "(#574) this EXISTS { ... } pattern has a \
-                             variable-length relationship (e.g. *1..2). \
-                             ClickGraph does not yet convert variable-length \
-                             EXISTS patterns through the full MATCH pipeline, so \
-                             the hop bound would be silently dropped and only a \
-                             single fixed hop checked — returning wrong results. \
-                             Workaround: restructure the query so the \
-                             variable-length pattern is a top-level MATCH \
-                             (e.g. `MATCH (a)-[*1..2]->(b) WHERE ...`) instead of \
-                             an EXISTS { } subquery."
-                                .to_string(),
-                        ));
-                    }
-                    let start = cp.start_node.borrow();
-                    let end = cp.end_node.borrow();
-
-                    let start_node = LogicalPlan::GraphNode(GraphNode {
-                        input: Arc::new(LogicalPlan::Empty),
-                        alias: start.name.unwrap_or("").to_string(),
-                        label: start.first_label().map(|s| s.to_string()),
-                        is_denormalized: false,
-                        projected_columns: None,
-                        node_types: None,
-                    });
-
-                    let rel_scan = LogicalPlan::Empty;
-
-                    let end_node = LogicalPlan::GraphNode(GraphNode {
-                        input: Arc::new(LogicalPlan::Empty),
-                        alias: end.name.unwrap_or("").to_string(),
-                        label: end.first_label().map(|s| s.to_string()),
-                        is_denormalized: false,
-                        projected_columns: None,
-                        node_types: None,
-                    });
-
-                    let direction = match rel.direction {
-                        open_cypher_parser::ast::Direction::Outgoing => Direction::Outgoing,
-                        open_cypher_parser::ast::Direction::Incoming => Direction::Incoming,
-                        open_cypher_parser::ast::Direction::Either => Direction::Either,
-                    };
-
-                    Arc::new(LogicalPlan::GraphRel(GraphRel {
-                        left: Arc::new(start_node),
-                        center: Arc::new(rel_scan),
-                        right: Arc::new(end_node),
-                        alias: rel.name.unwrap_or("").to_string(),
-                        direction,
-                        left_connection: start.name.unwrap_or("").to_string(),
-                        right_connection: end.name.unwrap_or("").to_string(),
-                        is_rel_anchor: false,
-                        variable_length: None,
-                        shortest_path_mode: None,
-                        path_variable: None,
-                        where_predicate: None,
-                        labels: rel
-                            .labels
-                            .as_ref()
-                            .map(|l| l.iter().map(|s| s.to_string()).collect()),
-                        is_optional: None,
-                        anchor_connection: None,
-                        cte_references: std::collections::HashMap::new(),
-                        pattern_combinations: None,
-                        was_undirected: None,
-                        // #586: an EXISTS-subquery pattern renders as a scope-isolated
-                        // subquery and never shares PatternGraphMetadata with the outer
-                        // pattern's edges, so a fixed clause index 0 cannot collide with
-                        // the outer first clause. If EXISTS patterns are ever inlined into
-                        // the outer metadata, this must instead inherit the outer index.
-                        match_clause_index: 0,
-                        optional_anchor_where: None, // #597: set by evaluate_optional_match_clause
-                    }))
-                }
-            }
-            AstPathPattern::ShortestPath(inner) | AstPathPattern::AllShortestPaths(inner) => {
-                // #579: previously hardcoded `where_clause: None` here, silently
-                // dropping the outer EXISTS's WHERE clause whenever its pattern
-                // was wrapped in shortestPath()/allShortestPaths() — the shared
-                // Filter-wrapping logic below never ran because this arm
-                // returns early via recursion. Thread the outer where_clause
-                // through so the recursive call applies it exactly as the
-                // non-shortestPath arms do.
-                let inner_exists = open_cypher_parser::ast::ExistsSubquery {
-                    pattern: *inner,
-                    where_clause: exists.where_clause,
-                };
-                return ExistsSubquery::try_from(inner_exists);
-            }
-        };
-
-        let plan = if let Some(where_clause) = exists.where_clause {
-            Arc::new(LogicalPlan::Filter(Filter {
-                input: base_plan,
-                predicate: LogicalExpr::try_from(where_clause.conditions)?,
-            }))
-        } else {
-            base_plan
-        };
-
-        Ok(ExistsSubquery { subplan: plan })
-    }
-}
-
-// =============================================================================
 // Main Expression Conversion
 // =============================================================================
 
@@ -691,29 +509,21 @@ impl<'a> std::convert::TryFrom<open_cypher_parser::ast::Expression<'a>> for Logi
             Expression::OperatorApplicationExp(oa) => Ok(LogicalExpr::OperatorApplicationExp(
                 OperatorApplication::try_from(oa)?,
             )),
-            Expression::PathPattern(pp) => {
-                // A bare relationship pattern used as a boolean (`WHERE (a)-[:R]->()`) is an
-                // existence test (#1238): lower it to `EXISTS { pattern }`, which is supported
-                // everywhere a scalar predicate is. `NOT (pattern)` keeps its own lowering
-                // (see the `Not` arm of `OperatorApplication::try_from`).
-                if matches!(
-                    pp,
-                    open_cypher_parser::ast::PathPattern::ConnectedPattern(_)
-                ) {
-                    check_bare_pattern_guardrail(&pp)?;
-                    return Ok(LogicalExpr::ExistsSubquery(ExistsSubquery::try_from(
-                        open_cypher_parser::ast::ExistsSubquery {
-                            pattern: pp,
-                            where_clause: None,
-                        },
-                    )?));
-                }
-                bare_path_pattern_expr(pp)
+            // The binder takes a relationship pattern (`WHERE (a)-[:R]->()`) and an
+            // `EXISTS { … }` out of their expression before converting it
+            // (`bound_plan::expr::hoist_subqueries`); one is left only inside a
+            // pattern's property map (`(a {name: EXISTS { … }})`), a pattern the
+            // binder refuses as a value.
+            Expression::PathPattern(open_cypher_parser::ast::PathPattern::ConnectedPattern(_))
+            | Expression::ExistsExpression(_) => {
+                Err(errors::LogicalExprError::UnsupportedExpression(
+                    "a graph pattern inside an expression (EXISTS, pattern predicate, \
+                     size(pattern), pattern comprehension)"
+                        .to_string(),
+                ))
             }
+            Expression::PathPattern(pp) => bare_path_pattern_expr(pp),
             Expression::Case(case) => Ok(LogicalExpr::Case(LogicalCase::try_from(case)?)),
-            Expression::ExistsExpression(exists) => Ok(LogicalExpr::ExistsSubquery(
-                ExistsSubquery::try_from(*exists)?,
-            )),
             Expression::ReduceExp(reduce) => Ok(LogicalExpr::ReduceExpr(ReduceExpr {
                 accumulator: reduce.accumulator.to_string(),
                 initial_value: Box::new(Self::try_from(*reduce.initial_value)?),

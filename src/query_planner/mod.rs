@@ -4,15 +4,12 @@ use types::QueryType;
 use crate::{
     graph_catalog::graph_schema::GraphSchema,
     open_cypher_parser::ast::{CypherStatement, OpenCypherQueryAst},
-    query_planner::logical_plan::{LogicalPlan, PageRank},
 };
 
 pub mod ast_transform;
 mod errors;
 pub mod join_context;
 pub mod logical_expr;
-pub mod logical_plan;
-pub mod transformed;
 pub mod types;
 
 pub fn get_query_type(query_ast: &OpenCypherQueryAst) -> QueryType {
@@ -49,10 +46,20 @@ pub fn get_statement_query_type(statement: &CypherStatement) -> QueryType {
     }
 }
 
+/// `CALL pagerank(...)`'s arguments.
+#[derive(Debug, PartialEq, Clone)]
+pub struct PageRank {
+    pub graph_name: Option<String>,
+    pub iterations: usize,
+    pub damping_factor: f64,
+    pub node_labels: Option<Vec<String>>,
+    pub relationship_types: Option<Vec<String>>,
+}
+
 pub fn evaluate_call_query(
     query_ast: OpenCypherQueryAst,
     _current_graph_schema: &GraphSchema,
-) -> Result<LogicalPlan, QueryPlannerError> {
+) -> Result<PageRank, QueryPlannerError> {
     if let Some(call_clause) = query_ast.call_clause {
         match call_clause.procedure_name {
             "pagerank" | "pagerank.graph" => {
@@ -132,14 +139,13 @@ pub fn evaluate_call_query(
                     }
                 }
 
-                // Create PageRank logical plan
-                Ok(LogicalPlan::PageRank(PageRank {
+                Ok(PageRank {
                     graph_name,
                     iterations,
                     damping_factor,
                     node_labels,
                     relationship_types,
-                }))
+                })
             }
             _ => Err(QueryPlannerError::UnsupportedProcedure {
                 procedure: call_clause.procedure_name.to_string(),

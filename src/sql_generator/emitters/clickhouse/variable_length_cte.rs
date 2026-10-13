@@ -1,7 +1,7 @@
 use crate::graph_catalog::config::Identifier;
 use crate::graph_catalog::graph_schema::GraphSchema;
 use crate::query_planner::join_context::VLP_END_ID_COLUMN;
-use crate::query_planner::logical_plan::VariableLengthSpec;
+use crate::render_plan::variable_length::VariableLengthSpec;
 use crate::render_plan::Cte;
 use crate::sql_generator::function_mapper::current_function_mapper;
 
@@ -658,13 +658,13 @@ pub enum ShortestPathMode {
     AllShortest,
 }
 
-// Conversion from logical plan's ShortestPathMode to SQL generator's ShortestPathMode
-impl From<crate::query_planner::logical_plan::ShortestPathMode> for ShortestPathMode {
-    fn from(mode: crate::query_planner::logical_plan::ShortestPathMode) -> Self {
-        use crate::query_planner::logical_plan::ShortestPathMode as LogicalMode;
+// Conversion from the hop spec's ShortestPathMode to the generator's
+impl From<crate::render_plan::variable_length::ShortestPathMode> for ShortestPathMode {
+    fn from(mode: crate::render_plan::variable_length::ShortestPathMode) -> Self {
+        use crate::render_plan::variable_length::ShortestPathMode as SpecMode;
         match mode {
-            LogicalMode::Shortest => ShortestPathMode::Shortest,
-            LogicalMode::AllShortest => ShortestPathMode::AllShortest,
+            SpecMode::Shortest => ShortestPathMode::Shortest,
+            SpecMode::AllShortest => ShortestPathMode::AllShortest,
         }
     }
 }
@@ -1318,9 +1318,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
     /// This is more memory-efficient than edge-uniqueness (no separate path_edges arrays) and
     /// equivalent for simple graphs (at most one edge per type between any node pair).
     /// `path_relationships` is populated whenever a path variable is bound
-    /// (`MATCH p = ...`, `shortestPath(...)`). This ensures `relationships(p)` works
-    /// even when called inside WITH clauses (where the root_plan detection can't see
-    /// the path function usage above the VLP subtree).
+    /// (`MATCH p = ...`, `shortestPath(...)`).
     fn needs_path_data(&self) -> bool {
         self.path_variable.is_some()
     }
@@ -5411,14 +5409,6 @@ mod tests {
     }
 
     #[test]
-    fn test_fixed_length_spec() {
-        let spec = VariableLengthSpec::fixed(2);
-        assert_eq!(spec.effective_min_hops(), 2);
-        assert_eq!(spec.max_hops, Some(2));
-        assert!(!spec.is_single_hop());
-    }
-
-    #[test]
     fn test_polymorphic_edge_filter() {
         // Test single relationship type with polymorphic edge
         let schema = create_test_schema();
@@ -5792,10 +5782,7 @@ impl ChainedJoinGenerator {
     /// Generate a CTE containing the chained JOIN query
     /// Even though it's not recursive, we wrap it in a CTE for consistency
     pub fn generate_cte(&self) -> Cte {
-        let cte_name = format!(
-            "chain_{}",
-            crate::query_planner::logical_plan::generate_cte_id()
-        );
+        let cte_name = format!("chain_{}", crate::server::query_context::generate_cte_id());
         let cte_sql = self.generate_query();
 
         // Wrap the query body with CTE name, like recursive CTE does

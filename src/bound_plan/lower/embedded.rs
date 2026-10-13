@@ -9,10 +9,7 @@
 //! reads a node table. This module builds that CTE, once per query, when a
 //! node of the label is first read ([`Lowerer::node_table`]).
 
-use std::sync::Arc;
-
 use crate::graph_catalog::graph_schema::{NodeRelation, NodeSchema};
-use crate::query_planner::logical_plan::LogicalPlan;
 use crate::render_plan::render_expr::{Literal, Operator, OperatorApplication, RenderExpr};
 use crate::render_plan::{
     Cte, CteContent, FilterItems, FromTableItem, GroupByExpressions, RenderPlan, SelectItems,
@@ -223,7 +220,6 @@ impl<'s> Lowerer<'s> {
                     distinct: false,
                 },
                 from: FromTableItem(Some(ViewTableRef {
-                    source: Arc::new(LogicalPlan::Empty),
                     name: table,
                     alias: Some(ROW.to_string()),
                     use_final: source.use_final,
@@ -241,7 +237,6 @@ impl<'s> Lowerer<'s> {
                 union: UnionItems(Some(Union {
                     input,
                     union_type: UnionType::All,
-                    is_cypher_union: false,
                 })),
                 ..empty_plan()
             })),
@@ -290,7 +285,6 @@ impl<'s> Lowerer<'s> {
                     distinct: false,
                 },
                 from: FromTableItem(Some(ViewTableRef {
-                    source: Arc::new(LogicalPlan::Empty),
                     name: rows,
                     alias: Some(ROW.to_string()),
                     use_final: false,

@@ -33,6 +33,7 @@
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 
 use crate::graph_catalog::graph_schema::GraphSchema;
@@ -208,6 +209,44 @@ pub fn get_current_dialect() -> SqlDialect {
     QUERY_CONTEXT
         .try_with(|ctx| ctx.borrow().dialect)
         .unwrap_or_default()
+}
+
+/// Process-global fallback for generated aliases, used only outside a query
+/// context (unit tests). Inside one, the counter is per query
+/// (`QueryContext::alias_counter`).
+static ALIAS_COUNTER: AtomicU32 = AtomicU32::new(1);
+
+/// Generate a simple, human-readable alias for anonymous nodes/edges.
+/// Returns "t1", "t2", "t3", etc. Much easier to read than UUID hex strings!
+pub fn generate_id() -> String {
+    let n = next_query_counter(QueryCounter::Alias)
+        .unwrap_or_else(|| ALIAS_COUNTER.fetch_add(1, Ordering::SeqCst));
+    format!("t{}", n)
+}
+
+/// Restart the generated-alias and CTE counters for deterministic SQL.
+/// Called at the start of each translation (`translate::translate_read`).
+///
+/// Inside a query context this resets only THAT query's counters. The
+/// process-global fallbacks are reset only when there is no context: a global
+/// reset used to rewind the counters of other requests being translated
+/// concurrently, so the same `t{N}` could be issued twice in one query.
+pub fn reset_all_counters() {
+    if !reset_query_counters() {
+        ALIAS_COUNTER.store(1, Ordering::SeqCst);
+        CTE_COUNTER.store(1, Ordering::SeqCst);
+    }
+}
+
+/// Process-global fallback for CTE names outside a query context.
+static CTE_COUNTER: AtomicU32 = AtomicU32::new(1);
+
+/// Generate a simple, human-readable CTE name.
+/// Returns "cte1", "cte2", "cte3", etc. Much shorter than UUID strings!
+pub fn generate_cte_id() -> String {
+    let n = next_query_counter(QueryCounter::Cte)
+        .unwrap_or_else(|| CTE_COUNTER.fetch_add(1, Ordering::SeqCst));
+    format!("cte{}", n)
 }
 
 /// Which per-query counter to advance (see [`next_query_counter`]).

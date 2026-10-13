@@ -1,7 +1,7 @@
 use crate::clickhouse_query_generator::variable_length_cte::VariableLengthCteGenerator;
 use crate::graph_catalog::config::Identifier;
 use crate::graph_catalog::graph_schema::GraphSchema;
-use crate::query_planner::logical_plan::VariableLengthSpec;
+use crate::render_plan::variable_length::VariableLengthSpec;
 use std::collections::HashMap;
 
 /// Helper to create a minimal test schema for VLC tests

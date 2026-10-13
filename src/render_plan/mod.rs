@@ -3,7 +3,7 @@ pub mod cte_manager;
 pub(crate) mod expression_utils;
 mod filter_pipeline;
 pub(crate) mod filter_sql;
-mod from_table;
+pub mod variable_length;
 mod view_table_ref;
 
 use render_expr::{ColumnAlias, OperatorApplication, RenderExpr};
@@ -11,19 +11,7 @@ use render_expr::{ColumnAlias, OperatorApplication, RenderExpr};
 pub use cte_generation::CteGenerationContext;
 pub use cte_manager::{CteError, CteGenerationResult, CteManager};
 pub use filter_pipeline::CategorizedFilters;
-pub use from_table::FromTable;
 pub use view_table_ref::ViewTableRef;
-
-/// Maximum recursion depth for plan/expression tree traversal functions.
-/// Prevents stack overflow and OOM from pathologically deep or cyclic plan trees.
-/// Normal queries rarely exceed depth 50; 200 is generous while protecting against DoS.
-pub const MAX_TRAVERSAL_DEPTH: usize = 200;
-
-/// Maximum total number of nodes allowed in a plan tree.
-/// Prevents OOM from plan width explosion (e.g., UNION distribution through deep trees
-/// can create N^D nodes where N = branch count, D = depth).
-/// Normal queries produce plans with < 100 nodes; 10,000 is generous.
-pub const MAX_PLAN_NODES: usize = 10_000;
 
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -152,14 +140,6 @@ pub struct UnionItems(pub Option<Union>);
 pub struct Union {
     pub input: Vec<RenderPlan>,
     pub union_type: UnionType,
-    /// True when this comes from an explicit Cypher `UNION` clause: each
-    /// branch is an independent complete query, so aggregation / GROUP BY /
-    /// ORDER BY / LIMIT apply WITHIN each branch and must never be hoisted
-    /// over the union (#487). False for planner-internal unions (multi-label
-    /// scans, denormalized from/to, bidirectional expansion) where outer
-    /// aggregation applies OVER the combined branches.
-    #[serde(default)]
-    pub is_cypher_union: bool,
 }
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]

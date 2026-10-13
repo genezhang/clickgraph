@@ -185,7 +185,7 @@ Content-Type: application/json
   - `planning_time_ms` (number): Time to plan query
   - `sql_generation_time_ms` (number): Time to generate SQL
   - `total_time_ms` (number): Total translation time
-- `logical_plan` (string, optional): The result shape, each RETURN item's kind and columns (when `include_plan=true`; for a PageRank CALL, its plan)
+- `logical_plan` (string, optional): The result shape, each RETURN item's kind and columns (when `include_plan=true`; for a PageRank CALL, its arguments)
 
 **Example Usage:**
 
