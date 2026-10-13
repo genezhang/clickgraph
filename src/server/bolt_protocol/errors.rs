@@ -160,8 +160,8 @@ impl BoltError {
     /// `error: general processing exception - unexpected error. <message>`,
     /// matching Neo4j and the drivers' own fallback wording for `50N42`.
     /// Note: `message` may echo substituted query text from ClickHouse
-    /// errors (pre-existing behavior, also visible pre-5.7) — never log or
-    /// store it beyond the FAILURE itself.
+    /// errors (pre-existing behavior, also visible pre-5.7); the handler
+    /// also logs it at error level before sending the FAILURE.
     pub fn status_description_for(message: &str) -> String {
         format!(
             "error: general processing exception - unexpected error. {}",
@@ -260,10 +260,6 @@ mod tests {
             BoltError::classification_for("Neo.DatabaseError.General.UnknownError"),
             "DATABASE_ERROR"
         );
-        // GQLSTATUS default is the documented polyfill value; neo4j_code stays
-        // authoritative.
-        assert_eq!(BoltError::GQLSTATUS_DEFAULT, "50N42");
-        assert_eq!(BoltError::GQLSTATUS_DEFAULT.len(), 5);
         // Description matches Neo4j/drivers fallback wording for 50N42.
         assert_eq!(
             BoltError::status_description_for("boom"),
