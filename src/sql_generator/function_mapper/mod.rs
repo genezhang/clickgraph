@@ -607,6 +607,16 @@ pub(crate) struct Lists {
     /// The list `{0}` without its repeated elements, each where it first
     /// occurs.
     pub distinct: fn(&str) -> String,
+    /// Whether the list `{0}`, of no NULL, has an element equal to `{1}`
+    /// (a tuple of the type of its elements).
+    pub contains: fn(&str, &str) -> String,
+    /// The elements of the list `{0}` that the list `{1}` has, once each
+    /// (by hashing, not one search per element).
+    pub intersect: fn(&str, &str) -> String,
+    /// The list `{0}` in ascending order.
+    pub sorted: fn(&str) -> String,
+    /// A 64-bit hash of the value `{0}` (a list of tuples).
+    pub fingerprint: fn(&str) -> String,
 }
 
 /// An entry of a map ([`Lists::map_of`]).

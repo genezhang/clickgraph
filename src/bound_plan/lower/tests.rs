@@ -5537,8 +5537,15 @@ fn a_subquery_whose_pattern_matches_nothing_is_a_constant() {
 
 #[test]
 fn subquery_shapes_not_lowered() {
-    not_lowered(
+    // In a comprehension, reading none of its elements: one value a row
+    // (S11o9).
+    has(
         "MATCH (a:User) RETURN [x IN [1, 2] WHERE EXISTS { (a)-[:FOLLOWS]->() }] AS l",
+        &["arrayFilter(v4 -> coalesce(s1.__value, false), [1, 2]) AS \"l\""],
+    );
+    not_lowered(
+        "MATCH (a:User) RETURN [x IN [1, 2] WHERE EXISTS { (a)-[:FOLLOWS]->(b) WHERE b.age > x }] \
+         AS l",
         "inside a list comprehension",
     );
     not_lowered(
@@ -6541,4 +6548,77 @@ fn a_collected_map_read_by_its_keys() {
         let err = translate_bound_plan(q, &social(), &ReadOptions::default()).unwrap_err();
         assert!(err.contains(why), "{q}: {err}");
     }
+}
+
+/// S11o9: a pattern predicate of a list comprehension's element (LDBC
+/// IC 10's `[p IN posts WHERE (p)-[:HAS_TAG]->()<-[:HAS_INTEREST]-(person)]`)
+/// is whether the element is one of the nodes in its place of the matches,
+/// by its label and identity: looked for from the list's elements (a row per
+/// element, the rows joined by a hash of the list's identities); false for a
+/// NULL element, and when the node cannot have the element's label.
+#[test]
+fn a_pattern_predicate_of_a_comprehension_element() {
+    let follows =
+        "MATCH (u:User) OPTIONAL MATCH (u)-[:FOLLOWS]->(f:User) WITH u, collect(f) AS fs ";
+    has(
+        &format!("{follows}RETURN size([x IN fs WHERE (x)-[:AUTHORED]->()]) AS a"),
+        &[
+            "cityHash64(arraySort(arrayDistinct(arrayMap(__cg_e -> tuple(tupleElement(__cg_e, \
+             1)), w2.v4)))) AS \"__cg_members\"",
+            "ARRAY JOIN arrayDistinct(arrayMap(__cg_e -> tuple(tupleElement(__cg_e, 1)), w2.v4)) \
+             AS __cg_member",
+            "JOIN test_integration.posts_test AS v6 ON v6.author_id = d3.v5__user_id",
+            "arrayDistinct(arrayMap(t -> t.1, groupArray(tuple(tuple('User', d3.v5__user_id)))))",
+            "CASE WHEN tupleElement(v9, 1) IS NULL THEN false WHEN has(arrayIntersect(s4.__value, \
+             arrayMap(__cg_e -> tuple('User', tupleElement(__cg_e, 1)), w2.v4)), tuple('User', \
+             tupleElement(v9, 1))) THEN true ELSE false END",
+            "LEFT JOIN subquery_s4 AS s4 ON cityHash64(arraySort(arrayDistinct(arrayMap(__cg_e -> \
+             tuple(tupleElement(__cg_e, 1)), w2.v4)))) = s4.__cg_members",
+        ],
+    );
+    // The node may have several labels: the element's only.
+    let got = squash(&sql(&format!(
+        "{follows}RETURN size([x IN fs WHERE (x)<-[:FOLLOWS|AUTHORED]-()]) AS a"
+    )));
+    assert!(got.contains("ARRAY JOIN"), "{got}");
+    assert!(!got.contains("_labels"), "no union of labels: {got}");
+    // A label the element cannot have: false, no subquery.
+    has(
+        &format!("{follows}RETURN size([x IN fs WHERE (x:Post)<-[:LIKED]-()]) AS z"),
+        &["length(arrayFilter(v9 -> false, w2.v4)) AS \"z\""],
+    );
+    // A list reading another comprehension's element: the matches in the
+    // whole graph.
+    let got = squash(&sql(&format!(
+        "{follows}RETURN [x IN fs | size([y IN [x] WHERE (y)-[:AUTHORED]->()])] AS a"
+    )));
+    assert!(!got.contains("ARRAY JOIN"), "{got}");
+    assert!(got.contains("has(arrayIntersect("), "{got}");
+    not_lowered(
+        &format!("{follows}RETURN [x IN fs WHERE size([y IN fs WHERE (x)-->(y)]) > 0] AS a"),
+        "a subquery expression inside a list comprehension, reduce or lambda",
+    );
+    not_lowered(
+        &format!("{follows}RETURN [x IN fs WHERE EXISTS {{ (x)-->(y) WHERE x.age > 3 }}] AS a"),
+        "a subquery expression inside a list comprehension, reduce or lambda",
+    );
+    not_lowered(
+        &format!("{follows}RETURN [x IN fs WHERE (x)-[:FOLLOWS]->(y)] AS a"),
+        "PatternExpressions are not allowed to introduce new variables: 'y'",
+    );
+}
+
+/// `datetime({epochMillis: x})` is `x`; a component of it converts it
+/// first, inline as through a WITH (LDBC IC 10's `birthday.month`).
+#[test]
+fn a_component_of_an_epoch_millis_datetime() {
+    has(
+        "MATCH (u:User) WITH u, datetime({epochMillis: u.age}) AS b \
+         WHERE b.month = 6 RETURN b.day AS d, datetime({epochMillis: u.age}).year AS y",
+        &[
+            "toMonth(fromUnixTimestamp64Milli(v0.age)) = 6",
+            "toDayOfMonth(fromUnixTimestamp64Milli(w1.v2)) AS \"d\"",
+            "toYear(fromUnixTimestamp64Milli(w1.p2_v1_age)) AS \"y\"",
+        ],
+    );
 }

@@ -1038,10 +1038,16 @@ impl Binder {
                 "internal: a subquery that is not a MATCH".to_string(),
             ));
         };
-        if sq.kind == RawKind::Predicate {
+        if matches!(
+            sq.kind,
+            RawKind::Predicate | RawKind::Members { predicate: true }
+        ) {
+            // The node in a list comprehension's element's place is the
+            // element's (S11o9).
             if let Some(name) = introduces
                 .iter()
-                .find_map(|v| self.binding(*v).name.clone())
+                .filter_map(|v| self.binding(*v).name.clone())
+                .find(|n| n != super::expr::MEMBER)
             {
                 return Err(BindError::Invalid(format!(
                     "PatternExpressions are not allowed to introduce new variables: '{name}'."
@@ -1053,6 +1059,12 @@ impl Binder {
             .as_ref()
             .map(|p| self.expr(p, &[&inner]))
             .transpose()?;
+        // In the enclosing scope (it reads no local, `expr.rs`).
+        let of = sq
+            .elements
+            .as_ref()
+            .map(|l| self.expr(l, scopes))
+            .transpose()?;
         if let Some(p) = &projection {
             no_aggregate(
                 p,
@@ -1062,7 +1074,7 @@ impl Binder {
         // The correlation: the scope's variables the subquery reads (the
         // pattern's, and in its expressions, nested subqueries' included).
         let mut reads: Vec<VarId> = Vec::new();
-        let mut exprs: Vec<&LogicalExpr> = predicate.iter().chain(&projection).collect();
+        let mut exprs: Vec<&LogicalExpr> = predicate.iter().chain(&projection).chain(&of).collect();
         for part in &pattern.parts {
             for n in &part.nodes {
                 if n.bound_before {
@@ -1091,7 +1103,15 @@ impl Binder {
             (RawKind::Exists | RawKind::Predicate, _) => SubqueryKind::Exists,
             (RawKind::Count, _) => SubqueryKind::Count,
             (RawKind::Collect, Some(p)) => SubqueryKind::Collect(p),
-            (RawKind::Collect, None) => {
+            (RawKind::Members { .. }, Some(LogicalExpr::TableAlias(TableAlias(m)))) => {
+                let Some(node) = parse_var(&m) else {
+                    return Err(BindError::Unsupported(
+                        "internal: a members subquery without its node".to_string(),
+                    ));
+                };
+                SubqueryKind::Members { node, of }
+            }
+            (RawKind::Collect | RawKind::Members { .. }, _) => {
                 return Err(BindError::Unsupported(
                     "internal: a pattern comprehension without its projection".to_string(),
                 ))

@@ -11,6 +11,10 @@
 
 ### 🐛 Bug Fixes
 
+- **A pattern predicate on a list comprehension's element was "Not supported"** (`[p IN posts WHERE (p)-[:HAS_TAG]->()<-[:HAS_INTEREST]-(person)]`, LDBC IC 10). It now lowers: the pattern is matched from the elements of each row's list, so the cost follows the lists' sizes. A NULL element gives false, as in Neo4j. A subquery inside a comprehension that reads none of its elements (`[x IN [1, 2] WHERE EXISTS { (a)-->() }]`) also lowers now.
+
+- **`datetime({epochMillis: x}).month` read inline failed on ClickHouse** (Code 43, `toMonth` of an Int64). Through a WITH it converted the milliseconds first; read inline it did not. Both forms now convert.
+
 - **`head(collect({…}))` and `collect({…})[i]` read by key were "Not supported".** A WITH can now carry them and later clauses read their keys, including a node property under a key (`latestLike.msg.id`). This covers LDBC IC 7 and BI 14.
 
 - **`p IS NULL` of a path was "Not supported".** It is now true where an OPTIONAL MATCH left the path unmatched (LDBC IC 13).
