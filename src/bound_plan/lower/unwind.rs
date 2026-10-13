@@ -28,13 +28,13 @@ use std::collections::{BTreeSet, HashMap};
 use crate::graph_catalog::expression_parser::PropertyValue;
 use crate::graph_catalog::schema_types::SchemaType;
 use crate::query_planner::logical_expr::{self as lx, LogicalExpr};
-use crate::render_plan::render_expr::{Literal, RenderExpr, TableAlias};
+use crate::render_plan::render_expr::{Literal, RenderCase, RenderExpr, TableAlias};
 use crate::render_plan::RenderPlan;
 use crate::render_plan::{ArrayJoin, OrderByItem, OrderByOrder};
 use crate::sql_generator::emitters::clickhouse::to_sql_query::{
     order_keys_to_sql_plain, render_expr_to_sql_plain, render_plan_parts_plain,
 };
-use crate::sql_generator::function_mapper::current_function_mapper;
+use crate::sql_generator::function_mapper::{current_function_mapper, Unwind};
 
 use super::elements::Elem;
 use super::{
@@ -567,6 +567,11 @@ impl<'s> Lowerer<'s> {
             self.number_rows()?;
         }
         let e = self.held_list(expr, &HashMap::new())?;
+        // (A NULL `split()` whose NULL `null_list.rs` does not know: no rows.)
+        let e = match self.list_null(expr, &HashMap::new())? {
+            super::null_list::ListNull::Unknown => self.split_of_null(expr, e, &spelling)?,
+            _ => e,
+        };
         let element = kind.element();
         let list = match kind {
             Kind::List(_) => e,
@@ -638,6 +643,35 @@ impl<'s> Lowerer<'s> {
         self.close_segment(body, exports, alias)?;
         self.one_row = false;
         Ok(())
+    }
+
+    /// `split(s, d)` is NULL when `s` or `d` is (Cypher), and ClickHouse's
+    /// split of NULL is `['']`: UNWIND of it gives no rows.
+    fn split_of_null(
+        &self,
+        expr: &LogicalExpr,
+        list: RenderExpr,
+        spelling: &Unwind,
+    ) -> Result<RenderExpr, LowerError> {
+        let LogicalExpr::ScalarFnCall(f) = expr else {
+            return Ok(list);
+        };
+        if !f.name.eq_ignore_ascii_case("split") || f.args.is_empty() {
+            return Ok(list);
+        }
+        let mut null = Vec::new();
+        for a in &f.args {
+            let a = render_expr_to_sql_plain(&self.expr(a, &HashMap::new())?);
+            null.push((spelling.is_null)(&a));
+        }
+        Ok(RenderExpr::Case(RenderCase {
+            expr: None,
+            when_then: vec![(
+                RenderExpr::Raw(null.join(" OR ")),
+                RenderExpr::List(Vec::new()),
+            )],
+            else_expr: Some(Box::new(list)),
+        }))
     }
 
     /// The rows so far, in their order (rows in no order: in any, fixed by

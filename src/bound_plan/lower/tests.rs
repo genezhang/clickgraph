@@ -4132,7 +4132,7 @@ fn an_unwind_of_what_is_not_a_list() {
     // `split()` of NULL is NULL: no rows (ClickHouse's is `['']`).
     has(
         "MATCH (a:User) UNWIND split(a.name, ',') AS s RETURN s",
-        &["ARRAY JOIN CASE WHEN v0.full_name IS NULL THEN [] ELSE splitByChar(',', coalesce(v0.full_name, '')) END"],
+        &["ARRAY JOIN CASE WHEN isNull(v0.full_name) OR isNull(',') THEN [] ELSE"],
     );
     has(
         "MATCH (a:User) UNWIND a.name AS x RETURN x",
@@ -4281,19 +4281,10 @@ fn databricks_size_of_a_list() {
         &social(),
     )
     .unwrap();
-    assert!(
-        // Spark has NULL arrays: `split()` of NULL is one already, and its
-        // size NULL.
-        got.contains("array_size(split("),
-        "{got}"
-    );
-    // `split()` of NULL is NULL (held as `[]`), its size NULL (#1377).
+    assert!(got.contains("array_size(split("), "{got}");
     has(
         "MATCH (u:User) RETURN size(split(u.email, '@')) AS n",
-        &[
-            "CASE WHEN v0.email_address IS NULL THEN NULL ELSE length(CASE WHEN \
-           v0.email_address IS NULL THEN [] ELSE splitByChar('@', coalesce(v0.email_address, '')) END) END",
-        ],
+        &["length(splitByChar('@', v0.email_address))"],
     );
 }
 
@@ -4838,23 +4829,26 @@ fn comprehension_parameters_compare_as_values() {
     );
 }
 
-/// #1377 / #1364 / #1454 (user 2026-10-13): a NULL list is held as `[]`
-/// (ClickHouse has no NULL array); what tells NULL from `[]` reads where
-/// the NULL comes from, carried by a WITH as `{v}__null`; the final RETURN
-/// returns NULL there.
+/// #1377 / #1364 / #1454 (user 2026-10-13): ClickHouse has no NULL array.
+/// Where a list's NULL is known, what tells it from `[]` reads that
+/// condition, the list as it takes it held with `[]` for NULL; a WITH
+/// carries both beside the list as anything else reads it (`{v}__null`,
+/// `{v}__held`); the final RETURN returns NULL where the condition holds.
 #[test]
 fn a_null_list_is_told_by_its_source() {
     has(
         "UNWIND [1, 2] AS x WITH x, CASE WHEN x > 1 THEN [x] END AS l \
-         RETURN l, l IS NULL AS n, size(l) AS s, l + [9] AS p",
+         RETURN l, l IS NULL AS n, size(l) AS s, l + [9] AS p, {k: l} AS m",
         &[
-            r#"CASE WHEN w1.v0 > 1 THEN [w1.v0] ELSE [] END AS "v2""#,
+            r#"CASE WHEN w1.v0 > 1 THEN [w1.v0] END AS "v2""#,
             r#"CASE WHEN w1.v0 > 1 THEN false ELSE true END AS "v2__null""#,
-            r#"if(w2.v2__null, NULL, CAST(w2.v2, 'Dynamic')) AS "l""#,
+            r#"CASE WHEN w1.v0 > 1 THEN [w1.v0] ELSE [] END AS "v2__held""#,
+            r#"if(w2.v2__null, NULL, CAST(w2.v2__held, 'Dynamic')) AS "l""#,
             r#"w2.v2__null AS "n""#,
-            r#"CASE WHEN w2.v2__null THEN NULL ELSE length(w2.v2) END AS "s""#,
-            "CASE WHEN w2.v2__null THEN arrayFilter(__cg_e -> false, arrayConcat(w2.v2, [9])) \
-             ELSE arrayConcat(w2.v2, [9]) END",
+            r#"CASE WHEN w2.v2__null THEN NULL ELSE length(w2.v2__held) END AS "s""#,
+            "arrayFilter(__cg_e -> NOT (w2.v2__null), arrayConcat(w2.v2__held, [9]))",
+            // Anything else reads the list as it always did.
+            r#"map('k', CAST(w2.v2, 'Dynamic')) AS "m""#,
         ],
     );
     // count() / collect() skip it; grouped by it too.
@@ -4863,23 +4857,30 @@ fn a_null_list_is_told_by_its_source() {
          RETURN count(l) AS c, count(DISTINCT l) AS d, collect(l) AS cl",
         &[
             r#"count(CASE WHEN w2.v1__null THEN NULL ELSE 1 END) AS "c""#,
-            r#"length(arrayDistinct(groupArrayIf(w2.v1, NOT w2.v1__null))) AS "d""#,
-            r#"groupArrayIf((w2.__o0, w2.v1), NOT w2.v1__null))), []) AS "cl""#,
+            r#"length(arrayDistinct(groupArrayIf(w2.v1__held, NOT w2.v1__null))) AS "d""#,
+            r#"groupArrayIf((w2.__o0, w2.v1__held), NOT w2.v1__null))), []) AS "cl""#,
         ],
     );
     has(
         "UNWIND [1, 2] AS x WITH CASE WHEN x > 1 THEN [x] END AS l RETURN l, count(*) AS c",
-        &["toString(w2.v1))), w2.v1__null"],
+        &[
+            r#"any(if(w2.v1__null, NULL, CAST(w2.v1__held, 'Dynamic'))) AS "l""#,
+            "toString(w2.v1__held))), w2.v1__null",
+        ],
     );
-    // split() of NULL: NULL, split as '' (an array is no `Nullable`).
+    // split() of a CASE's NULL: NULL; of a column, as it always was.
     has(
-        "UNWIND ['a,b', null] AS s RETURN split(s, ',') IS NULL AS n",
-        &[r#"w1.v0 IS NULL AS Nullable(Bool)) AS "n""#],
+        "UNWIND [1, 2] AS x RETURN split(CASE WHEN x > 1 THEN 'a,b' END, ',') IS NULL AS n, \
+         split(toString(x), ',') AS t",
+        &[
+            r#"CASE WHEN w1.v0 > 1 THEN false ELSE true END AS "n""#,
+            r#"splitByChar(',', toString(w1.v0)) AS "t""#,
+        ],
     );
     // ORDER BY: NULL last ascending (its condition first); reduce() over
     // it NULL; carried into an OPTIONAL MATCH and joined on.
     has(
-        "UNWIND ['a', null] AS s WITH split(s, ',') AS l \
+        "UNWIND [1, 2] AS x WITH split(CASE WHEN x > 1 THEN 'a,b' END, ',') AS l \
          RETURN reduce(t = '', y IN l | t + y) AS r ORDER BY l",
         &[
             "CASE WHEN w2.v1__null THEN NULL ELSE arrayFold(",
@@ -4887,15 +4888,14 @@ fn a_null_list_is_told_by_its_source() {
         ],
     );
     has(
-        "UNWIND ['a', null] AS s WITH s, split(s, ',') AS l \
-         OPTIONAL MATCH (u:User) WHERE u.user_id = 1 AND l IS NULL RETURN s, u.name",
+        "UNWIND [1, 2] AS x WITH x, split(CASE WHEN x > 1 THEN 'a,b' END, ',') AS l \
+         OPTIONAL MATCH (u:User) WHERE u.user_id = 1 AND l IS NULL RETURN x, u.name",
         &[
             "d3.v2__null",
             "(w2.v2__null = o4.v2__null OR (w2.v2__null IS NULL AND o4.v2__null IS NULL))",
         ],
     );
-    // Held as `[]` only beside its condition: inside a list (or a map, an
-    // aggregate) a NULL stays NULL (review).
+    // Not held outside a reader: inside a list a NULL stays NULL (review).
     has(
         "UNWIND [1, 2] AS x RETURN [CASE WHEN x > 1 THEN [x] END, [5]] AS ll",
         &["[CASE WHEN w1.v0 > 1 THEN [w1.v0] END, [5]]"],
@@ -4955,7 +4955,7 @@ fn in_a_list_expression_is_three_valued() {
     // A NULL list (held as `[]`, `null_list.rs`): NULL by its source.
     has(
         "UNWIND [1, 2] AS x WITH x, CASE WHEN x > 1 THEN [x] END AS l RETURN 5 IN l AS i",
-        &["CASE WHEN w2.v2__null THEN NULL WHEN length(w2.v2) = 0 THEN false"],
+        &["CASE WHEN w2.v2__null THEN NULL WHEN length(w2.v2__held) = 0 THEN false"],
     );
     // `null IN []` is false; `x IN null` is NULL.
     has(

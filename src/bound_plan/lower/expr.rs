@@ -244,11 +244,6 @@ impl Lowerer<'_> {
     }
 
     pub(super) fn expr(&self, e: &LogicalExpr, items: &Items) -> Result<RenderExpr, LowerError> {
-        // A list held as `[]` where it is NULL, used as a value: NULL there
-        // (`null_list.rs`).
-        if let Some(v) = self.unheld(e, items)? {
-            return Ok(v);
-        }
         Ok(match e {
             LogicalExpr::Literal(l) => RenderExpr::Literal(literal(l)),
             LogicalExpr::Parameter(p) => RenderExpr::Parameter(p.clone()),
@@ -531,13 +526,16 @@ impl Lowerer<'_> {
 
     /// A list comprehension: `[x IN list WHERE p]` (`Filter`) or `[x IN list
     /// | e]` (`Map`). NULL when the list is.
-    fn comprehension(
+    /// `held`: its list as an operation that knows its NULL takes it
+    /// (`Lowerer::held_list`, `null_list.rs`).
+    pub(super) fn comprehension(
         &self,
         how: Comprehension,
         x: VarId,
         body: &LogicalExpr,
         list: &LogicalExpr,
         items: &Items,
+        held: bool,
     ) -> Result<RenderExpr, LowerError> {
         let Some(spelling) = current_function_mapper().lists() else {
             return unsupported("a list comprehension in this SQL dialect");
@@ -545,7 +543,10 @@ impl Lowerer<'_> {
         // Also gives the parameter its kind (an element of the list's).
         let kind = self.kind(list);
         self.local_kinds.borrow_mut().insert(x, kind.element());
-        let list = self.held_list(list, items)?;
+        let list = match held {
+            true => self.held_list(list, items)?,
+            false => self.expr(list, items)?,
+        };
         if kind == Kind::Null || matches!(list, RenderExpr::Literal(Literal::Null)) {
             return Ok(RenderExpr::Literal(Literal::Null));
         }
@@ -828,7 +829,7 @@ impl Lowerer<'_> {
             };
         }
         if let (O::Addition, [a, b]) = (op.operator, op.operands.as_slice()) {
-            if let Some(e) = self.list_addition(a, b, items)? {
+            if let Some(e) = self.list_addition(a, b, items, false)? {
                 return Ok(e);
             }
         }
@@ -1556,11 +1557,14 @@ impl Lowerer<'_> {
     /// appended or prepended as a list of itself; NULL with NULL. `None`
     /// when neither side is known to be a list (the emitter decides).
     /// ClickHouse's `plus` of arrays adds them element by element.
+    /// `held`: as an operation that knows its NULL takes it, its lists
+    /// held, NULL (`[]`) where either is (`null_list.rs`).
     pub(super) fn list_addition(
         &self,
         a: &LogicalExpr,
         b: &LogicalExpr,
         items: &Items,
+        held: bool,
     ) -> Result<Option<RenderExpr>, LowerError> {
         let (ka, kb) = (self.kind(a), self.kind(b));
         if !matches!(ka, Kind::List(_)) && !matches!(kb, Kind::List(_)) {
@@ -1590,13 +1594,17 @@ impl Lowerer<'_> {
                 Kind::Scalar | Kind::Boolean => RenderExpr::List(vec![self.element(e, items)?]),
                 // A list, or a value that must be one (ClickHouse refuses
                 // to concatenate anything else).
-                _ => self.held_list(e, items)?,
+                _ if held => self.held_list(e, items)?,
+                _ => self.expr(e, items)?,
             });
         }
         let concat = RenderExpr::ScalarFnCall(ScalarFnCall {
             name: current_function_mapper().array_concat().to_string(),
             args,
         });
+        if !held {
+            return Ok(Some(concat));
+        }
         // NULL (held as `[]`, `null_list.rs`) where either list is.
         let mut parts = Vec::new();
         for x in [a, b] {
@@ -1614,7 +1622,7 @@ impl Lowerer<'_> {
             );
         }
         Ok(Some(match null_list::ListNull::any(parts) {
-            null_list::ListNull::When(c) => null_list::empty_where(c, concat, true),
+            null_list::ListNull::When(c) => null_list::empty_unless(c, concat),
             _ => concat,
         }))
     }
@@ -1837,6 +1845,8 @@ impl Lowerer<'_> {
         let result = |t: &LogicalExpr| -> Result<RenderExpr, LowerError> {
             match t {
                 LogicalExpr::Literal(lx::Literal::Null) if lists => Ok(empty.clone()),
+                // A list result held too (a NULL one as `[]`).
+                t if lists && matches!(self.kind(t), Kind::List(_)) => self.held_list(t, items),
                 t => self.expr(t, items),
             }
         };
@@ -2095,7 +2105,7 @@ impl Lowerer<'_> {
             );
         }
         if let Some((how, x, body, list)) = comprehension(f) {
-            return self.comprehension(how, x, body, list, items);
+            return self.comprehension(how, x, body, list, items, false);
         }
         // `size()` of a path's list: from the path's structure (`value.rs`).
         // `length()` of a path's nodes / relationships is their size: Neo4j
@@ -2286,12 +2296,11 @@ impl Lowerer<'_> {
             return unsupported(format!("{}() of a map", f.name));
         }
         // A list these read is held (a NULL one as `[]`, `null_list.rs`):
-        // `head` / `last` of it is NULL, and the list `tail` / `reverse`
-        // give is NULL where it is (`Lowerer::unheld`); `isEmpty` reads it
+        // `head` / `last` of it is NULL; `isEmpty` reads its NULL
         // (`Lowerer::list_fn`).
         let reads_list = matches!(
             f.name.to_ascii_lowercase().as_str(),
-            "head" | "last" | "tail" | "reverse" | "isempty"
+            "head" | "last" | "isempty"
         );
         let args = f
             .args
@@ -2415,7 +2424,8 @@ impl Lowerer<'_> {
         }
         // A list that may be NULL, held as `[]` (`null_list.rs`): its least /
         // greatest of the rows where it is not NULL.
-        if let (Some(arg), "min" | "max", false) = (arg, name.as_str(), distinct) {
+        // (DISTINCT changes no least or greatest.)
+        if let (Some(arg), "min" | "max") = (arg, name.as_str()) {
             if matches!(self.kind(arg), Kind::List(_)) && !self.holds_elements(arg) {
                 if let null_list::ListNull::When(c) = self.list_null(arg, items)? {
                     let Some(spelling) = current_function_mapper().lists() else {

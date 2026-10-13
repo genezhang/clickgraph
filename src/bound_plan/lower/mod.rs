@@ -573,7 +573,7 @@ struct Segment<'s> {
     elided: HashMap<VarId, VarId>,
     graph_values: HashMap<VarId, Carried>,
     map_keys: HashMap<VarId, MapKeys>,
-    list_nulls: HashMap<VarId, Option<RenderExpr>>,
+    list_nulls: HashMap<VarId, Option<null_list::NullList>>,
 }
 
 /// One column an OPTIONAL MATCH's matches are joined to the input rows on:
@@ -632,10 +632,11 @@ struct Lowerer<'s> {
     /// Map values the segment's CTE carries with each key's value (S11m):
     /// a map literal a WITH projected; each is also in `values`.
     map_keys: HashMap<VarId, MapKeys>,
-    /// When each list value the segment's CTE carries is NULL (`null_list.rs`):
-    /// its `{v}__null` column (`None`: never NULL). A list not here is not
-    /// known to be either.
-    list_nulls: HashMap<VarId, Option<RenderExpr>>,
+    /// When each list value the segment's CTE carries is NULL, and the
+    /// list held so (`null_list.rs`): its `{v}__null` and `{v}__held`
+    /// columns (`None`: never NULL). A list not here is not known to be
+    /// either.
+    list_nulls: HashMap<VarId, Option<null_list::NullList>>,
     /// What each projected or unwound value is (`unwind.rs`).
     kinds: HashMap<VarId, unwind::Kind>,
     /// Projected values that are never a boolean (`Lowerer::never_boolean`).
@@ -1028,7 +1029,7 @@ impl<'s> Lowerer<'s> {
                 self.relation(input)?;
                 let exprs: Vec<&LogicalExpr> = keys.iter().map(|k| &k.expr).collect();
                 self.apply_subqueries(&exprs)?;
-                let keys = self.sort_keys(keys, &HashMap::new())?;
+                let keys = self.sort_keys(keys, &HashMap::new(), false)?;
                 // Sorting by constants keeps the order the rows had.
                 if !keys.is_empty() {
                     self.order = RowOrder::Keys(keys);
@@ -1696,19 +1697,30 @@ impl<'s> Lowerer<'s> {
                 columns.push(column.clone());
                 // When a list is NULL (`null_list.rs`): its column too, and
                 // joined on (a NULL list and `[]` are held alike).
-                let null = match self.list_nulls.get(v) {
-                    Some(Some(n)) if !is_constant(n) => {
-                        let n_column = column_of(n, &w)?;
-                        q.list_nulls.insert(*v, Some(col_at(&d, &n_column)));
-                        columns.push(n_column.clone());
-                        Some((n_column, n.clone()))
+                let mut null_columns: Vec<(String, RenderExpr)> = Vec::new();
+                match self.list_nulls.get(v).cloned() {
+                    Some(Some(n)) => {
+                        let mut import = |e: RenderExpr| -> Result<RenderExpr, LowerError> {
+                            if is_constant(&e) {
+                                return Ok(e);
+                            }
+                            let c = column_of(&e, &w)?;
+                            columns.push(c.clone());
+                            if c != column {
+                                null_columns.push((c.clone(), e));
+                            }
+                            Ok(col_at(&d, &c))
+                        };
+                        let flag = import(n.flag)?;
+                        let held = import(n.held)?;
+                        q.list_nulls
+                            .insert(*v, Some(null_list::NullList { flag, held }));
                     }
-                    Some(n) => {
-                        q.list_nulls.insert(*v, n.clone());
-                        None
+                    Some(None) => {
+                        q.list_nulls.insert(*v, None);
                     }
-                    None => None,
-                };
+                    None => {}
+                }
                 if determined.contains(v) {
                     continue;
                 }
@@ -1719,7 +1731,7 @@ impl<'s> Lowerer<'s> {
                     // A value's nullability is not tracked.
                     null_safe: where_only.contains(v),
                 });
-                if let Some((n_column, n)) = null {
+                for (n_column, n) in null_columns {
                     correlation.push(Correlated {
                         inner: col_at(&d, &n_column),
                         outer: n,
@@ -5372,10 +5384,13 @@ impl<'s> Lowerer<'s> {
     // ------------------------------------------------------------- segments
 
     /// `ORDER BY` keys over the current relation (and a projection's items).
+    /// `grouped`: of a projection that groups (DISTINCT, an aggregation),
+    /// whose items it reads as its groups'.
     fn sort_keys(
         &self,
         keys: &[SortKey],
         items: &HashMap<VarId, RenderExpr>,
+        grouped: bool,
     ) -> Result<Vec<OrderByItem>, LowerError> {
         if keys.iter().any(|k| self.holds_elements(&k.expr)) {
             // A tuple would sort by its columns.
@@ -5427,11 +5442,13 @@ impl<'s> Lowerer<'s> {
             let e = match self.node_id_item(&k.expr) {
                 // As an `id(n)` item: by the node's key (S11e).
                 Some((v, _)) => self.identity_value(v)?,
-                None => self.held_list(&k.expr, items)?,
+                // (A list held where its NULL is known: `null_list.rs`.)
+                None if !grouped => self.held_list(&k.expr, items)?,
+                None => self.expr(&k.expr, items)?,
             };
             // A list that may be NULL, held as `[]` (`null_list.rs`): NULL
             // last ascending, first descending, as Neo4j sorts.
-            if matches!(self.kind(&k.expr), unwind::Kind::List(_)) {
+            if !grouped && matches!(self.kind(&k.expr), unwind::Kind::List(_)) {
                 if let null_list::ListNull::When(c) = self.list_null(&k.expr, items)? {
                     sorted.push(OrderByItem {
                         expression: c,
@@ -5641,12 +5658,14 @@ impl<'s> Lowerer<'s> {
                 },
                 _ => None,
             };
-            // Held as ClickHouse holds a NULL list, `[]`, beside its
-            // condition (`Lowerer::held_list`).
-            let e = match &list_null {
-                Some(Some(_)) => self.held_list(&it.expr, &HashMap::new())?,
-                _ => self.expr(&it.expr, &HashMap::new())?,
+            // The list held (its NULL as `[]`, `Lowerer::held_list`): what a
+            // WITH carries beside it, and grouping / DISTINCT key on; anything
+            // else reads the list as it is lowered.
+            let held = match &list_null {
+                Some(Some(_)) => Some(self.held_list(&it.expr, &HashMap::new())?),
+                _ => None,
             };
+            let e = self.expr(&it.expr, &HashMap::new())?;
             // A map or a list of maps (of `Dynamic` values) is grouped, and
             // made distinct, by its key (`CypherUnion::distinct_key`, as a
             // UNION's): ClickHouse groups no `Dynamic`, and compares `1` and
@@ -5663,7 +5682,7 @@ impl<'s> Lowerer<'s> {
             let map_key = match (self.holds_maps(&it.expr) || value_list) && !it.aggregate {
                 true => match current_function_mapper().cypher_union() {
                     Some(u) => Some(RenderExpr::Raw((u.distinct_key)(
-                        &render_expr_to_sql_plain(&e),
+                        &render_expr_to_sql_plain(held.as_ref().unwrap_or(&e)),
                     ))),
                     None if !aggregating && !body.distinct => None,
                     None => return unsupported("a grouped or DISTINCT map in this SQL dialect"),
@@ -5719,18 +5738,29 @@ impl<'s> Lowerer<'s> {
             }
             match cte {
                 // A constant needs no column: the next segment uses it as is.
-                Some(_) if is_constant(&e) => {
-                    if let Some(null) = list_null {
-                        exports.list_nulls.push((it.var, null));
+                Some(_) if is_constant(&e) && held.is_none() => {
+                    if let Some(None) = list_null {
+                        exports.list_nulls.push((it.var, None));
                     }
                     exports.values.push((it.var, e));
                 }
                 Some(alias) => {
                     let name = it.var.name();
-                    body.select.push(select(e, &name));
-                    if let Some(null) = list_null {
-                        let null = export_list_null(it.var, null, alias, &mut body);
+                    body.select.push(select(e.clone(), &name));
+                    let null = match (list_null, held.clone()) {
+                        (Some(Some(flag)), Some(held)) => {
+                            Some(Some(null_list::NullList { flag, held }))
+                        }
+                        (Some(None), _) => Some(None),
+                        _ => None,
+                    };
+                    if let Some(null) = null {
+                        let (null, added) = export_list_null(it.var, null, &e, alias, &mut body);
                         exports.list_nulls.push((it.var, null));
+                        // Grouped by its key, as the list is.
+                        if let (Some(added), true) = (added, map_key.is_some()) {
+                            body.determined.push(added);
+                        }
                     }
                     // Grouped by its key, not itself.
                     if map_key.is_some() {
@@ -5778,8 +5808,8 @@ impl<'s> Lowerer<'s> {
                     }
                 }
                 None => {
-                    let (e, null) = match list_null {
-                        Some(Some(c)) => {
+                    let (e, null) = match (list_null, held) {
+                        (Some(Some(c)), Some(held)) => {
                             let Some(spelling) = current_function_mapper().lists() else {
                                 return unsupported("a list that may be NULL in this SQL dialect");
                             };
@@ -5787,12 +5817,12 @@ impl<'s> Lowerer<'s> {
                             // it is NULL; the column follows from them.
                             if body.distinct && !aggregating {
                                 body.distinct_keys
-                                    .push(map_key.clone().unwrap_or_else(|| e.clone()));
+                                    .push(map_key.clone().unwrap_or_else(|| held.clone()));
                                 body.distinct_keys.push(c.clone());
                             }
                             let value = (spelling.null_list)(
                                 &render_expr_to_sql_plain(&c),
-                                &render_expr_to_sql_plain(&e),
+                                &render_expr_to_sql_plain(&held),
                             );
                             (RenderExpr::Raw(value), true)
                         }
@@ -5810,7 +5840,7 @@ impl<'s> Lowerer<'s> {
                 }
             }
         }
-        body.order_by = self.sort_keys(&p.order_by, &items_env)?;
+        body.order_by = self.sort_keys(&p.order_by, &items_env, aggregating || body.distinct)?;
         // Without its own ORDER BY, a projection keeps the order of its input
         // rows. The SQL keeps it only for a plain projection; after DISTINCT or
         // aggregation it is lost, so a SKIP / LIMIT relying on it is refused.
@@ -6468,9 +6498,9 @@ impl<'s> Lowerer<'s> {
                     continue;
                 }
                 if is_constant(&e) {
-                    exports.values.push((v, e));
+                    exports.values.push((v, e.clone()));
                 } else {
-                    body.select.push(select(e, &v.name()));
+                    body.select.push(select(e.clone(), &v.name()));
                     exports.values.push((v, col_at(alias, &v.name())));
                 }
                 if let Some(keys) = self.map_keys.get(&v).cloned() {
@@ -6478,7 +6508,7 @@ impl<'s> Lowerer<'s> {
                     exports.maps.push((v, keys));
                 }
                 if let Some(null) = self.list_nulls.get(&v).cloned() {
-                    let null = export_list_null(v, null, alias, body);
+                    let (null, _) = export_list_null(v, null, &e, alias, body);
                     exports.list_nulls.push((v, null));
                 }
                 continue;
@@ -6811,7 +6841,7 @@ struct Exports<'s> {
     /// Each key's value of the map values among `values` (S11m).
     maps: Vec<(VarId, MapKeys)>,
     /// When each list value among `values` is NULL (`null_list.rs`).
-    list_nulls: Vec<(VarId, Option<RenderExpr>)>,
+    list_nulls: Vec<(VarId, Option<null_list::NullList>)>,
 }
 
 /// A map value's keys and each one's value, in its own type (S11m): what
@@ -6858,22 +6888,39 @@ fn collected_map(e: &LogicalExpr) -> Option<(&[(String, LogicalExpr)], usize)> {
     }
 }
 
-/// Export when list `out` is NULL (`null`, `None`: never) from a CTE
-/// aliased `alias`: a column `{out}__null` (a constant stays as it is).
-/// Returns how the next segment reads it.
+/// Export when list `out` (exported as the column `{out}`, of `value`) is
+/// NULL and the list held so (`null`, `None`: never NULL) from a CTE
+/// aliased `alias`: columns `{out}__null` and `{out}__held` (a constant
+/// stays as it is; a held list that is the value is its column). Returns
+/// how the next segment reads them, and the held column it added.
 fn export_list_null(
     out: VarId,
-    null: Option<RenderExpr>,
+    null: Option<null_list::NullList>,
+    value: &RenderExpr,
     alias: &str,
     body: &mut Body,
-) -> Option<RenderExpr> {
-    let null = null?;
-    if is_constant(&null) {
-        return Some(null);
-    }
-    let name = format!("{}__null", out.name());
-    body.select.push(select(null, &name));
-    Some(col_at(alias, &name))
+) -> (Option<null_list::NullList>, Option<String>) {
+    let Some(null) = null else {
+        return (None, None);
+    };
+    let flag = match is_constant(&null.flag) {
+        true => null.flag,
+        false => {
+            let name = format!("{}__null", out.name());
+            body.select.push(select(null.flag, &name));
+            col_at(alias, &name)
+        }
+    };
+    let (held, added) = if render_expr_to_sql_plain(&null.held) == render_expr_to_sql_plain(value) {
+        (col_at(alias, &out.name()), None)
+    } else if is_constant(&null.held) {
+        (null.held, None)
+    } else {
+        let name = format!("{}__held", out.name());
+        body.select.push(select(null.held, &name));
+        (col_at(alias, &name), Some(name))
+    };
+    (Some(null_list::NullList { flag, held }), added)
 }
 
 /// Export map `v`'s keys `keys` as `out`'s from a CTE aliased `alias`: each

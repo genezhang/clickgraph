@@ -1,12 +1,18 @@
 //! A NULL list (user 2026-10-13; #1377, #1364, #1454): ClickHouse holds no
-//! NULL array (`Nullable(Array)` is not a type), so a list value that is
-//! NULL is held as `[]`, and what tells NULL from `[]` reads where the NULL
-//! comes from instead ([`Lowerer::list_null`]): `IS [NOT] NULL`, `size()`,
-//! `coalesce()`, `count()`, `collect()`, `+`, `IN` and `=` of lists, and a
-//! grouped or DISTINCT list. A WITH carries the condition of a list it
-//! projects as a column of its own (`{v}__null`); the final RETURN returns
-//! NULL where it holds. Never `empty(l)`: a list that is `[]` is not NULL
-//! (`collect()` of no rows, a comprehension that keeps nothing).
+//! NULL array (`Nullable(Array)` is not a type). Where ClickGraph knows
+//! when a list is NULL ([`Lowerer::list_null`]: a CASE's null branch,
+//! `split()` of NULL, a list a WITH carries, and list functions of them),
+//! the operations that tell NULL from `[]` read that condition, and the
+//! list as they take it ([`Lowerer::held_list`]) holds its NULL as `[]`:
+//! `IS [NOT] NULL`, `size()`, `isEmpty()`, `head()` / `last()` / `l[i]`,
+//! `coalesce()`, `count()` / `collect()` / `min()` / `max()`, `+`, `IN`,
+//! comparisons, `reduce()`, `ORDER BY`, UNWIND, grouping and DISTINCT. A
+//! WITH carries the condition (`{v}__null`) and the held list
+//! (`{v}__held`) beside the list as anything else reads it; the final
+//! RETURN returns NULL where the condition holds. Anywhere else a list is
+//! lowered as it always was. Never `empty(l)`: a list that is `[]` is not
+//! NULL (`collect()` of no rows, a comprehension that keeps nothing). A
+//! dialect with NULL lists (Spark) needs none of this.
 
 use std::collections::HashMap;
 
@@ -18,6 +24,14 @@ use super::{parse_var, LowerError, Lowerer};
 use crate::bound_plan::types::SubqueryKind;
 
 type Items = HashMap<crate::bound_plan::types::VarId, RenderExpr>;
+
+/// What a WITH carries of a list that may be NULL (`Lowerer::list_nulls`):
+/// when it is NULL, and the list held so (`[]` where it is).
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct NullList {
+    pub(super) flag: RenderExpr,
+    pub(super) held: RenderExpr,
+}
 
 /// When a list value is NULL.
 #[derive(Debug, Clone, PartialEq)]
@@ -86,20 +100,6 @@ pub(super) fn null_as_empty() -> bool {
         .is_some_and(|l| l.null_as_empty)
 }
 
-/// `e IS NULL`, as a condition.
-fn is_null(e: RenderExpr) -> RenderExpr {
-    match e {
-        RenderExpr::Literal(Literal::Null) => RenderExpr::Literal(Literal::Boolean(true)),
-        RenderExpr::Literal(_) | RenderExpr::List(_) => {
-            RenderExpr::Literal(Literal::Boolean(false))
-        }
-        e => RenderExpr::OperatorApplicationExp(OperatorApplication {
-            operator: lx::Operator::IsNull,
-            operands: vec![e],
-        }),
-    }
-}
-
 impl Lowerer<'_> {
     /// The list `e` as an operation that tells its NULL by its source
     /// ([`Lowerer::list_null`]) reads it: held as ClickHouse holds a NULL
@@ -125,12 +125,13 @@ impl Lowerer<'_> {
                 // Carried by a WITH, or an item of this projection (in its
                 // WHERE / ORDER BY: held as the projection holds it).
                 LogicalExpr::TableAlias(lx::TableAlias(n)) => parse_var(n).is_some_and(|v| {
-                    matches!(self.list_nulls.get(&v), Some(Some(_)))
-                        || (items.contains_key(&v)
-                            && self
-                                .projected
-                                .get(&v)
-                                .is_some_and(|p| self.held_form(p, &HashMap::new())))
+                    if items.contains_key(&v) {
+                        self.projected
+                            .get(&v)
+                            .is_some_and(|p| self.held_form(p, &HashMap::new()))
+                    } else {
+                        matches!(self.list_nulls.get(&v), Some(Some(_)))
+                    }
                 }),
                 LogicalExpr::Case(_) | LogicalExpr::ArraySlicing { .. } => true,
                 LogicalExpr::ScalarFnCall(f) => {
@@ -147,12 +148,40 @@ impl Lowerer<'_> {
             }
     }
 
-    /// `e` ([`Lowerer::held_form`]) held: its NULL as `[]`.
+    /// `e` ([`Lowerer::held_form`]) held: its NULL as `[]`, each list it
+    /// reads held too.
     fn held_raw(&self, e: &LogicalExpr, items: &Items) -> Result<RenderExpr, LowerError> {
         match e {
-            LogicalExpr::TableAlias(lx::TableAlias(n)) => self.variable(n, items),
+            LogicalExpr::TableAlias(lx::TableAlias(n)) => match parse_var(n) {
+                // An item of this projection: as it holds it.
+                Some(v) if items.contains_key(&v) => match self.projected.get(&v) {
+                    Some(p) => self.held_list(p, &HashMap::new()),
+                    None => self.expr(e, items),
+                },
+                Some(v) => match self.list_nulls.get(&v) {
+                    Some(Some(n)) => Ok(n.held.clone()),
+                    _ => self.expr(e, items),
+                },
+                None => self.expr(e, items),
+            },
             LogicalExpr::Case(c) => self.case_held(c, true, items),
-            LogicalExpr::ScalarFnCall(f) => self.list_fn(e, f, items),
+            LogicalExpr::ScalarFnCall(f) => {
+                if let Some((how, x, body, list)) = comprehension(f) {
+                    return self.comprehension(how, x, body, list, items, true);
+                }
+                match (f.name.to_ascii_lowercase().as_str(), f.args.as_slice()) {
+                    ("coalesce", args) if matches!(self.kind(e), Kind::List(_)) => {
+                        self.coalesce_lists(args, items, true)
+                    }
+                    ("tail" | "reverse", [l]) => Ok(RenderExpr::ScalarFnCall(
+                        crate::render_plan::render_expr::ScalarFnCall {
+                            name: f.name.clone(),
+                            args: vec![self.held_list(l, items)?],
+                        },
+                    )),
+                    _ => self.list_fn(e, f, items),
+                }
+            }
             LogicalExpr::ArraySlicing { array, from, to } => Ok(RenderExpr::ArraySlicing {
                 array: Box::new(self.held_list(array, items)?),
                 from: from
@@ -167,7 +196,7 @@ impl Lowerer<'_> {
             LogicalExpr::Operator(op) | LogicalExpr::OperatorApplicationExp(op) => {
                 match op.operands.as_slice() {
                     [a, b] if op.operator == lx::Operator::Addition => {
-                        match self.list_addition(a, b, items)? {
+                        match self.list_addition(a, b, items, true)? {
                             Some(v) => Ok(v),
                             None => self.expr(e, items),
                         }
@@ -177,33 +206,6 @@ impl Lowerer<'_> {
             }
             e => self.expr(e, items),
         }
-    }
-
-    /// What [`Lowerer::expr`] lowers a held form to where its NULL is known
-    /// ([`Lowerer::held_form`]): NULL where it is, the held list elsewhere
-    /// (a ClickHouse `Variant`). A CASE is lowered as it is (the same).
-    /// `None`: not such a list.
-    pub(super) fn unheld(
-        &self,
-        e: &LogicalExpr,
-        items: &Items,
-    ) -> Result<Option<RenderExpr>, LowerError> {
-        if matches!(e, LogicalExpr::Case(_)) || !self.held_form(e, items) {
-            return Ok(None);
-        }
-        Ok(match self.list_null(e, items)? {
-            ListNull::When(RenderExpr::Literal(Literal::Boolean(true))) => {
-                // (Still lowered: what it refuses stays refused.)
-                self.held_raw(e, items)?;
-                Some(RenderExpr::Literal(Literal::Null))
-            }
-            ListNull::When(c) => Some(RenderExpr::Case(RenderCase {
-                expr: None,
-                when_then: vec![(c, RenderExpr::Literal(Literal::Null))],
-                else_expr: Some(Box::new(self.held_raw(e, items)?)),
-            })),
-            _ => None,
-        })
     }
 
     /// When the list value `e` is NULL ([`ListNull`]). Of an expression
@@ -286,7 +288,7 @@ impl Lowerer<'_> {
                     None => ListNull::Unknown,
                 },
                 Some(v) => match self.list_nulls.get(&v) {
-                    Some(Some(c)) => ListNull::When(c.clone()),
+                    Some(Some(n)) => ListNull::When(n.flag.clone()),
                     Some(None) => ListNull::Never,
                     None => ListNull::Unknown,
                 },
@@ -316,7 +318,7 @@ impl Lowerer<'_> {
                     ("split", args) => {
                         let mut parts = Vec::new();
                         for a in args {
-                            parts.push(ListNull::When(is_null(self.expr(a, items)?)));
+                            parts.push(self.scalar_null(a, items)?);
                         }
                         ListNull::any(parts)
                     }
@@ -352,6 +354,51 @@ impl Lowerer<'_> {
         })
     }
 
+    /// When a scalar `e` (`split()`'s string or delimiter) is NULL, where
+    /// it is known: the NULL literal; a CASE's null or missing branch (its
+    /// other results taken as values, as ClickHouse's `split()` of them
+    /// is). A column's or a function's NULL is not known here.
+    fn scalar_null(&self, e: &LogicalExpr, items: &Items) -> Result<ListNull, LowerError> {
+        Ok(match e {
+            LogicalExpr::Literal(lx::Literal::Null) => {
+                ListNull::When(RenderExpr::Literal(Literal::Boolean(true)))
+            }
+            LogicalExpr::Literal(_) | LogicalExpr::Parameter(_) => ListNull::Never,
+            LogicalExpr::Case(c) => {
+                let null = |t: Option<&LogicalExpr>| {
+                    t.is_none_or(|t| matches!(t, LogicalExpr::Literal(lx::Literal::Null)))
+                };
+                let mut when_then = Vec::new();
+                for (condition, (_, t)) in self
+                    .case_conditions(c, items)?
+                    .into_iter()
+                    .zip(&c.when_then)
+                {
+                    if let Some(condition) = condition {
+                        let n = RenderExpr::Literal(Literal::Boolean(null(Some(t))));
+                        when_then.push((condition, n));
+                    }
+                }
+                let else_null = null(c.else_expr.as_deref());
+                let never = RenderExpr::Literal(Literal::Boolean(false));
+                if !else_null && when_then.iter().all(|(_, t)| *t == never) {
+                    return Ok(ListNull::Never);
+                }
+                if when_then.is_empty() {
+                    return Ok(ListNull::When(RenderExpr::Literal(Literal::Boolean(
+                        else_null,
+                    ))));
+                }
+                ListNull::When(RenderExpr::Case(RenderCase {
+                    expr: None,
+                    when_then,
+                    else_expr: Some(Box::new(RenderExpr::Literal(Literal::Boolean(else_null)))),
+                }))
+            }
+            _ => ListNull::Unknown,
+        })
+    }
+
     /// When a CASE's result `t` is NULL: the NULL literal always; a list
     /// as [`Lowerer::list_null`] says.
     fn result_null(&self, t: &LogicalExpr, items: &Items) -> Result<ListNull, LowerError> {
@@ -376,6 +423,10 @@ impl Lowerer<'_> {
         items: &Items,
     ) -> Result<RenderExpr, LowerError> {
         match f.name.to_ascii_lowercase().as_str() {
+            // The first list not NULL by its source.
+            "coalesce" if matches!(self.kind(e), Kind::List(_)) => {
+                self.coalesce_lists(&f.args, items, false)
+            }
             // NULL of a NULL list (held as `[]`).
             "isempty" if matches!(f.args.as_slice(), [l] if matches!(self.kind(l), Kind::List(_))) =>
             {
@@ -419,43 +470,47 @@ impl Lowerer<'_> {
                 }
                 _ => self.scalar_fn(f, items)?,
             }),
-            "coalesce" if matches!(self.kind(e), Kind::List(_)) => {
-                self.coalesce_lists(&f.args, items)
-            }
             _ => self.scalar_fn(f, items),
         }
     }
 
-    /// `coalesce(args)` of lists: the first that is not NULL.
+    /// `coalesce(args)` of lists: the first that is not NULL by its
+    /// source; `held`: each as an operation that knows its NULL takes it
+    /// ([`Lowerer::held_list`]), else as lowered.
     fn coalesce_lists(
         &self,
         args: &[LogicalExpr],
         items: &Items,
+        held: bool,
     ) -> Result<RenderExpr, LowerError> {
+        let value = |a: &LogicalExpr| match held {
+            true => self.held_list(a, items),
+            false => self.expr(a, items),
+        };
         let [first, rest @ ..] = args else {
             return Ok(RenderExpr::Literal(Literal::Null));
         };
         if rest.is_empty() {
-            return self.held_list(first, items);
+            return value(first);
         }
         let null = match self.kind(first) {
             Kind::List(_) | Kind::Null => self.list_null(first, items)?,
             _ => ListNull::Unknown,
         };
         Ok(match null {
-            ListNull::Never => self.held_list(first, items)?,
+            ListNull::Never => value(first)?,
             ListNull::When(RenderExpr::Literal(Literal::Boolean(true))) => {
-                self.coalesce_lists(rest, items)?
+                self.coalesce_lists(rest, items, held)?
             }
             ListNull::When(c) => RenderExpr::Case(RenderCase {
                 expr: None,
-                when_then: vec![(c, self.coalesce_lists(rest, items)?)],
-                else_expr: Some(Box::new(self.held_list(first, items)?)),
+                when_then: vec![(c, self.coalesce_lists(rest, items, held)?)],
+                else_expr: Some(Box::new(value(first)?)),
             }),
             ListNull::Unknown => {
                 RenderExpr::ScalarFnCall(crate::render_plan::render_expr::ScalarFnCall {
                     name: "coalesce".to_string(),
-                    args: vec![self.expr(first, items)?, self.coalesce_lists(rest, items)?],
+                    args: vec![value(first)?, self.coalesce_lists(rest, items, held)?],
                 })
             }
         })
@@ -475,6 +530,20 @@ pub(super) fn empty_where(c: RenderExpr, value: RenderExpr, typed: bool) -> Rend
         when_then: vec![(c, empty)],
         else_expr: Some(Box::new(value)),
     })
+}
+
+/// The list `value`, empty where `c` holds (a NULL list, held as `[]`):
+/// its elements kept unless `c` (`value` read once, of its own type).
+pub(super) fn empty_unless(c: RenderExpr, value: RenderExpr) -> RenderExpr {
+    use crate::sql_generator::emitters::clickhouse::to_sql_query::render_expr_to_sql_plain;
+    match crate::sql_generator::function_mapper::current_function_mapper().lists() {
+        Some(spelling) => RenderExpr::Raw((spelling.filter)(
+            "__cg_e",
+            &format!("NOT ({})", render_expr_to_sql_plain(&c)),
+            &render_expr_to_sql_plain(&value),
+        )),
+        None => empty_where(c, value, false),
+    }
 }
 
 /// An empty list of the type of the list `value` (its elements kept where
