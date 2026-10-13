@@ -227,6 +227,7 @@ curl -X POST http://localhost:7475/query \
   -d '{"query": "MATCH (u:User) RETURN u.full_name LIMIT 5"}'
 
 # Bolt protocol (cypher-shell, Neo4j Browser, or any Neo4j driver)
+# (cypher-shell needs the server started with --neo4j-compat-mode)
 cypher-shell -a bolt://localhost:7687 -u neo4j -p password
 ```
 

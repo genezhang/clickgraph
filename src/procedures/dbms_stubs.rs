@@ -54,6 +54,12 @@ pub fn list_procedures(_schema: &GraphSchema) -> ProcedureResult {
 /// db.ping() - Whether the server answers: one row, `success: true`, as
 /// Neo4j's. cypher-shell calls it on connect (#1476).
 pub fn ping(_schema: &GraphSchema) -> ProcedureResult {
+    ping_rows()
+}
+
+/// `db.ping()`'s row, which reads no schema: answered in every database,
+/// `system` too, as Neo4j's ("available in all databases").
+pub fn ping_rows() -> ProcedureResult {
     Ok(vec![HashMap::from([(
         "success".to_string(),
         serde_json::json!(true),
