@@ -2,7 +2,7 @@
 //!
 //! Exercises the full pipeline:
 //!
-//!   parse → plan (write variants) → write_guard → write_plan_builder
+//!   the executor gate (chdb only) → `bound_plan::write::plan_write`
 //!     → write_to_sql → chdb execution → read-back verification
 //!
 //! Unlike `chdb_e2e.rs`, these tests use a *writable* schema (no `source:`

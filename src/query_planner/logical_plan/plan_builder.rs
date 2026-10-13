@@ -38,7 +38,7 @@ use crate::{
         logical_plan::{
             errors::LogicalPlanError, match_clause, optional_match_clause, order_by_clause,
             return_clause, skip_n_limit_clause, unwind_clause, where_clause, with_clause,
-            write_clause_builder, LogicalPlan,
+            LogicalPlan,
         },
         plan_ctx::PlanCtx,
     },
@@ -338,21 +338,16 @@ pub fn build_logical_plan(
         logical_plan = where_clause::evaluate_where_clause(where_clause, logical_plan)?;
     }
 
-    // Process write clauses (embedded chdb only; gated by `write_guard` at the
-    // executor entry point). Order matters: CREATE wraps its preceding read
-    // pipeline, then SET / REMOVE / DELETE chain on top. Per OpenCypher,
-    // queries with multiple write clauses apply them in this order.
-    if let Some(create_clause) = &query_ast.create_clause {
-        logical_plan = write_clause_builder::build_create(create_clause, logical_plan, schema)?;
-    }
-    if let Some(set_clause) = &query_ast.set_clause {
-        logical_plan = write_clause_builder::build_set(set_clause, logical_plan, schema)?;
-    }
-    if let Some(remove_clause) = &query_ast.remove_clause {
-        logical_plan = write_clause_builder::build_remove(remove_clause, logical_plan, schema)?;
-    }
-    if let Some(delete_clause) = &query_ast.delete_clause {
-        logical_plan = write_clause_builder::build_delete(delete_clause, logical_plan, schema)?;
+    // Write clauses: the bound plan's write planner (`bound_plan::write`)
+    // plans them; the legacy planner no longer does (P-4c S14c2).
+    if query_ast.create_clause.is_some()
+        || query_ast.set_clause.is_some()
+        || query_ast.remove_clause.is_some()
+        || query_ast.delete_clause.is_some()
+    {
+        return Err(LogicalPlanError::QueryPlanningError(
+            "write clauses are planned by the bound plan's write planner".to_string(),
+        ));
     }
 
     if let Some(return_clause) = &query_ast.return_clause {

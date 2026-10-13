@@ -1315,12 +1315,12 @@ impl<'db> Connection<'db> {
             let cleaned = clickgraph::open_cypher_parser::strip_comments(&cypher);
 
             // Writes run on the embedded chdb backend only (Decision 0.1).
-            if executor_kind != clickgraph::query_planner::write_guard::ExecutorKind::EmbeddedChdb {
+            if executor_kind != crate::database::ExecutorKind::EmbeddedChdb {
                 return Err(EmbeddedError::Query(format!(
-                    "Write rejected: {}",
-                    clickgraph::query_planner::write_guard::WriteGuardError::ExecutorNotWritable(
-                        executor_kind
-                    )
+                    "Write rejected: Cypher write clauses (CREATE/SET/DELETE/REMOVE) are only \
+                     supported in embedded chdb mode; this connection is `{executor_kind:?}`. Use \
+                     `Database::new(schema, SystemConfig)` (with the `embedded` feature) to \
+                     enable writes."
                 )));
             }
 
@@ -1936,7 +1936,7 @@ graph_schema:
                 .enable_all()
                 .build()
                 .unwrap(),
-            executor_kind: clickgraph::query_planner::write_guard::ExecutorKind::EmbeddedChdb,
+            executor_kind: crate::database::ExecutorKind::EmbeddedChdb,
             dialect: clickgraph::sql_generator::SqlDialect::ClickHouse,
         }
     }
@@ -1997,7 +1997,7 @@ graph_schema:
                 .enable_all()
                 .build()
                 .unwrap(),
-            executor_kind: clickgraph::query_planner::write_guard::ExecutorKind::EmbeddedChdb,
+            executor_kind: crate::database::ExecutorKind::EmbeddedChdb,
             dialect: clickgraph::sql_generator::SqlDialect::ClickHouse,
         };
         (db, captured)
@@ -2033,7 +2033,7 @@ graph_schema:
                 .enable_all()
                 .build()
                 .unwrap(),
-            executor_kind: clickgraph::query_planner::write_guard::ExecutorKind::EmbeddedChdb,
+            executor_kind: crate::database::ExecutorKind::EmbeddedChdb,
             dialect: clickgraph::sql_generator::SqlDialect::ClickHouse,
         }
     }

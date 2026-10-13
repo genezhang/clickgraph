@@ -107,7 +107,6 @@ mod unwind_clause;
 mod view_scan;
 mod where_clause;
 mod with_clause;
-pub mod write_clause_builder;
 
 pub use view_scan::ViewScan;
 

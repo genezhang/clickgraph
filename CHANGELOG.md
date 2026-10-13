@@ -14,6 +14,8 @@
 
 ### 🧹 Infrastructure
 
+- **The legacy write planner is gone** (P-4c S14c2): `write_plan_builder`, `write_clause_builder` and `write_guard` (~3k lines). Embedded writes have been planned by `bound_plan::write` since S14b; the chdb-only gate (`ExecutorKind`) moved into `clickgraph-embedded`.
+
 - **The corpus SQL goldens now lock the bound plan's output** (P-4c S14c0). They were translated without the query text, which took the legacy pipeline, so the net that guards the legacy deletion checked the wrong pipeline. The census of the corpus now also asserts its count (1477 lowered on each dialect).
 
 ### 🐛 Bug Fixes

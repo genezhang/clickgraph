@@ -107,6 +107,20 @@ pub struct SystemConfig {
     pub remote: Option<RemoteConfig>,
 }
 
+/// The execution backend a database runs its SQL on. Cypher writes run on
+/// the embedded chdb backend only (Decision 0.1 of the embedded-writes
+/// design).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ExecutorKind {
+    /// Embedded chdb (`Database::new(...)` with the `embedded` feature).
+    /// Writes are permitted.
+    EmbeddedChdb,
+    /// Translation-only mode (`Database::sql_only(...)`). No execution.
+    SqlOnly,
+    /// External ClickHouse via HTTP (`Database::new_remote(...)`). Writes rejected.
+    Remote,
+}
+
 /// An embedded ClickGraph database.
 ///
 /// # Example
@@ -124,10 +138,9 @@ pub struct Database {
     /// Shared Tokio runtime for blocking `Connection::query()` calls.
     /// Created once, reused by all connections -- avoids per-call overhead.
     pub(crate) runtime: tokio::runtime::Runtime,
-    /// What kind of backend the primary executor is. Used by the write
-    /// guard (Phase 3 of the embedded-writes plan) to gate Cypher write
-    /// clauses to the embedded chdb path only.
-    pub(crate) executor_kind: clickgraph::query_planner::write_guard::ExecutorKind,
+    /// What kind of backend the primary executor is: Cypher writes run on
+    /// the embedded chdb path only.
+    pub(crate) executor_kind: ExecutorKind,
     /// SQL dialect this database emits. `Connection::query_*` paths
     /// stamp this onto the per-query `QueryContext` so that the shared
     /// renderer routes through the right `FunctionMapper`. Default
@@ -218,7 +231,7 @@ impl Database {
             remote_executor,
             schema,
             runtime,
-            executor_kind: clickgraph::query_planner::write_guard::ExecutorKind::EmbeddedChdb,
+            executor_kind: ExecutorKind::EmbeddedChdb,
             dialect: SqlDialect::ClickHouse,
         })
     }
@@ -247,7 +260,7 @@ impl Database {
             remote_executor: Some(remote_executor),
             schema: Arc::new(graph_schema),
             runtime,
-            executor_kind: clickgraph::query_planner::write_guard::ExecutorKind::Remote,
+            executor_kind: ExecutorKind::Remote,
             dialect: SqlDialect::ClickHouse,
         })
     }
@@ -283,7 +296,7 @@ impl Database {
             remote_executor: Some(Arc::new(executor) as Arc<dyn QueryExecutor>),
             schema: Arc::new(graph_schema),
             runtime,
-            executor_kind: clickgraph::query_planner::write_guard::ExecutorKind::Remote,
+            executor_kind: ExecutorKind::Remote,
             dialect: SqlDialect::Databricks,
         })
     }
@@ -334,7 +347,7 @@ impl Database {
             // writes through it safely. Tag as SqlOnly so the write
             // guard rejects writes here — tests that need writes should
             // construct a chdb-backed Database via `new` instead.
-            executor_kind: clickgraph::query_planner::write_guard::ExecutorKind::SqlOnly,
+            executor_kind: ExecutorKind::SqlOnly,
             dialect: SqlDialect::ClickHouse,
         })
     }

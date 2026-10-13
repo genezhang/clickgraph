@@ -208,9 +208,8 @@ pub async fn run_with_config(config: ServerConfig) {
     // makes the server read-only for this dispatch — `query_handler_inner`
     // returns 501 NOT_IMPLEMENTED for any DDL when `clickhouse_client` is
     // absent (same code path the embedded branch already relies on). The
-    // planner-level `write_guard` only kicks in for the embedded crate's
-    // `Database::new_*` constructors, not the server, so we are not
-    // depending on `ExecutorKind` here.
+    // embedded crate's write gate (`ExecutorKind`) applies to its
+    // `Database::new_*` constructors only, not the server.
     #[cfg(feature = "databricks")]
     if config.databricks {
         if config.embedded {
