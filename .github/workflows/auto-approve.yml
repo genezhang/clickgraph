@@ -7,7 +7,6 @@ name: Auto Approve Documentation Changes
 on:
   pull_request_target:
     types: [opened, synchronize, reopened]
-  status: {}
 
 jobs:
   auto-approve:
@@ -28,7 +27,10 @@ jobs:
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         PR: ${{ github.event.pull_request.number }}
       run: |
-        files=$(gh api --paginate "repos/${{ github.repository }}/pulls/$PR/files" --jq '.[].filename')
+        # Renames report only the new path in `filename` (old path in
+        # `previous_filename`), so include both: renaming src/lib.rs to
+        # src/lib.md must not auto-approve.
+        files=$(gh api --paginate "repos/${{ github.repository }}/pulls/$PR/files" --jq '.[] | .filename, (.previous_filename // empty)')
         echo "Changed files:"
         echo "$files"
         if echo "$files" | grep -qE '^\.github/'; then
