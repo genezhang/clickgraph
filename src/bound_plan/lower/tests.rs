@@ -6606,6 +6606,23 @@ fn a_pattern_predicate_of_a_comprehension_element() {
         &format!("{follows}RETURN [x IN fs WHERE (x)-[:FOLLOWS]->(y)] AS a"),
         "PatternExpressions are not allowed to introduce new variables: 'y'",
     );
+    // A shortest path reading the element reads it (review: it was bound as
+    // one value per row, `x` a new or the outer variable).
+    for q in [
+        "RETURN size([x IN fs WHERE EXISTS { shortestPath((x)-[:FOLLOWS*]->(:User {user_id: 1})) }]) AS n",
+        "RETURN [x IN fs | EXISTS { allShortestPaths((x)-[:FOLLOWS*]->(:User {user_id: 1})) }] AS n",
+    ] {
+        not_lowered(
+            &format!("{follows}{q}"),
+            "a subquery expression inside a list comprehension, reduce or lambda",
+        );
+    }
+    not_lowered(
+        "MATCH (x:User {user_id: 1}) MATCH (u:User) OPTIONAL MATCH (u)-[:FOLLOWS]->(f:User) \
+         WITH x, u, collect(f) AS fs \
+         RETURN size([x IN fs WHERE EXISTS { shortestPath((u)-[:FOLLOWS*]->(x)) }]) AS n",
+        "a subquery expression inside a list comprehension, reduce or lambda",
+    );
 }
 
 /// `datetime({epochMillis: x})` is `x`; a component of it converts it

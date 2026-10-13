@@ -482,7 +482,7 @@ fn property_names<'a>(props: Option<&Vec<ast::Property<'a>>>) -> Vec<&'a str> {
 
 /// Every variable name an AST expression reads, its patterns' included.
 fn ast_names<'a>(e: &Expression<'a>, out: &mut Vec<&'a str>) {
-    let pattern = |p: &PathPattern<'a>, out: &mut Vec<&'a str>| {
+    fn pattern<'a>(p: &PathPattern<'a>, out: &mut Vec<&'a str>) {
         let node = |n: &ast::NodePattern<'a>, out: &mut Vec<&'a str>| {
             out.extend(n.name);
             out.extend(property_names(n.properties.as_ref()));
@@ -497,9 +497,13 @@ fn ast_names<'a>(e: &Expression<'a>, out: &mut Vec<&'a str>) {
                     out.extend(property_names(s.relationship.properties.as_ref()));
                 }
             }
-            PathPattern::ShortestPath(_) | PathPattern::AllShortestPaths(_) => {}
+            // Its pattern's names (S11o9 review: a shortestPath reading a
+            // comprehension's element read none, and bound as a constant).
+            PathPattern::ShortestPath(inner) | PathPattern::AllShortestPaths(inner) => {
+                pattern(inner, out)
+            }
         }
-    };
+    }
     match e {
         Expression::Variable(n) => out.push(n),
         Expression::PropertyAccessExp(pa) => out.push(pa.base),

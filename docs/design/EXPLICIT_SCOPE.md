@@ -4592,7 +4592,9 @@ slice that will handle it.
       element of each row's list (`ARRAY JOIN`), with `m` read from the
       element's identity. The drive and the rows also join on a hash of
       the list's sorted, distinct identities, which is stable when
-      ClickHouse re-evaluates a `collect()` in another order. Two lists
+      ClickHouse re-evaluates a `collect()` in another order (not when a
+      re-evaluated `LIMIT` without ORDER BY keeps other rows: #1395, as
+      for any drive). Two lists
       sharing a hash only merge matches, and a merged match is a match of
       the element. The matches are thus among each row's elements: IC 10
       runs in 0.5 s on the SF1 `ldbc` database, and the whole-graph
@@ -4607,6 +4609,13 @@ slice that will handle it.
       SF1; the probes (Posts, Comments of several-label `m`, NOT,
       uncorrelated patterns, whole graph) equal hand-written SQL on
       ClickHouse and Spark; 13 edge shapes equal Neo4j (oracle).
+      - Adversarial review (about 60 shapes on the oracle, plus composite-id,
+        polymorphic and denormalized schemas, all equal). Fixed: a
+        `shortestPath` / `allShortestPaths` in a subquery read no name
+        (`ast_names`), so one reading the element was bound as a constant,
+        `x` a new or the outer variable (wrong counts). It now reads the
+        element, and is not lowered. Recorded on #1395: a drive over a
+        `LIMIT` without ORDER BY.
     - [ ] **S11o10: BI 17's time** (two variable-length paths; over 300 s
       on SF1, legacy refused it).
 - [ ] **S12: Databricks coverage.** The bound plan lowers on Databricks what
