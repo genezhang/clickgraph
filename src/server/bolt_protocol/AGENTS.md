@@ -94,7 +94,7 @@ Client                          BoltHandler                    ClickHouse
 |---|---|---|
 | `mod.rs` | 384 | Module root. Constants (`BOLT_VERSION_*`, `SUPPORTED_VERSIONS`), `ConnectionState` enum, `BoltContext`, `BoltConfig`, `BoltServer`, version negotiation utils. |
 | `handler.rs` | 1826 | **Core orchestrator.** Handles every Bolt message type (HELLO, LOGON, RUN, PULL, BEGIN, COMMIT, ROUTE, etc.). Contains `execute_cypher_query()` which runs the full parse→plan→SQL→execute→transform pipeline. Parameter substitution for `id()` predicates. |
-| `result_transformer.rs` | 2146 | **Largest file.** `extract_return_metadata()` analyzes logical plan to classify return items as Node/Relationship/Path/Scalar/IdFunction. `transform_row()` converts flat ClickHouse rows into packstream-encoded graph objects. Handles fixed-hop paths, VLP paths, multi-label scans, UNION path JSON format, polymorphic edges. |
+| `result_transformer.rs` | 2146 | **Largest file.** `ReturnItemMetadata` (from `ReadTranslation::return_metadata()`, the bound plan's result shape) classifies return items as Node/Relationship/Path/Scalar/IdFunction/Graph. `transform_row()` converts flat ClickHouse rows into packstream-encoded graph objects. Handles fixed-hop paths, VLP paths, multi-label scans, UNION path JSON format, polymorphic edges. |
 | `graph_objects.rs` | 717 | `Node`, `Relationship`, `Path` structs with `to_packstream()` methods. Custom packstream encoding helpers (`encode_integer`, `encode_string`, `encode_properties_map`, `encode_json_value`). |
 | `connection.rs` | 605 | `BoltConnection<S>` — wire-level I/O. Handshake (magic preamble + version negotiation), chunked message reading/writing, packstream message parsing/serialization. Generic over `AsyncRead + AsyncWrite`. |
 | `id_mapper.rs` | 571 | Deterministic 53-bit ID mapping. Label-encoded IDs (6 bits label code + 47 bits id value). Session cache with cross-session chaining via `ACTIVE_SESSION_CACHES` global registry. |
@@ -159,7 +159,7 @@ The `negotiate_version()` function uses a heuristic: if the decoded major byte i
 ClickHouse JSON row
     │
     ▼
-extract_return_metadata()     ← Analyzes LogicalPlan + PlanCtx
+ReadTranslation::return_metadata()  ← the bound plan's result shape
     │                            Classifies each RETURN item:
     │                            - Node { labels }
     │                            - Relationship { rel_types, from/to_label }
@@ -375,7 +375,7 @@ server.handle_connection(tcp_stream, peer_addr).await?;
 
 | Function | Location | Purpose |
 |---|---|---|
-| `extract_return_metadata()` | `result_transformer.rs` | Classify RETURN items as Node/Rel/Path/Scalar |
+| `ReadTranslation::return_metadata()` | `translate.rs` | Classify RETURN items as Node/Rel/Path/Scalar (the bound plan's shape) |
 | `transform_row()` | `result_transformer.rs` | Convert ClickHouse row → packstream graph objects |
 | `rewrite_id_predicates()` | `id_rewriter.rs` | Rewrite `id(n) = N` to property filters |
 | `IdMapper::compute_deterministic_id()` | `id_mapper.rs` | Static: element_id → 53-bit integer |

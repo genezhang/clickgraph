@@ -95,8 +95,8 @@ const POLICY_DIALECTS: &[SqlDialect] = &[SqlDialect::ClickHouse, SqlDialect::Dat
 /// Returns the pass-through policy for an explicit dialect, or `None` for a
 /// dialect that has no policy yet. Returning `None` (rather than panicking)
 /// keeps this safe on the per-function-call hot path: dialects without a
-/// pass-through policy also have no SQL emitter, so they fail earlier at
-/// `emitter_for` — here they simply mean "no pass-through handling".
+/// pass-through policy are not translated to (entry points refuse them) —
+/// here they simply mean "no pass-through handling".
 fn for_dialect(dialect: SqlDialect) -> Option<&'static dyn PassthroughPolicy> {
     static CLICKHOUSE: clickhouse::ClickhousePassthrough = clickhouse::ClickhousePassthrough;
     static DATABRICKS: databricks::DatabricksPassthrough = databricks::DatabricksPassthrough;

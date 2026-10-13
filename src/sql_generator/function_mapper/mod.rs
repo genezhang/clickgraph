@@ -682,8 +682,8 @@ pub(crate) fn current_function_mapper() -> &'static dyn FunctionMapper {
 /// `current_function_mapper()` delegates here with `ClickHouse`; Phase 1.1
 /// will route call sites through this accessor with the active dialect once
 /// it's plumbed through the rendering pipeline. Unsupported dialects panic
-/// at the boundary rather than silently falling back, matching
-/// `emitter_for`.
+/// at the boundary rather than silently falling back (entry points refuse
+/// them before translating).
 pub(crate) fn for_dialect(
     dialect: crate::sql_generator::SqlDialect,
 ) -> &'static dyn FunctionMapper {

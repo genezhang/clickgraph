@@ -3027,8 +3027,8 @@ impl BoltHandler {
         // (no-op unless CLICKGRAPH_STATS_ENABLED installed the cache).
         crate::server::query_context::attach_current_table_stats(&graph_schema).await;
 
-        // The session's ids: `id()` comparisons read them (the `id()`
-        // rewrite below, and the bound plan).
+        // The session's ids: the bound plan reads `id()` comparisons with
+        // them.
         let id_mapper_snapshot = {
             let context = lock_context!(self.context);
             context.id_mapper.clone()

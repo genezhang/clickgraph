@@ -150,10 +150,9 @@ impl std::fmt::Display for TranslateError {
 
 impl std::error::Error for TranslateError {}
 
-/// Translate a parsed read statement to SQL.
-///
-/// The statement must already have gone through the caller's AST pre-passes
-/// (`USE` extraction, the `id()` rewrite). Server entry points call this
+/// Translate a read query to SQL: the bound plan translates
+/// `options.cypher`; `statement` (its legacy parse) only tells a read from
+/// a CALL or a write (`is_read` / `not_a_read`). Server entry points call this
 /// inside their `with_query_context` scope (schema, dialect, table stats set).
 /// A caller without one (library code, unit tests) gets a fresh per-query
 /// context holding `schema`, so a translation never runs on process-global
@@ -283,9 +282,9 @@ pub fn translate_text_read(
 }
 
 /// The SQL of an inner read query (`COPY (<query>) TO`, the query argument of
-/// `apoc.export.*.query`), translated as `/query` would: the legacy parse
-/// with the `id()` rewrite, or text only the clause-list parser reads on the
-/// bound plan (S10b). Errors are messages prefixed `Inner Cypher …`.
+/// `apoc.export.*.query`), translated as `/query` would (the bound plan;
+/// text only the clause-list parser reads included, S10b). Errors are
+/// messages prefixed `Inner Cypher …`.
 pub fn translate_inner_read(cypher: &str, schema: &GraphSchema) -> Result<String, String> {
     use crate::query_planner::ast_transform;
     // Stateless for export: no IdMapper scope.
