@@ -1,6 +1,6 @@
 SELECT 
-      array('TEST_FOLLOWS') AS "path_rels"
-FROM test_integration.users AS a
-INNER JOIN test_integration.follows AS t0 ON t0.follower_id = a.user_id
-INNER JOIN test_integration.users AS b ON b.user_id = t0.followed_id
-WHERE (a.name = 'Alice' AND b.name = 'Bob')
+      [map('elementId', CAST(concat('TEST_FOLLOWS:', toString(v1.follower_id), '->', toString(v1.followed_id), '-'), 'Dynamic'), 'startNodeElementId', CAST(concat('TestUser:', toString(v1.follower_id), '-'), 'Dynamic'), 'endNodeElementId', CAST(concat('TestUser:', toString(v1.followed_id), '-'), 'Dynamic'), 'type', CAST('TEST_FOLLOWS', 'Dynamic'), 'properties', CAST(mapFilter((__k, __v) -> __v IS NOT NULL, map('since', CAST(v1.since, 'Dynamic'))), 'Dynamic'))] AS "path_rels"
+FROM test_integration.users AS v0
+JOIN test_integration.follows AS v1 ON v1.follower_id = v0.user_id
+JOIN test_integration.users AS v2 ON v1.followed_id = v2.user_id
+WHERE (v0.name = 'Alice' AND v2.name = 'Bob')

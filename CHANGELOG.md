@@ -11,6 +11,10 @@
 - **Embedded writes go through the bound plan's write planner only (P-4c S14b).** A write statement it does not plan is an error before anything runs ("Not supported: …"), naming the construct and what to use instead: `CREATE … RETURN` (run the CREATE, then `MATCH … RETURN`), creating or deleting a relationship in Cypher (`Connection::create_edge` / `delete_edges`), a reading clause after an updating one. The legacy write planner refused the same statements, with less specific errors.
 - **A query without RETURN is a syntax error**, as in Neo4j (`MATCH (u:User)` used to return the matched nodes).
 
+### 🧹 Infrastructure
+
+- **The corpus SQL goldens now lock the bound plan's output** (P-4c S14c0). They were translated without the query text, which took the legacy pipeline, so the net that guards the legacy deletion checked the wrong pipeline. The census of the corpus now also asserts its count (1477 lowered on each dialect).
+
 ### 🐛 Bug Fixes
 
 - **A pattern predicate on a list comprehension's element was "Not supported"** (`[p IN posts WHERE (p)-[:HAS_TAG]->()<-[:HAS_INTEREST]-(person)]`, LDBC IC 10). It now lowers: the pattern is matched from the elements of each row's list, so the cost follows the lists' sizes. A NULL element gives false, as in Neo4j. A subquery inside a comprehension that reads none of its elements (`[x IN [1, 2] WHERE EXISTS { (a)-->() }]`) also lowers now.

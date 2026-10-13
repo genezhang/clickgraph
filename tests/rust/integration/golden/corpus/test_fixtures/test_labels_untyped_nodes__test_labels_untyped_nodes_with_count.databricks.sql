@@ -1,23 +1,18 @@
-SELECT `label` AS `label`, count(*) AS `cnt` FROM (
+WITH v0_labels AS (
 SELECT 
-      NULL AS `age`,
-      string(n.category) AS `category`,
-      string(n.name) AS `name`,
-      string(n.price) AS `price`,
-      string(n.product_id) AS `product_id`,
-      NULL AS `user_id`,
-      array('TestProduct', 'TestUser') AS `label`
-FROM test_integration.products AS n
-UNION ALL 
+      'TestProduct' AS `__cg_label`, 
+      e.product_id AS `__cg_id_0`
+FROM test_integration.products AS e
+
+UNION ALL
 SELECT 
-      string(n.age) AS `age`,
-      NULL AS `category`,
-      string(n.name) AS `name`,
-      NULL AS `price`,
-      NULL AS `product_id`,
-      string(n.user_id) AS `user_id`,
-      array('TestProduct', 'TestUser') AS `label`
-FROM test_integration.users AS n
-) AS __union
-GROUP BY `label`
-ORDER BY `label` ASC NULLS LAST
+      'TestUser' AS `__cg_label`, 
+      e.user_id AS `__cg_id_0`
+FROM test_integration.users AS e
+)
+SELECT 
+      array(v0.__cg_label) AS `label`, 
+      count(*) AS `cnt`
+FROM v0_labels AS v0
+GROUP BY array(v0.__cg_label)
+ORDER BY array(v0.__cg_label) ASC NULLS LAST

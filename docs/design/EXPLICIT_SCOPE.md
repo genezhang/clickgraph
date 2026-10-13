@@ -5080,9 +5080,57 @@ slice that will handle it.
     - Adversarial review: no lost capability (each shape the legacy
       planner ran, the write planner plans). Fixed: an unlowered value
       read twice "not supported" (one prefix now).
-  - [ ] **S14c…: the deletion PRs** (the legacy translate route and its
-    tests, the analyzer passes, render composition, the repairs, the
-    name-keyed maps), then #1392 closed.
+  - [ ] **S14c…: the deletion PRs**, one group each, in this order (the
+    legacy code is one cycle: render composition reads the analyzer's
+    types and the analyzer reads `render_plan` helpers, so top-down). The
+    gate of each: the corpus goldens byte-identical (S14c0), the census
+    1477 on both dialects, the full tests, clippy, the ratchet (its
+    decreases recorded). A compile error outside the deleted set means
+    something live went: it is never fixed by editing live logic.
+    - [x] **S14c0: the golden net on the bound plan.** `corpus_sweep`
+      translated without the query text, so it locked the legacy
+      pipeline's SQL, and the census asserted no count. It now passes the
+      text (the bound plan, as every entry point), over the whole corpus
+      (`census_only.txt` gone): 2954 SQL goldens (exactly the census's
+      1477 per dialect) and 142 error goldens, byte-stable over fresh
+      processes and the whole test binary (the 5 nondeterministic entries,
+      a legacy CTE-name counter, are locked again). The census asserts 1477
+      (`LOWERED`). `with_cte_column_refs` now scans the bound plan's SQL:
+      the legacy violations (#1189, #933) are gone and none is new
+      (verified live by planting one).
+    - [ ] **S14c1: the legacy translate route and its tests.** `cypher`
+      required in `ReadOptions`; `BoundPlanMode`, `Route::Legacy`,
+      `TranslateError::{Planning, Render}`, `where_label_constraints`,
+      `cypher_to_sql_legacy` / `cypher_to_sql_read_only`, the
+      `SqlEmitter` facade, `extract_return_metadata`; the legacy-only
+      tests (`sql_golden_tests` and `golden/sql_ir`, `ldbc_regression`,
+      `complex_feature`, the browser, cross-schema, parameter, SKIP, WITH
+      and path test files, the `render_plan/tests` that call the legacy
+      route); the legacy modules made `pub(crate)` so the build lists the
+      dead set; `ExecutorKind` / `WriteGuardError` and
+      `get_query_type` / `QueryType` moved to homes outside the planner.
+    - [ ] **S14c2: the legacy write planner** (`write_plan_builder`,
+      `write_clause_builder`, the rest of `write_guard`, the write
+      `LogicalPlan` variants).
+    - [ ] **S14c3: render composition and the emitter's repairs**
+      (`plan_builder*`, `with_to_cte`, the builders, `cte_extraction` but
+      the two functions the path generator reads, `render_plan_to_sql`
+      and its helpers, `multi_type_vlp_joins`, `json_builder`).
+    - [ ] **S14c4: the planner** (`analyzer`, `optimizer`, `plan_ctx`, the
+      `logical_plan` builders, `expression_rewriter`, `variable_scope`);
+      decide `CLICKGRAPH_STATS_ENABLED` (its only reader is the analyzer's
+      join ordering; the lowering's join order is S11o10's).
+    - [ ] **S14c5: the printer and context cleanup** (the name-keyed
+      registries of `query_context`, the legacy fields of `RenderPlan` /
+      `Cte` / `Join`, the non-plain `ToSql` branches; coverage-guided).
+    - [ ] **S14c6: the types** (`ViewTableRef.source`, the `LogicalExpr`
+      subquery variants, `LogicalPlan` itself; PageRank's CALL to a
+      config), then the survivors moved (`LogicalExpr` to `bound_plan`, the
+      IR types to an IR module).
+    - [ ] **S14c7: the entry points** (`transform_id_functions`, the dead
+      `id_rewriter.rs` and `src/testing/`, `include_plan`, the generator's
+      branches the bound plan never reaches) and the docs (`CLAUDE.md`,
+      the AGENTS.md files), then #1392 closed.
 
 ## Appendix A — post-assembly repair passes (48, plus CTE flattening, at `e1241a9c`)
 

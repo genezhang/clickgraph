@@ -1,8 +1,9 @@
 SELECT 
-      g.name AS `g.name`, 
-      collect_list(u.name) AS `member_names`
-FROM data_security.ds_users AS u
-INNER JOIN data_security.ds_memberships AS t0 ON t0.member_id = u.user_id AND t0.member_type = 'User'
-INNER JOIN data_security.ds_groups AS g ON g.group_id = t0.group_id
-GROUP BY g.name
-ORDER BY g.name ASC NULLS LAST
+      v0.name AS `g.name`, 
+      coalesce(collect_list(v2.name), array()) AS `member_names`
+FROM data_security.ds_groups AS v0
+JOIN data_security.ds_memberships AS v1 ON v1.group_id = v0.group_id
+JOIN data_security.ds_users AS v2 ON v1.member_id = v2.user_id
+WHERE ((v1.`member_type` = 'User'))
+GROUP BY v0.name
+ORDER BY v0.name ASC NULLS LAST

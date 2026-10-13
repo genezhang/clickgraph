@@ -1,14 +1,37 @@
-WITH vlp_multi_type_p_u AS (
-SELECT 'User' AS end_type, u2.user_id AS end_id, p_1.post_id AS start_id, 'Post' AS start_type, string(r1.author_id) AS r_from_id, string(r1.post_id) AS r_to_id, to_json(struct(u2.age AS age, u2.city AS city, u2.country AS country, u2.email_address AS email, u2.is_active AS is_active, u2.full_name AS name, u2.registration_date AS registration_date, u2.user_id AS user_id)) AS end_properties, u2.age AS end_age, u2.city AS end_city, u2.country AS end_country, u2.email_address AS end_email, u2.is_active AS end_is_active, u2.full_name AS end_name, u2.registration_date AS end_registration_date, u2.user_id AS end_user_id, 1 AS hop_count, array('AUTHORED') AS path_relationships, array('{}') AS rel_properties, array(string(p_1.post_id), string(u2.user_id)) AS path_nodes
-FROM test_integration.posts_test p_1
-INNER JOIN test_integration.posts_test r1 ON p_1.post_id = r1.post_id
-INNER JOIN test_integration.users_test u2 ON r1.author_id = u2.user_id
+WITH v1_rels AS (
+SELECT 
+      'AUTHORED' AS `__cg_type`, 
+      'User' AS `__cg_from_label`, 
+      'Post' AS `__cg_to_label`, 
+      e.author_id AS `__cg_rid_0`, 
+      e.post_id AS `__cg_rid_1`, 
+      e.author_id AS `__cg_from_0`, 
+      e.post_id AS `__cg_to_0`, 
+      e.post_id AS `__cg_start_0`, 
+      e.author_id AS `__cg_end_0`, 
+      'Post' AS `__cg_start_label`, 
+      'User' AS `__cg_end_label`, 
+      concat('AUTHORED:User:Post:', to_json(named_struct('_1', CAST(e.author_id AS STRING), '_2', CAST(e.post_id AS STRING)), map('ignoreNullFields', 'false'))) AS `__cg_key`
+FROM test_integration.posts_test AS e
+
 UNION ALL
-SELECT 'User' AS end_type, u2.user_id AS end_id, p_1.post_id AS start_id, 'Post' AS start_type, string(r1.user_id) AS r_from_id, string(r1.post_id) AS r_to_id, to_json(struct(u2.age AS age, u2.city AS city, u2.country AS country, u2.email_address AS email, u2.is_active AS is_active, u2.full_name AS name, u2.registration_date AS registration_date, u2.user_id AS user_id)) AS end_properties, u2.age AS end_age, u2.city AS end_city, u2.country AS end_country, u2.email_address AS end_email, u2.is_active AS end_is_active, u2.full_name AS end_name, u2.registration_date AS end_registration_date, u2.user_id AS end_user_id, 1 AS hop_count, array('LIKED') AS path_relationships, array(to_json(struct(r1.like_date))) AS rel_properties, array(string(p_1.post_id), string(u2.user_id)) AS path_nodes
-FROM test_integration.posts_test p_1
-INNER JOIN test_integration.post_likes_test r1 ON p_1.post_id = r1.post_id
-INNER JOIN test_integration.users_test u2 ON r1.user_id = u2.user_id
+SELECT 
+      'LIKED' AS `__cg_type`, 
+      'User' AS `__cg_from_label`, 
+      'Post' AS `__cg_to_label`, 
+      e.like_id AS `__cg_rid_0`, 
+      NULL AS `__cg_rid_1`, 
+      e.user_id AS `__cg_from_0`, 
+      e.post_id AS `__cg_to_0`, 
+      e.post_id AS `__cg_start_0`, 
+      e.user_id AS `__cg_end_0`, 
+      'Post' AS `__cg_start_label`, 
+      'User' AS `__cg_end_label`, 
+      concat('LIKED:User:Post:', CAST(e.like_id AS STRING)) AS `__cg_key`
+FROM test_integration.post_likes_test AS e
 )
 SELECT 
-      count(DISTINCT struct(t.end_type, t.end_id)) AS `total`
-FROM vlp_multi_type_p_u AS t
+      count(DISTINCT v2.user_id) AS `total`
+FROM test_integration.posts_test AS v0
+JOIN v1_rels AS v1 ON v1.__cg_start_0 = v0.post_id
+JOIN test_integration.users_test AS v2 ON v1.__cg_end_0 = v2.user_id

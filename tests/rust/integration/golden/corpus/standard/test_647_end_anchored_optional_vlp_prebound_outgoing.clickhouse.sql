@@ -1,4 +1,15 @@
-WITH RECURSIVE vlp_a_b AS (
+WITH RECURSIVE with_w1 AS (
+SELECT 
+      v0.user_id AS "v0__user_id", 
+      v0.full_name AS "p2_v0_name"
+FROM test_integration.users_test AS v0
+), 
+optional_d2 AS (
+SELECT DISTINCT 
+      w1.v0__user_id AS "v0__user_id"
+FROM with_w1 AS w1
+), 
+vlp_v2_path AS (
     SELECT 
         start_node.user_id as start_id,
         end_node.user_id as end_id,
@@ -7,8 +18,11 @@ WITH RECURSIVE vlp_a_b AS (
         [start_node.user_id, end_node.user_id] as path_nodes,
         [rel.follow_id] as path_edges
     FROM test_integration.users_test AS start_node
-    JOIN test_integration.user_follows_test AS rel ON start_node.user_id = rel.follower_id
-    JOIN test_integration.users_test AS end_node ON rel.followed_id = end_node.user_id
+    JOIN test_integration.user_follows_test AS rel ON start_node.user_id = rel.followed_id
+    JOIN test_integration.users_test AS end_node ON rel.follower_id = end_node.user_id
+    WHERE (start_node.user_id IN (SELECT DISTINCT 
+      d2.v0__user_id AS "id"
+FROM optional_d2 AS d2))
     UNION ALL
     SELECT
         vp.start_id,
@@ -17,16 +31,24 @@ WITH RECURSIVE vlp_a_b AS (
         CAST([] AS Array(String)) as path_relationships,
         arrayConcat(vp.path_nodes, [end_node.user_id]) as path_nodes,
         arrayConcat(vp.path_edges, [rel.follow_id]) as path_edges
-    FROM vlp_a_b vp
-    JOIN test_integration.user_follows_test AS rel ON vp.end_id = rel.follower_id
-    JOIN test_integration.users_test AS end_node ON rel.followed_id = end_node.user_id
+    FROM vlp_v2_path vp
+    JOIN test_integration.user_follows_test AS rel ON vp.end_id = rel.followed_id
+    JOIN test_integration.users_test AS end_node ON rel.follower_id = end_node.user_id
     WHERE vp.hop_count < 2
       AND NOT has(vp.path_edges, rel.follow_id)
+), 
+optional_o3 AS (
+SELECT 
+      d2.v0__user_id AS "v0__user_id", 
+      v1.user_id AS "v1__user_id"
+FROM vlp_v2_path AS v2
+JOIN optional_d2 AS d2 ON v2.start_id = d2.v0__user_id
+JOIN test_integration.users_test AS v1 ON v2.end_id = v1.user_id
 )
 SELECT 
-      b.full_name AS "b.name", 
-      count(vt0.start_id) AS "c"
-FROM test_integration.users_test AS b
-LEFT JOIN vlp_a_b AS vt0 ON b.user_id = vt0.end_id
-GROUP BY b.full_name
-ORDER BY b.full_name ASC
+      w1.p2_v0_name AS "b.name", 
+      count(o3.v1__user_id) AS "c"
+FROM with_w1 AS w1
+LEFT JOIN optional_o3 AS o3 ON w1.v0__user_id = o3.v0__user_id
+GROUP BY w1.p2_v0_name
+ORDER BY w1.p2_v0_name ASC

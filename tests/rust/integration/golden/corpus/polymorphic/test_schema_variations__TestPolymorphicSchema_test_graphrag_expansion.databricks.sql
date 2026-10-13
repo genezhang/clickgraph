@@ -1,159 +1,220 @@
-WITH vlp_multi_type_u_target AS (
-SELECT 'Post' AS end_type, p2.post_id AS end_id, u_1.user_id AS start_id, 'User' AS start_type, to_json(struct(p2.content AS content, p2.created_at AS created, p2.post_id AS post_id, p2.content AS title)) AS end_properties, to_json(struct(u_1.email_address, u_1.full_name, u_1.user_id)) AS start_properties, u_1.user_id AS start_user_id, 1 AS hop_count, array('FOLLOWS') AS path_relationships, array(to_json(struct(r1.timestamp, r1.interaction_weight))) AS rel_properties, array(string(u_1.user_id), string(p2.post_id)) AS path_nodes
-FROM brahmand.users_bench u_1
-INNER JOIN brahmand.interactions r1 ON u_1.user_id = r1.from_id
-INNER JOIN brahmand.posts_bench p2 ON r1.to_id = p2.post_id
-WHERE r1.interaction_type = 'FOLLOWS' AND r1.from_type = 'User' AND r1.to_type = 'Post' AND (u_1.user_id = 1)
+WITH RECURSIVE v2_labels AS (
+SELECT 
+      'Post' AS `__cg_label`, 
+      e.post_id AS `__cg_id_0`, 
+      e.content AS `p2_v2_content`, 
+      e.created_at AS `p2_v2_created`, 
+      NULL AS `p2_v2_email`, 
+      NULL AS `p2_v2_name`, 
+      e.post_id AS `p2_v2_post_id`, 
+      e.content AS `p2_v2_title`, 
+      NULL AS `p2_v2_user_id`
+FROM brahmand.posts_bench AS e
+
 UNION ALL
-SELECT 'Post' AS end_type, p3.post_id AS end_id, u_1.user_id AS start_id, 'User' AS start_type, to_json(struct(p3.content AS content, p3.created_at AS created, p3.post_id AS post_id, p3.content AS title)) AS end_properties, to_json(struct(u_1.email_address, u_1.full_name, u_1.user_id)) AS start_properties, u_1.user_id AS start_user_id, 2 AS hop_count, array('FOLLOWS', 'FOLLOWS') AS path_relationships, array(to_json(struct(r1.timestamp, r1.interaction_weight)), to_json(struct(r2.timestamp, r2.interaction_weight))) AS rel_properties, array(string(u_1.user_id), string(p2.post_id), string(p3.post_id)) AS path_nodes
-FROM brahmand.users_bench u_1
-INNER JOIN brahmand.interactions r1 ON u_1.user_id = r1.from_id
-INNER JOIN brahmand.posts_bench p2 ON r1.to_id = p2.post_id
-INNER JOIN brahmand.interactions r2 ON p2.post_id = r2.from_id
-INNER JOIN brahmand.posts_bench p3 ON r2.to_id = p3.post_id
-WHERE r1.interaction_type = 'FOLLOWS' AND r1.from_type = 'User' AND r1.to_type = 'Post' AND r2.interaction_type = 'FOLLOWS' AND r2.from_type = 'Post' AND r2.to_type = 'Post' AND NOT ((r1.from_id = r2.from_id) AND (r1.to_id = r2.to_id)) AND (u_1.user_id = 1)
+SELECT 
+      'User' AS `__cg_label`, 
+      e.user_id AS `__cg_id_0`, 
+      NULL AS `p2_v2_content`, 
+      NULL AS `p2_v2_created`, 
+      e.email_address AS `p2_v2_email`, 
+      e.full_name AS `p2_v2_name`, 
+      NULL AS `p2_v2_post_id`, 
+      NULL AS `p2_v2_title`, 
+      e.user_id AS `p2_v2_user_id`
+FROM brahmand.users_bench AS e
+), 
+vlp_v1_nodes AS (
+SELECT 
+      'Post' AS `__cg_label`, 
+      e.post_id AS `__cg_id_0`, 
+      concat('Post', ':', CAST(e.post_id AS STRING)) AS `__cg_key`
+FROM brahmand.posts_bench AS e
+
 UNION ALL
-SELECT 'User' AS end_type, u3.user_id AS end_id, u_1.user_id AS start_id, 'User' AS start_type, to_json(struct(u3.email_address AS email, u3.full_name AS name, u3.user_id AS user_id)) AS end_properties, to_json(struct(u_1.email_address, u_1.full_name, u_1.user_id)) AS start_properties, u_1.user_id AS start_user_id, 2 AS hop_count, array('FOLLOWS', 'FOLLOWS') AS path_relationships, array(to_json(struct(r1.timestamp, r1.interaction_weight)), to_json(struct(r2.timestamp, r2.interaction_weight))) AS rel_properties, array(string(u_1.user_id), string(p2.post_id), string(u3.user_id)) AS path_nodes
-FROM brahmand.users_bench u_1
-INNER JOIN brahmand.interactions r1 ON u_1.user_id = r1.from_id
-INNER JOIN brahmand.posts_bench p2 ON r1.to_id = p2.post_id
-INNER JOIN brahmand.interactions r2 ON p2.post_id = r2.from_id
-INNER JOIN brahmand.users_bench u3 ON r2.to_id = u3.user_id
-WHERE r1.interaction_type = 'FOLLOWS' AND r1.from_type = 'User' AND r1.to_type = 'Post' AND r2.interaction_type = 'FOLLOWS' AND r2.from_type = 'Post' AND r2.to_type = 'User' AND NOT ((r1.from_id = r2.from_id) AND (r1.to_id = r2.to_id)) AND (u_1.user_id = 1)
+SELECT 
+      'User' AS `__cg_label`, 
+      e.user_id AS `__cg_id_0`, 
+      concat('User', ':', CAST(e.user_id AS STRING)) AS `__cg_key`
+FROM brahmand.users_bench AS e
+), 
+v1_rels AS (
+SELECT 
+      'FOLLOWS' AS `__cg_type`, 
+      'Post' AS `__cg_from_label`, 
+      'Post' AS `__cg_to_label`, 
+      e.from_id AS `__cg_rid_0`, 
+      e.to_id AS `__cg_rid_1`, 
+      e.interaction_type AS `__cg_rid_2`, 
+      e.timestamp AS `__cg_rid_3`, 
+      e.from_id AS `__cg_from_0`, 
+      e.to_id AS `__cg_to_0`, 
+      e.from_id AS `__cg_start_0`, 
+      e.to_id AS `__cg_end_0`, 
+      'Post' AS `__cg_start_label`, 
+      'Post' AS `__cg_end_label`, 
+      concat('FOLLOWS:Post:Post:', to_json(named_struct('_1', CAST(e.from_id AS STRING), '_2', CAST(e.to_id AS STRING), '_3', CAST(e.interaction_type AS STRING), '_4', CAST(e.timestamp AS STRING)), map('ignoreNullFields', 'false'))) AS `__cg_key`
+FROM brahmand.interactions AS e
+WHERE ((((e.`interaction_type` = 'FOLLOWS') AND (e.`from_type` = 'Post')) AND (e.`to_type` = 'Post')))
+
 UNION ALL
-SELECT 'Post' AS end_type, p3.post_id AS end_id, u_1.user_id AS start_id, 'User' AS start_type, to_json(struct(p3.content AS content, p3.created_at AS created, p3.post_id AS post_id, p3.content AS title)) AS end_properties, to_json(struct(u_1.email_address, u_1.full_name, u_1.user_id)) AS start_properties, u_1.user_id AS start_user_id, 2 AS hop_count, array('FOLLOWS', 'LIKES') AS path_relationships, array(to_json(struct(r1.timestamp, r1.interaction_weight)), to_json(struct(r2.timestamp, r2.interaction_weight))) AS rel_properties, array(string(u_1.user_id), string(p2.post_id), string(p3.post_id)) AS path_nodes
-FROM brahmand.users_bench u_1
-INNER JOIN brahmand.interactions r1 ON u_1.user_id = r1.from_id
-INNER JOIN brahmand.posts_bench p2 ON r1.to_id = p2.post_id
-INNER JOIN brahmand.interactions r2 ON p2.post_id = r2.from_id
-INNER JOIN brahmand.posts_bench p3 ON r2.to_id = p3.post_id
-WHERE r1.interaction_type = 'FOLLOWS' AND r1.from_type = 'User' AND r1.to_type = 'Post' AND r2.interaction_type = 'LIKES' AND r2.from_type = 'Post' AND r2.to_type = 'Post' AND (u_1.user_id = 1)
+SELECT 
+      'FOLLOWS' AS `__cg_type`, 
+      'Post' AS `__cg_from_label`, 
+      'User' AS `__cg_to_label`, 
+      e.from_id AS `__cg_rid_0`, 
+      e.to_id AS `__cg_rid_1`, 
+      e.interaction_type AS `__cg_rid_2`, 
+      e.timestamp AS `__cg_rid_3`, 
+      e.from_id AS `__cg_from_0`, 
+      e.to_id AS `__cg_to_0`, 
+      e.from_id AS `__cg_start_0`, 
+      e.to_id AS `__cg_end_0`, 
+      'Post' AS `__cg_start_label`, 
+      'User' AS `__cg_end_label`, 
+      concat('FOLLOWS:Post:User:', to_json(named_struct('_1', CAST(e.from_id AS STRING), '_2', CAST(e.to_id AS STRING), '_3', CAST(e.interaction_type AS STRING), '_4', CAST(e.timestamp AS STRING)), map('ignoreNullFields', 'false'))) AS `__cg_key`
+FROM brahmand.interactions AS e
+WHERE ((((e.`interaction_type` = 'FOLLOWS') AND (e.`from_type` = 'Post')) AND (e.`to_type` = 'User')))
+
 UNION ALL
-SELECT 'User' AS end_type, u3.user_id AS end_id, u_1.user_id AS start_id, 'User' AS start_type, to_json(struct(u3.email_address AS email, u3.full_name AS name, u3.user_id AS user_id)) AS end_properties, to_json(struct(u_1.email_address, u_1.full_name, u_1.user_id)) AS start_properties, u_1.user_id AS start_user_id, 2 AS hop_count, array('FOLLOWS', 'LIKES') AS path_relationships, array(to_json(struct(r1.timestamp, r1.interaction_weight)), to_json(struct(r2.timestamp, r2.interaction_weight))) AS rel_properties, array(string(u_1.user_id), string(p2.post_id), string(u3.user_id)) AS path_nodes
-FROM brahmand.users_bench u_1
-INNER JOIN brahmand.interactions r1 ON u_1.user_id = r1.from_id
-INNER JOIN brahmand.posts_bench p2 ON r1.to_id = p2.post_id
-INNER JOIN brahmand.interactions r2 ON p2.post_id = r2.from_id
-INNER JOIN brahmand.users_bench u3 ON r2.to_id = u3.user_id
-WHERE r1.interaction_type = 'FOLLOWS' AND r1.from_type = 'User' AND r1.to_type = 'Post' AND r2.interaction_type = 'LIKES' AND r2.from_type = 'Post' AND r2.to_type = 'User' AND (u_1.user_id = 1)
+SELECT 
+      'FOLLOWS' AS `__cg_type`, 
+      'User' AS `__cg_from_label`, 
+      'Post' AS `__cg_to_label`, 
+      e.from_id AS `__cg_rid_0`, 
+      e.to_id AS `__cg_rid_1`, 
+      e.interaction_type AS `__cg_rid_2`, 
+      e.timestamp AS `__cg_rid_3`, 
+      e.from_id AS `__cg_from_0`, 
+      e.to_id AS `__cg_to_0`, 
+      e.from_id AS `__cg_start_0`, 
+      e.to_id AS `__cg_end_0`, 
+      'User' AS `__cg_start_label`, 
+      'Post' AS `__cg_end_label`, 
+      concat('FOLLOWS:User:Post:', to_json(named_struct('_1', CAST(e.from_id AS STRING), '_2', CAST(e.to_id AS STRING), '_3', CAST(e.interaction_type AS STRING), '_4', CAST(e.timestamp AS STRING)), map('ignoreNullFields', 'false'))) AS `__cg_key`
+FROM brahmand.interactions AS e
+WHERE ((((e.`interaction_type` = 'FOLLOWS') AND (e.`from_type` = 'User')) AND (e.`to_type` = 'Post')))
+
 UNION ALL
-SELECT 'User' AS end_type, u2.user_id AS end_id, u_1.user_id AS start_id, 'User' AS start_type, to_json(struct(u2.email_address AS email, u2.full_name AS name, u2.user_id AS user_id)) AS end_properties, to_json(struct(u_1.email_address, u_1.full_name, u_1.user_id)) AS start_properties, u_1.user_id AS start_user_id, 1 AS hop_count, array('FOLLOWS') AS path_relationships, array(to_json(struct(r1.timestamp, r1.interaction_weight))) AS rel_properties, array(string(u_1.user_id), string(u2.user_id)) AS path_nodes
-FROM brahmand.users_bench u_1
-INNER JOIN brahmand.interactions r1 ON u_1.user_id = r1.from_id
-INNER JOIN brahmand.users_bench u2 ON r1.to_id = u2.user_id
-WHERE r1.interaction_type = 'FOLLOWS' AND r1.from_type = 'User' AND r1.to_type = 'User' AND (u_1.user_id = 1)
+SELECT 
+      'FOLLOWS' AS `__cg_type`, 
+      'User' AS `__cg_from_label`, 
+      'User' AS `__cg_to_label`, 
+      e.from_id AS `__cg_rid_0`, 
+      e.to_id AS `__cg_rid_1`, 
+      e.interaction_type AS `__cg_rid_2`, 
+      e.timestamp AS `__cg_rid_3`, 
+      e.from_id AS `__cg_from_0`, 
+      e.to_id AS `__cg_to_0`, 
+      e.from_id AS `__cg_start_0`, 
+      e.to_id AS `__cg_end_0`, 
+      'User' AS `__cg_start_label`, 
+      'User' AS `__cg_end_label`, 
+      concat('FOLLOWS:User:User:', to_json(named_struct('_1', CAST(e.from_id AS STRING), '_2', CAST(e.to_id AS STRING), '_3', CAST(e.interaction_type AS STRING), '_4', CAST(e.timestamp AS STRING)), map('ignoreNullFields', 'false'))) AS `__cg_key`
+FROM brahmand.interactions AS e
+WHERE ((((e.`interaction_type` = 'FOLLOWS') AND (e.`from_type` = 'User')) AND (e.`to_type` = 'User')))
+
 UNION ALL
-SELECT 'Post' AS end_type, p3.post_id AS end_id, u_1.user_id AS start_id, 'User' AS start_type, to_json(struct(p3.content AS content, p3.created_at AS created, p3.post_id AS post_id, p3.content AS title)) AS end_properties, to_json(struct(u_1.email_address, u_1.full_name, u_1.user_id)) AS start_properties, u_1.user_id AS start_user_id, 2 AS hop_count, array('FOLLOWS', 'FOLLOWS') AS path_relationships, array(to_json(struct(r1.timestamp, r1.interaction_weight)), to_json(struct(r2.timestamp, r2.interaction_weight))) AS rel_properties, array(string(u_1.user_id), string(u2.user_id), string(p3.post_id)) AS path_nodes
-FROM brahmand.users_bench u_1
-INNER JOIN brahmand.interactions r1 ON u_1.user_id = r1.from_id
-INNER JOIN brahmand.users_bench u2 ON r1.to_id = u2.user_id
-INNER JOIN brahmand.interactions r2 ON u2.user_id = r2.from_id
-INNER JOIN brahmand.posts_bench p3 ON r2.to_id = p3.post_id
-WHERE r1.interaction_type = 'FOLLOWS' AND r1.from_type = 'User' AND r1.to_type = 'User' AND r2.interaction_type = 'FOLLOWS' AND r2.from_type = 'User' AND r2.to_type = 'Post' AND NOT ((r1.from_id = r2.from_id) AND (r1.to_id = r2.to_id)) AND (u_1.user_id = 1)
+SELECT 
+      'LIKES' AS `__cg_type`, 
+      'Post' AS `__cg_from_label`, 
+      'Post' AS `__cg_to_label`, 
+      e.from_id AS `__cg_rid_0`, 
+      e.to_id AS `__cg_rid_1`, 
+      e.interaction_type AS `__cg_rid_2`, 
+      e.timestamp AS `__cg_rid_3`, 
+      e.from_id AS `__cg_from_0`, 
+      e.to_id AS `__cg_to_0`, 
+      e.from_id AS `__cg_start_0`, 
+      e.to_id AS `__cg_end_0`, 
+      'Post' AS `__cg_start_label`, 
+      'Post' AS `__cg_end_label`, 
+      concat('LIKES:Post:Post:', to_json(named_struct('_1', CAST(e.from_id AS STRING), '_2', CAST(e.to_id AS STRING), '_3', CAST(e.interaction_type AS STRING), '_4', CAST(e.timestamp AS STRING)), map('ignoreNullFields', 'false'))) AS `__cg_key`
+FROM brahmand.interactions AS e
+WHERE ((((e.`interaction_type` = 'LIKES') AND (e.`from_type` = 'Post')) AND (e.`to_type` = 'Post')))
+
 UNION ALL
-SELECT 'User' AS end_type, u3.user_id AS end_id, u_1.user_id AS start_id, 'User' AS start_type, to_json(struct(u3.email_address AS email, u3.full_name AS name, u3.user_id AS user_id)) AS end_properties, to_json(struct(u_1.email_address, u_1.full_name, u_1.user_id)) AS start_properties, u_1.user_id AS start_user_id, 2 AS hop_count, array('FOLLOWS', 'FOLLOWS') AS path_relationships, array(to_json(struct(r1.timestamp, r1.interaction_weight)), to_json(struct(r2.timestamp, r2.interaction_weight))) AS rel_properties, array(string(u_1.user_id), string(u2.user_id), string(u3.user_id)) AS path_nodes
-FROM brahmand.users_bench u_1
-INNER JOIN brahmand.interactions r1 ON u_1.user_id = r1.from_id
-INNER JOIN brahmand.users_bench u2 ON r1.to_id = u2.user_id
-INNER JOIN brahmand.interactions r2 ON u2.user_id = r2.from_id
-INNER JOIN brahmand.users_bench u3 ON r2.to_id = u3.user_id
-WHERE r1.interaction_type = 'FOLLOWS' AND r1.from_type = 'User' AND r1.to_type = 'User' AND r2.interaction_type = 'FOLLOWS' AND r2.from_type = 'User' AND r2.to_type = 'User' AND NOT ((r1.from_id = r2.from_id) AND (r1.to_id = r2.to_id)) AND (u_1.user_id = 1)
+SELECT 
+      'LIKES' AS `__cg_type`, 
+      'Post' AS `__cg_from_label`, 
+      'User' AS `__cg_to_label`, 
+      e.from_id AS `__cg_rid_0`, 
+      e.to_id AS `__cg_rid_1`, 
+      e.interaction_type AS `__cg_rid_2`, 
+      e.timestamp AS `__cg_rid_3`, 
+      e.from_id AS `__cg_from_0`, 
+      e.to_id AS `__cg_to_0`, 
+      e.from_id AS `__cg_start_0`, 
+      e.to_id AS `__cg_end_0`, 
+      'Post' AS `__cg_start_label`, 
+      'User' AS `__cg_end_label`, 
+      concat('LIKES:Post:User:', to_json(named_struct('_1', CAST(e.from_id AS STRING), '_2', CAST(e.to_id AS STRING), '_3', CAST(e.interaction_type AS STRING), '_4', CAST(e.timestamp AS STRING)), map('ignoreNullFields', 'false'))) AS `__cg_key`
+FROM brahmand.interactions AS e
+WHERE ((((e.`interaction_type` = 'LIKES') AND (e.`from_type` = 'Post')) AND (e.`to_type` = 'User')))
+
 UNION ALL
-SELECT 'Post' AS end_type, p3.post_id AS end_id, u_1.user_id AS start_id, 'User' AS start_type, to_json(struct(p3.content AS content, p3.created_at AS created, p3.post_id AS post_id, p3.content AS title)) AS end_properties, to_json(struct(u_1.email_address, u_1.full_name, u_1.user_id)) AS start_properties, u_1.user_id AS start_user_id, 2 AS hop_count, array('FOLLOWS', 'LIKES') AS path_relationships, array(to_json(struct(r1.timestamp, r1.interaction_weight)), to_json(struct(r2.timestamp, r2.interaction_weight))) AS rel_properties, array(string(u_1.user_id), string(u2.user_id), string(p3.post_id)) AS path_nodes
-FROM brahmand.users_bench u_1
-INNER JOIN brahmand.interactions r1 ON u_1.user_id = r1.from_id
-INNER JOIN brahmand.users_bench u2 ON r1.to_id = u2.user_id
-INNER JOIN brahmand.interactions r2 ON u2.user_id = r2.from_id
-INNER JOIN brahmand.posts_bench p3 ON r2.to_id = p3.post_id
-WHERE r1.interaction_type = 'FOLLOWS' AND r1.from_type = 'User' AND r1.to_type = 'User' AND r2.interaction_type = 'LIKES' AND r2.from_type = 'User' AND r2.to_type = 'Post' AND (u_1.user_id = 1)
+SELECT 
+      'LIKES' AS `__cg_type`, 
+      'User' AS `__cg_from_label`, 
+      'Post' AS `__cg_to_label`, 
+      e.from_id AS `__cg_rid_0`, 
+      e.to_id AS `__cg_rid_1`, 
+      e.interaction_type AS `__cg_rid_2`, 
+      e.timestamp AS `__cg_rid_3`, 
+      e.from_id AS `__cg_from_0`, 
+      e.to_id AS `__cg_to_0`, 
+      e.from_id AS `__cg_start_0`, 
+      e.to_id AS `__cg_end_0`, 
+      'User' AS `__cg_start_label`, 
+      'Post' AS `__cg_end_label`, 
+      concat('LIKES:User:Post:', to_json(named_struct('_1', CAST(e.from_id AS STRING), '_2', CAST(e.to_id AS STRING), '_3', CAST(e.interaction_type AS STRING), '_4', CAST(e.timestamp AS STRING)), map('ignoreNullFields', 'false'))) AS `__cg_key`
+FROM brahmand.interactions AS e
+WHERE ((((e.`interaction_type` = 'LIKES') AND (e.`from_type` = 'User')) AND (e.`to_type` = 'Post')))
+
 UNION ALL
-SELECT 'User' AS end_type, u3.user_id AS end_id, u_1.user_id AS start_id, 'User' AS start_type, to_json(struct(u3.email_address AS email, u3.full_name AS name, u3.user_id AS user_id)) AS end_properties, to_json(struct(u_1.email_address, u_1.full_name, u_1.user_id)) AS start_properties, u_1.user_id AS start_user_id, 2 AS hop_count, array('FOLLOWS', 'LIKES') AS path_relationships, array(to_json(struct(r1.timestamp, r1.interaction_weight)), to_json(struct(r2.timestamp, r2.interaction_weight))) AS rel_properties, array(string(u_1.user_id), string(u2.user_id), string(u3.user_id)) AS path_nodes
-FROM brahmand.users_bench u_1
-INNER JOIN brahmand.interactions r1 ON u_1.user_id = r1.from_id
-INNER JOIN brahmand.users_bench u2 ON r1.to_id = u2.user_id
-INNER JOIN brahmand.interactions r2 ON u2.user_id = r2.from_id
-INNER JOIN brahmand.users_bench u3 ON r2.to_id = u3.user_id
-WHERE r1.interaction_type = 'FOLLOWS' AND r1.from_type = 'User' AND r1.to_type = 'User' AND r2.interaction_type = 'LIKES' AND r2.from_type = 'User' AND r2.to_type = 'User' AND (u_1.user_id = 1)
-UNION ALL
-SELECT 'Post' AS end_type, p2.post_id AS end_id, u_1.user_id AS start_id, 'User' AS start_type, to_json(struct(p2.content AS content, p2.created_at AS created, p2.post_id AS post_id, p2.content AS title)) AS end_properties, to_json(struct(u_1.email_address, u_1.full_name, u_1.user_id)) AS start_properties, u_1.user_id AS start_user_id, 1 AS hop_count, array('LIKES') AS path_relationships, array(to_json(struct(r1.timestamp, r1.interaction_weight))) AS rel_properties, array(string(u_1.user_id), string(p2.post_id)) AS path_nodes
-FROM brahmand.users_bench u_1
-INNER JOIN brahmand.interactions r1 ON u_1.user_id = r1.from_id
-INNER JOIN brahmand.posts_bench p2 ON r1.to_id = p2.post_id
-WHERE r1.interaction_type = 'LIKES' AND r1.from_type = 'User' AND r1.to_type = 'Post' AND (u_1.user_id = 1)
-UNION ALL
-SELECT 'Post' AS end_type, p3.post_id AS end_id, u_1.user_id AS start_id, 'User' AS start_type, to_json(struct(p3.content AS content, p3.created_at AS created, p3.post_id AS post_id, p3.content AS title)) AS end_properties, to_json(struct(u_1.email_address, u_1.full_name, u_1.user_id)) AS start_properties, u_1.user_id AS start_user_id, 2 AS hop_count, array('LIKES', 'FOLLOWS') AS path_relationships, array(to_json(struct(r1.timestamp, r1.interaction_weight)), to_json(struct(r2.timestamp, r2.interaction_weight))) AS rel_properties, array(string(u_1.user_id), string(p2.post_id), string(p3.post_id)) AS path_nodes
-FROM brahmand.users_bench u_1
-INNER JOIN brahmand.interactions r1 ON u_1.user_id = r1.from_id
-INNER JOIN brahmand.posts_bench p2 ON r1.to_id = p2.post_id
-INNER JOIN brahmand.interactions r2 ON p2.post_id = r2.from_id
-INNER JOIN brahmand.posts_bench p3 ON r2.to_id = p3.post_id
-WHERE r1.interaction_type = 'LIKES' AND r1.from_type = 'User' AND r1.to_type = 'Post' AND r2.interaction_type = 'FOLLOWS' AND r2.from_type = 'Post' AND r2.to_type = 'Post' AND (u_1.user_id = 1)
-UNION ALL
-SELECT 'User' AS end_type, u3.user_id AS end_id, u_1.user_id AS start_id, 'User' AS start_type, to_json(struct(u3.email_address AS email, u3.full_name AS name, u3.user_id AS user_id)) AS end_properties, to_json(struct(u_1.email_address, u_1.full_name, u_1.user_id)) AS start_properties, u_1.user_id AS start_user_id, 2 AS hop_count, array('LIKES', 'FOLLOWS') AS path_relationships, array(to_json(struct(r1.timestamp, r1.interaction_weight)), to_json(struct(r2.timestamp, r2.interaction_weight))) AS rel_properties, array(string(u_1.user_id), string(p2.post_id), string(u3.user_id)) AS path_nodes
-FROM brahmand.users_bench u_1
-INNER JOIN brahmand.interactions r1 ON u_1.user_id = r1.from_id
-INNER JOIN brahmand.posts_bench p2 ON r1.to_id = p2.post_id
-INNER JOIN brahmand.interactions r2 ON p2.post_id = r2.from_id
-INNER JOIN brahmand.users_bench u3 ON r2.to_id = u3.user_id
-WHERE r1.interaction_type = 'LIKES' AND r1.from_type = 'User' AND r1.to_type = 'Post' AND r2.interaction_type = 'FOLLOWS' AND r2.from_type = 'Post' AND r2.to_type = 'User' AND (u_1.user_id = 1)
-UNION ALL
-SELECT 'Post' AS end_type, p3.post_id AS end_id, u_1.user_id AS start_id, 'User' AS start_type, to_json(struct(p3.content AS content, p3.created_at AS created, p3.post_id AS post_id, p3.content AS title)) AS end_properties, to_json(struct(u_1.email_address, u_1.full_name, u_1.user_id)) AS start_properties, u_1.user_id AS start_user_id, 2 AS hop_count, array('LIKES', 'LIKES') AS path_relationships, array(to_json(struct(r1.timestamp, r1.interaction_weight)), to_json(struct(r2.timestamp, r2.interaction_weight))) AS rel_properties, array(string(u_1.user_id), string(p2.post_id), string(p3.post_id)) AS path_nodes
-FROM brahmand.users_bench u_1
-INNER JOIN brahmand.interactions r1 ON u_1.user_id = r1.from_id
-INNER JOIN brahmand.posts_bench p2 ON r1.to_id = p2.post_id
-INNER JOIN brahmand.interactions r2 ON p2.post_id = r2.from_id
-INNER JOIN brahmand.posts_bench p3 ON r2.to_id = p3.post_id
-WHERE r1.interaction_type = 'LIKES' AND r1.from_type = 'User' AND r1.to_type = 'Post' AND r2.interaction_type = 'LIKES' AND r2.from_type = 'Post' AND r2.to_type = 'Post' AND NOT ((r1.from_id = r2.from_id) AND (r1.to_id = r2.to_id)) AND (u_1.user_id = 1)
-UNION ALL
-SELECT 'User' AS end_type, u3.user_id AS end_id, u_1.user_id AS start_id, 'User' AS start_type, to_json(struct(u3.email_address AS email, u3.full_name AS name, u3.user_id AS user_id)) AS end_properties, to_json(struct(u_1.email_address, u_1.full_name, u_1.user_id)) AS start_properties, u_1.user_id AS start_user_id, 2 AS hop_count, array('LIKES', 'LIKES') AS path_relationships, array(to_json(struct(r1.timestamp, r1.interaction_weight)), to_json(struct(r2.timestamp, r2.interaction_weight))) AS rel_properties, array(string(u_1.user_id), string(p2.post_id), string(u3.user_id)) AS path_nodes
-FROM brahmand.users_bench u_1
-INNER JOIN brahmand.interactions r1 ON u_1.user_id = r1.from_id
-INNER JOIN brahmand.posts_bench p2 ON r1.to_id = p2.post_id
-INNER JOIN brahmand.interactions r2 ON p2.post_id = r2.from_id
-INNER JOIN brahmand.users_bench u3 ON r2.to_id = u3.user_id
-WHERE r1.interaction_type = 'LIKES' AND r1.from_type = 'User' AND r1.to_type = 'Post' AND r2.interaction_type = 'LIKES' AND r2.from_type = 'Post' AND r2.to_type = 'User' AND NOT ((r1.from_id = r2.from_id) AND (r1.to_id = r2.to_id)) AND (u_1.user_id = 1)
-UNION ALL
-SELECT 'User' AS end_type, u2.user_id AS end_id, u_1.user_id AS start_id, 'User' AS start_type, to_json(struct(u2.email_address AS email, u2.full_name AS name, u2.user_id AS user_id)) AS end_properties, to_json(struct(u_1.email_address, u_1.full_name, u_1.user_id)) AS start_properties, u_1.user_id AS start_user_id, 1 AS hop_count, array('LIKES') AS path_relationships, array(to_json(struct(r1.timestamp, r1.interaction_weight))) AS rel_properties, array(string(u_1.user_id), string(u2.user_id)) AS path_nodes
-FROM brahmand.users_bench u_1
-INNER JOIN brahmand.interactions r1 ON u_1.user_id = r1.from_id
-INNER JOIN brahmand.users_bench u2 ON r1.to_id = u2.user_id
-WHERE r1.interaction_type = 'LIKES' AND r1.from_type = 'User' AND r1.to_type = 'User' AND (u_1.user_id = 1)
-UNION ALL
-SELECT 'Post' AS end_type, p3.post_id AS end_id, u_1.user_id AS start_id, 'User' AS start_type, to_json(struct(p3.content AS content, p3.created_at AS created, p3.post_id AS post_id, p3.content AS title)) AS end_properties, to_json(struct(u_1.email_address, u_1.full_name, u_1.user_id)) AS start_properties, u_1.user_id AS start_user_id, 2 AS hop_count, array('LIKES', 'FOLLOWS') AS path_relationships, array(to_json(struct(r1.timestamp, r1.interaction_weight)), to_json(struct(r2.timestamp, r2.interaction_weight))) AS rel_properties, array(string(u_1.user_id), string(u2.user_id), string(p3.post_id)) AS path_nodes
-FROM brahmand.users_bench u_1
-INNER JOIN brahmand.interactions r1 ON u_1.user_id = r1.from_id
-INNER JOIN brahmand.users_bench u2 ON r1.to_id = u2.user_id
-INNER JOIN brahmand.interactions r2 ON u2.user_id = r2.from_id
-INNER JOIN brahmand.posts_bench p3 ON r2.to_id = p3.post_id
-WHERE r1.interaction_type = 'LIKES' AND r1.from_type = 'User' AND r1.to_type = 'User' AND r2.interaction_type = 'FOLLOWS' AND r2.from_type = 'User' AND r2.to_type = 'Post' AND (u_1.user_id = 1)
-UNION ALL
-SELECT 'User' AS end_type, u3.user_id AS end_id, u_1.user_id AS start_id, 'User' AS start_type, to_json(struct(u3.email_address AS email, u3.full_name AS name, u3.user_id AS user_id)) AS end_properties, to_json(struct(u_1.email_address, u_1.full_name, u_1.user_id)) AS start_properties, u_1.user_id AS start_user_id, 2 AS hop_count, array('LIKES', 'FOLLOWS') AS path_relationships, array(to_json(struct(r1.timestamp, r1.interaction_weight)), to_json(struct(r2.timestamp, r2.interaction_weight))) AS rel_properties, array(string(u_1.user_id), string(u2.user_id), string(u3.user_id)) AS path_nodes
-FROM brahmand.users_bench u_1
-INNER JOIN brahmand.interactions r1 ON u_1.user_id = r1.from_id
-INNER JOIN brahmand.users_bench u2 ON r1.to_id = u2.user_id
-INNER JOIN brahmand.interactions r2 ON u2.user_id = r2.from_id
-INNER JOIN brahmand.users_bench u3 ON r2.to_id = u3.user_id
-WHERE r1.interaction_type = 'LIKES' AND r1.from_type = 'User' AND r1.to_type = 'User' AND r2.interaction_type = 'FOLLOWS' AND r2.from_type = 'User' AND r2.to_type = 'User' AND (u_1.user_id = 1)
-UNION ALL
-SELECT 'Post' AS end_type, p3.post_id AS end_id, u_1.user_id AS start_id, 'User' AS start_type, to_json(struct(p3.content AS content, p3.created_at AS created, p3.post_id AS post_id, p3.content AS title)) AS end_properties, to_json(struct(u_1.email_address, u_1.full_name, u_1.user_id)) AS start_properties, u_1.user_id AS start_user_id, 2 AS hop_count, array('LIKES', 'LIKES') AS path_relationships, array(to_json(struct(r1.timestamp, r1.interaction_weight)), to_json(struct(r2.timestamp, r2.interaction_weight))) AS rel_properties, array(string(u_1.user_id), string(u2.user_id), string(p3.post_id)) AS path_nodes
-FROM brahmand.users_bench u_1
-INNER JOIN brahmand.interactions r1 ON u_1.user_id = r1.from_id
-INNER JOIN brahmand.users_bench u2 ON r1.to_id = u2.user_id
-INNER JOIN brahmand.interactions r2 ON u2.user_id = r2.from_id
-INNER JOIN brahmand.posts_bench p3 ON r2.to_id = p3.post_id
-WHERE r1.interaction_type = 'LIKES' AND r1.from_type = 'User' AND r1.to_type = 'User' AND r2.interaction_type = 'LIKES' AND r2.from_type = 'User' AND r2.to_type = 'Post' AND NOT ((r1.from_id = r2.from_id) AND (r1.to_id = r2.to_id)) AND (u_1.user_id = 1)
-UNION ALL
-SELECT 'User' AS end_type, u3.user_id AS end_id, u_1.user_id AS start_id, 'User' AS start_type, to_json(struct(u3.email_address AS email, u3.full_name AS name, u3.user_id AS user_id)) AS end_properties, to_json(struct(u_1.email_address, u_1.full_name, u_1.user_id)) AS start_properties, u_1.user_id AS start_user_id, 2 AS hop_count, array('LIKES', 'LIKES') AS path_relationships, array(to_json(struct(r1.timestamp, r1.interaction_weight)), to_json(struct(r2.timestamp, r2.interaction_weight))) AS rel_properties, array(string(u_1.user_id), string(u2.user_id), string(u3.user_id)) AS path_nodes
-FROM brahmand.users_bench u_1
-INNER JOIN brahmand.interactions r1 ON u_1.user_id = r1.from_id
-INNER JOIN brahmand.users_bench u2 ON r1.to_id = u2.user_id
-INNER JOIN brahmand.interactions r2 ON u2.user_id = r2.from_id
-INNER JOIN brahmand.users_bench u3 ON r2.to_id = u3.user_id
-WHERE r1.interaction_type = 'LIKES' AND r1.from_type = 'User' AND r1.to_type = 'User' AND r2.interaction_type = 'LIKES' AND r2.from_type = 'User' AND r2.to_type = 'User' AND NOT ((r1.from_id = r2.from_id) AND (r1.to_id = r2.to_id)) AND (u_1.user_id = 1)
+SELECT 
+      'LIKES' AS `__cg_type`, 
+      'User' AS `__cg_from_label`, 
+      'User' AS `__cg_to_label`, 
+      e.from_id AS `__cg_rid_0`, 
+      e.to_id AS `__cg_rid_1`, 
+      e.interaction_type AS `__cg_rid_2`, 
+      e.timestamp AS `__cg_rid_3`, 
+      e.from_id AS `__cg_from_0`, 
+      e.to_id AS `__cg_to_0`, 
+      e.from_id AS `__cg_start_0`, 
+      e.to_id AS `__cg_end_0`, 
+      'User' AS `__cg_start_label`, 
+      'User' AS `__cg_end_label`, 
+      concat('LIKES:User:User:', to_json(named_struct('_1', CAST(e.from_id AS STRING), '_2', CAST(e.to_id AS STRING), '_3', CAST(e.interaction_type AS STRING), '_4', CAST(e.timestamp AS STRING)), map('ignoreNullFields', 'false'))) AS `__cg_key`
+FROM brahmand.interactions AS e
+WHERE ((((e.`interaction_type` = 'LIKES') AND (e.`from_type` = 'User')) AND (e.`to_type` = 'User')))
+), 
+vlp_v1_trails AS (
+    SELECT start_node.__cg_label AS start_label, start_node.__cg_id_0 AS start_id, start_node.__cg_label AS end_label, start_node.__cg_id_0 AS end_id, CAST(0 AS INT) AS hop_count, CAST(array() AS ARRAY<STRING>) AS path_edges, array(start_node.__cg_key) AS path_nodes
+    FROM vlp_v1_nodes AS start_node
+    WHERE (start_node.__cg_label = 'User') AND ((start_node.__cg_label, start_node.__cg_id_0) IN (SELECT DISTINCT 
+      'User' AS `label`, 
+      v0.user_id AS `id`
+FROM brahmand.users_bench AS v0
+WHERE v0.user_id = 1))
+    UNION ALL
+    SELECT vp.start_label AS start_label, vp.start_id AS start_id, end_node.__cg_label AS end_label, end_node.__cg_id_0 AS end_id, CAST(vp.hop_count + 1 AS INT) AS hop_count, concat(vp.path_edges, array(rel.__cg_key)) AS path_edges, concat(vp.path_nodes, array(end_node.__cg_key)) AS path_nodes
+    FROM vlp_v1_trails AS vp
+    JOIN v1_rels AS rel ON rel.__cg_start_label = vp.end_label AND rel.__cg_start_0 = vp.end_id
+    JOIN vlp_v1_nodes AS end_node ON end_node.__cg_label = rel.__cg_end_label AND end_node.__cg_id_0 = rel.__cg_end_0
+    WHERE vp.hop_count < 2
+      AND NOT array_contains(vp.path_edges, rel.__cg_key)
+), 
+vlp_v1_path AS (
+    SELECT start_label, start_id, end_label, end_id, hop_count, path_edges, path_nodes
+    FROM vlp_v1_trails
+    WHERE hop_count >= 1
 )
 SELECT 
-      t.end_properties AS `target.properties`, 
-      t.end_id AS `target.id`, 
-      t.end_type AS `target.__label__`
-FROM vlp_multi_type_u_target AS t
+      to_variant_object(map('elementId', CAST(concat(v2.__cg_label, ':', CAST(v2.__cg_id_0 AS STRING), '-') AS VARIANT), 'labels', CAST(array(v2.__cg_label) AS VARIANT), 'properties', CAST(to_variant_object(map_filter(map('content', CAST(v2.p2_v2_content AS VARIANT), 'created', CAST(v2.p2_v2_created AS VARIANT), 'email', CAST(v2.p2_v2_email AS VARIANT), 'name', CAST(v2.p2_v2_name AS VARIANT), 'post_id', CAST(v2.p2_v2_post_id AS VARIANT), 'title', CAST(v2.p2_v2_title AS VARIANT), 'user_id', CAST(v2.p2_v2_user_id AS VARIANT)), (__k, __v) -> __v IS NOT NULL)) AS VARIANT))) AS `target`
+FROM vlp_v1_path AS v1
+JOIN brahmand.users_bench AS v0 ON v1.start_id = v0.user_id
+JOIN v2_labels AS v2 ON v1.end_label = v2.__cg_label AND v1.end_id = v2.__cg_id_0
+WHERE v0.user_id = 1
 LIMIT 10

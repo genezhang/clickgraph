@@ -1,8 +1,9 @@
-WITH with_id_cte_0 AS (SELECT 
-      u.user_id AS "id"
-FROM test_integration.users_test AS u
+WITH with_w1 AS (
+SELECT 
+      v0.user_id AS "v1"
+FROM test_integration.users_test AS v0
 )
 SELECT 
-      id.id AS "id"
-FROM with_id_cte_0 AS id
+      w1.v1 AS "id"
+FROM with_w1 AS w1
 LIMIT 1

@@ -1,6 +1,6 @@
 SELECT 
-      array(a.user_id, b.user_id) AS "path_nodes"
-FROM test_integration.users AS a
-INNER JOIN test_integration.follows AS t0 ON t0.follower_id = a.user_id
-INNER JOIN test_integration.users AS b ON b.user_id = t0.followed_id
-WHERE (a.name = 'Alice' AND b.name = 'Bob')
+      [map('elementId', CAST(concat('TestUser:', toString(v0.user_id), '-'), 'Dynamic'), 'labels', CAST(['TestUser'], 'Dynamic'), 'properties', CAST(mapFilter((__k, __v) -> __v IS NOT NULL, map('age', CAST(v0.age, 'Dynamic'), 'name', CAST(v0.name, 'Dynamic'), 'user_id', CAST(v0.user_id, 'Dynamic'))), 'Dynamic')), map('elementId', CAST(concat('TestUser:', toString(v2.user_id), '-'), 'Dynamic'), 'labels', CAST(['TestUser'], 'Dynamic'), 'properties', CAST(mapFilter((__k, __v) -> __v IS NOT NULL, map('age', CAST(v2.age, 'Dynamic'), 'name', CAST(v2.name, 'Dynamic'), 'user_id', CAST(v2.user_id, 'Dynamic'))), 'Dynamic'))] AS "path_nodes"
+FROM test_integration.users AS v0
+JOIN test_integration.follows AS v1 ON v1.follower_id = v0.user_id
+JOIN test_integration.users AS v2 ON v1.followed_id = v2.user_id
+WHERE (v0.name = 'Alice' AND v2.name = 'Bob')

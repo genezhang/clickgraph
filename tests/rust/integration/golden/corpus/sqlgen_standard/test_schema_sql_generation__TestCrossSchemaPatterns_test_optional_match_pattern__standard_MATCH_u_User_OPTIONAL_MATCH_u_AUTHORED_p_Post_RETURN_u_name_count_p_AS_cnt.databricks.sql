@@ -1,6 +1,13 @@
+WITH optional_o1 AS (
 SELECT 
-      u.full_name AS `u.name`, 
-      count(p.post_id) AS `cnt`
-FROM db_standard.users AS u
-LEFT JOIN db_standard.posts AS p ON p.user_id = u.user_id
-GROUP BY u.full_name
+      v1.user_id AS `v0__user_id`, 
+      v2.post_id AS `v2__post_id`
+FROM db_standard.posts AS v1
+JOIN db_standard.posts AS v2 ON v1.post_id = v2.post_id
+)
+SELECT 
+      v0.full_name AS `u.name`, 
+      count(o1.v2__post_id) AS `cnt`
+FROM db_standard.users AS v0
+LEFT JOIN optional_o1 AS o1 ON v0.user_id = o1.v0__user_id
+GROUP BY v0.full_name

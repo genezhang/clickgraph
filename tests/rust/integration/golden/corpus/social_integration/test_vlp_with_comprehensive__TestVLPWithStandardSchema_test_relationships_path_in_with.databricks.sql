@@ -1,67 +1,48 @@
-WITH RECURSIVE vlp_u1_u2 AS (
+WITH RECURSIVE vlp_v1_path AS (
     SELECT 
         start_node.user_id as start_id,
         end_node.user_id as end_id,
         1 as hop_count,
-        array('FOLLOWS') as path_relationships,
+        CAST(array() AS ARRAY<STRING>) as path_relationships,
         array(start_node.user_id, end_node.user_id) as path_nodes,
-        array(rel.follow_id) as path_edges,
-        start_node.age as start_age,
-        start_node.city as start_city,
-        start_node.country as start_country,
-        start_node.email_address as start_email,
-        start_node.is_active as start_is_active,
-        start_node.full_name as start_name,
-        start_node.registration_date as start_registration_date,
-        end_node.age as end_age,
-        end_node.city as end_city,
-        end_node.country as end_country,
-        end_node.email_address as end_email,
-        end_node.is_active as end_is_active,
-        end_node.full_name as end_name,
-        end_node.registration_date as end_registration_date
+        array(to_variant_object(map('elementId', CAST(concat('FOLLOWS:', CAST(rel.follower_id AS STRING), '->', CAST(rel.followed_id AS STRING), '-') AS VARIANT), 'startNodeElementId', CAST(concat('User:', CAST(rel.follower_id AS STRING), '-') AS VARIANT), 'endNodeElementId', CAST(concat('User:', CAST(rel.followed_id AS STRING), '-') AS VARIANT), 'type', CAST('FOLLOWS' AS VARIANT), 'properties', CAST(to_variant_object(map_filter(map('follow_date', CAST(rel.follow_date AS VARIANT)), (__k, __v) -> __v IS NOT NULL)) AS VARIANT)))) as path_rel_values,
+        array(named_struct('_1', rel.follower_id, '_2', rel.followed_id, '_3', rel.follow_id, '_4', rel.follow_date)) as path_rel_tuples,
+        array(rel.follow_id) as path_edges
     FROM test_integration.users_test AS start_node
     JOIN test_integration.user_follows_test AS rel ON start_node.user_id = rel.follower_id
     JOIN test_integration.users_test AS end_node ON rel.followed_id = end_node.user_id
-    WHERE start_node.user_id = 1
+    WHERE (start_node.user_id = 1)
     UNION ALL
     SELECT
         vp.start_id,
         end_node.user_id as end_id,
         vp.hop_count + 1 as hop_count,
-        concat(vp.path_relationships, array('FOLLOWS')) as path_relationships,
+        CAST(array() AS ARRAY<STRING>) as path_relationships,
         concat(vp.path_nodes, array(end_node.user_id)) as path_nodes,
-        concat(vp.path_edges, array(rel.follow_id)) as path_edges,
-        vp.start_age as start_age,
-        vp.start_city as start_city,
-        vp.start_country as start_country,
-        vp.start_email as start_email,
-        vp.start_is_active as start_is_active,
-        vp.start_name as start_name,
-        vp.start_registration_date as start_registration_date,
-        end_node.age as end_age,
-        end_node.city as end_city,
-        end_node.country as end_country,
-        end_node.email_address as end_email,
-        end_node.is_active as end_is_active,
-        end_node.full_name as end_name,
-        end_node.registration_date as end_registration_date
-    FROM vlp_u1_u2 vp
+        concat(vp.path_rel_values, array(to_variant_object(map('elementId', CAST(concat('FOLLOWS:', CAST(rel.follower_id AS STRING), '->', CAST(rel.followed_id AS STRING), '-') AS VARIANT), 'startNodeElementId', CAST(concat('User:', CAST(rel.follower_id AS STRING), '-') AS VARIANT), 'endNodeElementId', CAST(concat('User:', CAST(rel.followed_id AS STRING), '-') AS VARIANT), 'type', CAST('FOLLOWS' AS VARIANT), 'properties', CAST(to_variant_object(map_filter(map('follow_date', CAST(rel.follow_date AS VARIANT)), (__k, __v) -> __v IS NOT NULL)) AS VARIANT))))) as path_rel_values,
+        concat(vp.path_rel_tuples, array(named_struct('_1', rel.follower_id, '_2', rel.followed_id, '_3', rel.follow_id, '_4', rel.follow_date))) as path_rel_tuples,
+        concat(vp.path_edges, array(rel.follow_id)) as path_edges
+    FROM vlp_v1_path vp
     JOIN test_integration.user_follows_test AS rel ON vp.end_id = rel.follower_id
     JOIN test_integration.users_test AS end_node ON rel.followed_id = end_node.user_id
     WHERE vp.hop_count < 2
       AND NOT array_contains(vp.path_edges, rel.follow_id)
 ), 
-with_hops_path_rels_u1_u2_cte_0 AS (SELECT 
-      start_name AS `p2_u1_name`, 
-      end_name AS `p2_u2_name`, 
-      path_relationships AS `path_rels`, 
-      hop_count AS `hops`
-FROM vlp_u1_u2 AS t
-WHERE hop_count = 2
+with_w2 AS (
+SELECT 
+      v0.user_id AS `v4__user_id`, 
+      v0.full_name AS `p2_v4_name`, 
+      v2.user_id AS `v5__user_id`, 
+      v2.full_name AS `p2_v5_name`, 
+      v1.path_rel_tuples AS `v6`, 
+      v1.hop_count AS `v7`
+FROM vlp_v1_path AS v1
+JOIN test_integration.users_test AS v0 ON v1.start_id = v0.user_id
+JOIN test_integration.users_test AS v2 ON v1.end_id = v2.user_id
+WHERE (v0.user_id = 1 AND v1.hop_count = 2)
 )
 SELECT 
-      hops_path_rels_u1_u2.p2_u1_name AS `u1.name`, 
-      hops_path_rels_u1_u2.p2_u2_name AS `u2.name`, 
-      length(hops_path_rels_u1_u2.path_rels) AS `rel_count`
-FROM with_hops_path_rels_u1_u2_cte_0 AS hops_path_rels_u1_u2
+      w2.p2_v4_name AS `u1.name`, 
+      w2.p2_v5_name AS `u2.name`, 
+      array_size(w2.v6) AS `rel_count`
+FROM with_w2 AS w2

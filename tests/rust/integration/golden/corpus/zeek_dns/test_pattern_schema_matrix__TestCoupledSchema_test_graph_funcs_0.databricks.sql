@@ -1,6 +1,6 @@
 SELECT 
-      'REQUESTED' AS `type(r)`, 
-      r.domain_name AS `id(a)`, 
-      array('Domain') AS `labels(a)`
-FROM zeek.dns_log AS r
+      NULL AS `type(r)`, 
+      NULL AS `id(a)`, 
+      NULL AS `labels(a)`
+WHERE false
 LIMIT 5

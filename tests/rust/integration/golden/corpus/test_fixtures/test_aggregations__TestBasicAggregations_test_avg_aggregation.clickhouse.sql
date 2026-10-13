@@ -1,3 +1,3 @@
 SELECT 
-      avg(n.age) AS "average_age"
-FROM test_integration.users AS n
+      avg(v0.age) AS "average_age"
+FROM test_integration.users AS v0

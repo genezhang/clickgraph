@@ -1,12 +1,13 @@
-WITH with_c_cte_0 AS (SELECT 
-      c.account_number AS "p1_c_account_number", 
-      c.bank_id AS "p1_c_bank_id"
-FROM db_composite_id.accounts AS z
-INNER JOIN db_composite_id.transfers AS t0 ON t0.from_bank_id = z.bank_id AND t0.from_account_number = z.account_number
-INNER JOIN db_composite_id.accounts AS c ON c.bank_id = t0.to_bank_id AND c.account_number = t0.to_account_number
+WITH with_w1 AS (
+SELECT 
+      v2.bank_id AS "v3__bank_id", 
+      v2.account_number AS "v3__account_number"
+FROM db_composite_id.accounts AS v0
+JOIN db_composite_id.transfers AS v1 ON v1.from_bank_id = v0.bank_id AND v1.from_account_number = v0.account_number
+JOIN db_composite_id.accounts AS v2 ON v1.to_bank_id = v2.bank_id AND v1.to_account_number = v2.account_number
 )
 SELECT 
       count(*) AS "k"
-FROM db_composite_id.transfers AS t1
-INNER JOIN db_composite_id.accounts AS a ON a.bank_id = t1.from_bank_id AND a.account_number = t1.from_account_number
-INNER JOIN with_c_cte_0 AS c ON t1.to_bank_id = c.p1_c_bank_id AND t1.to_account_number = c.p1_c_account_number
+FROM with_w1 AS w1
+JOIN db_composite_id.transfers AS v5 ON v5.to_bank_id = w1.v3__bank_id AND v5.to_account_number = w1.v3__account_number
+JOIN db_composite_id.accounts AS v4 ON v5.from_bank_id = v4.bank_id AND v5.from_account_number = v4.account_number

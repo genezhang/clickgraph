@@ -1,12 +1,13 @@
-WITH with_lower_n_n1_n2_cte_0 AS (SELECT 
-      u.full_name AS "n1", 
-      u.full_name AS "n2", 
-      lowerUTF8(u.full_name) AS "lower_n"
-FROM test_integration.users_test AS u
+WITH with_w1 AS (
+SELECT 
+      v0.full_name AS "v1", 
+      v0.full_name AS "v2", 
+      lowerUTF8(v0.full_name) AS "v3"
+FROM test_integration.users_test AS v0
 )
 SELECT 
-      lower_n_n1_n2.n1 AS "n1", 
-      lower_n_n1_n2.n2 AS "n2", 
-      lower_n_n1_n2.lower_n AS "lower_n"
-FROM with_lower_n_n1_n2_cte_0 AS lower_n_n1_n2
+      w1.v1 AS "n1", 
+      w1.v2 AS "n2", 
+      w1.v3 AS "lower_n"
+FROM with_w1 AS w1
 LIMIT 1

@@ -1,4 +1,4 @@
-WITH RECURSIVE vlp_a_b AS (
+WITH RECURSIVE vlp_v3_path AS (
     SELECT 
         start_node.user_id as start_id,
         end_node.user_id as end_id,
@@ -9,6 +9,11 @@ WITH RECURSIVE vlp_a_b AS (
     FROM test_integration.users_test AS start_node
     JOIN test_integration.user_follows_test AS rel ON start_node.user_id = rel.follower_id
     JOIN test_integration.users_test AS end_node ON rel.followed_id = end_node.user_id
+    WHERE (start_node.user_id IN (SELECT DISTINCT 
+      v2.user_id AS `id`
+FROM test_integration.users_test AS v0
+JOIN test_integration.user_follows_test AS v1 ON v1.followed_id = v0.user_id
+JOIN test_integration.users_test AS v2 ON v1.follower_id = v2.user_id))
     UNION ALL
     SELECT
         vp.start_id,
@@ -17,7 +22,7 @@ WITH RECURSIVE vlp_a_b AS (
         CAST(array() AS ARRAY<STRING>) as path_relationships,
         concat(vp.path_nodes, array(end_node.user_id)) as path_nodes,
         concat(vp.path_edges, array(rel.follow_id)) as path_edges
-    FROM vlp_a_b vp
+    FROM vlp_v3_path vp
     JOIN test_integration.user_follows_test AS rel ON vp.end_id = rel.follower_id
     JOIN test_integration.users_test AS end_node ON rel.followed_id = end_node.user_id
     WHERE vp.hop_count < 2
@@ -25,6 +30,9 @@ WITH RECURSIVE vlp_a_b AS (
 )
 SELECT 
       count(*) AS `count(*)`
-FROM vlp_a_b AS t
-INNER JOIN test_integration.user_follows_test AS t0 ON t0.follower_id = t.start_id
-WHERE NOT array_contains(t.path_edges, t0.follow_id)
+FROM vlp_v3_path AS v3
+JOIN test_integration.users_test AS v2 ON v3.start_id = v2.user_id
+JOIN test_integration.user_follows_test AS v1 ON v1.follower_id = v2.user_id
+JOIN test_integration.users_test AS v0 ON v1.followed_id = v0.user_id
+JOIN test_integration.users_test AS v4 ON v3.end_id = v4.user_id
+WHERE NOT array_contains(v3.path_edges, v1.follow_id)

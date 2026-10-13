@@ -1,9 +1,11 @@
-WITH with_userName_cte_0 AS (SELECT 
-      u.full_name AS "userName"
-FROM test_integration.users_test AS u
-ORDER BY userName ASC
+WITH with_w1 AS (
+SELECT 
+      v0.full_name AS "v1", 
+      v0.full_name AS "__o0"
+FROM test_integration.users_test AS v0
 )
 SELECT 
-      userName.userName AS "userName"
-FROM with_userName_cte_0 AS userName
+      w1.v1 AS "userName"
+FROM with_w1 AS w1
+ORDER BY w1.__o0 ASC
 LIMIT 5

@@ -1,14 +1,20 @@
-WITH with_c_cte_0 AS (SELECT 
-      t0.Dest AS `p1_c_code`
-FROM test_integration.flights AS t0
+WITH with_w1 AS (
+SELECT 
+      v1.Dest AS `v3__code`
+FROM test_integration.flights AS v1
+WHERE (v1.Origin IS NOT NULL AND v1.Dest IS NOT NULL)
 ), 
-with_a_cte_1 AS (SELECT 
-      t1.Dest AS `p1_a_code`
-FROM with_c_cte_0 AS c
-INNER JOIN test_integration.flights AS t1 ON t1.Origin = c.p1_c_code
+with_w2 AS (
+SELECT 
+      v4.Dest AS `v6__code`, 
+      v4.Dest AS `p2_v6_code`
+FROM with_w1 AS w1
+JOIN test_integration.flights AS v4 ON v4.Origin = w1.v3__code
+WHERE v4.Dest IS NOT NULL
 )
 SELECT 
-      a.p1_a_code AS `x`, 
-      t2.Dest AS `y`
-FROM test_integration.flights AS t2
-INNER JOIN with_a_cte_1 AS a ON t2.Origin = a.p1_a_code
+      w2.p2_v6_code AS `x`, 
+      v7.Dest AS `y`
+FROM with_w2 AS w2
+JOIN test_integration.flights AS v7 ON v7.Origin = w2.v6__code
+WHERE v7.Dest IS NOT NULL

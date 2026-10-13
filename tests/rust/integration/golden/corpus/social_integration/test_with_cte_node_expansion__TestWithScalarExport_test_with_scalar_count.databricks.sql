@@ -1,7 +1,8 @@
-WITH with_user_count_cte_0 AS (SELECT 
-      count(a.user_id) AS `user_count`
-FROM test_integration.users_test AS a
+WITH with_w1 AS (
+SELECT 
+      count(v0.user_id) AS `v1`
+FROM test_integration.users_test AS v0
 )
 SELECT 
-      user_count.user_count AS `user_count`
-FROM with_user_count_cte_0 AS user_count
+      w1.v1 AS `user_count`
+FROM with_w1 AS w1

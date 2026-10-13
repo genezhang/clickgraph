@@ -1,6 +1,6 @@
 SELECT 
-      u.name AS `u.name`, 
-      u.email AS `u.email`
-FROM data_security.ds_users AS u
-WHERE u.exposure = 'external'
-ORDER BY u.name ASC NULLS LAST
+      v0.name AS `u.name`, 
+      v0.email AS `u.email`
+FROM data_security.ds_users AS v0
+WHERE v0.exposure = 'external'
+ORDER BY v0.name ASC NULLS LAST

@@ -1,0 +1,1 @@
+parse error: Parsing Failure: OpenCypherParsingError { errors: [(".totalWeight\nRETURN person1Id, person2Id, totalWeight\nORDER BY person1Id, person2Id\n", "Unexpected tokens after query"), (".totalWeight\nRETURN person1Id, person2Id, totalWeight\nORDER BY person1Id, person2Id", "Unparsed input")] }

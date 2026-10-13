@@ -1,8 +1,11 @@
 SELECT 
-      t0.mgr_id AS "a.pid", 
-      t1.mgr_id AS "b.pid", 
-      t2.mgr_id AS "c.pid"
-FROM testdb.reports AS t0
-INNER JOIN testdb.reports AS t1 ON t0.emp_id = t1.mgr_id
-INNER JOIN testdb.reports AS t2 ON t2.emp_id = t0.mgr_id AND t1.emp_id = t2.mgr_id
-WHERE (((t2.mgr_id <> t1.mgr_id OR t2.emp_id <> t1.emp_id) AND (t2.mgr_id <> t0.mgr_id OR t2.emp_id <> t0.emp_id)) AND (t1.mgr_id <> t0.mgr_id OR t1.emp_id <> t0.emp_id))
+      v0.pid AS "a.pid", 
+      v2.pid AS "b.pid", 
+      v4.pid AS "c.pid"
+FROM testdb.people AS v0
+JOIN testdb.reports AS v1 ON v1.mgr_id = v0.pid
+JOIN testdb.people AS v2 ON v1.emp_id = v2.pid
+JOIN testdb.reports AS v3 ON v3.mgr_id = v2.pid
+JOIN testdb.people AS v4 ON v3.emp_id = v4.pid
+JOIN testdb.reports AS v5 ON v5.mgr_id = v4.pid AND v5.emp_id = v0.pid
+WHERE ((v1.mgr_id <> v3.mgr_id OR v1.emp_id <> v3.emp_id) AND (v1.mgr_id <> v5.mgr_id OR v1.emp_id <> v5.emp_id) AND (v3.mgr_id <> v5.mgr_id OR v3.emp_id <> v5.emp_id))

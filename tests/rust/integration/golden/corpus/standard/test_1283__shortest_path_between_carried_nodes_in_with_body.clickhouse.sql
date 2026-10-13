@@ -1,157 +1,74 @@
-WITH RECURSIVE with_f_p_cte_0 AS (SELECT 
-      p.user_id AS "p1_p_user_id", 
-      f.age AS "p1_f_age", 
-      f.city AS "p1_f_city", 
-      f.country AS "p1_f_country", 
-      f.email_address AS "p1_f_email", 
-      f.is_active AS "p1_f_is_active", 
-      f.full_name AS "p1_f_name", 
-      f.registration_date AS "p1_f_registration_date", 
-      f.user_id AS "p1_f_user_id"
-FROM test_integration.users_test AS p
-CROSS JOIN test_integration.users_test AS f
-WHERE (p.user_id = 1 AND f.user_id IN [2, 7, 15])
-), 
-vlp_p_f_inner AS (
-    SELECT 
-        start_node.user_id as start_id,
-        end_node.user_id as end_id,
-        1 as hop_count,
-        ['FOLLOWS'] as path_relationships,
-        [start_node.user_id, end_node.user_id] as path_nodes,
-        start_node.age as start_age,
-        start_node.city as start_city,
-        start_node.country as start_country,
-        start_node.email_address as start_email,
-        start_node.is_active as start_is_active,
-        start_node.full_name as start_name,
-        start_node.registration_date as start_registration_date,
-        end_node.age as end_age,
-        end_node.city as end_city,
-        end_node.country as end_country,
-        end_node.email_address as end_email,
-        end_node.is_active as end_is_active,
-        end_node.full_name as end_name,
-        end_node.registration_date as end_registration_date
-    FROM test_integration.users_test AS start_node
-    JOIN test_integration.user_follows_test AS rel ON start_node.user_id = rel.follower_id
-    JOIN test_integration.users_test AS end_node ON rel.followed_id = end_node.user_id
-    WHERE start_node.user_id = 1
-    UNION ALL
-    SELECT
-        vp.start_id,
-        end_node.user_id as end_id,
-        vp.hop_count + 1 as hop_count,
-        arrayConcat(vp.path_relationships, ['FOLLOWS']) as path_relationships,
-        arrayConcat(vp.path_nodes, [end_node.user_id]) as path_nodes,
-        vp.start_age as start_age,
-        vp.start_city as start_city,
-        vp.start_country as start_country,
-        vp.start_email as start_email,
-        vp.start_is_active as start_is_active,
-        vp.start_name as start_name,
-        vp.start_registration_date as start_registration_date,
-        end_node.age as end_age,
-        end_node.city as end_city,
-        end_node.country as end_country,
-        end_node.email_address as end_email,
-        end_node.is_active as end_is_active,
-        end_node.full_name as end_name,
-        end_node.registration_date as end_registration_date
-    FROM vlp_p_f_inner vp
-    JOIN test_integration.user_follows_test AS rel ON vp.end_id = rel.follower_id
-    JOIN test_integration.users_test AS end_node ON rel.followed_id = end_node.user_id
-    WHERE vp.hop_count < 3
-      AND NOT has(vp.path_nodes, end_node.user_id)
-),
-vlp_p_f_to_target AS (
-    SELECT * FROM vlp_p_f_inner WHERE (end_id IN (2, 7, 15)) AND hop_count <= 3
-),
-vlp_p_f AS (
-    SELECT * FROM (
-        SELECT *, ROW_NUMBER() OVER (PARTITION BY start_id, end_id ORDER BY hop_count ASC) as rn
-        FROM vlp_p_f_to_target
-    ) WHERE rn = 1
-), 
-vlp_f_p_inner AS (
-    SELECT 
-        start_node.user_id as start_id,
-        end_node.user_id as end_id,
-        1 as hop_count,
-        ['FOLLOWS'] as path_relationships,
-        [start_node.user_id, end_node.user_id] as path_nodes,
-        start_node.age as start_age,
-        start_node.city as start_city,
-        start_node.country as start_country,
-        start_node.email_address as start_email,
-        start_node.is_active as start_is_active,
-        start_node.full_name as start_name,
-        start_node.registration_date as start_registration_date,
-        end_node.age as end_age,
-        end_node.city as end_city,
-        end_node.country as end_country,
-        end_node.email_address as end_email,
-        end_node.is_active as end_is_active,
-        end_node.full_name as end_name,
-        end_node.registration_date as end_registration_date
-    FROM test_integration.users_test AS start_node
-    JOIN test_integration.user_follows_test AS rel ON start_node.user_id = rel.follower_id
-    JOIN test_integration.users_test AS end_node ON rel.followed_id = end_node.user_id
-    WHERE start_node.user_id IN (2, 7, 15)
-    UNION ALL
-    SELECT
-        vp.start_id,
-        end_node.user_id as end_id,
-        vp.hop_count + 1 as hop_count,
-        arrayConcat(vp.path_relationships, ['FOLLOWS']) as path_relationships,
-        arrayConcat(vp.path_nodes, [end_node.user_id]) as path_nodes,
-        vp.start_age as start_age,
-        vp.start_city as start_city,
-        vp.start_country as start_country,
-        vp.start_email as start_email,
-        vp.start_is_active as start_is_active,
-        vp.start_name as start_name,
-        vp.start_registration_date as start_registration_date,
-        end_node.age as end_age,
-        end_node.city as end_city,
-        end_node.country as end_country,
-        end_node.email_address as end_email,
-        end_node.is_active as end_is_active,
-        end_node.full_name as end_name,
-        end_node.registration_date as end_registration_date
-    FROM vlp_f_p_inner vp
-    JOIN test_integration.user_follows_test AS rel ON vp.end_id = rel.follower_id
-    JOIN test_integration.users_test AS end_node ON rel.followed_id = end_node.user_id
-    WHERE vp.hop_count < 3
-      AND NOT has(vp.path_nodes, end_node.user_id)
-),
-vlp_f_p_to_target AS (
-    SELECT * FROM vlp_f_p_inner WHERE (end_id = 1) AND hop_count <= 3
-),
-vlp_f_p AS (
-    SELECT * FROM (
-        SELECT *, ROW_NUMBER() OVER (PARTITION BY start_id, end_id ORDER BY hop_count ASC) as rn
-        FROM vlp_f_p_to_target
-    ) WHERE rn = 1
-), 
-with_d_f_cte_1 AS (SELECT minOrNull(`hop_count`) AS "d", `p1_f_user_id` AS "p1_f_user_id" FROM (
+WITH RECURSIVE with_w1 AS (
 SELECT 
-      f_p.p1_f_user_id AS "p1_f_user_id",
-      f_p.p1_f_user_id AS "f_p.p1_f_user_id",
-      hop_count AS "hop_count"
-FROM vlp_p_f AS t
-INNER JOIN with_f_p_cte_0 AS f_p ON toString(t.end_id) = toString(f_p.p1_f_user_id) AND toString(t.start_id) = toString(f_p.p1_p_user_id)
-UNION ALL 
+      v0.user_id AS "v2__user_id", 
+      v1.user_id AS "v3__user_id", 
+      v1.user_id AS "p2_v3_user_id"
+FROM test_integration.users_test AS v0
+CROSS JOIN test_integration.users_test AS v1
+WHERE (v0.user_id = 1 AND v1.user_id IN [2, 7, 15])
+), 
+v4_both AS (
 SELECT 
-      f_p.p1_f_user_id AS "p1_f_user_id",
-      f_p.p1_f_user_id AS "f_p.p1_f_user_id",
-      hop_count AS "hop_count"
-FROM vlp_f_p AS t
-INNER JOIN with_f_p_cte_0 AS f_p ON toString(t.end_id) = toString(f_p.p1_f_user_id) AND toString(t.start_id) = toString(f_p.p1_p_user_id)
-) AS __union
-GROUP BY `p1_f_user_id`
+      e.follow_date AS "follow_date", 
+      e.follow_id AS "follow_id", 
+      e.followed_id AS "followed_id", 
+      e.follower_id AS "follower_id", 
+      e.follower_id AS "__cg_start_0", 
+      e.followed_id AS "__cg_end_0"
+FROM test_integration.user_follows_test AS e
+
+UNION ALL
+SELECT 
+      e.follow_date AS "follow_date", 
+      e.follow_id AS "follow_id", 
+      e.followed_id AS "followed_id", 
+      e.follower_id AS "follower_id", 
+      e.followed_id AS "__cg_start_0", 
+      e.follower_id AS "__cg_end_0"
+FROM test_integration.user_follows_test AS e
+WHERE e.follower_id <> e.followed_id
+), 
+vlp_v4_bfs AS (
+    SELECT DISTINCT start_node.user_id AS start_id, start_node.user_id AS node, CAST(0 AS UInt32) AS depth, CAST(1 AS UInt8) AS new
+    FROM test_integration.users_test AS start_node
+    WHERE start_node.user_id IS NOT NULL AND (start_node.user_id IN (SELECT DISTINCT 
+      w1.v2__user_id AS "id"
+FROM with_w1 AS w1))
+    UNION ALL
+    SELECT DISTINCT f.start_id AS start_id, end_node.user_id AS node, CAST(f.depth + 1 AS UInt32) AS depth, CAST(1 AS UInt8) AS new
+    FROM vlp_v4_bfs AS f
+    JOIN v4_both AS rel ON rel.__cg_start_0 = f.node
+    JOIN test_integration.users_test AS end_node ON end_node.user_id = rel.__cg_end_0
+    WHERE f.new = 1
+      AND f.depth < 3
+      AND (f.start_id, end_node.user_id) NOT IN (SELECT start_id, node FROM vlp_v4_bfs)
+      AND f.start_id NOT IN (SELECT start_id FROM vlp_v4_bfs GROUP BY start_id HAVING countIf(node IN (SELECT end_node.user_id FROM test_integration.users_test AS end_node WHERE (end_node.user_id IN (SELECT DISTINCT 
+      w1.v3__user_id AS "id"
+FROM with_w1 AS w1)))) >= (SELECT count(DISTINCT end_node.user_id) FROM (SELECT end_node.user_id FROM test_integration.users_test AS end_node WHERE (end_node.user_id IN (SELECT DISTINCT 
+      w1.v3__user_id AS "id"
+FROM with_w1 AS w1))) AS end_node))
+    UNION ALL
+    SELECT start_id, node, depth, CAST(0 AS UInt8) AS new
+    FROM vlp_v4_bfs
+    WHERE start_id IN (SELECT start_id FROM vlp_v4_bfs WHERE new = 1)
+), 
+vlp_v4_path AS (
+    SELECT start_id, node AS end_id, depth AS hop_count FROM vlp_v4_bfs
+    WHERE new = 1 AND depth >= 1
+      AND node IN (SELECT end_node.user_id FROM test_integration.users_test AS end_node WHERE (end_node.user_id IN (SELECT DISTINCT 
+      w1.v3__user_id AS "id"
+FROM with_w1 AS w1)))
+), 
+with_w5 AS (
+SELECT 
+      minOrNull(v4.hop_count) AS "v6", 
+      w1.v3__user_id AS "v7__user_id", 
+      w1.p2_v3_user_id AS "p2_v7_user_id"
+FROM vlp_v4_path AS v4
+JOIN with_w1 AS w1 ON v4.start_id = w1.v2__user_id AND v4.end_id = w1.v3__user_id
+GROUP BY w1.v3__user_id, w1.p2_v3_user_id
 )
 SELECT 
-      d_f.p1_f_user_id AS "fid", 
-      d_f.d AS "d"
-FROM with_d_f_cte_1 AS d_f
+      w5.p2_v7_user_id AS "fid", 
+      w5.v6 AS "d"
+FROM with_w5 AS w5

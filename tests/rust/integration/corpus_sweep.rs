@@ -1,6 +1,12 @@
 //! Corpus translation-snapshot sweep — Phase 0 slice P0.6
 //! (`docs/design/REFACTORING_SAFETY_PLAN.md` §3.2).
 //!
+//! Since P-4c S14c0 it locks the bound plan's SQL, the translation every
+//! entry point uses (`translate_read` with the query text), over the whole
+//! corpus (the census's queries, `binder_corpus.rs`): the net that keeps the
+//! legacy pipeline's deletion (S14c…) from changing what the bound plan
+//! emits. Until then it locked the legacy pipeline's.
+//!
 //! A mass "translate everything, lock the bytes" regression net over a
 //! ~1,070-query corpus harvested from the Python integration test suite
 //! (`scripts/dev/harvest_corpus.py` -> `tests/corpus/queries.jsonl` +
@@ -105,13 +111,6 @@ fn load_nondeterministic_set() -> HashSet<(String, String)> {
     load_entry_list("nondeterministic.txt")
 }
 
-/// Entries of the bound plan's census only (`census_only.txt`, written by
-/// `scripts/dev/corpus_add_ldbc.py`): added after the P-4c cutover, so this
-/// net of the legacy pipeline's output does not lock them.
-fn load_census_only_set() -> HashSet<(String, String)> {
-    load_entry_list("census_only.txt")
-}
-
 /// A `schema/name<TAB>…` list of corpus entries in the corpus directory.
 fn load_entry_list(file: &str) -> HashSet<(String, String)> {
     let path = format!("{}/{file}", corpus_root());
@@ -200,12 +199,14 @@ async fn try_render(
                 let cleaned = strip_comments(&cypher);
                 let (_rest, statement) =
                     parse_cypher_statement(&cleaned).map_err(|e| format!("parse error: {e}"))?;
-                // The production read seam (every entry point translates here).
+                // The production read seam (every entry point translates
+                // here, with the query text: the bound plan).
                 translate_read(
                     statement,
                     &schema,
                     ReadOptions {
                         max_cte_depth: 100,
+                        cypher: Some(cleaned.to_string()),
                         ..Default::default()
                     },
                 )
@@ -245,7 +246,6 @@ async fn corpus_sweep() {
     let entries = load_entries();
     let schema_map = load_schema_map();
     let nondeterministic = load_nondeterministic_set();
-    let census_only = load_census_only_set();
 
     // Cache loaded GraphSchema per schema key — many entries share a schema.
     let mut schema_cache: std::collections::HashMap<String, GraphSchema> =
@@ -257,9 +257,6 @@ async fn corpus_sweep() {
     let mut skipped_nondeterministic = 0usize;
 
     for entry in &entries {
-        if census_only.contains(&(entry.schema.clone(), entry.name.clone())) {
-            continue;
-        }
         let schema = schema_cache.entry(entry.schema.clone()).or_insert_with(|| {
             let map_entry = schema_map.get(&entry.schema).unwrap_or_else(|| {
                 panic!(

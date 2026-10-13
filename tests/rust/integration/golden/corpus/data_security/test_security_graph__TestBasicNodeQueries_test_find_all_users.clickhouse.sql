@@ -1,5 +1,5 @@
 SELECT 
-      u.name AS "u.name", 
-      u.email AS "u.email"
-FROM data_security.ds_users AS u
-ORDER BY u.name ASC
+      v0.name AS "u.name", 
+      v0.email AS "u.email"
+FROM data_security.ds_users AS v0
+ORDER BY v0.name ASC

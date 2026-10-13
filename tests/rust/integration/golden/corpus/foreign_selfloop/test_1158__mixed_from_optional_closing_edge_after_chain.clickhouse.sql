@@ -1,11 +1,17 @@
+WITH optional_o1 AS (
 SELECT 
-      a.name AS "a.name", 
-      b.name AS "b.name", 
-      c.name AS "c.name"
-FROM testdb.reports AS t0
-LEFT JOIN (SELECT pid, any(name) as name FROM testdb.people GROUP BY pid) AS a ON a.pid = t0.mgr_id
-INNER JOIN testdb.people AS b ON b.pid = t0.emp_id
-INNER JOIN testdb.reports AS t1 ON b.pid = t1.mgr_id
-INNER JOIN testdb.people AS c ON c.pid = t1.emp_id
-LEFT JOIN testdb.reports AS t2 ON t2.emp_id = c.pid AND t2.mgr_id = t0.mgr_id
-WHERE (t1.mgr_id <> t0.mgr_id OR t1.emp_id <> t0.emp_id)
+      v5.mgr_id AS "v0__pid", 
+      v5.emp_id AS "v4__pid"
+FROM testdb.reports AS v5
+)
+SELECT 
+      v0.name AS "a.name", 
+      v2.name AS "b.name", 
+      v4.name AS "c.name"
+FROM testdb.people AS v0
+JOIN testdb.reports AS v1 ON v1.mgr_id = v0.pid
+JOIN testdb.people AS v2 ON v1.emp_id = v2.pid
+JOIN testdb.reports AS v3 ON v3.mgr_id = v2.pid
+JOIN testdb.people AS v4 ON v3.emp_id = v4.pid
+LEFT JOIN optional_o1 AS o1 ON v0.pid = o1.v0__pid AND v4.pid = o1.v4__pid
+WHERE (v1.mgr_id <> v3.mgr_id OR v1.emp_id <> v3.emp_id)

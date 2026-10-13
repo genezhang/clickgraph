@@ -20,7 +20,6 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 CORPUS = ROOT / "tests" / "corpus" / "queries.jsonl"
 SCHEMA_MAP = ROOT / "tests" / "corpus" / "schema_map.json"
-CENSUS_ONLY = ROOT / "tests" / "corpus" / "census_only.txt"
 OFFICIAL = ROOT / "benchmarks" / "ldbc_snb" / "queries" / "official"
 SCHEMA_KEY = "ldbc_official"
 SCHEMA_YAML = "benchmarks/ldbc_snb/schemas/ldbc_snb_complete.yaml"
@@ -77,16 +76,6 @@ def main():
     # The others as they are (in the file's order), these after them.
     entries = [e for e in entries if (e["schema"], e["name"]) not in keys] + added
     CORPUS.write_text("".join(json.dumps(e, sort_keys=True) + "\n" for e in entries))
-    # The legacy pipeline's corpus sweep does not lock them.
-    CENSUS_ONLY.write_text(
-        "# Corpus entries of the bound plan's census only, not byte-locked by the\n"
-        "# legacy pipeline's corpus sweep (tests/rust/integration/corpus_sweep.rs).\n"
-        "# Written by scripts/dev/corpus_add_ldbc.py; format: schema/name<TAB>source.\n"
-        + "".join(
-            f"{e['schema']}/{e['name']}\t{'LDBC official' if e['schema'] == SCHEMA_KEY else 'curated'}\n"
-            for e in added
-        )
-    )
     schema_map = json.loads(SCHEMA_MAP.read_text())
     schema_map[SCHEMA_KEY] = {"subschema": None, "yaml": SCHEMA_YAML}
     SCHEMA_MAP.write_text(json.dumps(dict(sorted(schema_map.items())), indent=2) + "\n")

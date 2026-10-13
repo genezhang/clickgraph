@@ -1,4 +1,4 @@
 SELECT 
-      min(n.age) AS `youngest`, 
-      max(n.age) AS `oldest`
-FROM test_integration.users AS n
+      min(v0.age) AS `youngest`, 
+      max(v0.age) AS `oldest`
+FROM test_integration.users AS v0

@@ -1,9 +1,10 @@
 SELECT 
-      a.email_address AS `a.email`, 
-      c.email_address AS `c.email`
-FROM test_integration.users_test AS a
-INNER JOIN test_integration.user_follows_test AS r1 ON r1.follower_id = a.user_id
-INNER JOIN test_integration.user_follows_test AS r2 ON r2.follower_id = r1.followed_id
-INNER JOIN test_integration.users_test AS c ON c.user_id = r2.followed_id
-WHERE r2.follow_id <> r1.follow_id
+      v0.email_address AS `a.email`, 
+      v4.email_address AS `c.email`
+FROM test_integration.users_test AS v0
+JOIN test_integration.user_follows_test AS v1 ON v1.follower_id = v0.user_id
+JOIN test_integration.users_test AS v2 ON v1.followed_id = v2.user_id
+JOIN test_integration.user_follows_test AS v3 ON v3.follower_id = v2.user_id
+JOIN test_integration.users_test AS v4 ON v3.followed_id = v4.user_id
+WHERE v1.follow_id <> v3.follow_id
 LIMIT 5

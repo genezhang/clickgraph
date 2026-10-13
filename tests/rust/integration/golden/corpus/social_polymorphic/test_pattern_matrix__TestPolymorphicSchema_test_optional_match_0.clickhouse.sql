@@ -1,42 +1,75 @@
-SELECT `a.email` AS "a.email", count(`r.from_id`) AS "rel_count" FROM (
+WITH v2_labels AS (
 SELECT 
-      toString(a.email_address) AS "a.email",
-      toString(a.full_name) AS "a.name",
-      toString(a.user_id) AS "a.user_id",
-      NULL AS "b.email",
-      NULL AS "b.name",
-      NULL AS "b.user_id",
-      toString(b.content) AS "content",
-      toString(b.created_at) AS "created",
-      toString(a.email_address) AS "email",
-      toString(a.full_name) AS "name",
-      toString(b.post_id) AS "post_id",
-      toString(b.content) AS "title",
-      toString(a.user_id) AS "user_id",
-      a.email_address AS "a.email_address",
-      r.from_id AS "r.from_id"
-FROM brahmand.users_bench AS a
-LEFT JOIN (SELECT * FROM brahmand.interactions WHERE (interaction_type = 'FOLLOWS' AND from_type = 'User' AND to_type = 'Post')) AS r ON r.from_id = a.user_id
-LEFT JOIN brahmand.posts_bench AS b ON b.post_id = r.to_id
-UNION ALL 
+      'Post' AS "__cg_label", 
+      e.post_id AS "__cg_id_0"
+FROM brahmand.posts_bench AS e
+
+UNION ALL
 SELECT 
-      toString(a.email_address) AS "a.email",
-      toString(a.full_name) AS "a.name",
-      toString(a.user_id) AS "a.user_id",
-      toString(b.email_address) AS "b.email",
-      toString(b.full_name) AS "b.name",
-      toString(b.user_id) AS "b.user_id",
-      NULL AS "content",
-      NULL AS "created",
-      toString(b.email_address) AS "email",
-      toString(b.full_name) AS "name",
-      NULL AS "post_id",
-      NULL AS "title",
-      toString(b.user_id) AS "user_id",
-      a.email_address AS "a.email_address",
-      r.from_id AS "r.from_id"
-FROM brahmand.users_bench AS a
-LEFT JOIN (SELECT * FROM brahmand.interactions WHERE (interaction_type = 'FOLLOWS' AND from_type = 'User' AND to_type = 'User')) AS r ON r.from_id = a.user_id
-LEFT JOIN brahmand.users_bench AS b ON b.user_id = r.to_id
-) AS __union
-GROUP BY `a.email`
+      'User' AS "__cg_label", 
+      e.user_id AS "__cg_id_0"
+FROM brahmand.users_bench AS e
+), 
+v1_rels AS (
+SELECT 
+      'FOLLOWS' AS "__cg_type", 
+      'User' AS "__cg_from_label", 
+      'Post' AS "__cg_to_label", 
+      e.from_id AS "__cg_rid_0", 
+      e.to_id AS "__cg_rid_1", 
+      e.interaction_type AS "__cg_rid_2", 
+      e.timestamp AS "__cg_rid_3", 
+      e.from_id AS "__cg_from_0", 
+      e.to_id AS "__cg_to_0", 
+      e.from_id AS "__cg_start_0", 
+      e.to_id AS "__cg_end_0", 
+      'User' AS "__cg_start_label", 
+      'Post' AS "__cg_end_label", 
+      concat('FOLLOWS:User:Post:', toString(tuple(e.from_id, e.to_id, e.interaction_type, e.timestamp))) AS "__cg_key"
+FROM brahmand.interactions AS e
+WHERE ((((e."interaction_type" = 'FOLLOWS') AND (e."from_type" = 'User')) AND (e."to_type" = 'Post')))
+
+UNION ALL
+SELECT 
+      'FOLLOWS' AS "__cg_type", 
+      'User' AS "__cg_from_label", 
+      'User' AS "__cg_to_label", 
+      e.from_id AS "__cg_rid_0", 
+      e.to_id AS "__cg_rid_1", 
+      e.interaction_type AS "__cg_rid_2", 
+      e.timestamp AS "__cg_rid_3", 
+      e.from_id AS "__cg_from_0", 
+      e.to_id AS "__cg_to_0", 
+      e.from_id AS "__cg_start_0", 
+      e.to_id AS "__cg_end_0", 
+      'User' AS "__cg_start_label", 
+      'User' AS "__cg_end_label", 
+      concat('FOLLOWS:User:User:', toString(tuple(e.from_id, e.to_id, e.interaction_type, e.timestamp))) AS "__cg_key"
+FROM brahmand.interactions AS e
+WHERE ((((e."interaction_type" = 'FOLLOWS') AND (e."from_type" = 'User')) AND (e."to_type" = 'User')))
+), 
+optional_o1 AS (
+SELECT 
+      v0.user_id AS "v0__user_id", 
+      v1.__cg_type AS "v1____cg_type", 
+      v1.__cg_from_label AS "v1____cg_from_label", 
+      v1.__cg_to_label AS "v1____cg_to_label", 
+      v1.__cg_rid_0 AS "v1____cg_rid_0", 
+      v1.__cg_rid_1 AS "v1____cg_rid_1", 
+      v1.__cg_rid_2 AS "v1____cg_rid_2", 
+      v1.__cg_rid_3 AS "v1____cg_rid_3", 
+      v1.__cg_from_0 AS "v1____cg_from_0", 
+      v1.__cg_to_0 AS "v1____cg_to_0", 
+      v1.__cg_key AS "v1____cg_key", 
+      v2.__cg_label AS "v2____cg_label", 
+      v2.__cg_id_0 AS "v2____cg_id_0"
+FROM brahmand.users_bench AS v0
+JOIN v1_rels AS v1 ON v1.__cg_start_0 = v0.user_id
+JOIN v2_labels AS v2 ON v1.__cg_end_label = v2.__cg_label AND v1.__cg_end_0 = v2.__cg_id_0
+)
+SELECT 
+      v0.email_address AS "a.email", 
+      count(o1.v1____cg_type) AS "rel_count"
+FROM brahmand.users_bench AS v0
+LEFT JOIN optional_o1 AS o1 ON v0.user_id = o1.v0__user_id
+GROUP BY v0.email_address

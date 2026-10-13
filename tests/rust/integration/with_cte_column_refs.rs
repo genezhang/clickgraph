@@ -19,34 +19,10 @@ use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 
 /// `(golden path relative to golden/, violation, tracking issue)`.
-const KNOWN_VIOLATIONS: &[(&str, &str, &str)] = &[
-    (
-        "corpus/denormalized_flights/test_1182__outside_carried_node_mid_chain_not_repaired_den.clickhouse.sql",
-        "c.p1_c_start_id not in with_c_cte_0",
-        "#1189",
-    ),
-    (
-        "corpus/denormalized_flights/test_1182__outside_closed_on_carried_node_not_repaired_den.clickhouse.sql",
-        "c.p1_c_end_id not in with_c_cte_1",
-        "#1189",
-    ),
-    (
-        "corpus/denormalized_flights/test_1189__two_carried_path_between_them_not_repaired_den.clickhouse.sql",
-        "c_z.p1_c_end_id not in with_c_z_cte_0",
-        "#1189",
-    ),
-    (
-        // The start-endpoint tie (P-4b), spelled with the same #1189 guess as the end tie.
-        "corpus/denormalized_flights/test_1189__two_carried_path_between_them_not_repaired_den.clickhouse.sql",
-        "c_z.p1_z_start_id not in with_c_z_cte_0",
-        "#1189",
-    ),
-    (
-        "corpus/standard/test_636_shared_anchor_comma_interleaved_stays_loud.clickhouse.sql",
-        "p.post_id not in with_p_cte_0",
-        "#933",
-    ),
-];
+/// The legacy pipeline's guessed columns (#1189, #933) went with the corpus
+/// sweep's switch to the bound plan's SQL (P-4c S14c0), whose CTE columns
+/// are each read through what the CTE exports.
+const KNOWN_VIOLATIONS: &[(&str, &str, &str)] = &[];
 
 /// Index just past the `)` closing the `(` that ends right before `start`,
 /// skipping single-quoted string literals (backslash escapes, as rendered).

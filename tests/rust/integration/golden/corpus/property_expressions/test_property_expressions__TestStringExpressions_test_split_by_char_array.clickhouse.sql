@@ -1,5 +1,5 @@
 SELECT 
-      splitByChar(',', u.tags_str) AS "u.tags_array", 
-      length(splitByChar(',', u.tags_str)) AS "u.tag_count"
-FROM test_integration.users_expressions_test AS u
-WHERE u.user_id = 6
+      splitByChar(',', v0.tags_str) AS "u.tags_array", 
+      length(splitByChar(',', v0.tags_str)) AS "u.tag_count"
+FROM test_integration.users_expressions_test AS v0
+WHERE v0.user_id = 6

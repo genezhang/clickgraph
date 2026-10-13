@@ -1,6 +1,6 @@
 SELECT 
-      u.exposure AS `u.exposure`, 
-      count(u.user_id) AS `count`
-FROM data_security.ds_users AS u
-GROUP BY u.exposure
-ORDER BY u.exposure ASC NULLS LAST
+      v0.exposure AS `u.exposure`, 
+      count(v0.user_id) AS `count`
+FROM data_security.ds_users AS v0
+GROUP BY v0.exposure
+ORDER BY v0.exposure ASC NULLS LAST

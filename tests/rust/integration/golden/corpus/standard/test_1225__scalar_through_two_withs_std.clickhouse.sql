@@ -1,15 +1,17 @@
-WITH with_ag_cte_0 AS (SELECT 
-      a.age AS "ag"
-FROM test_integration.users_test AS a
+WITH with_w1 AS (
+SELECT 
+      v0.age AS "v1"
+FROM test_integration.users_test AS v0
 ), 
-with_ag_c_cte_1 AS (SELECT 
-      anyLast(ag.ag) AS "ag", 
-      count(*) AS "c"
-FROM with_ag_cte_0 AS ag
-GROUP BY ag.ag
+with_w2 AS (
+SELECT 
+      w1.v1 AS "v2", 
+      count(*) AS "v3"
+FROM with_w1 AS w1
+GROUP BY w1.v1
 )
 SELECT 
-      ag_c.ag AS "ag", 
-      ag_c.c AS "c"
-FROM with_ag_c_cte_1 AS ag_c
-ORDER BY ag_c.ag ASC
+      w2.v2 AS "ag", 
+      w2.v3 AS "c"
+FROM with_w2 AS w2
+ORDER BY w2.v2 ASC

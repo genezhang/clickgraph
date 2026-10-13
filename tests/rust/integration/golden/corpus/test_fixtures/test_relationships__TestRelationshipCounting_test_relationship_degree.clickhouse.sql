@@ -1,17 +1,27 @@
-SELECT `a.name` AS "a.name", count(DISTINCT `b.user_id`) AS "connections" FROM (
+WITH v1_both AS (
 SELECT 
-      a.name AS "a.name",
-      b.user_id AS "b.user_id"
-FROM test_integration.users AS a
-INNER JOIN test_integration.follows AS t0 ON t0.follower_id = a.user_id
-INNER JOIN test_integration.users AS b ON b.user_id = t0.followed_id
-UNION ALL 
+      e.followed_id AS "followed_id", 
+      e.follower_id AS "follower_id", 
+      e.since AS "since", 
+      e.follower_id AS "__cg_start_0", 
+      e.followed_id AS "__cg_end_0"
+FROM test_integration.follows AS e
+
+UNION ALL
 SELECT 
-      a.name AS "a.name",
-      b.user_id AS "b.user_id"
-FROM test_integration.users AS b
-INNER JOIN test_integration.follows AS t0 ON t0.follower_id = b.user_id
-INNER JOIN test_integration.users AS a ON a.user_id = t0.followed_id
-) AS __union
-GROUP BY `a.name`
-ORDER BY `connections` DESC NULLS FIRST, `a.name` ASC
+      e.followed_id AS "followed_id", 
+      e.follower_id AS "follower_id", 
+      e.since AS "since", 
+      e.followed_id AS "__cg_start_0", 
+      e.follower_id AS "__cg_end_0"
+FROM test_integration.follows AS e
+WHERE e.follower_id <> e.followed_id
+)
+SELECT 
+      v0.name AS "a.name", 
+      count(DISTINCT v2.user_id) AS "connections"
+FROM test_integration.users AS v0
+JOIN v1_both AS v1 ON v1.__cg_start_0 = v0.user_id
+JOIN test_integration.users AS v2 ON v1.__cg_end_0 = v2.user_id
+GROUP BY v0.name
+ORDER BY count(DISTINCT v2.user_id) DESC NULLS FIRST, v0.name ASC

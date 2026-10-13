@@ -1,6 +1,6 @@
 SELECT 
-      r."id.orig_h" AS "src.ip", 
-      r.query AS "d.name", 
-      r.answers AS "r.answers"
-FROM zeek.dns_log AS r
-WHERE r.query = 'cdn.example.com'
+      v1."id.orig_h" AS "src.ip", 
+      v1.query AS "d.name", 
+      v1.answers AS "r.answers"
+FROM zeek.dns_log AS v1
+WHERE (v1."id.orig_h" IS NOT NULL AND v1.query IS NOT NULL AND v1.query = 'cdn.example.com')

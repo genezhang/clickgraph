@@ -1,4 +1,4 @@
 SELECT DISTINCT 
-      u.name AS "u.name"
-FROM test_integration.users AS u
-ORDER BY u.name ASC
+      v0.name AS "u.name"
+FROM test_integration.users AS v0
+ORDER BY v0.name ASC

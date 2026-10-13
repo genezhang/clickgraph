@@ -1,4 +1,4 @@
-WITH RECURSIVE vlp_a_b_inner AS (
+WITH RECURSIVE vlp_v1_path AS (
     SELECT 
         start_node.user_id as start_id,
         start_node.user_id as end_id,
@@ -11,6 +11,7 @@ WITH RECURSIVE vlp_a_b_inner AS (
             LIMIT 1
         ) as path_edges
     FROM test_integration.users_test AS start_node
+    WHERE (start_node.user_id > 2)
     UNION ALL
     SELECT
         vp.start_id,
@@ -19,17 +20,17 @@ WITH RECURSIVE vlp_a_b_inner AS (
         CAST([] AS Array(String)) as path_relationships,
         arrayConcat(vp.path_nodes, [end_node.user_id]) as path_nodes,
         arrayConcat(vp.path_edges, [rel.follow_id]) as path_edges
-    FROM vlp_a_b_inner vp
-    JOIN test_integration.user_follows_test AS rel ON vp.end_id = rel.follower_id
-    JOIN test_integration.users_test AS end_node ON rel.followed_id = end_node.user_id
+    FROM vlp_v1_path vp
+    JOIN test_integration.user_follows_test AS rel ON vp.end_id = rel.followed_id
+    JOIN test_integration.users_test AS end_node ON rel.follower_id = end_node.user_id
     WHERE vp.hop_count < 2
       AND NOT has(vp.path_edges, rel.follow_id)
-),
-vlp_a_b AS (
-    SELECT * FROM vlp_a_b_inner WHERE (end_id > 2)
 )
 SELECT 
-      t.start_id AS "a.user_id", 
-      t.end_id AS "b.user_id"
-FROM vlp_a_b AS t
-ORDER BY t.start_id ASC, t.end_id ASC
+      v0.user_id AS "a.user_id", 
+      v2.user_id AS "b.user_id"
+FROM vlp_v1_path AS v1
+JOIN test_integration.users_test AS v0 ON v1.end_id = v0.user_id
+JOIN test_integration.users_test AS v2 ON v1.start_id = v2.user_id
+WHERE v2.user_id > 2
+ORDER BY v0.user_id ASC, v2.user_id ASC

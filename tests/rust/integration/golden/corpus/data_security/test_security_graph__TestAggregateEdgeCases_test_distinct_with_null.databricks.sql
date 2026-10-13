@@ -1,3 +1,3 @@
 SELECT 
-      count(DISTINCT u.exposure) AS `unique_exposures`
-FROM data_security.ds_users AS u
+      count(DISTINCT v0.exposure) AS `unique_exposures`
+FROM data_security.ds_users AS v0

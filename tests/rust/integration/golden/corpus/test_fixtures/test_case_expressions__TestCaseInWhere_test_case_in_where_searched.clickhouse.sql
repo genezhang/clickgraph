@@ -1,6 +1,6 @@
 SELECT 
-      n.name AS "n.name", 
-      n.age AS "n.age"
-FROM test_integration.users AS n
-WHERE CASE WHEN n.age < 25 THEN 'include' WHEN n.age > 35 THEN 'include' ELSE 'exclude' END = 'include'
-ORDER BY n.name ASC
+      v0.name AS "n.name", 
+      v0.age AS "n.age"
+FROM test_integration.users AS v0
+WHERE CASE WHEN v0.age < 25 THEN 'include' WHEN v0.age > 35 THEN 'include' ELSE 'exclude' END = 'include'
+ORDER BY v0.name ASC

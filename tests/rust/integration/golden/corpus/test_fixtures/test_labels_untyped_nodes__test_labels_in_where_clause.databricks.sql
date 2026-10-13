@@ -1,25 +1,16 @@
-SELECT count(coalesce(`n.product_id`, `n.user_id`)) AS `user_count` FROM (
+WITH v0_labels AS (
 SELECT 
-      NULL AS `age`,
-      string(n.category) AS `category`,
-      string(n.name) AS `name`,
-      string(n.price) AS `price`,
-      string(n.product_id) AS `product_id`,
-      NULL AS `user_id`,
-      string(n.product_id) AS `n.product_id`,
-      NULL AS `n.user_id`
-FROM test_integration.products AS n
-WHERE labels(n) = array('TestUser')
-UNION ALL 
+      'TestProduct' AS `__cg_label`, 
+      e.product_id AS `__cg_id_0`
+FROM test_integration.products AS e
+
+UNION ALL
 SELECT 
-      string(n.age) AS `age`,
-      NULL AS `category`,
-      string(n.name) AS `name`,
-      NULL AS `price`,
-      NULL AS `product_id`,
-      string(n.user_id) AS `user_id`,
-      NULL AS `n.product_id`,
-      string(n.user_id) AS `n.user_id`
-FROM test_integration.users AS n
-WHERE labels(n) = array('TestUser')
-) AS __union
+      'TestUser' AS `__cg_label`, 
+      e.user_id AS `__cg_id_0`
+FROM test_integration.users AS e
+)
+SELECT 
+      count(v0.__cg_label) AS `user_count`
+FROM v0_labels AS v0
+WHERE array(v0.__cg_label) = array('TestUser')

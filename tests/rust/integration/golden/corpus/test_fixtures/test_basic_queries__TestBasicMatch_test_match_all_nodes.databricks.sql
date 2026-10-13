@@ -1,3 +1,3 @@
 SELECT 
-      n.name AS `n.name`
-FROM test_integration.users AS n
+      v0.name AS `n.name`
+FROM test_integration.users AS v0

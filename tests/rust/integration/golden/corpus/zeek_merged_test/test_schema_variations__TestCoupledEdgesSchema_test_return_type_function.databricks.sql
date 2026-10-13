@@ -1,18 +1,104 @@
-WITH vlp_multi_type_ip_target AS (
-SELECT 'IP' AS end_type, n2.`id.orig_h` AS end_id, ip_1.`id.orig_h` AS start_id, 'IP' AS start_type, string(n2.`id.orig_h`) AS r_from_id, string(n2.`id.resp_h`) AS r_to_id, to_json(struct(n2.`id.orig_h` AS `id.orig_h`)) AS end_properties, to_json(struct(ip_1.`id.orig_h`)) AS start_properties, ip_1.`id.orig_h` AS start_id_orig_h, 1 AS hop_count, array('ACCESSED') AS path_relationships, array(to_json(struct(n2.conn_state, n2.duration, n2.orig_bytes, n2.proto, n2.resp_bytes, n2.service, n2.ts, n2.uid))) AS rel_properties, array(string(ip_1.`id.orig_h`), string(n2.`id.orig_h`)) AS path_nodes
-FROM zeek.conn_log ip_1
-INNER JOIN zeek.conn_log n2 ON ip_1.`id.orig_h` = n2.`id.orig_h`
-WHERE (ip_1.`id.orig_h` = '192.168.1.10')
+WITH __cg_nodes_Domain__cg_rows AS (
+SELECT 
+      e.query AS `name`
+FROM zeek.dns_log AS e
+), 
+__cg_nodes_Domain AS (
+SELECT 
+      e.name AS `name`
+FROM __cg_nodes_Domain__cg_rows AS e
+WHERE NOT isnull(e.name)
+GROUP BY e.name
+), 
+__cg_nodes_IP__cg_rows AS (
+SELECT 
+      e.`id.orig_h` AS `ip`, 
+      NULL AS `port__cg2`, 
+      NULL AS `port__cg3`
+FROM zeek.dns_log AS e
+
 UNION ALL
-SELECT 'Domain' AS end_type, n2.name AS end_id, ip_1.`id.orig_h` AS start_id, 'IP' AS start_type, string(n2.`id.orig_h`) AS r_from_id, string(n2.query) AS r_to_id, to_json(struct(n2.name AS name)) AS end_properties, to_json(struct(ip_1.`id.orig_h`)) AS start_properties, ip_1.`id.orig_h` AS start_id_orig_h, 1 AS hop_count, array('REQUESTED') AS path_relationships, array(to_json(struct(n2.answers, n2.`id.resp_h`, n2.qtype_name, n2.rcode_name, n2.ts, n2.uid))) AS rel_properties, array(string(ip_1.`id.orig_h`), string(n2.name)) AS path_nodes
-FROM zeek.conn_log ip_1
-INNER JOIN zeek.dns_log n2 ON ip_1.`id.orig_h` = n2.`id.orig_h`
-WHERE (ip_1.`id.orig_h` = '192.168.1.10')
+SELECT 
+      e.`id.resp_h` AS `ip`, 
+      NULL AS `port__cg2`, 
+      NULL AS `port__cg3`
+FROM zeek.dns_log AS e
+
+UNION ALL
+SELECT 
+      e.`id.orig_h` AS `ip`, 
+      e.`id.orig_p` AS `port__cg2`, 
+      NULL AS `port__cg3`
+FROM zeek.conn_log AS e
+
+UNION ALL
+SELECT 
+      e.`id.resp_h` AS `ip`, 
+      NULL AS `port__cg2`, 
+      e.`id.resp_p` AS `port__cg3`
+FROM zeek.conn_log AS e
+), 
+__cg_nodes_IP AS (
+SELECT 
+      e.ip AS `ip`, 
+      any_value(CASE WHEN regexp_replace(regexp_replace(typeof(e.port__cg2), '^(tinyint|smallint|int|bigint)$', 'int'), '^((var)?char\\(\\d+\\)|string( collate .*)?)$', 'string') = regexp_replace(regexp_replace(typeof(e.port__cg3), '^(tinyint|smallint|int|bigint)$', 'int'), '^((var)?char\\(\\d+\\)|string( collate .*)?)$', 'string') THEN coalesce(e.port__cg2, e.port__cg3) ELSE raise_error('ClickGraph: a property has different types on different labels or types') END, true) AS `port`
+FROM __cg_nodes_IP__cg_rows AS e
+WHERE NOT isnull(e.ip)
+GROUP BY e.ip
+), 
+v2_labels AS (
+SELECT 
+      'Domain' AS `__cg_label`, 
+      e.name AS `__cg_id_0`, 
+      NULL AS `p2_v2_ip`, 
+      e.name AS `p2_v2_name`, 
+      NULL AS `p2_v2_port`
+FROM __cg_nodes_Domain AS e
+
+UNION ALL
+SELECT 
+      'IP' AS `__cg_label`, 
+      e.ip AS `__cg_id_0`, 
+      e.ip AS `p2_v2_ip`, 
+      NULL AS `p2_v2_name`, 
+      e.port AS `p2_v2_port`
+FROM __cg_nodes_IP AS e
+), 
+v1_rels AS (
+SELECT 
+      'ACCESSED' AS `__cg_type`, 
+      'IP' AS `__cg_from_label`, 
+      'IP' AS `__cg_to_label`, 
+      e.uid AS `__cg_rid_0`, 
+      e.`id.orig_h` AS `__cg_from_0`, 
+      e.`id.resp_h` AS `__cg_to_0`, 
+      e.`id.orig_h` AS `__cg_start_0`, 
+      e.`id.resp_h` AS `__cg_end_0`, 
+      'IP' AS `__cg_start_label`, 
+      'IP' AS `__cg_end_label`, 
+      concat('ACCESSED:IP:IP:', CAST(e.uid AS STRING)) AS `__cg_key`
+FROM zeek.conn_log AS e
+
+UNION ALL
+SELECT 
+      'REQUESTED' AS `__cg_type`, 
+      'IP' AS `__cg_from_label`, 
+      'Domain' AS `__cg_to_label`, 
+      e.uid AS `__cg_rid_0`, 
+      e.`id.orig_h` AS `__cg_from_0`, 
+      e.query AS `__cg_to_0`, 
+      e.`id.orig_h` AS `__cg_start_0`, 
+      e.query AS `__cg_end_0`, 
+      'IP' AS `__cg_start_label`, 
+      'Domain' AS `__cg_end_label`, 
+      concat('REQUESTED:IP:Domain:', CAST(e.uid AS STRING)) AS `__cg_key`
+FROM zeek.dns_log AS e
 )
 SELECT 
-      try_element_at(t.path_relationships, 1) AS `type(r)`, 
-      t.end_properties AS `target.properties`, 
-      t.end_id AS `target.id`, 
-      t.end_type AS `target.__label__`
-FROM vlp_multi_type_ip_target AS t
+      v1.__cg_type AS `type(r)`, 
+      to_variant_object(map('elementId', CAST(concat(v2.__cg_label, ':', CAST(v2.__cg_id_0 AS STRING), '-') AS VARIANT), 'labels', CAST(array(v2.__cg_label) AS VARIANT), 'properties', CAST(to_variant_object(map_filter(map('ip', CAST(v2.p2_v2_ip AS VARIANT), 'name', CAST(v2.p2_v2_name AS VARIANT), 'port', CAST(v2.p2_v2_port AS VARIANT)), (__k, __v) -> __v IS NOT NULL)) AS VARIANT))) AS `target`
+FROM __cg_nodes_IP AS v0
+JOIN v1_rels AS v1 ON v1.__cg_start_0 = v0.ip
+JOIN v2_labels AS v2 ON v1.__cg_end_label = v2.__cg_label AND v1.__cg_end_0 = v2.__cg_id_0
+WHERE v0.ip = '192.168.1.10'
 LIMIT 10

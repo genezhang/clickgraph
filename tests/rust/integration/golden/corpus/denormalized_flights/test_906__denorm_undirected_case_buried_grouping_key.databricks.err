@@ -1,0 +1,1 @@
+query error: Aggregation column contains implicit grouping expressions: `a` is neither aggregated nor a grouping key

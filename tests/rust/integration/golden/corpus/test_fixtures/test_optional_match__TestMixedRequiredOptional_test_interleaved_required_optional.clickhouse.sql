@@ -1,10 +1,19 @@
+WITH optional_o1 AS (
 SELECT 
-      a.name AS "a.name", 
-      b.name AS "b.name", 
-      x.name AS "x.name"
-FROM test_integration.users AS a
-LEFT JOIN test_integration.follows AS t0 ON t0.follower_id = a.user_id
-LEFT JOIN test_integration.users AS b ON b.user_id = t0.followed_id
-JOIN test_integration.users AS x ON 1 = 1
-WHERE (x.name = 'Bob' AND a.name = 'Alice')
-ORDER BY b.name ASC
+      v0.user_id AS "v0__user_id", 
+      v2.user_id AS "v2__user_id", 
+      v2.name AS "p2_v2_name"
+FROM test_integration.users AS v0
+JOIN test_integration.follows AS v1 ON v1.follower_id = v0.user_id
+JOIN test_integration.users AS v2 ON v1.followed_id = v2.user_id
+WHERE v0.name = 'Alice'
+)
+SELECT 
+      v0.name AS "a.name", 
+      o1.p2_v2_name AS "b.name", 
+      v3.name AS "x.name"
+FROM test_integration.users AS v0
+LEFT JOIN optional_o1 AS o1 ON v0.user_id = o1.v0__user_id
+CROSS JOIN test_integration.users AS v3
+WHERE (v0.name = 'Alice' AND v3.name = 'Bob')
+ORDER BY o1.p2_v2_name ASC

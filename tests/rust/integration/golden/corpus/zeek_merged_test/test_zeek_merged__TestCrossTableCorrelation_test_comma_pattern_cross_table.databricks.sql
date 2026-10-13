@@ -1,8 +1,8 @@
 SELECT DISTINCT 
-      t0.`id.orig_h` AS `srcip.ip`, 
-      t1.query AS `d.name`, 
-      t0.`id.resp_h` AS `dest.ip`
-FROM zeek.conn_log AS t0
-INNER JOIN zeek.dns_log AS t1 ON t0.`id.orig_h` = t1.`id.orig_h`
-WHERE t0.`id.orig_h` = '192.168.1.10'
+      v1.`id.orig_h` AS `srcip.ip`, 
+      v1.query AS `d.name`, 
+      v3.`id.resp_h` AS `dest.ip`
+FROM zeek.dns_log AS v1
+JOIN zeek.conn_log AS v3 ON v3.`id.orig_h` = v1.`id.orig_h`
+WHERE (v1.`id.orig_h` IS NOT NULL AND v1.query IS NOT NULL AND v3.`id.resp_h` IS NOT NULL AND v1.`id.orig_h` = '192.168.1.10')
 ORDER BY `d.name` ASC NULLS LAST

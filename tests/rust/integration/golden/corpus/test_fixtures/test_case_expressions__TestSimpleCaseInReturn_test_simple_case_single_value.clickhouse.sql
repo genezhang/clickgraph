@@ -1,5 +1,5 @@
 SELECT 
-      n.name AS "n.name", 
-      caseWithExpression(n.name, 'Alice', 'Admin', 'User') AS "role"
-FROM test_integration.users AS n
-ORDER BY n.name ASC
+      v0.name AS "n.name", 
+      caseWithExpression(v0.name, 'Alice', 'Admin', 'User') AS "role"
+FROM test_integration.users AS v0
+ORDER BY v0.name ASC

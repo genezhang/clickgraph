@@ -1,4 +1,4 @@
 SELECT 
-      c.commentId AS `c.commentId`
-FROM ldbc.comment AS c
-WHERE c.commentId = 1
+      v0.commentId AS `c.commentId`
+FROM ldbc.comment AS v0
+WHERE v0.commentId = 1

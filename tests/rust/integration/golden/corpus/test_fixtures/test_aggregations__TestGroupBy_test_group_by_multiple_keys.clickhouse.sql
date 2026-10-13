@@ -1,9 +1,9 @@
 SELECT 
-      a.name AS "a.name", 
-      b.name AS "b.name", 
+      v0.name AS "a.name", 
+      v2.name AS "b.name", 
       count(*) AS "connection_count"
-FROM test_integration.users AS a
-INNER JOIN test_integration.follows AS t0 ON t0.follower_id = a.user_id
-INNER JOIN test_integration.users AS b ON b.user_id = t0.followed_id
-GROUP BY a.name, b.name
-ORDER BY a.name ASC, b.name ASC
+FROM test_integration.users AS v0
+JOIN test_integration.follows AS v1 ON v1.follower_id = v0.user_id
+JOIN test_integration.users AS v2 ON v1.followed_id = v2.user_id
+GROUP BY v0.name, v2.name
+ORDER BY v0.name ASC, v2.name ASC

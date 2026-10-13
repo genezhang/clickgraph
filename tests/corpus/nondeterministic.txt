@@ -47,8 +47,7 @@
 # `_t\d+` suffixes and regenerate every golden) is its own reviewed slice.
 # NOTE for that future slice: these 5 are the ONLY corpus entries whose
 # goldens would contain `_t\d+` — un-exclude them when normalize() is widened.
-social_integration/test_browser_expand_performance__TestBrowserExpandQuerySequence_test_expand_directed_pattern_performance	byte-stable per fresh process (#480 fixed) but CTE name embeds the process-global alias counter (pattern_union_t<n>) which normalize() cannot remap — flaps with test order inside the shared cargo-test process
-social_integration/test_schema_variations_comprehensive__TestLabelInference_test_inference_undirected_all_missing	byte-stable per fresh process (#480 fixed) but CTE name embeds the process-global alias counter (pattern_union_t<n>) which normalize() cannot remap — flaps with test order inside the shared cargo-test process
-social_integration/test_schema_variations_comprehensive__TestLabelInference_test_inference_union_relationship_types	byte-stable per fresh process (#480 fixed) but CTE name embeds the process-global alias counter (pattern_union_t<n>) which normalize() cannot remap — flaps with test order inside the shared cargo-test process
-social_integration/test_schema_variations_comprehensive__TestSchemaInteractions_test_shortest_path_with_type_inference	byte-stable per fresh process (#480 fixed) but CTE name embeds the process-global alias counter (pattern_union_t<n>) which normalize() cannot remap — flaps with test order inside the shared cargo-test process
-test_fixtures/test_count_relationships__TestCountRelationships_test_count_star_with_anonymous_relationship	byte-stable per fresh process (#480 fixed) but CTE name embeds the process-global alias counter (pattern_union_t<n>) which normalize() cannot remap — flaps with test order inside the shared cargo-test process
+#
+# P-4c S14c0: the sweep locks the bound plan's SQL now, which has no such
+# counter in its names; the 5 entries above were the legacy pipeline's and
+# are locked again (verified over fresh-process and whole-binary runs).

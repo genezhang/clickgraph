@@ -1,9 +1,11 @@
-WITH with_a_ag_cte_0 AS (SELECT 
-      a.age AS `ag`
-FROM test_integration.users_test AS a
+WITH with_w1 AS (
+SELECT 
+      v0.user_id AS `v1__user_id`, 
+      v0.age AS `v2`
+FROM test_integration.users_test AS v0
 )
 SELECT 
-      any_value(a_ag.ag) AS `ag`, 
+      w1.v2 AS `ag`, 
       count(*) AS `n`
-FROM with_a_ag_cte_0 AS a_ag
-GROUP BY a_ag.ag
+FROM with_w1 AS w1
+GROUP BY w1.v2

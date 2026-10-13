@@ -1,0 +1,4 @@
+SELECT 
+      NULL AS `r`
+WHERE false
+LIMIT 5

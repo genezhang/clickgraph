@@ -1,10 +1,12 @@
-WITH with_e_n_u_cte_0 AS (SELECT 
-      u.full_name AS "n", 
-      u.email_address AS "e"
-FROM test_integration.users_test AS u
+WITH with_w1 AS (
+SELECT 
+      v0.user_id AS "v1__user_id", 
+      v0.full_name AS "v2", 
+      v0.email_address AS "v3"
+FROM test_integration.users_test AS v0
 )
 SELECT 
-      e_n_u.n AS "n", 
-      e_n_u.e AS "e"
-FROM with_e_n_u_cte_0 AS e_n_u
+      w1.v2 AS "n", 
+      w1.v3 AS "e"
+FROM with_w1 AS w1
 LIMIT 1

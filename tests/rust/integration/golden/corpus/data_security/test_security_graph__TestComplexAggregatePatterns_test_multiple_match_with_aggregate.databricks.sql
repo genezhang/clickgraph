@@ -1,9 +1,11 @@
 SELECT 
-      g.name AS `g.name`, 
-      count(DISTINCT t0.object_id) AS `accessible_files`
-FROM data_security.ds_users AS u
-INNER JOIN data_security.ds_memberships AS t1 ON t1.member_id = u.user_id AND t1.member_type = 'User'
-INNER JOIN data_security.ds_groups AS g ON g.group_id = t1.group_id
-INNER JOIN data_security.ds_permissions AS t0 ON t0.subject_id = u.user_id AND t0.subject_type = 'User' AND t0.object_type = 'File'
-GROUP BY g.name
-ORDER BY accessible_files DESC NULLS FIRST
+      v2.name AS `g.name`, 
+      count(DISTINCT v4.fs_id) AS `accessible_files`
+FROM data_security.ds_users AS v0
+JOIN data_security.ds_memberships AS v1 ON v1.member_id = v0.user_id
+JOIN data_security.ds_groups AS v2 ON v1.group_id = v2.group_id
+JOIN data_security.ds_permissions AS v3 ON v3.subject_id = v0.user_id
+JOIN data_security.ds_fs_objects AS v4 ON v3.object_id = v4.fs_id
+WHERE (((v1.`member_type` = 'User')) AND (((v3.`subject_type` = 'User') AND (v3.`object_type` = 'File'))) AND ((v4.`fs_type` = 'File')))
+GROUP BY v2.name
+ORDER BY count(DISTINCT v4.fs_id) DESC NULLS FIRST

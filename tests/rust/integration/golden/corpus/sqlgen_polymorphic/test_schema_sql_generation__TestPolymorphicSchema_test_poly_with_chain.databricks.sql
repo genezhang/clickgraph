@@ -1,12 +1,16 @@
-WITH with_posts_u_cte_0 AS (SELECT 
-      any_value(u.full_name) AS `p1_u_name`, 
-      count(t0.to_id) AS `posts`
-FROM db_polymorphic.users AS u
-INNER JOIN db_polymorphic.interactions AS t0 ON t0.from_id = u.user_id AND t0.interaction_type = 'AUTHORED' AND t0.from_type = 'User' AND t0.to_type = 'Post'
-GROUP BY u.user_id
+WITH with_w1 AS (
+SELECT 
+      v0.user_id AS `v3__user_id`, 
+      v0.full_name AS `p2_v3_name`, 
+      count(v2.post_id) AS `v4`
+FROM db_polymorphic.users AS v0
+JOIN db_polymorphic.interactions AS v1 ON v1.from_id = v0.user_id
+JOIN db_polymorphic.posts AS v2 ON v1.to_id = v2.post_id
+WHERE ((((v1.`interaction_type` = 'AUTHORED') AND (v1.`from_type` = 'User')) AND (v1.`to_type` = 'Post')))
+GROUP BY v0.user_id, v0.full_name
 )
 SELECT 
-      posts_u.p1_u_name AS `u.name`, 
-      posts_u.posts AS `posts`
-FROM with_posts_u_cte_0 AS posts_u
-ORDER BY posts_u.posts DESC NULLS FIRST
+      w1.p2_v3_name AS `u.name`, 
+      w1.v4 AS `posts`
+FROM with_w1 AS w1
+ORDER BY w1.v4 DESC NULLS FIRST

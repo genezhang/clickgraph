@@ -1,8 +1,11 @@
 SELECT 
-      c.commentId AS `c.commentId`, 
-      reply.commentId AS `reply.commentId`, 
-      reply.creatorId AS `p.personId`
-FROM ldbc.comment AS c
-INNER JOIN ldbc.comment AS reply ON reply.replyOfCommentId = c.commentId
-WHERE c.commentId = 100
+      v0.commentId AS `c.commentId`, 
+      v2.commentId AS `reply.commentId`, 
+      v4.personId AS `p.personId`
+FROM ldbc.comment AS v0
+JOIN ldbc.comment AS v1 ON v1.replyOfCommentId = v0.commentId
+JOIN ldbc.comment AS v2 ON v1.commentId = v2.commentId
+JOIN ldbc.comment AS v3 ON v3.commentId = v2.commentId
+JOIN ldbc.person AS v4 ON v3.creatorId = v4.personId
+WHERE v0.commentId = 100
 LIMIT 5

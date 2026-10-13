@@ -1,7 +1,10 @@
 SELECT 
-      a.user_id AS `a.user_id`, 
-      r2.to_id AS `c.user_id`
-FROM brahmand.users_bench AS a
-INNER JOIN brahmand.interactions AS r1 ON r1.from_id = a.user_id AND r1.interaction_type = 'FOLLOWS' AND r1.from_type = 'User' AND r1.to_type = 'User'
-INNER JOIN brahmand.interactions AS r2 ON r2.from_id = r1.to_id AND r2.interaction_type = 'LIKES' AND r2.from_type = 'User' AND r2.to_type = 'User'
+      v0.user_id AS `a.user_id`, 
+      v4.user_id AS `c.user_id`
+FROM brahmand.users_bench AS v0
+JOIN brahmand.interactions AS v1 ON v1.from_id = v0.user_id
+JOIN brahmand.users_bench AS v2 ON v1.to_id = v2.user_id
+JOIN brahmand.interactions AS v3 ON v3.from_id = v2.user_id
+JOIN brahmand.users_bench AS v4 ON v3.to_id = v4.user_id
+WHERE (((((v1.`interaction_type` = 'FOLLOWS') AND (v1.`from_type` = 'User')) AND (v1.`to_type` = 'User'))) AND ((((v3.`interaction_type` = 'LIKES') AND (v3.`from_type` = 'User')) AND (v3.`to_type` = 'User'))))
 LIMIT 5

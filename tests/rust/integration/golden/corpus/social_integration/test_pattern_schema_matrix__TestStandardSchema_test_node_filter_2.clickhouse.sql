@@ -1,5 +1,5 @@
 SELECT 
-      n.user_id AS "n.user_id"
-FROM test_integration.users_test AS n
-WHERE n.user_id IS NOT NULL
+      v0.user_id AS "n.user_id"
+FROM test_integration.users_test AS v0
+WHERE v0.user_id IS NOT NULL
 LIMIT 10

@@ -1,8 +1,9 @@
-WITH with_status_cte_0 AS (SELECT 
-      CASE WHEN u.is_active THEN CASE WHEN u.country = 'USA' THEN u.full_name ELSE 'non-US' END ELSE 'inactive' END AS `status`
-FROM test_integration.users_test AS u
+WITH with_w1 AS (
+SELECT 
+      CASE WHEN v0.is_active THEN CASE WHEN v0.country = 'USA' THEN v0.full_name ELSE 'non-US' END ELSE 'inactive' END AS `v1`
+FROM test_integration.users_test AS v0
 )
 SELECT 
-      status.status AS `status`
-FROM with_status_cte_0 AS status
+      w1.v1 AS `status`
+FROM with_w1 AS w1
 LIMIT 1

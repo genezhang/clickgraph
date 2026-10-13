@@ -1,9 +1,9 @@
-WITH RECURSIVE vlp_a_b AS (
+WITH RECURSIVE vlp_v1_path AS (
     SELECT 
         start_node.user_id as start_id,
         end_node.user_id as end_id,
         1 as hop_count,
-        ['FOLLOWS'] as path_relationships,
+        CAST([] AS Array(String)) as path_relationships,
         [start_node.user_id, end_node.user_id] as path_nodes,
         [rel.follow_id] as path_edges
     FROM test_integration.users_test AS start_node
@@ -14,21 +14,24 @@ WITH RECURSIVE vlp_a_b AS (
         vp.start_id,
         end_node.user_id as end_id,
         vp.hop_count + 1 as hop_count,
-        arrayConcat(vp.path_relationships, ['FOLLOWS']) as path_relationships,
+        CAST([] AS Array(String)) as path_relationships,
         arrayConcat(vp.path_nodes, [end_node.user_id]) as path_nodes,
         arrayConcat(vp.path_edges, [rel.follow_id]) as path_edges
-    FROM vlp_a_b vp
+    FROM vlp_v1_path vp
     JOIN test_integration.user_follows_test AS rel ON vp.end_id = rel.follower_id
     JOIN test_integration.users_test AS end_node ON rel.followed_id = end_node.user_id
     WHERE vp.hop_count < 2
       AND NOT has(vp.path_edges, rel.follow_id)
 ), 
-with_len_cte_0 AS (SELECT 
-      hop_count AS "len"
-FROM vlp_a_b AS t
+with_w2 AS (
+SELECT 
+      v1.hop_count AS "v4"
+FROM vlp_v1_path AS v1
+JOIN test_integration.users_test AS v0 ON v1.start_id = v0.user_id
+JOIN test_integration.users_test AS v2 ON v1.end_id = v2.user_id
 )
 SELECT 
-      anyLast(len.len) AS "len", 
+      w2.v4 AS "len", 
       count(*) AS "n"
-FROM with_len_cte_0 AS len
-GROUP BY len.len
+FROM with_w2 AS w2
+GROUP BY w2.v4

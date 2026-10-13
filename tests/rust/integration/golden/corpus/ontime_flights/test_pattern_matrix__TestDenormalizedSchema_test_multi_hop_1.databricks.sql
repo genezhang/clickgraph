@@ -1,7 +1,7 @@
 SELECT 
-      r1.OriginState AS `a.state`, 
-      r2.DestState AS `c.state`
-FROM default.flights AS r1
-INNER JOIN default.flights AS r2 ON r2.Origin = r1.Dest
-WHERE (r2.flight_id <> r1.flight_id OR r2.flight_number <> r1.flight_number)
+      v1.OriginState AS `a.state`, 
+      v3.DestState AS `c.state`
+FROM default.flights AS v1
+JOIN default.flights AS v3 ON v3.Origin = v1.Dest
+WHERE (v1.Origin IS NOT NULL AND v1.Dest IS NOT NULL AND v3.Dest IS NOT NULL AND (v1.flight_id <> v3.flight_id OR v1.flight_number <> v3.flight_number))
 LIMIT 5

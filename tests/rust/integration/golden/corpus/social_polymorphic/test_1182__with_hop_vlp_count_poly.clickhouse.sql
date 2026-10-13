@@ -1,38 +1,128 @@
-WITH RECURSIVE with_c_cte_0 AS (SELECT 
-      t0.to_id AS "p1_c_user_id"
-FROM brahmand.users_bench AS z
-INNER JOIN brahmand.interactions AS t0 ON t0.from_id = z.user_id AND t0.interaction_type = 'FOLLOWS' AND t0.from_type = 'User' AND t0.to_type = 'User'
+WITH RECURSIVE with_w1 AS (
+SELECT 
+      v2.user_id AS "v3__user_id"
+FROM brahmand.users_bench AS v0
+JOIN brahmand.interactions AS v1 ON v1.from_id = v0.user_id
+JOIN brahmand.users_bench AS v2 ON v1.to_id = v2.user_id
+WHERE ((((v1."interaction_type" = 'FOLLOWS') AND (v1."from_type" = 'User')) AND (v1."to_type" = 'User')))
 ), 
-vlp_a_b AS (
-    SELECT 
-        start_node.user_id as start_id,
-        end_node.user_id as end_id,
-        1 as hop_count,
-        CAST([] AS Array(String)) as path_relationships,
-        [start_node.user_id, end_node.user_id] as path_nodes,
-        [tuple(rel.from_id, rel.to_id, rel.interaction_type, rel.timestamp)] as path_edges
-    FROM brahmand.users_bench AS start_node
-    JOIN brahmand.interactions AS rel ON start_node.user_id = rel.from_id
-    JOIN brahmand.users_bench AS end_node ON rel.to_id = end_node.user_id
-    WHERE rel.interaction_type = 'FOLLOWS' AND rel.from_type = 'User' AND rel.to_type = 'User'
+vlp_v6_nodes AS (
+SELECT 
+      'Post' AS "__cg_label", 
+      e.post_id AS "__cg_id_0", 
+      concat('Post', ':', toString(e.post_id)) AS "__cg_key"
+FROM brahmand.posts_bench AS e
+
+UNION ALL
+SELECT 
+      'User' AS "__cg_label", 
+      e.user_id AS "__cg_id_0", 
+      concat('User', ':', toString(e.user_id)) AS "__cg_key"
+FROM brahmand.users_bench AS e
+), 
+v6_rels AS (
+SELECT 
+      'FOLLOWS' AS "__cg_type", 
+      'Post' AS "__cg_from_label", 
+      'Post' AS "__cg_to_label", 
+      e.from_id AS "__cg_rid_0", 
+      e.to_id AS "__cg_rid_1", 
+      e.interaction_type AS "__cg_rid_2", 
+      e.timestamp AS "__cg_rid_3", 
+      e.from_id AS "__cg_from_0", 
+      e.to_id AS "__cg_to_0", 
+      e.from_id AS "__cg_start_0", 
+      e.to_id AS "__cg_end_0", 
+      'Post' AS "__cg_start_label", 
+      'Post' AS "__cg_end_label", 
+      concat('FOLLOWS:Post:Post:', toString(tuple(e.from_id, e.to_id, e.interaction_type, e.timestamp))) AS "__cg_key"
+FROM brahmand.interactions AS e
+WHERE ((((e."interaction_type" = 'FOLLOWS') AND (e."from_type" = 'Post')) AND (e."to_type" = 'Post')))
+
+UNION ALL
+SELECT 
+      'FOLLOWS' AS "__cg_type", 
+      'Post' AS "__cg_from_label", 
+      'User' AS "__cg_to_label", 
+      e.from_id AS "__cg_rid_0", 
+      e.to_id AS "__cg_rid_1", 
+      e.interaction_type AS "__cg_rid_2", 
+      e.timestamp AS "__cg_rid_3", 
+      e.from_id AS "__cg_from_0", 
+      e.to_id AS "__cg_to_0", 
+      e.from_id AS "__cg_start_0", 
+      e.to_id AS "__cg_end_0", 
+      'Post' AS "__cg_start_label", 
+      'User' AS "__cg_end_label", 
+      concat('FOLLOWS:Post:User:', toString(tuple(e.from_id, e.to_id, e.interaction_type, e.timestamp))) AS "__cg_key"
+FROM brahmand.interactions AS e
+WHERE ((((e."interaction_type" = 'FOLLOWS') AND (e."from_type" = 'Post')) AND (e."to_type" = 'User')))
+
+UNION ALL
+SELECT 
+      'FOLLOWS' AS "__cg_type", 
+      'User' AS "__cg_from_label", 
+      'Post' AS "__cg_to_label", 
+      e.from_id AS "__cg_rid_0", 
+      e.to_id AS "__cg_rid_1", 
+      e.interaction_type AS "__cg_rid_2", 
+      e.timestamp AS "__cg_rid_3", 
+      e.from_id AS "__cg_from_0", 
+      e.to_id AS "__cg_to_0", 
+      e.from_id AS "__cg_start_0", 
+      e.to_id AS "__cg_end_0", 
+      'User' AS "__cg_start_label", 
+      'Post' AS "__cg_end_label", 
+      concat('FOLLOWS:User:Post:', toString(tuple(e.from_id, e.to_id, e.interaction_type, e.timestamp))) AS "__cg_key"
+FROM brahmand.interactions AS e
+WHERE ((((e."interaction_type" = 'FOLLOWS') AND (e."from_type" = 'User')) AND (e."to_type" = 'Post')))
+
+UNION ALL
+SELECT 
+      'FOLLOWS' AS "__cg_type", 
+      'User' AS "__cg_from_label", 
+      'User' AS "__cg_to_label", 
+      e.from_id AS "__cg_rid_0", 
+      e.to_id AS "__cg_rid_1", 
+      e.interaction_type AS "__cg_rid_2", 
+      e.timestamp AS "__cg_rid_3", 
+      e.from_id AS "__cg_from_0", 
+      e.to_id AS "__cg_to_0", 
+      e.from_id AS "__cg_start_0", 
+      e.to_id AS "__cg_end_0", 
+      'User' AS "__cg_start_label", 
+      'User' AS "__cg_end_label", 
+      concat('FOLLOWS:User:User:', toString(tuple(e.from_id, e.to_id, e.interaction_type, e.timestamp))) AS "__cg_key"
+FROM brahmand.interactions AS e
+WHERE ((((e."interaction_type" = 'FOLLOWS') AND (e."from_type" = 'User')) AND (e."to_type" = 'User')))
+), 
+vlp_v6_trails AS (
+    SELECT start_node.__cg_label AS start_label, start_node.__cg_id_0 AS start_id, start_node.__cg_label AS end_label, start_node.__cg_id_0 AS end_id, CAST(0 AS UInt32) AS hop_count, CAST([], 'Array(String)') AS path_edges, [start_node.__cg_key] AS path_nodes
+    FROM vlp_v6_nodes AS start_node
+    WHERE (start_node.__cg_label = 'User') AND ((start_node.__cg_label, start_node.__cg_id_0) IN (SELECT DISTINCT 
+      'User' AS "label", 
+      v5.user_id AS "id"
+FROM with_w1 AS w1
+JOIN brahmand.interactions AS v4 ON v4.from_id = w1.v3__user_id
+JOIN brahmand.users_bench AS v5 ON v4.to_id = v5.user_id))
     UNION ALL
-    SELECT
-        vp.start_id,
-        end_node.user_id as end_id,
-        vp.hop_count + 1 as hop_count,
-        CAST([] AS Array(String)) as path_relationships,
-        arrayConcat(vp.path_nodes, [end_node.user_id]) as path_nodes,
-        arrayConcat(vp.path_edges, [tuple(rel.from_id, rel.to_id, rel.interaction_type, rel.timestamp)]) as path_edges
-    FROM vlp_a_b vp
-    JOIN brahmand.interactions AS rel ON vp.end_id = rel.from_id
-    JOIN brahmand.users_bench AS end_node ON rel.to_id = end_node.user_id
+    SELECT vp.start_label AS start_label, vp.start_id AS start_id, end_node.__cg_label AS end_label, end_node.__cg_id_0 AS end_id, CAST(vp.hop_count + 1 AS UInt32) AS hop_count, arrayConcat(vp.path_edges, [rel.__cg_key]) AS path_edges, arrayConcat(vp.path_nodes, [end_node.__cg_key]) AS path_nodes
+    FROM vlp_v6_trails AS vp
+    JOIN v6_rels AS rel ON rel.__cg_start_label = vp.end_label AND rel.__cg_start_0 = vp.end_id
+    JOIN vlp_v6_nodes AS end_node ON end_node.__cg_label = rel.__cg_end_label AND end_node.__cg_id_0 = rel.__cg_end_0
     WHERE vp.hop_count < 3
-      AND NOT has(vp.path_edges, tuple(rel.from_id, rel.to_id, rel.interaction_type, rel.timestamp))
-      AND rel.interaction_type = 'FOLLOWS' AND rel.from_type = 'User' AND rel.to_type = 'User'
+      AND NOT has(vp.path_edges, rel.__cg_key)
+), 
+vlp_v6_path AS (
+    SELECT start_label, start_id, end_label, end_id, hop_count, path_edges, path_nodes
+    FROM vlp_v6_trails
+    WHERE hop_count >= 1
 )
 SELECT 
       count(*) AS "count(*)"
-FROM vlp_a_b AS t
-INNER JOIN with_c_cte_0 AS c ON 1 = 1
-INNER JOIN brahmand.interactions AS t1 ON t1.from_id = c.p1_c_user_id AND t1.to_id = t.start_id AND t1.interaction_type = 'FOLLOWS' AND t1.from_type = 'User' AND t1.to_type = 'User'
-WHERE NOT has(t.path_edges, tuple(t1.from_id, t1.to_id, t1.interaction_type, t1.timestamp))
+FROM vlp_v6_path AS v6
+JOIN brahmand.users_bench AS v5 ON v6.start_id = v5.user_id
+JOIN brahmand.interactions AS v4 ON v4.to_id = v5.user_id
+JOIN with_w1 AS w1 ON v4.from_id = w1.v3__user_id
+JOIN brahmand.users_bench AS v7 ON v6.end_id = v7.user_id
+WHERE (((((v4."interaction_type" = 'FOLLOWS') AND (v4."from_type" = 'User')) AND (v4."to_type" = 'User'))) AND v6.end_label = 'User' AND NOT has(v6.path_edges, concat('FOLLOWS:User:User:', toString(tuple(v4.from_id, v4.to_id, v4.interaction_type, v4.timestamp)))))

@@ -1,17 +1,18 @@
-WITH with_destinations_hub_origins_cte_0 AS (SELECT 
-      f2.Origin AS "hub", 
-      count(DISTINCT f1.Origin) AS "origins", 
-      count(DISTINCT f3.Dest) AS "destinations"
-FROM default.flights AS f1
-INNER JOIN default.flights AS f2 ON f2.Origin = f1.Dest
-INNER JOIN default.flights AS f3 ON f3.Origin = f2.Dest
-WHERE (((f3.flight_id <> f2.flight_id OR f3.flight_number <> f2.flight_number) AND (f3.flight_id <> f1.flight_id OR f3.flight_number <> f1.flight_number)) AND (f2.flight_id <> f1.flight_id OR f2.flight_number <> f1.flight_number))
-GROUP BY f2.Origin
+WITH with_w1 AS (
+SELECT 
+      v1.Dest AS "v7", 
+      count(DISTINCT v1.Origin) AS "v8", 
+      count(DISTINCT v5.Dest) AS "v9"
+FROM default.flights AS v1
+JOIN default.flights AS v3 ON v3.Origin = v1.Dest
+JOIN default.flights AS v5 ON v5.Origin = v3.Dest
+WHERE (v1.Origin IS NOT NULL AND v1.Dest IS NOT NULL AND v3.Dest IS NOT NULL AND v5.Dest IS NOT NULL AND (v1.flight_id <> v3.flight_id OR v1.flight_number <> v3.flight_number) AND (v1.flight_id <> v5.flight_id OR v1.flight_number <> v5.flight_number) AND (v3.flight_id <> v5.flight_id OR v3.flight_number <> v5.flight_number))
+GROUP BY v1.Dest
 )
 SELECT 
-      destinations_hub_origins.hub AS "hub", 
-      destinations_hub_origins.origins AS "origins", 
-      destinations_hub_origins.destinations AS "destinations"
-FROM with_destinations_hub_origins_cte_0 AS destinations_hub_origins
-ORDER BY destinations_hub_origins.origins DESC NULLS FIRST
+      w1.v7 AS "hub", 
+      w1.v8 AS "origins", 
+      w1.v9 AS "destinations"
+FROM with_w1 AS w1
+ORDER BY w1.v8 DESC NULLS FIRST
 LIMIT 5

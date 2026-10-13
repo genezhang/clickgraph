@@ -1,4 +1,4 @@
-WITH RECURSIVE vlp_a_b AS (
+WITH RECURSIVE vlp_v1_path AS (
     SELECT 
         start_node.user_id as start_id,
         end_node.user_id as end_id,
@@ -9,7 +9,7 @@ WITH RECURSIVE vlp_a_b AS (
     FROM test_integration.users_test AS start_node
     JOIN test_integration.user_follows_test AS rel ON start_node.user_id = rel.follower_id
     JOIN test_integration.users_test AS end_node ON rel.followed_id = end_node.user_id
-    WHERE start_node.user_id = 5
+    WHERE (start_node.user_id = 5)
     UNION ALL
     SELECT
         vp.start_id,
@@ -18,25 +18,43 @@ WITH RECURSIVE vlp_a_b AS (
         CAST(array() AS ARRAY<STRING>) as path_relationships,
         concat(vp.path_nodes, array(end_node.user_id)) as path_nodes,
         concat(vp.path_edges, array(rel.follow_id)) as path_edges
-    FROM vlp_a_b vp
+    FROM vlp_v1_path vp
     JOIN test_integration.user_follows_test AS rel ON vp.end_id = rel.follower_id
     JOIN test_integration.users_test AS end_node ON rel.followed_id = end_node.user_id
     WHERE vp.hop_count < 2
       AND NOT array_contains(vp.path_edges, rel.follow_id)
-)
-SELECT * FROM (
-(SELECT * FROM (
+), 
+with_w2 AS (
 SELECT 
-      t.end_id AS `id`
-FROM vlp_a_b AS t
-)
-ORDER BY id ASC NULLS LAST
-LIMIT 2
-)
-UNION ALL 
+      v2.user_id AS `__cg_w2_c0`, 
+      v2.user_id AS `__cg_w2_o0`
+FROM vlp_v1_path AS v1
+JOIN test_integration.users_test AS v0 ON v1.start_id = v0.user_id
+JOIN test_integration.users_test AS v2 ON v1.end_id = v2.user_id
+WHERE v0.user_id = 5
+ORDER BY v2.user_id ASC NULLS LAST
+LIMIT 2), 
+with_w3 AS (
 SELECT 
-      a.user_id AS `id`
-FROM test_integration.users_test AS a
-WHERE a.user_id = 6
+      v4.user_id AS `__cg_w3_c0`
+FROM test_integration.users_test AS v4
+WHERE v4.user_id = 6
+), 
+with_w4 AS (
+SELECT 
+      CAST(w2.__cg_w2_c0 AS VARIANT) AS `__cg_c0`, 
+      0 AS `__cg_arm`, 
+      row_number() OVER (ORDER BY w2.__cg_w2_o0 ASC NULLS LAST) AS `__cg_row`
+FROM with_w2 AS w2
 
-) AS __cypher_union
+UNION ALL
+SELECT 
+      CAST(w3.__cg_w3_c0 AS VARIANT) AS `__cg_c0`, 
+      1 AS `__cg_arm`, 
+      0 AS `__cg_row`
+FROM with_w3 AS w3
+)
+SELECT 
+      w4.__cg_c0 AS `id`
+FROM with_w4 AS w4
+ORDER BY w4.__cg_arm ASC NULLS LAST, w4.__cg_row ASC NULLS LAST

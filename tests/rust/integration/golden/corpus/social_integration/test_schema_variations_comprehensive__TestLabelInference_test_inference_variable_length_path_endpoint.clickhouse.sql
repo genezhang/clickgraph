@@ -1,39 +1,96 @@
-WITH vlp_multi_type_a_b AS (
-SELECT 'Post' AS end_type, p2.post_id AS end_id, a_1.user_id AS start_id, 'User' AS start_type, formatRowNoNewline('JSONEachRow', p2.author_id AS author_id, p2.post_content AS content, p2.post_date AS created_at, p2.post_id AS post_id, p2.post_title AS title) AS end_properties, 1 AS hop_count, ['AUTHORED'] AS path_relationships, ['{}'] AS rel_properties, [toString(a_1.user_id), toString(p2.post_id)] AS path_nodes
-FROM test_integration.users_test a_1
-INNER JOIN test_integration.posts_test p2 ON a_1.user_id = p2.author_id
+WITH RECURSIVE v2_labels AS (
+SELECT 
+      'Post' AS "__cg_label", 
+      e.post_id AS "__cg_id_0"
+FROM test_integration.posts_test AS e
+
 UNION ALL
-SELECT 'User' AS end_type, u2.user_id AS end_id, a_1.user_id AS start_id, 'User' AS start_type, formatRowNoNewline('JSONEachRow', u2.age AS age, u2.city AS city, u2.country AS country, u2.email_address AS email, u2.is_active AS is_active, u2.full_name AS name, u2.registration_date AS registration_date, u2.user_id AS user_id) AS end_properties, 1 AS hop_count, ['FOLLOWS'] AS path_relationships, [formatRowNoNewline('JSONEachRow', r1.follow_date)] AS rel_properties, [toString(a_1.user_id), toString(u2.user_id)] AS path_nodes
-FROM test_integration.users_test a_1
-INNER JOIN test_integration.user_follows_test r1 ON a_1.user_id = r1.follower_id
-INNER JOIN test_integration.users_test u2 ON r1.followed_id = u2.user_id
+SELECT 
+      'User' AS "__cg_label", 
+      e.user_id AS "__cg_id_0"
+FROM test_integration.users_test AS e
+), 
+vlp_v1_nodes AS (
+SELECT 
+      'Post' AS "__cg_label", 
+      e.post_id AS "__cg_id_0", 
+      concat('Post', ':', toString(e.post_id)) AS "__cg_key"
+FROM test_integration.posts_test AS e
+
 UNION ALL
-SELECT 'Post' AS end_type, p3.post_id AS end_id, a_1.user_id AS start_id, 'User' AS start_type, formatRowNoNewline('JSONEachRow', p3.author_id AS author_id, p3.post_content AS content, p3.post_date AS created_at, p3.post_id AS post_id, p3.post_title AS title) AS end_properties, 2 AS hop_count, ['FOLLOWS', 'AUTHORED'] AS path_relationships, [formatRowNoNewline('JSONEachRow', r1.follow_date), '{}'] AS rel_properties, [toString(a_1.user_id), toString(u2.user_id), toString(p3.post_id)] AS path_nodes
-FROM test_integration.users_test a_1
-INNER JOIN test_integration.user_follows_test r1 ON a_1.user_id = r1.follower_id
-INNER JOIN test_integration.users_test u2 ON r1.followed_id = u2.user_id
-INNER JOIN test_integration.posts_test p3 ON u2.user_id = p3.author_id
+SELECT 
+      'User' AS "__cg_label", 
+      e.user_id AS "__cg_id_0", 
+      concat('User', ':', toString(e.user_id)) AS "__cg_key"
+FROM test_integration.users_test AS e
+), 
+v1_rels AS (
+SELECT 
+      'AUTHORED' AS "__cg_type", 
+      'User' AS "__cg_from_label", 
+      'Post' AS "__cg_to_label", 
+      e.author_id AS "__cg_rid_0", 
+      e.post_id AS "__cg_rid_1", 
+      e.author_id AS "__cg_from_0", 
+      e.post_id AS "__cg_to_0", 
+      e.author_id AS "__cg_start_0", 
+      e.post_id AS "__cg_end_0", 
+      'User' AS "__cg_start_label", 
+      'Post' AS "__cg_end_label", 
+      concat('AUTHORED:User:Post:', toString(tuple(e.author_id, e.post_id))) AS "__cg_key"
+FROM test_integration.posts_test AS e
+
 UNION ALL
-SELECT 'User' AS end_type, u3.user_id AS end_id, a_1.user_id AS start_id, 'User' AS start_type, formatRowNoNewline('JSONEachRow', u3.age AS age, u3.city AS city, u3.country AS country, u3.email_address AS email, u3.is_active AS is_active, u3.full_name AS name, u3.registration_date AS registration_date, u3.user_id AS user_id) AS end_properties, 2 AS hop_count, ['FOLLOWS', 'FOLLOWS'] AS path_relationships, [formatRowNoNewline('JSONEachRow', r1.follow_date), formatRowNoNewline('JSONEachRow', r2.follow_date)] AS rel_properties, [toString(a_1.user_id), toString(u2.user_id), toString(u3.user_id)] AS path_nodes
-FROM test_integration.users_test a_1
-INNER JOIN test_integration.user_follows_test r1 ON a_1.user_id = r1.follower_id
-INNER JOIN test_integration.users_test u2 ON r1.followed_id = u2.user_id
-INNER JOIN test_integration.user_follows_test r2 ON u2.user_id = r2.follower_id
-INNER JOIN test_integration.users_test u3 ON r2.followed_id = u3.user_id
-WHERE NOT ((r1.follower_id = r2.follower_id) AND (r1.followed_id = r2.followed_id))
+SELECT 
+      'FOLLOWS' AS "__cg_type", 
+      'User' AS "__cg_from_label", 
+      'User' AS "__cg_to_label", 
+      e.follow_id AS "__cg_rid_0", 
+      NULL AS "__cg_rid_1", 
+      e.follower_id AS "__cg_from_0", 
+      e.followed_id AS "__cg_to_0", 
+      e.follower_id AS "__cg_start_0", 
+      e.followed_id AS "__cg_end_0", 
+      'User' AS "__cg_start_label", 
+      'User' AS "__cg_end_label", 
+      concat('FOLLOWS:User:User:', toString(e.follow_id)) AS "__cg_key"
+FROM test_integration.user_follows_test AS e
+
 UNION ALL
-SELECT 'Post' AS end_type, p3.post_id AS end_id, a_1.user_id AS start_id, 'User' AS start_type, formatRowNoNewline('JSONEachRow', p3.author_id AS author_id, p3.post_content AS content, p3.post_date AS created_at, p3.post_id AS post_id, p3.post_title AS title) AS end_properties, 2 AS hop_count, ['FOLLOWS', 'LIKED'] AS path_relationships, [formatRowNoNewline('JSONEachRow', r1.follow_date), formatRowNoNewline('JSONEachRow', r2.like_date)] AS rel_properties, [toString(a_1.user_id), toString(u2.user_id), toString(p3.post_id)] AS path_nodes
-FROM test_integration.users_test a_1
-INNER JOIN test_integration.user_follows_test r1 ON a_1.user_id = r1.follower_id
-INNER JOIN test_integration.users_test u2 ON r1.followed_id = u2.user_id
-INNER JOIN test_integration.post_likes_test r2 ON u2.user_id = r2.user_id
-INNER JOIN test_integration.posts_test p3 ON r2.post_id = p3.post_id
-UNION ALL
-SELECT 'Post' AS end_type, p2.post_id AS end_id, a_1.user_id AS start_id, 'User' AS start_type, formatRowNoNewline('JSONEachRow', p2.author_id AS author_id, p2.post_content AS content, p2.post_date AS created_at, p2.post_id AS post_id, p2.post_title AS title) AS end_properties, 1 AS hop_count, ['LIKED'] AS path_relationships, [formatRowNoNewline('JSONEachRow', r1.like_date)] AS rel_properties, [toString(a_1.user_id), toString(p2.post_id)] AS path_nodes
-FROM test_integration.users_test a_1
-INNER JOIN test_integration.post_likes_test r1 ON a_1.user_id = r1.user_id
-INNER JOIN test_integration.posts_test p2 ON r1.post_id = p2.post_id
+SELECT 
+      'LIKED' AS "__cg_type", 
+      'User' AS "__cg_from_label", 
+      'Post' AS "__cg_to_label", 
+      e.like_id AS "__cg_rid_0", 
+      NULL AS "__cg_rid_1", 
+      e.user_id AS "__cg_from_0", 
+      e.post_id AS "__cg_to_0", 
+      e.user_id AS "__cg_start_0", 
+      e.post_id AS "__cg_end_0", 
+      'User' AS "__cg_start_label", 
+      'Post' AS "__cg_end_label", 
+      concat('LIKED:User:Post:', toString(e.like_id)) AS "__cg_key"
+FROM test_integration.post_likes_test AS e
+), 
+vlp_v1_trails AS (
+    SELECT start_node.__cg_label AS start_label, start_node.__cg_id_0 AS start_id, start_node.__cg_label AS end_label, start_node.__cg_id_0 AS end_id, CAST(0 AS UInt32) AS hop_count, CAST([], 'Array(String)') AS path_edges, [start_node.__cg_key] AS path_nodes
+    FROM vlp_v1_nodes AS start_node
+    WHERE (start_node.__cg_label = 'User')
+    UNION ALL
+    SELECT vp.start_label AS start_label, vp.start_id AS start_id, end_node.__cg_label AS end_label, end_node.__cg_id_0 AS end_id, CAST(vp.hop_count + 1 AS UInt32) AS hop_count, arrayConcat(vp.path_edges, [rel.__cg_key]) AS path_edges, arrayConcat(vp.path_nodes, [end_node.__cg_key]) AS path_nodes
+    FROM vlp_v1_trails AS vp
+    JOIN v1_rels AS rel ON rel.__cg_start_label = vp.end_label AND rel.__cg_start_0 = vp.end_id
+    JOIN vlp_v1_nodes AS end_node ON end_node.__cg_label = rel.__cg_end_label AND end_node.__cg_id_0 = rel.__cg_end_0
+    WHERE vp.hop_count < 2
+      AND NOT has(vp.path_edges, rel.__cg_key)
+), 
+vlp_v1_path AS (
+    SELECT start_label, start_id, end_label, end_id, hop_count, path_edges, path_nodes
+    FROM vlp_v1_trails
+    WHERE hop_count >= 1
 )
 SELECT 
       count(*) AS "total"
-FROM vlp_multi_type_a_b AS t
+FROM vlp_v1_path AS v1
+JOIN test_integration.users_test AS v0 ON v1.start_id = v0.user_id
+JOIN v2_labels AS v2 ON v1.end_label = v2.__cg_label AND v1.end_id = v2.__cg_id_0

@@ -1,8 +1,10 @@
 SELECT 
-      t0.followed_id AS "u2.user_id", 
-      count(p.author_id) AS "count(r)", 
-      sum(p.post_id) AS "sum(r.post_id)"
-FROM test_integration.users_test AS u1
-INNER JOIN test_integration.user_follows_test AS t0 ON t0.follower_id = u1.user_id
-INNER JOIN test_integration.posts_test AS p ON p.author_id = t0.followed_id
-GROUP BY t0.followed_id
+      v2.user_id AS "u2.user_id", 
+      count(v3.author_id) AS "count(r)", 
+      coalesce(sum(v3.post_id), 0) AS "sum(r.post_id)"
+FROM test_integration.users_test AS v0
+JOIN test_integration.user_follows_test AS v1 ON v1.follower_id = v0.user_id
+JOIN test_integration.users_test AS v2 ON v1.followed_id = v2.user_id
+JOIN test_integration.posts_test AS v3 ON v3.author_id = v2.user_id
+JOIN test_integration.posts_test AS v4 ON v3.post_id = v4.post_id
+GROUP BY v2.user_id

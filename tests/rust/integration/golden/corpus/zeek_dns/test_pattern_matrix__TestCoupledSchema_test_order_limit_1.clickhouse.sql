@@ -1,15 +1,18 @@
-SELECT `n.domain_name` AS `n.domain_name` FROM (
+WITH __cg_nodes_Domain__cg_rows AS (
 SELECT 
-      n.query AS "n.domain_name", 
-      n.query AS "__order_col_0"
-FROM zeek.dns_log AS n
-WHERE n.query IS NOT NULL
-UNION DISTINCT 
+      e.query AS "domain_name"
+FROM zeek.dns_log AS e
+), 
+__cg_nodes_Domain AS (
 SELECT 
-      n.query AS "n.domain_name", 
-      n.query AS "__order_col_0"
-FROM zeek.dns_log AS n
-WHERE n.query IS NOT NULL
-) AS __union
-ORDER BY __union.`__order_col_0` DESC NULLS FIRST
+      e.domain_name AS "domain_name"
+FROM __cg_nodes_Domain__cg_rows AS e
+WHERE NOT isNull(e.domain_name)
+GROUP BY e.domain_name
+)
+SELECT 
+      v0.domain_name AS "n.domain_name"
+FROM __cg_nodes_Domain AS v0
+WHERE v0.domain_name IS NOT NULL
+ORDER BY v0.domain_name DESC NULLS FIRST
 LIMIT 5, 10

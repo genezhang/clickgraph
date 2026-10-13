@@ -1,34 +1,73 @@
-WITH RECURSIVE with_c_z_cte_0 AS (SELECT 
-      t0.Dest AS `p1_c_code`, 
-      t0.Origin AS `p1_z_code`
-FROM test_integration.flights AS t0
+WITH RECURSIVE with_w1 AS (
+SELECT 
+      v1.Dest AS `v3__code`, 
+      v1.Origin AS `v4__code`
+FROM test_integration.flights AS v1
+WHERE (v1.Origin IS NOT NULL AND v1.Dest IS NOT NULL)
 ), 
-vlp_c_b AS (
-    SELECT
-        t1.Origin as start_id,
-        t1.Dest as end_id,
+__cg_nodes_Airport__cg_rows AS (
+SELECT 
+      e.Origin AS `code`, 
+      e.OriginCityName AS `city__cg0`, 
+      NULL AS `city__cg1`, 
+      e.OriginState AS `state__cg0`, 
+      NULL AS `state__cg1`
+FROM test_integration.flights AS e
+
+UNION ALL
+SELECT 
+      e.Dest AS `code`, 
+      NULL AS `city__cg0`, 
+      e.DestCityName AS `city__cg1`, 
+      NULL AS `state__cg0`, 
+      e.DestState AS `state__cg1`
+FROM test_integration.flights AS e
+), 
+__cg_nodes_Airport AS (
+SELECT 
+      e.code AS `code`, 
+      any_value(CASE WHEN regexp_replace(regexp_replace(typeof(e.city__cg0), '^(tinyint|smallint|int|bigint)$', 'int'), '^((var)?char\\(\\d+\\)|string( collate .*)?)$', 'string') = regexp_replace(regexp_replace(typeof(e.city__cg1), '^(tinyint|smallint|int|bigint)$', 'int'), '^((var)?char\\(\\d+\\)|string( collate .*)?)$', 'string') THEN coalesce(e.city__cg0, e.city__cg1) ELSE raise_error('ClickGraph: a property has different types on different labels or types') END, true) AS `city`, 
+      any_value(CASE WHEN regexp_replace(regexp_replace(typeof(e.state__cg0), '^(tinyint|smallint|int|bigint)$', 'int'), '^((var)?char\\(\\d+\\)|string( collate .*)?)$', 'string') = regexp_replace(regexp_replace(typeof(e.state__cg1), '^(tinyint|smallint|int|bigint)$', 'int'), '^((var)?char\\(\\d+\\)|string( collate .*)?)$', 'string') THEN coalesce(e.state__cg0, e.state__cg1) ELSE raise_error('ClickGraph: a property has different types on different labels or types') END, true) AS `state`
+FROM __cg_nodes_Airport__cg_rows AS e
+WHERE NOT isnull(e.code)
+GROUP BY e.code
+), 
+vlp_v8_path AS (
+    SELECT 
+        start_node.code as start_id,
+        end_node.code as end_id,
         1 as hop_count,
-        array(struct(t1.flight_id, t1.flight_number)) as path_edges,
-        array(t1.Origin, t1.Dest) as path_nodes,
-        array() as path_relationships
-    FROM test_integration.flights AS t1
-    WHERE 1 <= 2
+        CAST(array() AS ARRAY<STRING>) as path_relationships,
+        array(start_node.code, end_node.code) as path_nodes,
+        array(struct(rel.flight_id, rel.flight_number)) as path_edges
+    FROM __cg_nodes_Airport AS start_node
+    JOIN test_integration.flights AS rel ON start_node.code = rel.Origin
+    JOIN __cg_nodes_Airport AS end_node ON rel.Dest = end_node.code
+    WHERE (start_node.code IN (SELECT DISTINCT 
+      w1.v3__code AS `id`
+FROM with_w1 AS w1
+JOIN test_integration.flights AS v6 ON v6.Dest = w1.v4__code
+JOIN test_integration.flights AS v7 ON v7.Origin = w1.v4__code AND v7.Dest = w1.v3__code
+WHERE v6.Origin IS NOT NULL))
     UNION ALL
     SELECT
-        vp.start_id as start_id,
-        next.Dest as end_id,
-        vp.hop_count + 1,
-        concat(vp.path_edges, array(struct(next.flight_id, next.flight_number))),
-        concat(vp.path_nodes, array(next.Dest)),
-        array() as path_relationships
-    FROM vlp_c_b vp
-    JOIN test_integration.flights next ON next.Origin = vp.end_id
-    WHERE vp.hop_count < 2 AND NOT array_contains(vp.path_edges, struct(next.flight_id, next.flight_number))
+        vp.start_id,
+        end_node.code as end_id,
+        vp.hop_count + 1 as hop_count,
+        CAST(array() AS ARRAY<STRING>) as path_relationships,
+        concat(vp.path_nodes, array(end_node.code)) as path_nodes,
+        concat(vp.path_edges, array(struct(rel.flight_id, rel.flight_number))) as path_edges
+    FROM vlp_v8_path vp
+    JOIN test_integration.flights AS rel ON vp.end_id = rel.Origin
+    JOIN __cg_nodes_Airport AS end_node ON rel.Dest = end_node.code
+    WHERE vp.hop_count < 2
+      AND NOT array_contains(vp.path_edges, struct(rel.flight_id, rel.flight_number))
 )
 SELECT 
       count(*) AS `k`
-FROM vlp_c_b AS t
-INNER JOIN with_c_z_cte_0 AS c_z ON string(t.start_id) = string(c_z.p1_c_code)
-INNER JOIN test_integration.flights AS t2 ON t2.Dest = c_z.p1_z_code
-INNER JOIN test_integration.flights AS t3 ON t3.Origin = t2.Dest AND t3.Dest = t.start_id
-WHERE ((NOT array_contains(t.path_edges, struct(t3.flight_id, t3.flight_number)) AND NOT array_contains(t.path_edges, struct(t2.flight_id, t2.flight_number))) AND (t3.flight_id <> t2.flight_id OR t3.flight_number <> t2.flight_number))
+FROM vlp_v8_path AS v8
+JOIN with_w1 AS w1 ON v8.start_id = w1.v3__code
+JOIN test_integration.flights AS v6 ON v6.Dest = w1.v4__code
+JOIN test_integration.flights AS v7 ON v7.Origin = w1.v4__code AND v7.Dest = w1.v3__code
+JOIN __cg_nodes_Airport AS v9 ON v8.end_id = v9.code
+WHERE (v6.Origin IS NOT NULL AND (v6.flight_id <> v7.flight_id OR v6.flight_number <> v7.flight_number) AND NOT array_contains(v8.path_edges, struct(v6.flight_id, v6.flight_number)) AND NOT array_contains(v8.path_edges, struct(v7.flight_id, v7.flight_number)))

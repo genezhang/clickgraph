@@ -1,4 +1,4 @@
 SELECT 
-      toFloat64(u.score_str) AS `u.score_float`
-FROM test_integration.users_expressions_test AS u
-WHERE u.user_id = 1
+      toFloat64(v0.score_str) AS `u.score_float`
+FROM test_integration.users_expressions_test AS v0
+WHERE v0.user_id = 1

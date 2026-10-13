@@ -1,18 +1,113 @@
-WITH vlp_multi_type_ip_target AS (
-SELECT 'IP' AS end_type, n2.ip AS end_id, ip_1.ip AS start_id, 'IP' AS start_type, toString(n2."id.orig_h") AS r_from_id, toString(n2."id.resp_h") AS r_to_id, formatRowNoNewline('JSONEachRow', n2.ip AS ip) AS end_properties, formatRowNoNewline('JSONEachRow', ip_1.ip) AS start_properties, ip_1.ip AS start_ip, 1 AS hop_count, ['CONNECTED_TO'] AS path_relationships, [formatRowNoNewline('JSONEachRow', n2.conn_state, n2.duration, n2.orig_bytes, n2.proto, n2.resp_bytes, n2.service, n2.ts, n2.uid)] AS rel_properties, [toString(ip_1.ip), toString(n2.ip)] AS path_nodes
-FROM zeek.conn_log ip_1
-INNER JOIN zeek.conn_log n2 ON ip_1.ip = n2."id.orig_h"
-WHERE (t0."id.orig_h" = '192.168.1.10')
+WITH __cg_nodes_Domain__cg_rows AS (
+SELECT 
+      e.query AS "name", 
+      NULL AS "resolved_ips__cg1"
+FROM zeek.dns_log AS e
+
 UNION ALL
-SELECT 'Domain' AS end_type, n2.name AS end_id, ip_1.ip AS start_id, 'IP' AS start_type, toString(n2."id.orig_h") AS r_from_id, toString(n2.query) AS r_to_id, formatRowNoNewline('JSONEachRow', n2.name AS name) AS end_properties, formatRowNoNewline('JSONEachRow', ip_1.ip) AS start_properties, ip_1.ip AS start_ip, 1 AS hop_count, ['DNS_REQUESTED'] AS path_relationships, [formatRowNoNewline('JSONEachRow', n2.answers, n2."id.resp_h", n2.qtype_name, n2.rcode_name, n2.ts, n2.uid)] AS rel_properties, [toString(ip_1.ip), toString(n2.name)] AS path_nodes
-FROM zeek.conn_log ip_1
-INNER JOIN zeek.dns_log n2 ON ip_1.ip = n2."id.orig_h"
-WHERE (t0."id.orig_h" = '192.168.1.10')
+SELECT 
+      e.query AS "name", 
+      e.answers AS "resolved_ips__cg1"
+FROM zeek.dns_log AS e
+), 
+__cg_nodes_Domain AS (
+SELECT 
+      e.name AS "name", 
+      anyIfOrNull(e.resolved_ips__cg1, NOT isNull(e.resolved_ips__cg1)) AS "resolved_ips"
+FROM __cg_nodes_Domain__cg_rows AS e
+WHERE NOT isNull(e.name)
+GROUP BY e.name
+), 
+__cg_nodes_IP__cg_rows AS (
+SELECT 
+      e."id.orig_h" AS "ip", 
+      NULL AS "port__cg2", 
+      NULL AS "port__cg3"
+FROM zeek.dns_log AS e
+
+UNION ALL
+SELECT 
+      e."id.resp_h" AS "ip", 
+      NULL AS "port__cg2", 
+      NULL AS "port__cg3"
+FROM zeek.dns_log AS e
+
+UNION ALL
+SELECT 
+      e."id.orig_h" AS "ip", 
+      e."id.orig_p" AS "port__cg2", 
+      NULL AS "port__cg3"
+FROM zeek.conn_log AS e
+
+UNION ALL
+SELECT 
+      e."id.resp_h" AS "ip", 
+      NULL AS "port__cg2", 
+      e."id.resp_p" AS "port__cg3"
+FROM zeek.conn_log AS e
+), 
+__cg_nodes_IP AS (
+SELECT 
+      e.ip AS "ip", 
+      anyIfOrNull(CAST(coalesce(e.port__cg2, e.port__cg3), if(replaceRegexpOne(replaceRegexpOne(replaceRegexpAll(toTypeName(e.port__cg2), 'Nullable\\(|LowCardinality\\(|\\)', ''), '^U?Int\\d+$', 'Int'), '^(String|FixedString\\(\\d+)$', 'String') = replaceRegexpOne(replaceRegexpOne(replaceRegexpAll(toTypeName(e.port__cg3), 'Nullable\\(|LowCardinality\\(|\\)', ''), '^U?Int\\d+$', 'Int'), '^(String|FixedString\\(\\d+)$', 'String') AND toTypeName(coalesce(e.port__cg2, e.port__cg3)) NOT LIKE 'Variant(%', toTypeName(coalesce(e.port__cg2, e.port__cg3)), 'ClickGraph_property_has_different_types_on_different_labels_or_types')), NOT isNull(CAST(coalesce(e.port__cg2, e.port__cg3), if(replaceRegexpOne(replaceRegexpOne(replaceRegexpAll(toTypeName(e.port__cg2), 'Nullable\\(|LowCardinality\\(|\\)', ''), '^U?Int\\d+$', 'Int'), '^(String|FixedString\\(\\d+)$', 'String') = replaceRegexpOne(replaceRegexpOne(replaceRegexpAll(toTypeName(e.port__cg3), 'Nullable\\(|LowCardinality\\(|\\)', ''), '^U?Int\\d+$', 'Int'), '^(String|FixedString\\(\\d+)$', 'String') AND toTypeName(coalesce(e.port__cg2, e.port__cg3)) NOT LIKE 'Variant(%', toTypeName(coalesce(e.port__cg2, e.port__cg3)), 'ClickGraph_property_has_different_types_on_different_labels_or_types')))) AS "port"
+FROM __cg_nodes_IP__cg_rows AS e
+WHERE NOT isNull(e.ip)
+GROUP BY e.ip
+), 
+v2_labels AS (
+SELECT 
+      'Domain' AS "__cg_label", 
+      e.name AS "__cg_id_0", 
+      NULL AS "p2_v2_ip", 
+      e.name AS "p2_v2_name", 
+      NULL AS "p2_v2_port", 
+      e.resolved_ips AS "p2_v2_resolved_ips"
+FROM __cg_nodes_Domain AS e
+
+UNION ALL
+SELECT 
+      'IP' AS "__cg_label", 
+      e.ip AS "__cg_id_0", 
+      e.ip AS "p2_v2_ip", 
+      NULL AS "p2_v2_name", 
+      e.port AS "p2_v2_port", 
+      NULL AS "p2_v2_resolved_ips"
+FROM __cg_nodes_IP AS e
+), 
+v1_rels AS (
+SELECT 
+      'CONNECTED_TO' AS "__cg_type", 
+      'IP' AS "__cg_from_label", 
+      'IP' AS "__cg_to_label", 
+      e.uid AS "__cg_rid_0", 
+      e."id.orig_h" AS "__cg_from_0", 
+      e."id.resp_h" AS "__cg_to_0", 
+      e."id.orig_h" AS "__cg_start_0", 
+      e."id.resp_h" AS "__cg_end_0", 
+      'IP' AS "__cg_start_label", 
+      'IP' AS "__cg_end_label", 
+      concat('CONNECTED_TO:IP:IP:', toString(e.uid)) AS "__cg_key"
+FROM zeek.conn_log AS e
+
+UNION ALL
+SELECT 
+      'DNS_REQUESTED' AS "__cg_type", 
+      'IP' AS "__cg_from_label", 
+      'Domain' AS "__cg_to_label", 
+      e.uid AS "__cg_rid_0", 
+      e."id.orig_h" AS "__cg_from_0", 
+      e.query AS "__cg_to_0", 
+      e."id.orig_h" AS "__cg_start_0", 
+      e.query AS "__cg_end_0", 
+      'IP' AS "__cg_start_label", 
+      'Domain' AS "__cg_end_label", 
+      concat('DNS_REQUESTED:IP:Domain:', toString(e.uid)) AS "__cg_key"
+FROM zeek.dns_log AS e
 )
 SELECT 
-      t.end_properties AS "target.properties", 
-      t.end_id AS "target.id", 
-      t.end_type AS "target.__label__"
-FROM vlp_multi_type_ip_target AS t
-WHERE t.start_ip = '192.168.1.10'
+      map('elementId', CAST(concat(v2.__cg_label, ':', toString(v2.__cg_id_0), '-'), 'Dynamic'), 'labels', CAST([v2.__cg_label], 'Dynamic'), 'properties', CAST(mapFilter((__k, __v) -> __v IS NOT NULL, map('ip', CAST(v2.p2_v2_ip, 'Dynamic'), 'name', CAST(v2.p2_v2_name, 'Dynamic'), 'port', CAST(v2.p2_v2_port, 'Dynamic'), 'resolved_ips', CAST(v2.p2_v2_resolved_ips, 'Dynamic'))), 'Dynamic')) AS "target"
+FROM __cg_nodes_IP AS v0
+JOIN v1_rels AS v1 ON v1.__cg_start_0 = v0.ip
+JOIN v2_labels AS v2 ON v1.__cg_end_label = v2.__cg_label AND v1.__cg_end_0 = v2.__cg_id_0
+WHERE v0.ip = '192.168.1.10'
 LIMIT 20

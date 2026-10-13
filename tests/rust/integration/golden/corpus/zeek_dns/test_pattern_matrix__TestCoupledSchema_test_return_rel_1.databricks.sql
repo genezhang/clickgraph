@@ -1,8 +1,9 @@
 SELECT 
-      r.query AS `r.from_id`, 
-      r.answers AS `r.to_id`, 
-      r.query AS `r.query`, 
-      r.ts AS `r.timestamp`, 
-      r.uid AS `r.uid`
-FROM zeek.dns_log AS r
+      v1.query AS `r.from_id`, 
+      v1.answers AS `r.to_id`, 
+      v1.query AS `r.query`, 
+      v1.ts AS `r.timestamp`, 
+      v1.uid AS `r.uid`
+FROM zeek.dns_log AS v1
+WHERE (v1.query IS NOT NULL AND v1.answers IS NOT NULL)
 LIMIT 5

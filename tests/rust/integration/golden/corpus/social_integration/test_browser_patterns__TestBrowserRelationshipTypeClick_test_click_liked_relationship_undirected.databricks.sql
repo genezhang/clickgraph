@@ -1,6 +1,62 @@
+WITH v0_labels AS (
 SELECT 
-      r.user_id AS `r.from_id`, 
-      r.post_id AS `r.to_id`, 
-      r.like_date AS `r.like_date`
-FROM test_integration.post_likes_test AS r
+      'Post' AS `__cg_label`, 
+      e.post_id AS `__cg_id_0`
+FROM test_integration.posts_test AS e
+
+UNION ALL
+SELECT 
+      'User' AS `__cg_label`, 
+      e.user_id AS `__cg_id_0`
+FROM test_integration.users_test AS e
+), 
+v2_labels AS (
+SELECT 
+      'Post' AS `__cg_label`, 
+      e.post_id AS `__cg_id_0`
+FROM test_integration.posts_test AS e
+
+UNION ALL
+SELECT 
+      'User' AS `__cg_label`, 
+      e.user_id AS `__cg_id_0`
+FROM test_integration.users_test AS e
+), 
+v1_rels AS (
+SELECT 
+      'LIKED' AS `__cg_type`, 
+      'User' AS `__cg_from_label`, 
+      'Post' AS `__cg_to_label`, 
+      e.like_id AS `__cg_rid_0`, 
+      e.user_id AS `__cg_from_0`, 
+      e.post_id AS `__cg_to_0`, 
+      e.post_id AS `__cg_start_0`, 
+      e.user_id AS `__cg_end_0`, 
+      'Post' AS `__cg_start_label`, 
+      'User' AS `__cg_end_label`, 
+      concat('LIKED:User:Post:', CAST(e.like_id AS STRING)) AS `__cg_key`, 
+      e.like_date AS `p2_v1_like_date`
+FROM test_integration.post_likes_test AS e
+
+UNION ALL
+SELECT 
+      'LIKED' AS `__cg_type`, 
+      'User' AS `__cg_from_label`, 
+      'Post' AS `__cg_to_label`, 
+      e.like_id AS `__cg_rid_0`, 
+      e.user_id AS `__cg_from_0`, 
+      e.post_id AS `__cg_to_0`, 
+      e.user_id AS `__cg_start_0`, 
+      e.post_id AS `__cg_end_0`, 
+      'User' AS `__cg_start_label`, 
+      'Post' AS `__cg_end_label`, 
+      concat('LIKED:User:Post:', CAST(e.like_id AS STRING)) AS `__cg_key`, 
+      e.like_date AS `p2_v1_like_date`
+FROM test_integration.post_likes_test AS e
+)
+SELECT 
+      to_variant_object(map('elementId', CAST(concat(v1.__cg_type, ':', CAST(v1.__cg_from_0 AS STRING), '->', CAST(v1.__cg_to_0 AS STRING), '-') AS VARIANT), 'startNodeElementId', CAST(concat(v1.__cg_from_label, ':', CAST(v1.__cg_from_0 AS STRING), '-') AS VARIANT), 'endNodeElementId', CAST(concat(v1.__cg_to_label, ':', CAST(v1.__cg_to_0 AS STRING), '-') AS VARIANT), 'type', CAST(v1.__cg_type AS VARIANT), 'properties', CAST(to_variant_object(map_filter(map('like_date', CAST(v1.p2_v1_like_date AS VARIANT)), (__k, __v) -> __v IS NOT NULL)) AS VARIANT))) AS `r`
+FROM v0_labels AS v0
+JOIN v1_rels AS v1 ON v1.__cg_start_label = v0.__cg_label AND v1.__cg_start_0 = v0.__cg_id_0
+JOIN v2_labels AS v2 ON v1.__cg_end_label = v2.__cg_label AND v1.__cg_end_0 = v2.__cg_id_0
 LIMIT 25

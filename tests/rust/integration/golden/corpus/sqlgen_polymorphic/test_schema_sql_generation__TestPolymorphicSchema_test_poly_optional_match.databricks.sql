@@ -1,6 +1,14 @@
+WITH optional_o1 AS (
 SELECT 
-      u.full_name AS `u.name`, 
-      count(t0.to_id) AS `liked`
-FROM db_polymorphic.users AS u
-LEFT JOIN (SELECT * FROM db_polymorphic.interactions WHERE interaction_type = 'LIKES' AND from_type = 'User' AND to_type = 'Post') AS t0 ON t0.from_id = u.user_id
-GROUP BY u.full_name
+      v1.from_id AS `v0__user_id`, 
+      v2.post_id AS `v2__post_id`
+FROM db_polymorphic.interactions AS v1
+JOIN db_polymorphic.posts AS v2 ON v1.to_id = v2.post_id
+WHERE ((((v1.`interaction_type` = 'LIKES') AND (v1.`from_type` = 'User')) AND (v1.`to_type` = 'Post')))
+)
+SELECT 
+      v0.full_name AS `u.name`, 
+      count(o1.v2__post_id) AS `liked`
+FROM db_polymorphic.users AS v0
+LEFT JOIN optional_o1 AS o1 ON v0.user_id = o1.v0__user_id
+GROUP BY v0.full_name

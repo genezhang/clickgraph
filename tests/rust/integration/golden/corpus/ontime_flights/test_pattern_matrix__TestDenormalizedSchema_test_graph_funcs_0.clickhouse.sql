@@ -1,6 +1,7 @@
 SELECT 
       'FLIGHT' AS "type(r)", 
-      r.Origin AS "id(a)", 
+      v1.Origin AS "id(a)", 
       ['Airport'] AS "labels(a)"
-FROM default.flights AS r
+FROM default.flights AS v1
+WHERE (v1.Origin IS NOT NULL AND v1.Dest IS NOT NULL)
 LIMIT 5

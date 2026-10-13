@@ -1,15 +1,33 @@
-SELECT `n.code` AS `n.code` FROM (
+WITH __cg_nodes_Airport__cg_rows AS (
 SELECT 
-      n.Origin AS `n.code`, 
-      n.Origin AS `__order_col_0`
-FROM default.flights AS n
-WHERE n.Origin IS NOT NULL
-UNION DISTINCT 
+      e.Origin AS `code`, 
+      e.OriginCityName AS `city__cg0`, 
+      NULL AS `city__cg1`, 
+      e.OriginState AS `state__cg0`, 
+      NULL AS `state__cg1`
+FROM default.flights AS e
+
+UNION ALL
 SELECT 
-      n.Dest AS `n.code`, 
-      n.Dest AS `__order_col_0`
-FROM default.flights AS n
-WHERE n.Dest IS NOT NULL
-) AS __union
-ORDER BY __union.`__order_col_0` DESC NULLS FIRST
+      e.Dest AS `code`, 
+      NULL AS `city__cg0`, 
+      e.DestCityName AS `city__cg1`, 
+      NULL AS `state__cg0`, 
+      e.DestState AS `state__cg1`
+FROM default.flights AS e
+), 
+__cg_nodes_Airport AS (
+SELECT 
+      e.code AS `code`, 
+      any_value(CASE WHEN regexp_replace(regexp_replace(typeof(e.city__cg0), '^(tinyint|smallint|int|bigint)$', 'int'), '^((var)?char\\(\\d+\\)|string( collate .*)?)$', 'string') = regexp_replace(regexp_replace(typeof(e.city__cg1), '^(tinyint|smallint|int|bigint)$', 'int'), '^((var)?char\\(\\d+\\)|string( collate .*)?)$', 'string') THEN coalesce(e.city__cg0, e.city__cg1) ELSE raise_error('ClickGraph: a property has different types on different labels or types') END, true) AS `city`, 
+      any_value(CASE WHEN regexp_replace(regexp_replace(typeof(e.state__cg0), '^(tinyint|smallint|int|bigint)$', 'int'), '^((var)?char\\(\\d+\\)|string( collate .*)?)$', 'string') = regexp_replace(regexp_replace(typeof(e.state__cg1), '^(tinyint|smallint|int|bigint)$', 'int'), '^((var)?char\\(\\d+\\)|string( collate .*)?)$', 'string') THEN coalesce(e.state__cg0, e.state__cg1) ELSE raise_error('ClickGraph: a property has different types on different labels or types') END, true) AS `state`
+FROM __cg_nodes_Airport__cg_rows AS e
+WHERE NOT isnull(e.code)
+GROUP BY e.code
+)
+SELECT 
+      v0.code AS `n.code`
+FROM __cg_nodes_Airport AS v0
+WHERE v0.code IS NOT NULL
+ORDER BY v0.code DESC NULLS FIRST
 LIMIT 10 OFFSET 5

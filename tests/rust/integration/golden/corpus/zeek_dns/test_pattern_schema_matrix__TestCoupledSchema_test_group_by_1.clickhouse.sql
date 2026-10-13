@@ -1,14 +1,19 @@
-SELECT `n.resolved_ip` AS "n.resolved_ip", count(`n.answers`) AS "cnt" FROM (
+WITH __cg_nodes_ResolvedIP__cg_rows AS (
 SELECT 
-      n.answers AS "n.resolved_ip",
-      n.answers AS "n.answers"
-FROM zeek.dns_log AS n
-UNION DISTINCT 
+      e.answers AS "resolved_ip"
+FROM zeek.dns_log AS e
+), 
+__cg_nodes_ResolvedIP AS (
 SELECT 
-      n.answers AS "n.resolved_ip",
-      n.answers AS "n.answers"
-FROM zeek.dns_log AS n
-) AS __union
-GROUP BY `n.resolved_ip`
-ORDER BY `cnt` DESC NULLS FIRST
+      e.resolved_ip AS "resolved_ip"
+FROM __cg_nodes_ResolvedIP__cg_rows AS e
+WHERE NOT isNull(e.resolved_ip)
+GROUP BY e.resolved_ip
+)
+SELECT 
+      v0.resolved_ip AS "n.resolved_ip", 
+      count(v0.resolved_ip) AS "cnt"
+FROM __cg_nodes_ResolvedIP AS v0
+GROUP BY v0.resolved_ip
+ORDER BY count(v0.resolved_ip) DESC NULLS FIRST
 LIMIT 10

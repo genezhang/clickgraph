@@ -1,4 +1,4 @@
-WITH RECURSIVE vlp_u1_u2 AS (
+WITH RECURSIVE vlp_v1_path AS (
     SELECT 
         start_node.user_id as start_id,
         end_node.user_id as end_id,
@@ -9,7 +9,7 @@ WITH RECURSIVE vlp_u1_u2 AS (
     FROM test_integration.users_test AS start_node
     JOIN test_integration.user_follows_test AS rel ON start_node.user_id = rel.follower_id
     JOIN test_integration.users_test AS end_node ON rel.followed_id = end_node.user_id
-    WHERE start_node.user_id = 1
+    WHERE (start_node.user_id = 1)
     UNION ALL
     SELECT
         vp.start_id,
@@ -18,17 +18,21 @@ WITH RECURSIVE vlp_u1_u2 AS (
         CAST([] AS Array(String)) as path_relationships,
         arrayConcat(vp.path_nodes, [end_node.user_id]) as path_nodes,
         arrayConcat(vp.path_edges, [rel.follow_id]) as path_edges
-    FROM vlp_u1_u2 vp
+    FROM vlp_v1_path vp
     JOIN test_integration.user_follows_test AS rel ON vp.end_id = rel.follower_id
     JOIN test_integration.users_test AS end_node ON rel.followed_id = end_node.user_id
     WHERE vp.hop_count < 2
       AND NOT has(vp.path_edges, rel.follow_id)
 )
 SELECT 
-      t.end_id AS "userId", 
-      sum(1) AS "postCount"
-FROM vlp_u1_u2 AS t
-INNER JOIN test_integration.posts_test AS p ON p.author_id = t.end_id
-GROUP BY t.end_id
-ORDER BY postCount DESC NULLS FIRST
+      v2.user_id AS "userId", 
+      coalesce(sum(1), 0) AS "postCount"
+FROM vlp_v1_path AS v1
+JOIN test_integration.users_test AS v0 ON v1.start_id = v0.user_id
+JOIN test_integration.users_test AS v2 ON v1.end_id = v2.user_id
+JOIN test_integration.posts_test AS v3 ON v3.author_id = v2.user_id
+JOIN test_integration.posts_test AS v4 ON v3.post_id = v4.post_id
+WHERE v0.user_id = 1
+GROUP BY v2.user_id
+ORDER BY coalesce(sum(1), 0) DESC NULLS FIRST
 LIMIT 5

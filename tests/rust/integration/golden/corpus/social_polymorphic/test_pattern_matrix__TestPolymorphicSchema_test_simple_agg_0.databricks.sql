@@ -1,3 +1,3 @@
 SELECT 
-      count(n.user_id) AS `count(n)`
-FROM brahmand.users_bench AS n
+      count(v0.user_id) AS `count(n)`
+FROM brahmand.users_bench AS v0

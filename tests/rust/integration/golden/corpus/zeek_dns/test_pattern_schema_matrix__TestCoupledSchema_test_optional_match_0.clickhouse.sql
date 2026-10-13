@@ -1,16 +1,22 @@
-WITH __denorm_scan_a AS (
+WITH __cg_nodes_IP__cg_rows AS (
 SELECT 
-      a."id.orig_h" AS "ip_address"
-FROM zeek.dns_log AS a
-UNION DISTINCT 
-SELECT 
-      a."id.resp_h" AS "ip_address"
-FROM zeek.dns_log AS a
+      e."id.orig_h" AS "ip_address"
+FROM zeek.dns_log AS e
 
+UNION ALL
+SELECT 
+      e."id.resp_h" AS "ip_address"
+FROM zeek.dns_log AS e
+), 
+__cg_nodes_IP AS (
+SELECT 
+      e.ip_address AS "ip_address"
+FROM __cg_nodes_IP__cg_rows AS e
+WHERE NOT isNull(e.ip_address)
+GROUP BY e.ip_address
 )
 SELECT 
-      a.ip_address AS "a.ip_address", 
-      count(r.uid) AS "rel_count"
-FROM __denorm_scan_a AS a
-LEFT JOIN zeek.dns_log AS r ON 1 = 0
-GROUP BY a.ip_address
+      v0.ip_address AS "a.ip_address", 
+      CASE WHEN count(*) >= 0 THEN 0 ELSE 0 END AS "rel_count"
+FROM __cg_nodes_IP AS v0
+GROUP BY v0.ip_address

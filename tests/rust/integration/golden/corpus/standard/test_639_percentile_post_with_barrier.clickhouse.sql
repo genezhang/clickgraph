@@ -1,11 +1,13 @@
-WITH with_city_p_cte_0 AS (SELECT 
-      a.city AS "city", 
-      arrayElementOrNull(arraySort(groupArray(t0.followed_id)), greatest(1, toUInt32(ceil(0.95 * count(t0.followed_id))))) AS "p"
-FROM test_integration.users_test AS a
-INNER JOIN test_integration.user_follows_test AS t0 ON t0.follower_id = a.user_id
-GROUP BY a.city
+WITH with_w1 AS (
+SELECT 
+      v0.city AS "v3", 
+      arrayElementOrNull(arraySort(groupArray(v2.user_id)), greatest(1, toUInt32(ceil(0.95 * count(v2.user_id))))) AS "v4"
+FROM test_integration.users_test AS v0
+JOIN test_integration.user_follows_test AS v1 ON v1.follower_id = v0.user_id
+JOIN test_integration.users_test AS v2 ON v1.followed_id = v2.user_id
+GROUP BY v0.city
 )
 SELECT 
-      city_p.city AS "city", 
-      city_p.p AS "p"
-FROM with_city_p_cte_0 AS city_p
+      w1.v3 AS "city", 
+      w1.v4 AS "p"
+FROM with_w1 AS w1

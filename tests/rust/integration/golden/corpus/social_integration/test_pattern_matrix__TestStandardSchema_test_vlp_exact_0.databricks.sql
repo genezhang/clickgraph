@@ -1,9 +1,35 @@
+WITH RECURSIVE vlp_v1_path_inner AS (
+    SELECT 
+        start_node.user_id as start_id,
+        end_node.user_id as end_id,
+        1 as hop_count,
+        CAST(array() AS ARRAY<STRING>) as path_relationships,
+        array(start_node.user_id, end_node.user_id) as path_nodes,
+        array(rel.follow_id) as path_edges
+    FROM test_integration.users_test AS start_node
+    JOIN test_integration.user_follows_test AS rel ON start_node.user_id = rel.follower_id
+    JOIN test_integration.users_test AS end_node ON rel.followed_id = end_node.user_id
+    UNION ALL
+    SELECT
+        vp.start_id,
+        end_node.user_id as end_id,
+        vp.hop_count + 1 as hop_count,
+        CAST(array() AS ARRAY<STRING>) as path_relationships,
+        concat(vp.path_nodes, array(end_node.user_id)) as path_nodes,
+        concat(vp.path_edges, array(rel.follow_id)) as path_edges
+    FROM vlp_v1_path_inner vp
+    JOIN test_integration.user_follows_test AS rel ON vp.end_id = rel.follower_id
+    JOIN test_integration.users_test AS end_node ON rel.followed_id = end_node.user_id
+    WHERE vp.hop_count < 2
+      AND NOT array_contains(vp.path_edges, rel.follow_id)
+),
+vlp_v1_path AS (
+    SELECT * FROM vlp_v1_path_inner WHERE hop_count >= 2
+)
 SELECT 
-      a.is_active AS `a.is_active`, 
-      b.is_active AS `b.is_active`
-FROM test_integration.users_test AS a
-INNER JOIN test_integration.user_follows_test AS r1 ON a.user_id = r1.follower_id
-INNER JOIN test_integration.user_follows_test AS r2 ON r1.followed_id = r2.follower_id
-INNER JOIN test_integration.users_test AS b ON r2.followed_id = b.user_id
-WHERE r1.follow_id <> r2.follow_id
+      v0.is_active AS `a.is_active`, 
+      v2.is_active AS `b.is_active`
+FROM vlp_v1_path AS v1
+JOIN test_integration.users_test AS v0 ON v1.start_id = v0.user_id
+JOIN test_integration.users_test AS v2 ON v1.end_id = v2.user_id
 LIMIT 10

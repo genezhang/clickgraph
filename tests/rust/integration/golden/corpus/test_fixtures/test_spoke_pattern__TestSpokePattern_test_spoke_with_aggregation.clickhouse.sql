@@ -1,8 +1,8 @@
 SELECT 
-      hub.name AS "hub.name", 
-      count(follower.user_id) AS "follower_count"
-FROM test_integration.users AS hub
-INNER JOIN test_integration.follows AS t0 ON hub.user_id = t0.followed_id
-INNER JOIN test_integration.users AS follower ON t0.follower_id = follower.user_id
-WHERE hub.user_id = 2
-GROUP BY hub.name
+      v2.name AS "hub.name", 
+      count(v0.user_id) AS "follower_count"
+FROM test_integration.users AS v0
+JOIN test_integration.follows AS v1 ON v1.follower_id = v0.user_id
+JOIN test_integration.users AS v2 ON v1.followed_id = v2.user_id
+WHERE v2.user_id = 2
+GROUP BY v2.name

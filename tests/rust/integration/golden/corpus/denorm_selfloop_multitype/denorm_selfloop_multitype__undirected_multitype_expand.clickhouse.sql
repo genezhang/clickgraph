@@ -1,13 +1,90 @@
-WITH pattern_union_r AS (
-SELECT 'Actor' AS start_type, toString(db_denorm_selfloop.events.src_actor) as start_id, toString(db_denorm_selfloop.events.dst_actor) as end_id, 'Actor' AS end_type, ['RECEIVED'] as path_relationships, [formatRowNoNewline('JSONEachRow', db_denorm_selfloop.events.channel AS channel, db_denorm_selfloop.events.evt_id AS evt_id)] as rel_properties, formatRowNoNewline('JSONEachRow', db_denorm_selfloop.events.src_actor AS _s_src_actor, db_denorm_selfloop.events.src_name AS _s_src_name) as start_properties, formatRowNoNewline('JSONEachRow', db_denorm_selfloop.events.dst_actor AS _e_dst_actor, db_denorm_selfloop.events.dst_name AS _e_dst_name) as end_properties, db_denorm_selfloop.events.channel AS channel, db_denorm_selfloop.events.evt_id AS evt_id, NULL AS weight FROM db_denorm_selfloop.events
+WITH v1_rels AS (
+SELECT 
+      'RECEIVED' AS "__cg_type", 
+      'Actor' AS "__cg_from_label", 
+      'Actor' AS "__cg_to_label", 
+      e.evt_id AS "__cg_rid_0", 
+      e.dst_actor AS "__cg_from_0", 
+      e.src_actor AS "__cg_to_0", 
+      e.dst_actor AS "__cg_start_0", 
+      e.src_actor AS "__cg_end_0", 
+      'Actor' AS "__cg_start_label", 
+      'Actor' AS "__cg_end_label", 
+      concat('RECEIVED:Actor:Actor:', toString(e.evt_id)) AS "__cg_key"
+FROM db_denorm_selfloop.events AS e
+
 UNION ALL
-SELECT 'Actor' AS start_type, toString(db_denorm_selfloop.events.dst_actor) as start_id, toString(db_denorm_selfloop.events.src_actor) as end_id, 'Actor' AS end_type, ['RECEIVED'] as path_relationships, [formatRowNoNewline('JSONEachRow', db_denorm_selfloop.events.channel AS channel, db_denorm_selfloop.events.evt_id AS evt_id)] as rel_properties, formatRowNoNewline('JSONEachRow', db_denorm_selfloop.events.dst_actor AS _s_src_actor, db_denorm_selfloop.events.dst_name AS _s_src_name) as start_properties, formatRowNoNewline('JSONEachRow', db_denorm_selfloop.events.src_actor AS _e_dst_actor, db_denorm_selfloop.events.src_name AS _e_dst_name) as end_properties, db_denorm_selfloop.events.channel AS channel, db_denorm_selfloop.events.evt_id AS evt_id, NULL AS weight FROM db_denorm_selfloop.events WHERE (db_denorm_selfloop.events.dst_actor != db_denorm_selfloop.events.src_actor)
+SELECT 
+      'RECEIVED' AS "__cg_type", 
+      'Actor' AS "__cg_from_label", 
+      'Actor' AS "__cg_to_label", 
+      e.evt_id AS "__cg_rid_0", 
+      e.dst_actor AS "__cg_from_0", 
+      e.src_actor AS "__cg_to_0", 
+      e.src_actor AS "__cg_start_0", 
+      e.dst_actor AS "__cg_end_0", 
+      'Actor' AS "__cg_start_label", 
+      'Actor' AS "__cg_end_label", 
+      concat('RECEIVED:Actor:Actor:', toString(e.evt_id)) AS "__cg_key"
+FROM db_denorm_selfloop.events AS e
+WHERE e.dst_actor <> e.src_actor
+
 UNION ALL
-SELECT 'Actor' AS start_type, toString(db_denorm_selfloop.events.src_actor) as start_id, toString(db_denorm_selfloop.events.dst_actor) as end_id, 'Actor' AS end_type, ['SENT'] as path_relationships, [formatRowNoNewline('JSONEachRow', db_denorm_selfloop.events.evt_id AS evt_id, db_denorm_selfloop.events.weight AS weight)] as rel_properties, formatRowNoNewline('JSONEachRow', db_denorm_selfloop.events.src_actor AS _s_src_actor, db_denorm_selfloop.events.src_name AS _s_src_name) as start_properties, formatRowNoNewline('JSONEachRow', db_denorm_selfloop.events.dst_actor AS _e_dst_actor, db_denorm_selfloop.events.dst_name AS _e_dst_name) as end_properties, NULL AS channel, db_denorm_selfloop.events.evt_id AS evt_id, db_denorm_selfloop.events.weight AS weight FROM db_denorm_selfloop.events
+SELECT 
+      'SENT' AS "__cg_type", 
+      'Actor' AS "__cg_from_label", 
+      'Actor' AS "__cg_to_label", 
+      e.evt_id AS "__cg_rid_0", 
+      e.src_actor AS "__cg_from_0", 
+      e.dst_actor AS "__cg_to_0", 
+      e.src_actor AS "__cg_start_0", 
+      e.dst_actor AS "__cg_end_0", 
+      'Actor' AS "__cg_start_label", 
+      'Actor' AS "__cg_end_label", 
+      concat('SENT:Actor:Actor:', toString(e.evt_id)) AS "__cg_key"
+FROM db_denorm_selfloop.events AS e
+
 UNION ALL
-SELECT 'Actor' AS start_type, toString(db_denorm_selfloop.events.dst_actor) as start_id, toString(db_denorm_selfloop.events.src_actor) as end_id, 'Actor' AS end_type, ['SENT'] as path_relationships, [formatRowNoNewline('JSONEachRow', db_denorm_selfloop.events.evt_id AS evt_id, db_denorm_selfloop.events.weight AS weight)] as rel_properties, formatRowNoNewline('JSONEachRow', db_denorm_selfloop.events.dst_actor AS _s_src_actor, db_denorm_selfloop.events.dst_name AS _s_src_name) as start_properties, formatRowNoNewline('JSONEachRow', db_denorm_selfloop.events.src_actor AS _e_dst_actor, db_denorm_selfloop.events.src_name AS _e_dst_name) as end_properties, NULL AS channel, db_denorm_selfloop.events.evt_id AS evt_id, db_denorm_selfloop.events.weight AS weight FROM db_denorm_selfloop.events WHERE (db_denorm_selfloop.events.src_actor != db_denorm_selfloop.events.dst_actor)
+SELECT 
+      'SENT' AS "__cg_type", 
+      'Actor' AS "__cg_from_label", 
+      'Actor' AS "__cg_to_label", 
+      e.evt_id AS "__cg_rid_0", 
+      e.src_actor AS "__cg_from_0", 
+      e.dst_actor AS "__cg_to_0", 
+      e.dst_actor AS "__cg_start_0", 
+      e.src_actor AS "__cg_end_0", 
+      'Actor' AS "__cg_start_label", 
+      'Actor' AS "__cg_end_label", 
+      concat('SENT:Actor:Actor:', toString(e.evt_id)) AS "__cg_key"
+FROM db_denorm_selfloop.events AS e
+WHERE e.src_actor <> e.dst_actor
+), 
+__cg_nodes_Actor__cg_rows AS (
+SELECT 
+      e.src_actor AS "actor_id", 
+      e.src_name AS "name__cg0", 
+      NULL AS "name__cg1"
+FROM db_denorm_selfloop.events AS e
+
+UNION ALL
+SELECT 
+      e.dst_actor AS "actor_id", 
+      NULL AS "name__cg0", 
+      e.dst_name AS "name__cg1"
+FROM db_denorm_selfloop.events AS e
+), 
+__cg_nodes_Actor AS (
+SELECT 
+      e.actor_id AS "actor_id", 
+      anyIfOrNull(CAST(coalesce(e.name__cg0, e.name__cg1), if(replaceRegexpOne(replaceRegexpOne(replaceRegexpAll(toTypeName(e.name__cg0), 'Nullable\\(|LowCardinality\\(|\\)', ''), '^U?Int\\d+$', 'Int'), '^(String|FixedString\\(\\d+)$', 'String') = replaceRegexpOne(replaceRegexpOne(replaceRegexpAll(toTypeName(e.name__cg1), 'Nullable\\(|LowCardinality\\(|\\)', ''), '^U?Int\\d+$', 'Int'), '^(String|FixedString\\(\\d+)$', 'String') AND toTypeName(coalesce(e.name__cg0, e.name__cg1)) NOT LIKE 'Variant(%', toTypeName(coalesce(e.name__cg0, e.name__cg1)), 'ClickGraph_property_has_different_types_on_different_labels_or_types')), NOT isNull(CAST(coalesce(e.name__cg0, e.name__cg1), if(replaceRegexpOne(replaceRegexpOne(replaceRegexpAll(toTypeName(e.name__cg0), 'Nullable\\(|LowCardinality\\(|\\)', ''), '^U?Int\\d+$', 'Int'), '^(String|FixedString\\(\\d+)$', 'String') = replaceRegexpOne(replaceRegexpOne(replaceRegexpAll(toTypeName(e.name__cg1), 'Nullable\\(|LowCardinality\\(|\\)', ''), '^U?Int\\d+$', 'Int'), '^(String|FixedString\\(\\d+)$', 'String') AND toTypeName(coalesce(e.name__cg0, e.name__cg1)) NOT LIKE 'Variant(%', toTypeName(coalesce(e.name__cg0, e.name__cg1)), 'ClickGraph_property_has_different_types_on_different_labels_or_types')))) AS "name"
+FROM __cg_nodes_Actor__cg_rows AS e
+WHERE NOT isNull(e.actor_id)
+GROUP BY e.actor_id
 )
 SELECT 
-      JSONExtractString(r.start_properties, '_s_src_name') AS "a.name", 
-      JSONExtractString(r.end_properties, '_e_dst_name') AS "b.name"
-FROM pattern_union_r AS r
+      v0.name AS "a.name", 
+      v2.name AS "b.name"
+FROM __cg_nodes_Actor AS v0
+JOIN v1_rels AS v1 ON v1.__cg_start_0 = v0.actor_id
+JOIN __cg_nodes_Actor AS v2 ON v1.__cg_end_0 = v2.actor_id

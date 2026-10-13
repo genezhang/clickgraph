@@ -1,5 +1,5 @@
 SELECT 
-      t0.answers AS `a.resolved_ip`, 
-      t0.answers AS `b.resolved_ip`
-FROM zeek.dns_log AS t0
+      NULL AS `a.resolved_ip`, 
+      NULL AS `b.resolved_ip`
+WHERE false
 LIMIT 10

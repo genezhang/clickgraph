@@ -1,7 +1,10 @@
 SELECT 
-      t0.mgr_id AS "a.pid", 
-      t0.emp_id AS "b.pid", 
-      t1.mgr_id AS "c.pid"
-FROM testdb.reports AS t1
-INNER JOIN testdb.reports AS t0 ON t0.emp_id = t1.emp_id
-WHERE (t1.mgr_id <> t0.mgr_id OR t1.emp_id <> t0.emp_id)
+      v0.pid AS "a.pid", 
+      v2.pid AS "b.pid", 
+      v3.pid AS "c.pid"
+FROM testdb.people AS v0
+JOIN testdb.reports AS v1 ON v1.mgr_id = v0.pid
+JOIN testdb.people AS v2 ON v1.emp_id = v2.pid
+JOIN testdb.reports AS v4 ON v4.emp_id = v2.pid
+JOIN testdb.people AS v3 ON v4.mgr_id = v3.pid
+WHERE (v1.mgr_id <> v4.mgr_id OR v1.emp_id <> v4.emp_id)

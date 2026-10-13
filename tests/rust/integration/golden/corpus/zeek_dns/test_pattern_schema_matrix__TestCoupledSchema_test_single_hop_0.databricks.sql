@@ -1,5 +1,5 @@
 SELECT 
-      r.answers AS `a.resolved_ip`, 
-      r.query AS `b.domain_name`
-FROM zeek.dns_log AS r
+      NULL AS `a.resolved_ip`, 
+      NULL AS `b.domain_name`
+WHERE false
 LIMIT 10

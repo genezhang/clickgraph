@@ -1,10 +1,10 @@
 SELECT 
-      a.name AS "a.name", 
-      b.name AS "b.name", 
-      c.name AS "c.name"
-FROM test_integration.users AS b
-INNER JOIN test_integration.follows AS t0 ON b.user_id = t0.followed_id
-INNER JOIN test_integration.follows AS t1 ON t1.followed_id = b.user_id
-INNER JOIN test_integration.users AS a ON a.user_id = t1.follower_id
-INNER JOIN test_integration.users AS c ON t0.follower_id = c.user_id
-WHERE ((b.user_id = 2 AND b.user_id = 2) AND (t0.follower_id <> t1.follower_id OR t0.followed_id <> t1.followed_id))
+      v0.name AS "a.name", 
+      v2.name AS "b.name", 
+      v3.name AS "c.name"
+FROM test_integration.users AS v0
+JOIN test_integration.follows AS v1 ON v1.follower_id = v0.user_id
+JOIN test_integration.users AS v2 ON v1.followed_id = v2.user_id
+JOIN test_integration.follows AS v4 ON v4.followed_id = v2.user_id
+JOIN test_integration.users AS v3 ON v4.follower_id = v3.user_id
+WHERE ((v1.follower_id <> v4.follower_id OR v1.followed_id <> v4.followed_id) AND v2.user_id = 2)

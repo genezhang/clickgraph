@@ -1,5 +1,6 @@
 SELECT 
-      count(t0.followed_id) AS `count`
-FROM test_integration.users AS a
-INNER JOIN test_integration.follows AS t0 ON t0.follower_id = a.user_id
-WHERE a.name = 'NonExistent'
+      count(v2.user_id) AS `count`
+FROM test_integration.users AS v0
+JOIN test_integration.follows AS v1 ON v1.follower_id = v0.user_id
+JOIN test_integration.users AS v2 ON v1.followed_id = v2.user_id
+WHERE v0.name = 'NonExistent'

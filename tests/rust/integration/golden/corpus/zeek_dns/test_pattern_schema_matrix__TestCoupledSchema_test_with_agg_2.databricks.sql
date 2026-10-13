@@ -1,12 +1,12 @@
-WITH with_cnt_prop_cte_0 AS (SELECT 
-      r.`id.orig_h` AS `prop`, 
-      count(r.uid) AS `cnt`
-FROM zeek.dns_log AS r
-GROUP BY r.`id.orig_h`
+WITH with_w1 AS (
+SELECT 
+      CASE WHEN count(*) >= 0 THEN 0 ELSE 0 END AS `v4`
+WHERE false
+HAVING count(*) > 0
 )
 SELECT 
-      cnt_prop.prop AS `prop`, 
-      cnt_prop.cnt AS `cnt`
-FROM with_cnt_prop_cte_0 AS cnt_prop
-ORDER BY cnt_prop.cnt DESC NULLS FIRST
+      NULL AS `prop`, 
+      w1.v4 AS `cnt`
+FROM with_w1 AS w1
+ORDER BY w1.v4 DESC NULLS FIRST
 LIMIT 10

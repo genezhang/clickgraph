@@ -1,5 +1,5 @@
 SELECT 
-      t0."id.resp_h" AS "dest.ip"
-FROM zeek.conn_log AS t0
-WHERE t0."id.orig_h" = '192.168.1.10'
+      v1."id.resp_h" AS "dest.ip"
+FROM zeek.conn_log AS v1
+WHERE (v1."id.orig_h" IS NOT NULL AND v1."id.resp_h" IS NOT NULL AND v1."id.orig_h" = '192.168.1.10')
 LIMIT 10

@@ -1,5 +1,5 @@
 SELECT 
-      u.name AS "u.name", 
-      u.age AS "u.age"
-FROM test_integration.users AS u
-WHERE u.name = 'Alice'
+      v0.name AS "u.name", 
+      v0.age AS "u.age"
+FROM test_integration.users AS v0
+WHERE v0.name = 'Alice'

@@ -1,4 +1,4 @@
-WITH RECURSIVE vlp_a_b AS (
+WITH RECURSIVE vlp_v5_path AS (
     SELECT 
         start_node.user_id as start_id,
         end_node.user_id as end_id,
@@ -9,6 +9,13 @@ WITH RECURSIVE vlp_a_b AS (
     FROM test_integration.users_test AS start_node
     JOIN test_integration.user_follows_test AS rel ON start_node.user_id = rel.follower_id
     JOIN test_integration.users_test AS end_node ON rel.followed_id = end_node.user_id
+    WHERE (start_node.user_id IN (SELECT DISTINCT 
+      v4.user_id AS "id"
+FROM test_integration.users_test AS v0
+JOIN test_integration.user_follows_test AS v1 ON v1.follower_id = v0.user_id
+JOIN test_integration.users_test AS v2 ON v1.followed_id = v2.user_id
+JOIN test_integration.user_follows_test AS v3 ON v3.follower_id = v2.user_id
+JOIN test_integration.users_test AS v4 ON v3.followed_id = v4.user_id))
     UNION ALL
     SELECT
         vp.start_id,
@@ -17,7 +24,7 @@ WITH RECURSIVE vlp_a_b AS (
         CAST([] AS Array(String)) as path_relationships,
         arrayConcat(vp.path_nodes, [end_node.user_id]) as path_nodes,
         arrayConcat(vp.path_edges, [rel.follow_id]) as path_edges
-    FROM vlp_a_b vp
+    FROM vlp_v5_path vp
     JOIN test_integration.user_follows_test AS rel ON vp.end_id = rel.follower_id
     JOIN test_integration.users_test AS end_node ON rel.followed_id = end_node.user_id
     WHERE vp.hop_count < 2
@@ -25,8 +32,11 @@ WITH RECURSIVE vlp_a_b AS (
 )
 SELECT 
       count(*) AS "count(*)"
-FROM vlp_a_b AS t
-JOIN test_integration.users_test AS c ON 1 = 1
-INNER JOIN test_integration.user_follows_test AS t0 ON t0.follower_id = c.user_id
-INNER JOIN test_integration.user_follows_test AS t1 ON t1.follower_id = t0.followed_id AND t1.followed_id = t.start_id
-WHERE ((t1.follow_id <> t0.follow_id AND NOT has(t.path_edges, t1.follow_id)) AND NOT has(t.path_edges, t0.follow_id))
+FROM vlp_v5_path AS v5
+JOIN test_integration.users_test AS v4 ON v5.start_id = v4.user_id
+JOIN test_integration.user_follows_test AS v3 ON v3.followed_id = v4.user_id
+JOIN test_integration.users_test AS v2 ON v3.follower_id = v2.user_id
+JOIN test_integration.user_follows_test AS v1 ON v1.followed_id = v2.user_id
+JOIN test_integration.users_test AS v0 ON v1.follower_id = v0.user_id
+JOIN test_integration.users_test AS v6 ON v5.end_id = v6.user_id
+WHERE (v1.follow_id <> v3.follow_id AND NOT has(v5.path_edges, v1.follow_id) AND NOT has(v5.path_edges, v3.follow_id))

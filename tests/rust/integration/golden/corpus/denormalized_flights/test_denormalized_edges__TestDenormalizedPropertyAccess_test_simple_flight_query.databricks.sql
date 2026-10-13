@@ -1,4 +1,5 @@
 SELECT 
-      f.flight_number AS `f.flight_num`, 
-      f.airline AS `f.carrier`
-FROM test_integration.flights AS f
+      v1.flight_number AS `f.flight_num`, 
+      v1.airline AS `f.carrier`
+FROM test_integration.flights AS v1
+WHERE (v1.Origin IS NOT NULL AND v1.Dest IS NOT NULL)

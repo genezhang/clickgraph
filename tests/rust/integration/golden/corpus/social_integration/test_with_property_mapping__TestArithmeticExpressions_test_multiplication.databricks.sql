@@ -1,8 +1,9 @@
-WITH with_doubled_cte_0 AS (SELECT 
-      u.user_id * 2 AS `doubled`
-FROM test_integration.users_test AS u
+WITH with_w1 AS (
+SELECT 
+      v0.user_id * 2 AS `v1`
+FROM test_integration.users_test AS v0
 )
 SELECT 
-      doubled.doubled AS `doubled`
-FROM with_doubled_cte_0 AS doubled
+      w1.v1 AS `doubled`
+FROM with_w1 AS w1
 LIMIT 1

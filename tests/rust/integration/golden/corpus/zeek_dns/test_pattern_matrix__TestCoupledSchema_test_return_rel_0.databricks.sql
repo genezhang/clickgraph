@@ -1,10 +1,11 @@
 SELECT 
-      r.`id.orig_h` AS `r.from_id`, 
-      r.query AS `r.to_id`, 
-      r.`id.resp_h` AS `r.dns_server`, 
-      r.qtype_name AS `r.qtype`, 
-      r.rcode_name AS `r.rcode`, 
-      r.ts AS `r.timestamp`, 
-      r.uid AS `r.uid`
-FROM zeek.dns_log AS r
+      v1.`id.orig_h` AS `r.from_id`, 
+      v1.query AS `r.to_id`, 
+      v1.`id.resp_h` AS `r.dns_server`, 
+      v1.qtype_name AS `r.qtype`, 
+      v1.rcode_name AS `r.rcode`, 
+      v1.ts AS `r.timestamp`, 
+      v1.uid AS `r.uid`
+FROM zeek.dns_log AS v1
+WHERE (v1.`id.orig_h` IS NOT NULL AND v1.query IS NOT NULL)
 LIMIT 5

@@ -1,12 +1,22 @@
-SELECT `n.ip_address` AS `n.ip_address` FROM (
+WITH __cg_nodes_IP__cg_rows AS (
 SELECT 
-      n.`id.orig_h` AS `n.ip_address`
-FROM zeek.dns_log AS n
-WHERE n.`id.orig_h` IS NOT NULL
-UNION DISTINCT 
+      e.`id.orig_h` AS `ip_address`
+FROM zeek.dns_log AS e
+
+UNION ALL
 SELECT 
-      n.`id.resp_h` AS `n.ip_address`
-FROM zeek.dns_log AS n
-WHERE n.`id.resp_h` IS NOT NULL
-) AS __union
+      e.`id.resp_h` AS `ip_address`
+FROM zeek.dns_log AS e
+), 
+__cg_nodes_IP AS (
+SELECT 
+      e.ip_address AS `ip_address`
+FROM __cg_nodes_IP__cg_rows AS e
+WHERE NOT isnull(e.ip_address)
+GROUP BY e.ip_address
+)
+SELECT 
+      v0.ip_address AS `n.ip_address`
+FROM __cg_nodes_IP AS v0
+WHERE v0.ip_address IS NOT NULL
 LIMIT 10

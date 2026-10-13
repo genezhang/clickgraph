@@ -1,8 +1,8 @@
 SELECT 
-      a.name AS `a.name`, 
-      count(b.user_id) AS `follower_count`
-FROM test_integration.users AS b
-INNER JOIN test_integration.follows AS t0 ON t0.follower_id = b.user_id
-INNER JOIN test_integration.users AS a ON a.user_id = t0.followed_id
-GROUP BY a.name
-ORDER BY follower_count DESC NULLS FIRST, a.name ASC NULLS LAST
+      v0.name AS `a.name`, 
+      count(v2.user_id) AS `follower_count`
+FROM test_integration.users AS v0
+JOIN test_integration.follows AS v1 ON v1.followed_id = v0.user_id
+JOIN test_integration.users AS v2 ON v1.follower_id = v2.user_id
+GROUP BY v0.name
+ORDER BY count(v2.user_id) DESC NULLS FIRST, v0.name ASC NULLS LAST

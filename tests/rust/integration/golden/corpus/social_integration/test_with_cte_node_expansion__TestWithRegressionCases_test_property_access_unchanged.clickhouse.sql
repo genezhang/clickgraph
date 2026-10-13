@@ -1,5 +1,5 @@
 SELECT 
-      a.user_id AS "a.user_id", 
-      a.full_name AS "a.name"
-FROM test_integration.users_test AS a
+      v0.user_id AS "a.user_id", 
+      v0.full_name AS "a.name"
+FROM test_integration.users_test AS v0
 LIMIT 1

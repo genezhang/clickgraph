@@ -1,5 +1,5 @@
 SELECT 
-      u.name AS "u.name"
-FROM test_integration.users AS u
-WHERE (u.name = 'Alice' OR u.name = 'Bob')
-ORDER BY u.name ASC
+      v0.name AS "u.name"
+FROM test_integration.users AS v0
+WHERE (v0.name = 'Alice' OR v0.name = 'Bob')
+ORDER BY v0.name ASC

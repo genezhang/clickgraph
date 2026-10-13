@@ -1,5 +1,5 @@
 SELECT 
-      1 AS `length(p)`, 
-      array(t0.`id.orig_h`, t0.query) AS `nodes(p)`
-FROM zeek.dns_log AS t0
+      NULL AS `length(p)`, 
+      NULL AS `nodes(p)`
+WHERE false
 LIMIT 5

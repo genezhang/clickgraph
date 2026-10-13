@@ -1,18 +1,45 @@
-WITH vlp_multi_type_a_b AS (
-SELECT 'User' AS end_type, u2.user_id AS end_id, a_1.user_id AS start_id, 'User' AS start_type, string(r1.from_id) AS r_from_id, string(r1.to_id) AS r_to_id, 1 AS hop_count, array('FOLLOWS') AS path_relationships, array(to_json(struct(r1.timestamp, r1.interaction_weight))) AS rel_properties, array(string(a_1.user_id), string(u2.user_id)) AS path_nodes
-FROM brahmand.users_bench a_1
-INNER JOIN brahmand.interactions r1 ON a_1.user_id = r1.from_id
-INNER JOIN brahmand.users_bench u2 ON r1.to_id = u2.user_id
-WHERE r1.interaction_type = 'FOLLOWS' AND r1.from_type = 'User' AND r1.to_type = 'User'
+WITH v1_rels AS (
+SELECT 
+      'FOLLOWS' AS `__cg_type`, 
+      'User' AS `__cg_from_label`, 
+      'User' AS `__cg_to_label`, 
+      e.from_id AS `__cg_rid_0`, 
+      e.to_id AS `__cg_rid_1`, 
+      e.interaction_type AS `__cg_rid_2`, 
+      e.timestamp AS `__cg_rid_3`, 
+      e.from_id AS `__cg_from_0`, 
+      e.to_id AS `__cg_to_0`, 
+      e.from_id AS `__cg_start_0`, 
+      e.to_id AS `__cg_end_0`, 
+      'User' AS `__cg_start_label`, 
+      'User' AS `__cg_end_label`, 
+      concat('FOLLOWS:User:User:', to_json(named_struct('_1', CAST(e.from_id AS STRING), '_2', CAST(e.to_id AS STRING), '_3', CAST(e.interaction_type AS STRING), '_4', CAST(e.timestamp AS STRING)), map('ignoreNullFields', 'false'))) AS `__cg_key`
+FROM brahmand.interactions AS e
+WHERE ((((e.`interaction_type` = 'FOLLOWS') AND (e.`from_type` = 'User')) AND (e.`to_type` = 'User')))
+
 UNION ALL
-SELECT 'User' AS end_type, u2.user_id AS end_id, a_1.user_id AS start_id, 'User' AS start_type, string(r1.from_id) AS r_from_id, string(r1.to_id) AS r_to_id, 1 AS hop_count, array('LIKES') AS path_relationships, array(to_json(struct(r1.timestamp, r1.interaction_weight))) AS rel_properties, array(string(a_1.user_id), string(u2.user_id)) AS path_nodes
-FROM brahmand.users_bench a_1
-INNER JOIN brahmand.interactions r1 ON a_1.user_id = r1.from_id
-INNER JOIN brahmand.users_bench u2 ON r1.to_id = u2.user_id
-WHERE r1.interaction_type = 'LIKES' AND r1.from_type = 'User' AND r1.to_type = 'User'
+SELECT 
+      'LIKES' AS `__cg_type`, 
+      'User' AS `__cg_from_label`, 
+      'User' AS `__cg_to_label`, 
+      e.from_id AS `__cg_rid_0`, 
+      e.to_id AS `__cg_rid_1`, 
+      e.interaction_type AS `__cg_rid_2`, 
+      e.timestamp AS `__cg_rid_3`, 
+      e.from_id AS `__cg_from_0`, 
+      e.to_id AS `__cg_to_0`, 
+      e.from_id AS `__cg_start_0`, 
+      e.to_id AS `__cg_end_0`, 
+      'User' AS `__cg_start_label`, 
+      'User' AS `__cg_end_label`, 
+      concat('LIKES:User:User:', to_json(named_struct('_1', CAST(e.from_id AS STRING), '_2', CAST(e.to_id AS STRING), '_3', CAST(e.interaction_type AS STRING), '_4', CAST(e.timestamp AS STRING)), map('ignoreNullFields', 'false'))) AS `__cg_key`
+FROM brahmand.interactions AS e
+WHERE ((((e.`interaction_type` = 'LIKES') AND (e.`from_type` = 'User')) AND (e.`to_type` = 'User')))
 )
 SELECT 
-      try_element_at(t.path_relationships, 1) AS `type(r)`, 
+      v1.__cg_type AS `type(r)`, 
       count(*) AS `cnt`
-FROM vlp_multi_type_a_b AS t
-GROUP BY try_element_at(t.path_relationships, 1)
+FROM brahmand.users_bench AS v0
+JOIN v1_rels AS v1 ON v1.__cg_start_0 = v0.user_id
+JOIN brahmand.users_bench AS v2 ON v1.__cg_end_0 = v2.user_id
+GROUP BY v1.__cg_type

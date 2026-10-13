@@ -1,8 +1,8 @@
 SELECT 
-      g.name AS `g.name`, 
-      count(u.user_id) AS `count`
-FROM data_security.ds_groups AS g
-INNER JOIN data_security.ds_memberships AS t0 ON g.group_id = t0.group_id AND t0.member_type = 'User'
-INNER JOIN data_security.ds_users AS u ON t0.member_id = u.user_id
-WHERE startswith(g.name, 'E')
-GROUP BY g.name
+      v2.name AS `g.name`, 
+      count(v0.user_id) AS `count`
+FROM data_security.ds_users AS v0
+JOIN data_security.ds_memberships AS v1 ON v1.member_id = v0.user_id
+JOIN data_security.ds_groups AS v2 ON v1.group_id = v2.group_id
+WHERE (((v1.`member_type` = 'User')) AND startswith(v2.name, 'E'))
+GROUP BY v2.name
