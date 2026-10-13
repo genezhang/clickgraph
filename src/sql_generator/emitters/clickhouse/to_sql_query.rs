@@ -1,11 +1,9 @@
 use crate::{
-    query_planner::join_context::{VLP_END_ID_COLUMN, VLP_START_ID_COLUMN},
     query_planner::logical_plan::LogicalPlan,
     render_plan::{
         render_expr::{
-            self, AggregateFnCall, Column, ColumnAlias, InSubquery, Literal, Operator,
-            OperatorApplication, PropertyAccess, ReduceExpr, RenderCase, RenderExpr, ScalarFnCall,
-            TableAlias,
+            self, AggregateFnCall, Column, ColumnAlias, Literal, Operator, OperatorApplication,
+            PropertyAccess, ReduceExpr, RenderCase, RenderExpr, ScalarFnCall, TableAlias,
         },
         {
             ArrayJoinItem, Cte, CteContent, FilterItems, FromTableItem, GroupByExpressions, Join,
@@ -13,10 +11,7 @@ use crate::{
             ToSql, UnionType,
         },
     },
-    server::query_context::{
-        clear_all_render_contexts, get_relationship_columns, is_multi_type_vlp_alias,
-        set_alias_label_map, set_multi_type_vlp_aliases, vlp_from_alias,
-    },
+    server::query_context::set_alias_label_map,
 };
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -27,16 +22,6 @@ use super::function_registry::get_function_mapping;
 // ============================================================================
 // RENDER CONTEXT ACCESSORS (delegating to unified query_context)
 // ============================================================================
-
-/// Get relationship columns for IS NULL checks
-fn get_relationship_columns_from_context(alias: &str) -> Option<(String, String)> {
-    get_relationship_columns(alias)
-}
-
-/// Check if alias is a multi-type VLP endpoint
-fn is_multi_type_vlp_alias_from_context(alias: &str) -> bool {
-    is_multi_type_vlp_alias(alias)
-}
 
 /// True when `expr` is a string-valued operand of a Cypher `+`, so the `+`
 /// should render as `concat(...)` rather than numeric addition. Detects both a
@@ -321,43 +306,6 @@ fn is_known_scalar(expr: &RenderExpr) -> bool {
             | RenderExpr::Literal(Literal::Null)
             | RenderExpr::Parameter(_)
     )
-}
-
-/// Rewrite `x IN cte.p{N}_col` / `x NOT IN cte.p{N}_col` to a subquery form:
-/// `x IN (SELECT col FROM cte_name)`. Returns `Some(sql)` if rewritten.
-///
-/// After CollectUnwindElimination, `x IN collected_list` becomes
-/// `x IN cte.p{N}_{alias}_{property}`. CTE entity columns are scalar, not arrays,
-/// so we must expand to a subquery. Only matches CTE-format columns (is_cte_column)
-/// to avoid converting legitimate array column references.
-fn try_rewrite_in_cte_subquery(
-    operator: &Operator,
-    lhs_sql: &str,
-    rhs_expr: &RenderExpr,
-) -> Option<String> {
-    if !matches!(operator, Operator::In | Operator::NotIn) {
-        return None;
-    }
-    if let RenderExpr::PropertyAccessExp(ref prop) = rhs_expr {
-        let col_name = prop.column.to_sql_column_only();
-        if crate::utils::cte_column_naming::is_cte_column(&col_name) {
-            let table_alias = &prop.table_alias.0;
-            if let Some(cte_name) =
-                crate::server::query_context::get_cte_name_for_alias(table_alias)
-            {
-                let op_word = if *operator == Operator::In {
-                    "IN"
-                } else {
-                    "NOT IN"
-                };
-                return Some(format!(
-                    "{} {} (SELECT {} FROM {})",
-                    lhs_sql, op_word, col_name, cte_name
-                ));
-            }
-        }
-    }
-    None
 }
 
 // ---------------------------------------------------------------------------
@@ -736,13 +684,9 @@ pub(crate) fn clickhouse_utf8_string_fn(
 /// True when a `size()` argument is recognizably a collection (vs a string).
 fn render_arg_is_collection(arg: &RenderExpr) -> bool {
     fn name_is_collection(name: &str) -> bool {
-        // Variable registry (collection-typed vars) OR the array-CTE-column set
-        // collected from the plan (carried-forward collect()/groupArray columns
-        // the registry types only as scalars).
-        crate::server::query_context::get_current_variable_registry()
-            .and_then(|r| r.lookup(name).map(|v| v.is_collection()))
-            .unwrap_or(false)
-            || crate::server::query_context::is_array_cte_column(name)
+        // The array-CTE-column set collected from the plan (carried-forward
+        // collect()/groupArray columns).
+        crate::server::query_context::is_array_cte_column(name)
     }
     match arg {
         RenderExpr::List(_) => true,
@@ -888,33 +832,6 @@ fn activate_scope_context(from: &FromTableItem, joins: &JoinItems) {
     // 1. Rebuild alias_label_map from this scope's actual FROM/JOIN table names.
     let alias_label_map = build_alias_label_map_from_scope(from, joins);
     set_alias_label_map(alias_label_map);
-
-    // 2. Filter multi_type_vlp_aliases to only aliases that are VLP-backed in this scope.
-    let vlp_backed = vlp_backed_aliases_from_from_joins(from, joins);
-    let full_vlp = crate::server::query_context::get_multi_type_vlp_aliases();
-    let scoped_vlp: HashMap<String, String> = full_vlp
-        .into_iter()
-        .filter(|(k, _)| vlp_backed.contains(k.as_str()))
-        .collect();
-    set_multi_type_vlp_aliases(scoped_vlp);
-}
-
-/// Returns VLP-backed aliases from explicit FROM + JOINs (shared by branch and outer-plan rendering).
-fn vlp_backed_aliases_from_from_joins(from: &FromTableItem, joins: &JoinItems) -> HashSet<String> {
-    let mut vlp_backed = HashSet::new();
-    if let Some(ref vtr) = from.0 {
-        if vtr.name.starts_with("vlp_") {
-            if let Some(ref alias) = vtr.alias {
-                vlp_backed.insert(alias.clone());
-            }
-        }
-    }
-    for join in &joins.0 {
-        if join.table_name.starts_with("vlp_") {
-            vlp_backed.insert(join.table_alias.clone());
-        }
-    }
-    vlp_backed
 }
 
 /// Ensure a table name has a database prefix for base table references.
@@ -1314,13 +1231,9 @@ fn flatten_all_ctes(plan: &mut RenderPlan) {
 }
 
 /// P-4c (`EXPLICIT_SCOPE.md` §4.14): print a plan produced by the bound-plan
-/// lowering. It runs only what printing needs — CTE flattening, the alias →
-/// label scope used for result typing, duplicate-alias disambiguation — and
-/// none of the post-assembly repair passes (`optimize_plan`, the VLP and
-/// fixed-path rewrites, join re-sorting): the lowering emits joins in
+/// lowering: CTE flattening, then the SQL text. The lowering emits joins in
 /// dependency order and every column reference already names its element's
-/// alias and physical column. Column printing skips the name-keyed resolution
-/// while this runs (`QueryContext::plain_render`).
+/// alias and physical column.
 ///
 /// Supports the plan shapes the lowering produces today: SELECTs with FROM /
 /// JOINs / ARRAY JOIN / WHERE / GROUP BY / HAVING / ORDER BY / SKIP / LIMIT,
@@ -1361,15 +1274,6 @@ pub fn render_plan_parts_plain(mut plan: RenderPlan) -> (Vec<PlainCte>, String) 
         "render_plan_to_sql_plain: UNION is not lowered yet"
     );
     flatten_all_ctes(&mut plan);
-    struct PlainGuard(bool);
-    impl Drop for PlainGuard {
-        fn drop(&mut self) {
-            crate::server::query_context::set_plain_render(self.0);
-            clear_all_render_contexts();
-        }
-    }
-    let _guard = PlainGuard(crate::server::query_context::is_plain_render());
-    crate::server::query_context::set_plain_render(true);
     // The Databricks `size()` render picks Spark `size` for a list-valued
     // column (see `databricks_size_name`); a lowered plan has no variable
     // registry, so its list columns are read off the plan itself.
@@ -1440,28 +1344,12 @@ fn in_list_expression_sql(
 }
 
 pub fn render_expr_to_sql_plain(e: &RenderExpr) -> String {
-    struct PlainGuard(bool);
-    impl Drop for PlainGuard {
-        fn drop(&mut self) {
-            crate::server::query_context::set_plain_render(self.0);
-        }
-    }
-    let _guard = PlainGuard(crate::server::query_context::is_plain_render());
-    crate::server::query_context::set_plain_render(true);
     e.to_sql()
 }
 
 /// Sort keys of a lowered plan as SQL (`a ASC, b DESC`, with the NULL
 /// placement of [`OrderByItems`]), for a window's `ORDER BY`.
 pub fn order_keys_to_sql_plain(keys: &[OrderByItem]) -> String {
-    struct PlainGuard(bool);
-    impl Drop for PlainGuard {
-        fn drop(&mut self) {
-            crate::server::query_context::set_plain_render(self.0);
-        }
-    }
-    let _guard = PlainGuard(crate::server::query_context::is_plain_render());
-    crate::server::query_context::set_plain_render(true);
     let sql = OrderByItems(keys.to_vec()).to_sql();
     sql.trim_start_matches("ORDER BY ").trim_end().to_string()
 }
@@ -1726,9 +1614,9 @@ impl ToSql for FromTableItem {
                 match view_ref.source.as_ref() {
                     LogicalPlan::ViewScan(_) => {
                         // ViewScan fallback - should not reach here if alias is properly set
-                        vlp_from_alias()
+                        crate::query_planner::join_context::VLP_CTE_FROM_ALIAS.to_string()
                     }
-                    _ => vlp_from_alias(), // Default fallback
+                    _ => crate::query_planner::join_context::VLP_CTE_FROM_ALIAS.to_string(), // Default fallback
                 }
             };
 
@@ -1907,7 +1795,6 @@ impl ToSql for Join {
         crate::debug_print!("  table_alias: {}", self.table_alias);
         crate::debug_print!("  table_name: {}", self.table_name);
         crate::debug_print!("  joining_on.len(): {}", self.joining_on.len());
-        crate::debug_print!("  pre_filter: {:?}", self.pre_filter.is_some());
         if !self.joining_on.is_empty() {
             crate::debug_print!("  joining_on conditions:");
             for (_idx, _cond) in self.joining_on.iter().enumerate() {
@@ -1935,35 +1822,10 @@ impl ToSql for Join {
             JoinType::Right => "RIGHT JOIN",
         };
 
-        // For LEFT JOIN with pre_filter, use subquery form:
-        // LEFT JOIN (SELECT * FROM table WHERE pre_filter) AS alias ON ...
-        // This ensures the filter is applied BEFORE the join (correct LEFT JOIN semantics)
-        //
-        // For INNER JOIN with pre_filter, add filter to ON clause:
-        // INNER JOIN table AS alias ON <join_cond> AND <pre_filter>
-        // This is semantically equivalent and more efficient than subquery
-        let table_expr = if let Some(ref pre_filter) = self.pre_filter {
-            if matches!(self.join_type, JoinType::Left) {
-                // Use to_sql_without_table_alias to render column names without table prefix
-                // since inside the subquery, the table is not yet aliased
-                let filter_sql = pre_filter.to_sql_without_table_alias();
-                crate::debug_print!(
-                    "  Using subquery form for LEFT JOIN with pre_filter: {}",
-                    filter_sql
-                );
-                format!(
-                    "(SELECT * FROM {} WHERE {})",
-                    qualified_table_name, filter_sql
-                )
-            } else {
-                // For non-LEFT joins, pre_filter will be added to ON clause below
-                qualified_table_name.clone()
-            }
-        } else {
-            qualified_table_name.clone()
-        };
-
-        let mut sql = format!("{} {} AS {}", join_type_str, table_expr, self.table_alias);
+        let mut sql = format!(
+            "{} {} AS {}",
+            join_type_str, qualified_table_name, self.table_alias
+        );
         // A dialect without FINAL (Databricks) reads the table as it is, as
         // for the FROM table.
         if self.use_final
@@ -1996,20 +1858,7 @@ impl ToSql for Join {
                 })
                 .collect();
 
-            let mut joining_on_str = joining_on_str_vec.join(" AND ");
-
-            // For INNER JOINs (not LEFT), add pre_filter to ON clause
-            // This applies polymorphic edge filters, schema filters, etc.
-            if let Some(ref pre_filter) = self.pre_filter {
-                if !matches!(self.join_type, JoinType::Left) {
-                    let filter_sql = pre_filter.to_sql();
-                    crate::debug_print!(
-                        "  Adding pre_filter to INNER JOIN ON clause: {}",
-                        filter_sql
-                    );
-                    joining_on_str = format!("{} AND {}", joining_on_str, filter_sql);
-                }
-            }
+            let joining_on_str = joining_on_str_vec.join(" AND ");
 
             sql.push_str(&format!(" ON {joining_on_str}"));
         } else if matches!(
@@ -2473,211 +2322,8 @@ impl RenderExpr {
                 table_alias,
                 column,
             }) => {
-                // P-4c: a lowered plan's column references are final — the
-                // alias is the element's own and the column is physical.
-                if crate::server::query_context::is_plain_render() {
-                    return column.to_sql(&table_alias.0);
-                }
-                let col_name = column.raw();
-                log::info!(
-                    "🔍 RenderExpr::PropertyAccessExp: {}.{}",
-                    table_alias.0,
-                    col_name
-                );
-
-                // 🔧 CRITICAL FIX (Jan 23, 2026): Handle bare VLP columns in WITH clauses
-                // When path functions are rewritten in WITH contexts, they use __vlp_bare_col marker
-                // to indicate the column should be selected without a table alias
-                if table_alias.0 == "__vlp_bare_col" {
-                    log::info!(
-                        "🔧 Detected VLP bare column: {} (from WITH clause path function)",
-                        col_name
-                    );
-                    return col_name.to_string();
-                }
-
-                // Special case: Multi-type VLP properties stored in JSON
-                // Check if this table alias is a multi-type VLP endpoint
-                if is_multi_type_vlp_alias_from_context(&table_alias.0) {
-                    log::info!("🎯 Found '{}' in multi-type VLP aliases!", table_alias.0);
-                    // Properties like end_type, end_id, hop_count, path_relationships are direct CTE columns
-                    if col_name == VLP_START_ID_COLUMN
-                        || col_name == VLP_END_ID_COLUMN
-                        || matches!(
-                            col_name,
-                            "end_type" | "end_properties" | "hop_count" | "path_relationships"
-                        )
-                    {
-                        log::info!(
-                            "🎯 Multi-type VLP CTE column: {}.{}",
-                            table_alias.0,
-                            col_name
-                        );
-                        return format!("{}.{}", table_alias.0, col_name);
-                    } else {
-                        // Regular properties need JSON extraction from end_properties
-                        log::info!("🎯 Multi-type VLP JSON extraction: {}.{} → JSON_VALUE({}.end_properties, '$.{}')",
-                                  table_alias.0, col_name, table_alias.0, col_name);
-                        return format!(
-                            "JSON_VALUE({}.end_properties, '$.{}')",
-                            table_alias.0, col_name
-                        );
-                    }
-                }
-
-                // Resolve via unified VariableRegistry (M1) for CTE-scoped variables.
-                // Match-sourced variables are already resolved to DB columns during
-                // planning, so only CTE-sourced variables need registry resolution
-                // (where the PropertyAccess.column is a Cypher property / scalar-alias
-                // name that maps to a CTE column).
-                if let Some(resolved) = crate::server::query_context::resolve_with_current_registry(
-                    &table_alias.0,
-                    col_name,
-                ) {
-                    use crate::query_planner::typed_variable::ResolvedProperty;
-                    match resolved {
-                        // F1 (P-4 forward-resolution): the forward registry (M1) resolves
-                        // the scalar / composite FROM-alias references (`id.id`,
-                        // `e_id_n.id`) that M3 (`variable_scope`) does NOT rewrite and that
-                        // would otherwise fall into the id-pseudo-property block below and
-                        // be mis-resolved to a schema node_id column. This retires the
-                        // legacy render-site M2 reparse (`get_cte_property_from_context`)
-                        // that used to catch them.
-                        //
-                        // GUARD — two conditions, both required, because M1's registry is
-                        // keyed by Cypher alias and is GLOBAL (not scoped per Cypher-UNION
-                        // arm the way M3 is, `VariableScope::scoped_to_referenced_ctes`,
-                        // #593):
-                        //
-                        //  1. `sql_alias == table_alias.0` — the reference is against the
-                        //     CTE's OWN FROM alias (a scalar / composite self-reference),
-                        //     not a cross-arm alias whose CTE FROM alias differs. Reproduces
-                        //     M2's FROM-alias keying (M2 always re-qualified with
-                        //     `table_alias.0`, never rewriting the alias).
-                        //
-                        //  2. `table_alias.0` is NOT a base-table alias in the CURRENT
-                        //     branch (`alias_is_base_table_in_branch` consults ONLY the
-                        //     branch-local `alias_label_map`, rebuilt from THIS branch's
-                        //     FROM/JOIN table names — see `build_alias_label_map_from_scope`
-                        //     — NOT the global registry, which would report the WITH arm's
-                        //     label for the plain arm's `u`). Condition 1 alone is
-                        //     insufficient: in `MATCH (u:User) WITH u WHERE … RETURN
-                        //     u.user_id UNION MATCH (u:User) RETURN u.user_id`, the WITH
-                        //     arm's CTE FROM alias is literally `u` (single-alias CTE), so
-                        //     the PLAIN arm's own `u.user_id` — where `u` scans the raw
-                        //     `users_bench` table — would pass condition 1 and leak the WITH
-                        //     arm's `p1_u_user_id` (the #593 leak, on a NODE export this
-                        //     time). When `u` is a base table in this branch it appears in
-                        //     `alias_label_map`; a genuine CTE FROM alias (`id`,
-                        //     `with_*_cte_*`) does not. This is exactly the arm-locality M2
-                        //     had implicitly (its map was repopulated per CTE-body scope)
-                        //     and M3 has explicitly. (Full per-arm registry scoping is
-                        //     F2b's job; this keeps F1 byte-identical.)
-                        ResolvedProperty::CteColumn { sql_alias, column }
-                            if sql_alias == table_alias.0
-                                && !crate::server::query_context::alias_is_base_table_in_branch(
-                                    &table_alias.0,
-                                ) =>
-                        {
-                            log::debug!(
-                                "VariableRegistry resolved (F1, authoritative): {}.{} -> {}.{}",
-                                table_alias.0,
-                                col_name,
-                                sql_alias,
-                                column
-                            );
-                            return format!("{}.{}", sql_alias, column);
-                        }
-                        ResolvedProperty::CteColumn { .. }
-                        | ResolvedProperty::DbColumn(_)
-                        | ResolvedProperty::Unresolved => {
-                            // Cross-arm alias (guard failed), Match-sourced, or unresolved:
-                            // skip — PropertyAccess already carries the correct column from
-                            // planning / upstream M3 rewrite. Fall through.
-                        }
-                    }
-                }
-
-                // F1 (P-4 forward-resolution): the legacy M2 render-site fallback
-                // (`get_cte_property_from_context`) was DELETED here — the forward
-                // registry (M1) above now resolves every CTE-scoped reference this
-                // arm used to (node property maps + scalar/composite identity maps).
-                // Corpus + goldens byte-identical after the switch; see the F1 report
-                // and FORWARD_RESOLUTION_PLAN.md. (M2's populator/reader are retired
-                // wholesale in F2a.)
-
-                // Resolve "id" pseudo-property (from id() function transform) to actual
-                // schema id column. This handles composite ID schemas where the table
-                // doesn't have a column literally named "id".
-                // Skip this rewrite if any node schema has "id" as a real property mapping —
-                // in that case filter_tagging already resolved p.id → Column("id") correctly.
-                if col_name == "id" {
-                    use crate::server::query_context::{
-                        get_current_schema, get_node_label_for_alias,
-                    };
-                    if let Some(schema) = get_current_schema() {
-                        // If any schema has "id" as an explicit property mapping, "id" is a
-                        // real column, not a pseudo-property residue from id() transforms.
-                        let has_id_as_property = schema
-                            .all_node_schemas()
-                            .values()
-                            .any(|ns| ns.property_mappings.contains_key("id"));
-                        if !has_id_as_property {
-                            // No schema treats "id" as a real property — this must be an id()
-                            // function residue. Rewrite to the actual node_id column.
-                            // Use the variable registry to find the label for this specific
-                            // alias, then look up that label's node_id column.
-                            let label = get_node_label_for_alias(&table_alias.0);
-                            let node_schema =
-                                label.as_deref().and_then(|l| schema.node_schema_opt(l));
-                            if let Some(ns) = node_schema {
-                                let cols = ns.node_id.columns();
-                                if cols.len() == 1 {
-                                    if let Some(first_col) = cols.first() {
-                                        log::info!(
-                                            "🔧 Resolved {}.id → {}.{} (schema id column, label={})",
-                                            table_alias.0,
-                                            table_alias.0,
-                                            first_col,
-                                            label.as_deref().unwrap_or("?"),
-                                        );
-                                        return format!("{}.{}", table_alias.0, first_col);
-                                    }
-                                }
-                                // Composite node_id: fall through to render as-is
-                                log::warn!(
-                                    "⚠️  {}.id could not be resolved (composite node_id, label={})",
-                                    table_alias.0,
-                                    label.as_deref().unwrap_or("?"),
-                                );
-                            } else {
-                                // Label unknown — fall back to iterating all schemas
-                                // (pre-existing behaviour; handles cases where registry is absent)
-                                for ns in schema.all_node_schemas().values() {
-                                    let cols = ns.node_id.columns();
-                                    if cols.len() == 1 {
-                                        if let Some(first_col) = cols.first() {
-                                            log::warn!(
-                                                "🔧 Resolved {}.id → {}.{} (fallback — label unknown)",
-                                                table_alias.0,
-                                                table_alias.0,
-                                                first_col
-                                            );
-                                            return format!("{}.{}", table_alias.0, first_col);
-                                        }
-                                    }
-                                }
-                                log::warn!(
-                                    "⚠️  {}.id could not be resolved (composite/unknown ID, no label in registry)",
-                                    table_alias.0
-                                );
-                            }
-                        }
-                    }
-                }
-
-                // Property has been resolved from schema during query planning.
-                // Just use the resolved mapping directly.
+                // A lowered plan's column references are final: the alias is
+                // the element's own and the column is physical (P-4c).
                 column.to_sql(&table_alias.0)
             }
             RenderExpr::OperatorApplicationExp(op) => {
@@ -2749,61 +2395,53 @@ impl RenderExpr {
 
                             // Look up the actual column name from the JOIN metadata (populated during rendering)
                             // This ensures we use the CORRECT column for the SPECIFIC relationship table
-                            if let Some((from_id, _to_id)) =
-                                get_relationship_columns_from_context(table_alias)
-                            {
-                                // Use from_id - any ID column works since LEFT JOIN makes all NULL together
-                                let id_sql = format!("{}.{}", table_alias, from_id);
-                                return format!("{} {}", id_sql, op_str);
-                            } else {
-                                // Not a relationship — likely a node alias from OPTIONAL MATCH
-                                // (e.g., CASE WHEN c IS NULL ... where c is a Comment node).
-                                // Resolve to the node's ID column for the null check.
-                                //
-                                // We check ALL node schemas for consensus on the ID column name.
-                                // If all nodes agree, we use that column. If they disagree, we log
-                                // an error since we cannot determine the specific node type from
-                                // the alias at this stage.
-                                let id_col = {
-                                    use crate::server::query_context::get_current_schema;
-                                    use std::collections::BTreeSet;
-                                    let mut unique_id_cols = BTreeSet::new();
-                                    if let Some(schema) = get_current_schema() {
-                                        for ns in schema.all_node_schemas().values() {
-                                            let cols = ns.node_id.columns();
-                                            if cols.len() == 1 {
-                                                if let Some(first_col) = cols.first() {
-                                                    unique_id_cols.insert(first_col.to_string());
-                                                }
+                            // Not a relationship — likely a node alias from OPTIONAL MATCH
+                            // (e.g., CASE WHEN c IS NULL ... where c is a Comment node).
+                            // Resolve to the node's ID column for the null check.
+                            //
+                            // We check ALL node schemas for consensus on the ID column name.
+                            // If all nodes agree, we use that column. If they disagree, we log
+                            // an error since we cannot determine the specific node type from
+                            // the alias at this stage.
+                            let id_col = {
+                                use crate::server::query_context::get_current_schema;
+                                use std::collections::BTreeSet;
+                                let mut unique_id_cols = BTreeSet::new();
+                                if let Some(schema) = get_current_schema() {
+                                    for ns in schema.all_node_schemas().values() {
+                                        let cols = ns.node_id.columns();
+                                        if cols.len() == 1 {
+                                            if let Some(first_col) = cols.first() {
+                                                unique_id_cols.insert(first_col.to_string());
                                             }
                                         }
                                     }
-                                    if unique_id_cols.len() == 1 {
-                                        unique_id_cols.into_iter().next().unwrap()
-                                    } else if unique_id_cols.is_empty() {
-                                        log::error!(
-                                            "Node wildcard null check for alias '{}': no node schemas found with single-column ID. Defaulting to 'id'.",
-                                            table_alias
-                                        );
-                                        String::from("id")
-                                    } else {
-                                        log::error!(
-                                            "Node wildcard null check for alias '{}': node schemas disagree on ID column name ({:?}). Cannot determine specific node type at SQL generation stage. Defaulting to 'id'.",
-                                            table_alias,
-                                            unique_id_cols
-                                        );
-                                        String::from("id")
-                                    }
-                                };
-                                log::debug!(
-                                    "Node wildcard null check: {}.{} {}",
-                                    table_alias,
-                                    id_col,
-                                    op_str
-                                );
-                                let id_sql = format!("{}.{}", table_alias, id_col);
-                                return format!("{} {}", id_sql, op_str);
-                            }
+                                }
+                                if unique_id_cols.len() == 1 {
+                                    unique_id_cols.into_iter().next().unwrap()
+                                } else if unique_id_cols.is_empty() {
+                                    log::error!(
+                                        "Node wildcard null check for alias '{}': no node schemas found with single-column ID. Defaulting to 'id'.",
+                                        table_alias
+                                    );
+                                    String::from("id")
+                                } else {
+                                    log::error!(
+                                        "Node wildcard null check for alias '{}': node schemas disagree on ID column name ({:?}). Cannot determine specific node type at SQL generation stage. Defaulting to 'id'.",
+                                        table_alias,
+                                        unique_id_cols
+                                    );
+                                    String::from("id")
+                                }
+                            };
+                            log::debug!(
+                                "Node wildcard null check: {}.{} {}",
+                                table_alias,
+                                id_col,
+                                op_str
+                            );
+                            let id_sql = format!("{}.{}", table_alias, id_col);
+                            return format!("{} {}", id_sql, op_str);
                         }
                     }
                 }
@@ -2900,15 +2538,6 @@ impl RenderExpr {
                 // Special handling for RegexMatch - ClickHouse uses match() function
                 if op.operator == Operator::RegexMatch && rendered.len() == 2 {
                     return super::common::regex_match_predicate(&rendered[0], &rendered[1]);
-                }
-
-                // IN/NOT IN with CTE entity column → subquery for set membership.
-                if rendered.len() == 2 {
-                    if let Some(sql) =
-                        try_rewrite_in_cte_subquery(&op.operator, &rendered[0], &op.operands[1])
-                    {
-                        return sql;
-                    }
                 }
 
                 // Special handling for IN/NOT IN with array columns
@@ -3120,18 +2749,6 @@ impl RenderExpr {
                     sql
                 }
             }
-            RenderExpr::InSubquery(InSubquery { expr, subplan }) => {
-                let left = expr.to_sql();
-                // Not built by the bound plan (P-4c S14c5 removes it).
-                let body = render_plan_to_sql_plain((**subplan).clone());
-                let body = body.split_whitespace().collect::<Vec<&str>>().join(" ");
-
-                format!("{} IN ({})", left, body)
-            }
-            RenderExpr::ExistsSubquery(exists) => {
-                // Use the pre-generated SQL from the ExistsSubquery
-                format!("EXISTS ({})", exists.sql)
-            }
             RenderExpr::ReduceExpr(reduce) => {
                 // Convert to ClickHouse arrayFold((acc, x) -> expr, list, init)
                 // Cast numeric init to Int64 to prevent type mismatch issues
@@ -3213,10 +2830,6 @@ impl RenderExpr {
                         .collect();
                     format!("map({})", args.join(", "))
                 }
-            }
-            RenderExpr::PatternCount(pc) => {
-                // Use the pre-generated SQL from PatternCount (correlated subquery)
-                pc.sql.clone()
             }
             RenderExpr::ArraySubscript { array, index } => {
                 // Cypher uses 0-based indexing; array element access is 1-based on
@@ -3329,19 +2942,6 @@ impl RenderExpr {
                     }
                 }
             }
-            RenderExpr::CteEntityRef(cte_ref) => {
-                // CteEntityRef should be expanded to all its columns in the SELECT list
-                // When we reach to_sql(), it means it wasn't expanded properly by select_builder
-                // For now, generate SQL that selects all prefixed columns from the CTE
-                log::debug!(
-                    "CteEntityRef '{}' from CTE '{}' reached to_sql() - should have been expanded",
-                    cte_ref.alias,
-                    cte_ref.cte_name
-                );
-                // Fall back to table alias reference (this won't work correctly,
-                // but prevents crashes while we complete the select_builder integration)
-                format!("{}.{}", cte_ref.alias, cte_ref.alias)
-            }
         }
     }
 
@@ -3355,14 +2955,11 @@ impl RenderExpr {
                 // Just render the column without the table alias prefix
                 column.to_sql_column_only()
             }
-            // OperatorApplicationExp has TWO special cases that pattern-match on
+            // OperatorApplicationExp has a special case that pattern-matches on
             // the operand's ORIGINAL TYPE, not its rendered text:
-            //   - `try_rewrite_in_cte_subquery`: `x IN cte.p{N}_col` -> `x IN
-            //     (SELECT col FROM cte)`, detected by operands[1] being a CTE-
-            //     column `PropertyAccessExp`.
             //   - array membership: `x IN node.tags` -> `has(tags, x)`, detected
             //     by operands[1] being a plain `PropertyAccessExp`.
-            // Both checks MUST run before any alias-stripping touches
+            // The check MUST run before any alias-stripping touches
             // operands[1]'s type (stripping to `Raw` would blind the type
             // check, silently degrading `has(tags,x)` to a scalar `x IN tags`
             // — a hard ClickHouse error — or `x IN (SELECT col FROM cte)` to a
@@ -3436,16 +3033,6 @@ impl RenderExpr {
                 // Special handling for RegexMatch - ClickHouse uses match() function
                 if op.operator == Operator::RegexMatch && rendered.len() == 2 {
                     return super::common::regex_match_predicate(&rendered[0], &rendered[1]);
-                }
-
-                // IN/NOT IN with CTE entity column → subquery for set membership.
-                // Type check on the ORIGINAL operand — see the doc comment above.
-                if rendered.len() == 2 {
-                    if let Some(sql) =
-                        try_rewrite_in_cte_subquery(&op.operator, &rendered[0], &op.operands[1])
-                    {
-                        return sql;
-                    }
                 }
 
                 // Special handling for IN/NOT IN with array columns. Type check
@@ -3797,15 +3384,6 @@ impl ToSql for OperatorApplication {
             return super::common::regex_match_predicate(&rendered[0], &rendered[1]);
         }
 
-        // IN/NOT IN with CTE entity column → subquery for set membership.
-        if rendered.len() == 2 {
-            if let Some(sql) =
-                try_rewrite_in_cte_subquery(&self.operator, &rendered[0], &self.operands[1])
-            {
-                return sql;
-            }
-        }
-
         // Special handling for IN/NOT IN with array columns
         if self.operator == Operator::In
             && rendered.len() == 2
@@ -4041,9 +3619,6 @@ mod tests {
                 skip: SkipItem(None),
                 limit: LimitItem(None),
                 union: UnionItems(None),
-                fixed_path_info: None,
-                is_multi_label_scan: false,
-                variable_registry: None,
             }
         }
 
@@ -4207,44 +3782,6 @@ mod tests {
             args: vec![inner],
         });
         assert_eq!(expr.to_sql_without_table_alias(), "not(has(tags, 'a'))");
-    }
-
-    /// `x IN cte.p{N}_col` (a CTE-entity scalar reference, per
-    /// `is_cte_column`) must still expand to `x IN (SELECT col FROM cte)`, not
-    /// degrade to a bare unqualified `x IN col` — which could silently bind to
-    /// an unrelated same-named column elsewhere in the query (the worst class
-    /// of bug per ground rule 1: wrong answer, no error).
-    #[tokio::test]
-    async fn test_to_sql_without_table_alias_preserves_in_cte_subquery_rewrite() {
-        use crate::server::query_context::{set_cte_alias_scope, with_query_context};
-        with_query_context(
-            crate::server::query_context::QueryContext::default(),
-            async {
-                set_cte_alias_scope(
-                    [("u".to_string(), "with_users_cte_0".to_string())]
-                        .into_iter()
-                        .collect(),
-                );
-                let expr = RenderExpr::OperatorApplicationExp(OperatorApplication {
-                    operator: Operator::In,
-                    operands: vec![
-                        RenderExpr::PropertyAccessExp(PropertyAccess {
-                            table_alias: TableAlias("o".to_string()),
-                            column: PropVal::Column("id".to_string()),
-                        }),
-                        RenderExpr::PropertyAccessExp(PropertyAccess {
-                            table_alias: TableAlias("u".to_string()),
-                            column: PropVal::Column("p1_u_id".to_string()),
-                        }),
-                    ],
-                });
-                assert_eq!(
-                    expr.to_sql_without_table_alias(),
-                    "id IN (SELECT p1_u_id FROM with_users_cte_0)"
-                );
-            },
-        )
-        .await;
     }
 
     // ---- #855: three-valued IN / NOT IN when the list holds an explicit null ----

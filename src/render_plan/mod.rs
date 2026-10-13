@@ -27,14 +27,6 @@ pub const MAX_TRAVERSAL_DEPTH: usize = 200;
 /// Normal queries produce plans with < 100 nodes; 10,000 is generous.
 pub const MAX_PLAN_NODES: usize = 10_000;
 
-// Re-export denormalized alias accessors from unified query context
-// See server/query_context.rs for the task_local! implementation with .scope() support
-pub use crate::server::query_context::{
-    clear_denormalized_aliases, get_denormalized_alias_mapping, register_denormalized_alias,
-};
-
-use crate::query_planner::join_context::{VLP_END_ID_COLUMN, VLP_START_ID_COLUMN};
-
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
@@ -62,48 +54,6 @@ pub struct RenderPlan {
     pub skip: SkipItem,
     pub limit: LimitItem,
     pub union: UnionItems,
-    /// Fixed path information for simple (non-VLP) path patterns
-    /// Contains path variable name and hop count for queries like:
-    /// `MATCH p = (a)-[:T]->(b) RETURN length(p)`
-    pub fixed_path_info: Option<FixedPathMetadata>,
-    /// Flag indicating this is a multi-label node scan (labelless MATCH (n))
-    /// When true, the SELECT items should NOT be overwritten by Projection
-    /// as they contain the special _label, _id, _properties columns
-    pub is_multi_label_scan: bool,
-    /// Variable registry for scope-aware property resolution during SQL rendering.
-    /// Contains TypedVariable entries with property_mapping for CTE-sourced variables.
-    /// Set during render plan building; consumed by `PropertyAccessExp::to_sql()`.
-    /// Wrapped in Arc to avoid deep-clone stack overflow on complex query plans.
-    #[serde(skip)]
-    pub variable_registry:
-        Option<std::sync::Arc<crate::query_planner::typed_variable::VariableRegistry>>,
-}
-
-/// Metadata for simple/fixed path patterns (non-VLP)
-/// Used to render path functions like length(p), nodes(p), relationships(p)
-#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
-pub struct FixedPathMetadata {
-    /// Path variable name from Cypher (e.g., "p")
-    pub path_variable: String,
-    /// Number of relationships/hops in the path (e.g., 1 for `(a)-[r]->(b)`)
-    pub hop_count: u32,
-    /// List of node table aliases in order: [start_alias, intermediate1, ..., end_alias]
-    pub node_aliases: Vec<String>,
-    /// List of relationship aliases (e.g., ["r"])
-    pub rel_aliases: Vec<String>,
-    /// Maps node alias to (reference_alias, id_column) — `id_column` is the
-    /// full composite-aware `Identifier` (single or multi-column id), and
-    /// `reference_alias` is whichever alias is actually bound in FROM/JOIN
-    /// (the node's own alias, or the relationship's for a denormalized/
-    /// embedded node). Used to render `nodes(p)`.
-    #[serde(default)]
-    pub node_id_columns:
-        std::collections::HashMap<String, (String, crate::graph_catalog::config::Identifier)>,
-    /// Maps relationship alias to its Cypher relationship type name. Used to
-    /// render `relationships(p)` as an array of type-name literals, mirroring
-    /// the VLP recursive CTE's `path_relationships` column.
-    #[serde(default)]
-    pub rel_types: std::collections::HashMap<String, String>,
 }
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
@@ -136,65 +86,13 @@ pub struct Join {
     pub table_alias: String,
     pub joining_on: Vec<OperatorApplication>,
     pub join_type: JoinType,
-    /// Pre-filter for LEFT JOIN subquery form:
-    /// `LEFT JOIN (SELECT * FROM table WHERE pre_filter) AS alias ON ...`
-    /// This is used for schema filters and OPTIONAL MATCH WHERE clauses
-    /// to ensure correct LEFT JOIN semantics (filter BEFORE join, not after).
-    pub pre_filter: Option<RenderExpr>,
-    /// For relationship tables: the source node ID column name (e.g., "Person1Id", "from_id")
-    /// Used for NULL checks: `r IS NULL` → `r.from_id IS NULL`
-    /// Extracted during planning from schema lookups, NOT from joining_on (to avoid circular logic)
-    pub from_id_column: Option<String>,
-    /// For relationship tables: the target node ID column name (e.g., "Person2Id", "to_id")
-    pub to_id_column: Option<String>,
-    /// For VLP joins, the original GraphRel for CTE generation
-    #[serde(skip)]
-    pub graph_rel: Option<std::sync::Arc<crate::query_planner::logical_plan::GraphRel>>,
-    /// #601: marks a cardinality-significant cross join for a genuine user-written
-    /// DISCONNECTED comma-cartesian (`MATCH (a),(c)`), rendered `JOIN … ON 1=1`.
-    /// Set on the logical Join by the analyzer and carried through here so
-    /// `remove_unreferenced_joins` will NOT prune it (pruning would change row
-    /// count). Spurious internal `ON 1=1` joins leave this false and stay prunable.
-    #[serde(default)]
-    pub is_cartesian: bool,
     /// Read the table with `FINAL` (its merged rows: `JOIN t AS a FINAL`),
     /// where the dialect has it (P-4c S11k).
     #[serde(default)]
     pub use_final: bool,
 }
 
-impl Join {
-    /// Get the relationship ID column for NULL checks.
-    /// Returns from_id_column if set (populated during planning from schema),
-    /// otherwise extracts from JOIN condition as fallback.
-    /// For `LEFT JOIN Person_knows_Person AS k ON k.Person1Id = a.id`,
-    /// returns "Person1Id".
-    pub fn get_relationship_id_column(&self) -> Option<String> {
-        // First priority: use from_id_column if explicitly set during planning
-        if let Some(ref col) = self.from_id_column {
-            return Some(col.clone());
-        }
-
-        // Fallback: extract from joining_on condition
-        if let Some(first_condition) = self.joining_on.first() {
-            if first_condition.operands.len() >= 2 {
-                // Check if first operand is PropertyAccess with our table_alias
-                if let RenderExpr::PropertyAccessExp(prop) = &first_condition.operands[0] {
-                    if prop.table_alias.0 == self.table_alias {
-                        return Some(prop.column.raw().to_string());
-                    }
-                }
-                // Sometimes the order is reversed: other.column = alias.column
-                if let RenderExpr::PropertyAccessExp(prop) = &first_condition.operands[1] {
-                    if prop.table_alias.0 == self.table_alias {
-                        return Some(prop.column.raw().to_string());
-                    }
-                }
-            }
-        }
-        None
-    }
-}
+impl Join {}
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub enum JoinType {
@@ -239,132 +137,15 @@ pub struct Cte {
     pub cte_name: String,
     pub content: CteContent,
     pub is_recursive: bool,
-    // VLP endpoint information (only populated for VLP CTEs)
-    pub vlp_start_alias: Option<String>, // Internal alias used in VLP CTE (e.g., "start_node")
-    pub vlp_end_alias: Option<String>,   // Internal alias used in VLP CTE (e.g., "end_node")
-    pub vlp_start_table: Option<String>, // Start node table name (e.g., "ldbc.Message")
-    pub vlp_end_table: Option<String>,   // End node table name (e.g., "ldbc.Post")
-    pub vlp_cypher_start_alias: Option<String>, // Original Cypher alias for start node (e.g., "m")
-    pub vlp_cypher_end_alias: Option<String>, // Original Cypher alias for end node (e.g., "p")
-    // 🔧 FIX: Store actual ID columns from relationship schema (not node schema)
-    // For zeek DNS: start_id_col = "id.orig_h", end_id_col = "query" (from DNS_REQUESTED relationship)
-    // NOT Domain.node_id = "name" (that's the logical name, not the column)
-    pub vlp_start_id_col: Option<String>, // Actual ID column for start node JOIN (from rel.from_id)
-    pub vlp_end_id_col: Option<String>,   // Actual ID column for end node JOIN (from rel.to_id)
-    // Path variable name from Cypher (e.g., "p" in MATCH p = (a)-[*]->(b))
-    // Used for rewriting path functions like length(p) → hop_count
-    pub vlp_path_variable: Option<String>,
-    /// Column metadata for deterministic column lookup (from CteGenerationResult)
-    /// This eliminates heuristic column guessing in plan_builder_utils.rs
-    pub columns: Vec<CteColumnMetadata>,
-    /// The table alias to use when referencing this CTE's columns (e.g., "t" for VLP CTEs)
-    pub from_alias: Option<String>,
-    /// Filters to apply to outer SELECT when referencing this CTE (for denormalized VLP end_node_filters)
-    pub outer_where_filters: Option<String>,
-    /// Original exported aliases from the WITH clause (e.g., ["__expand", "a", "allNeighboursCount"])
-    /// Used to build cte_references without relying on CTE name parsing, which fails for
-    /// aliases containing underscores.
-    pub with_exported_aliases: Vec<String>,
-    /// Variable registry capturing the Cypher scope at the point this CTE was built.
-    /// Used during SQL rendering to resolve `alias.property` → correct CTE or DB column.
-    /// Wrapped in Arc to avoid deep-clone stack overflow on complex query plans.
-    #[serde(skip)]
-    pub variable_registry:
-        Option<std::sync::Arc<crate::query_planner::typed_variable::VariableRegistry>>,
 }
 
 impl Cte {
-    /// Create a new non-VLP CTE
     pub fn new(cte_name: String, content: CteContent, is_recursive: bool) -> Self {
         Self {
             cte_name,
             content,
             is_recursive,
-            vlp_start_alias: None,
-            vlp_end_alias: None,
-            vlp_start_table: None,
-            vlp_end_table: None,
-            vlp_cypher_start_alias: None,
-            vlp_cypher_end_alias: None,
-            vlp_start_id_col: None,
-            vlp_end_id_col: None,
-            vlp_path_variable: None,
-            columns: Vec::new(),
-            from_alias: None,
-            outer_where_filters: None,
-            with_exported_aliases: Vec::new(),
-            variable_registry: None,
         }
-    }
-
-    /// Create a new VLP CTE with endpoint information
-    #[allow(clippy::too_many_arguments)] // VLP endpoint metadata: each pair (alias, table, id_col) is needed for both start and end nodes; not factorable without losing clarity
-    pub fn new_vlp(
-        cte_name: String,
-        content: CteContent,
-        is_recursive: bool,
-        start_alias: String,
-        end_alias: String,
-        start_table: String,
-        end_table: String,
-        cypher_start_alias: String,
-        cypher_end_alias: String,
-        start_id_col: String, // 🔧 FIX: Add ID columns from relationship schema
-        end_id_col: String,
-        path_variable: Option<String>, // Path variable name from Cypher (e.g., "p")
-    ) -> Self {
-        Self {
-            cte_name,
-            content,
-            is_recursive,
-            vlp_start_alias: Some(start_alias),
-            vlp_end_alias: Some(end_alias),
-            vlp_start_table: Some(start_table),
-            vlp_end_table: Some(end_table),
-            vlp_cypher_start_alias: Some(cypher_start_alias.clone()),
-            vlp_cypher_end_alias: Some(cypher_end_alias.clone()),
-            vlp_start_id_col: Some(start_id_col.clone()),
-            vlp_end_id_col: Some(end_id_col.clone()),
-            vlp_path_variable: path_variable,
-            // Generate basic VLP column metadata from the endpoint info
-            columns: vec![
-                CteColumnMetadata {
-                    cte_column_name: VLP_START_ID_COLUMN.to_string(),
-                    cypher_alias: cypher_start_alias.clone(),
-                    cypher_property: start_id_col.clone(),
-                    db_column: start_id_col.clone(),
-                    is_id_column: true,
-                    vlp_position: Some(cte_manager::VlpColumnPosition::Start),
-                },
-                CteColumnMetadata {
-                    cte_column_name: VLP_END_ID_COLUMN.to_string(),
-                    cypher_alias: cypher_end_alias.clone(),
-                    cypher_property: end_id_col.clone(),
-                    db_column: end_id_col.clone(),
-                    is_id_column: true,
-                    vlp_position: Some(cte_manager::VlpColumnPosition::End),
-                },
-            ],
-            from_alias: Some(crate::server::query_context::vlp_from_alias()), // #1088: query-scoped VLP FROM alias
-            outer_where_filters: None,
-            with_exported_aliases: Vec::new(),
-            variable_registry: None,
-        }
-    }
-
-    /// Get the ID column metadata for a given Cypher alias
-    pub fn get_id_column_for_alias(&self, alias: &str) -> Option<&CteColumnMetadata> {
-        self.columns
-            .iter()
-            .find(|c| c.cypher_alias == alias && c.is_id_column)
-    }
-
-    /// Get all columns for a given Cypher alias  
-    pub fn get_columns_for_alias(&self, alias: &str) -> Vec<&CteColumnMetadata> {
-        self.columns
-            .iter()
-            .filter(|c| c.cypher_alias == alias)
-            .collect()
     }
 }
 
@@ -389,18 +170,6 @@ pub struct Union {
 pub enum UnionType {
     Distinct,
     All,
-}
-
-#[derive(Debug, PartialEq, Clone)]
-pub struct InSubquery {
-    pub expr: RenderExpr,
-    pub subplan: SubquerySubPlan,
-}
-
-#[derive(Debug, PartialEq, Clone)]
-pub struct SubquerySubPlan {
-    pub select: SelectItems,
-    pub from: FromTable,
 }
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]

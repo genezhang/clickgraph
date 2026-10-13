@@ -84,9 +84,6 @@ fn collect_parameters_recursive(expr: &RenderExpr, params: &mut Vec<String>) {
                 collect_parameters_recursive(else_expr, params);
             }
         }
-        RenderExpr::InSubquery(subq) => {
-            collect_parameters_recursive(&subq.expr, params);
-        }
         RenderExpr::ArraySubscript { array, index } => {
             collect_parameters_recursive(array, params);
             collect_parameters_recursive(index, params);
@@ -116,10 +113,7 @@ fn collect_parameters_recursive(expr: &RenderExpr, params: &mut Vec<String>) {
         | RenderExpr::Star
         | RenderExpr::TableAlias(_)
         | RenderExpr::ColumnAlias(_)
-        | RenderExpr::Column(_)
-        | RenderExpr::ExistsSubquery(_)
-        | RenderExpr::PatternCount(_)
-        | RenderExpr::CteEntityRef(_) => {}
+        | RenderExpr::Column(_) => {}
     }
 }
 
@@ -433,13 +427,6 @@ pub fn render_expr_to_sql_string(expr: &RenderExpr, alias_mapping: &[(String, St
             crate::sql_generator::function_mapper::current_function_mapper()
                 .array_literal(&items.join(", "))
         }
-        RenderExpr::InSubquery(subq) => {
-            format!(
-                "{} IN ({})",
-                render_expr_to_sql_string(&subq.expr, alias_mapping),
-                "/* subquery */"
-            )
-        }
         RenderExpr::Case(case) => {
             let when_clauses: Vec<String> = case
                 .when_then
@@ -465,10 +452,6 @@ pub fn render_expr_to_sql_string(expr: &RenderExpr, alias_mapping: &[(String, St
                     .unwrap_or_default(),
                 when_clauses.join(" ") + &else_clause
             )
-        }
-        RenderExpr::ExistsSubquery(exists) => {
-            // Use the pre-generated SQL from ExistsSubquery
-            format!("EXISTS ({})", exists.sql)
         }
         RenderExpr::ReduceExpr(reduce) => {
             // Route reduce() through the dialect helper so the fold spelling
@@ -520,10 +503,6 @@ pub fn render_expr_to_sql_string(expr: &RenderExpr, alias_mapping: &[(String, St
                 &list_sql,
                 &init_cast,
             )
-        }
-        RenderExpr::PatternCount(pc) => {
-            // Use the pre-generated SQL from PatternCount
-            pc.sql.clone()
         }
         RenderExpr::ArraySubscript { array, index } => {
             let array_sql = render_expr_to_sql_string(array, alias_mapping);
@@ -625,15 +604,6 @@ pub fn render_expr_to_sql_string(expr: &RenderExpr, alias_mapping: &[(String, St
                 })
                 .collect();
             format!("{{{}}}", pairs.join(", "))
-        }
-        RenderExpr::CteEntityRef(cte_ref) => {
-            // CTE entity reference - expand to prefixed column references
-            // For now, return the alias as placeholder - full expansion happens in select_builder
-            log::debug!(
-                "render_expr_to_sql_string: CteEntityRef '{}' from CTE '{}' - should be expanded by select_builder",
-                cte_ref.alias, cte_ref.cte_name
-            );
-            cte_ref.alias.clone()
         }
     }
 }

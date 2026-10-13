@@ -130,26 +130,6 @@ pub struct CteGenerationResult {
 }
 
 impl CteGenerationResult {
-    /// Get the ID column for a given Cypher alias
-    pub fn get_id_column_for_alias(&self, alias: &str) -> Option<&CteColumnMetadata> {
-        self.columns
-            .iter()
-            .find(|c| c.cypher_alias == alias && c.is_id_column)
-    }
-
-    /// Get all columns for a given Cypher alias
-    pub fn get_columns_for_alias(&self, alias: &str) -> Vec<&CteColumnMetadata> {
-        self.columns
-            .iter()
-            .filter(|c| c.cypher_alias == alias)
-            .collect()
-    }
-
-    /// Get the FROM alias to use when referencing this CTE's columns
-    pub fn get_from_alias(&self) -> &str {
-        &self.from_alias
-    }
-
     /// Build column metadata for VLP CTE columns
     ///
     /// VLP CTEs generate columns like: start_id, end_id, start_city, end_city, etc.
@@ -222,34 +202,6 @@ impl CteGenerationResult {
 
         columns
     }
-
-    /// Convert CteGenerationResult to Cte struct for downstream use
-    pub fn to_cte(&self) -> crate::render_plan::Cte {
-        use crate::render_plan::{Cte, CteContent};
-
-        if let Some(ref endpoint) = self.vlp_endpoint {
-            Cte::new_vlp(
-                self.cte_name.clone(),
-                CteContent::RawSql(self.sql.clone()),
-                self.recursive,
-                endpoint.start_alias.clone(),
-                endpoint.end_alias.clone(),
-                endpoint.start_table.clone(),
-                endpoint.end_table.clone(),
-                endpoint.cypher_start_alias.clone(),
-                endpoint.cypher_end_alias.clone(),
-                endpoint.start_id_col.clone(),
-                endpoint.end_id_col.clone(),
-                endpoint.path_variable.clone(),
-            )
-        } else {
-            Cte::new(
-                self.cte_name.clone(),
-                CteContent::RawSql(self.sql.clone()),
-                self.recursive,
-            )
-        }
-    }
 }
 
 /// Main entry point for CTE generation across all schema variations
@@ -319,17 +271,6 @@ impl CteManager {
     /// Get the current context (for incremental building)
     pub fn context(&self) -> &CteGenerationContext {
         &self.context
-    }
-
-    /// Update context with new information
-    pub fn with_context_update<F>(self, updater: F) -> Self
-    where
-        F: FnOnce(CteGenerationContext) -> CteGenerationContext,
-    {
-        Self {
-            context: updater(self.context),
-            ..self
-        }
     }
 }
 
@@ -650,7 +591,7 @@ impl DenormalizedCteStrategy {
             parameters: collect_parameters_from_filters(filters),
             cte_name,
             recursive: true,
-            from_alias: crate::server::query_context::vlp_from_alias(),
+            from_alias: crate::query_planner::join_context::VLP_CTE_FROM_ALIAS.to_string(),
             columns,
             vlp_endpoint: Some(vlp_endpoint),
             // ⚠️ CRITICAL: For denormalized VLP, end_node_filters must be applied in outer SELECT
@@ -2055,7 +1996,7 @@ impl VariableLengthCteStrategy {
             parameters: vec![],
             cte_name,
             recursive: true,
-            from_alias: crate::server::query_context::vlp_from_alias(),
+            from_alias: crate::query_planner::join_context::VLP_CTE_FROM_ALIAS.to_string(),
             columns,
             vlp_endpoint: Some(vlp_endpoint),
             outer_where_filters: None,

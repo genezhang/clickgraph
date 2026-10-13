@@ -117,30 +117,6 @@ pub fn generate_id() -> String {
     format!("t{}", n)
 }
 
-/// Generate a simple alias (`t{N}`) that does NOT collide with any name already
-/// present in `used` — the query-scoped set of user-declared variables plus any
-/// aliases generated earlier in the same batch. The chosen candidate is recorded
-/// in `used` so a subsequent call in the same batch skips it too.
-///
-/// Anonymous nodes/edges draw from the shared `t{N}` counter (`generate_id`); a
-/// user variable named exactly `t{N}` would otherwise collide with a generated
-/// alias, corrupting the node/relationship it aliases (#1081, #1084). Callers seed
-/// `used` from `PlanCtx::reserved_aliases()` (and any locally-bound aliases).
-pub fn generate_id_avoiding(used: &mut std::collections::HashSet<String>) -> String {
-    loop {
-        let candidate = generate_id();
-        if used.insert(candidate.clone()) {
-            return candidate;
-        }
-    }
-}
-
-/// Reset the alias counter (useful for testing to get predictable aliases)
-#[allow(dead_code)]
-pub fn reset_alias_counter() {
-    ALIAS_COUNTER.store(1, Ordering::SeqCst);
-}
-
 /// Restart the generated-alias and CTE counters for deterministic SQL.
 /// Called at the start of each translation (`translate::translate_read`).
 ///
@@ -591,30 +567,6 @@ impl WithClause {
         self
     }
 
-    /// Add ORDER BY to the WithClause
-    pub fn with_order_by(mut self, order_by: Vec<OrderByItem>) -> Self {
-        self.order_by = Some(order_by);
-        self
-    }
-
-    /// Add SKIP to the WithClause
-    pub fn with_skip(mut self, skip: u64) -> Self {
-        self.skip = Some(skip);
-        self
-    }
-
-    /// Add LIMIT to the WithClause
-    pub fn with_limit(mut self, limit: u64) -> Self {
-        self.limit = Some(limit);
-        self
-    }
-
-    /// Add WHERE clause to the WithClause
-    pub fn with_where(mut self, predicate: LogicalExpr) -> Self {
-        self.where_clause = Some(predicate);
-        self
-    }
-
     /// Replace input while preserving all other fields (including cte_name).
     /// Use this instead of manual struct reconstruction to avoid zeroing cte_name.
     pub fn with_new_input(&self, input: Arc<LogicalPlan>) -> Self {
@@ -668,11 +620,6 @@ impl WithClause {
             }
             _ => None,
         }
-    }
-
-    /// Check if a given alias is exported by this WITH clause
-    pub fn exports_alias(&self, alias: &str) -> bool {
-        self.exported_aliases.iter().any(|a| a == alias)
     }
 }
 
@@ -1161,17 +1108,6 @@ impl Unwind {
         Unwind {
             input: new_input,
             expression: self.expression.clone(),
-            alias: self.alias.clone(),
-            label: self.label.clone(),
-            tuple_properties: self.tuple_properties.clone(),
-        }
-    }
-
-    /// Create a new Unwind node with a different expression, preserving metadata
-    pub fn with_new_expression(&self, new_expr: LogicalExpr) -> Self {
-        Unwind {
-            input: self.input.clone(),
-            expression: new_expr,
             alias: self.alias.clone(),
             label: self.label.clone(),
             tuple_properties: self.tuple_properties.clone(),
@@ -1908,67 +1844,6 @@ impl LogicalPlan {
             _ => false,
         }
     }
-
-    /// Check if this plan tree contains a Union node at any depth.
-    pub fn has_union_anywhere(&self) -> bool {
-        // Exhaustive walk (no hand-listed arms) — a `Union` reachable through
-        // ANY child edge counts, including the ones the previous hand-rolled
-        // match omitted (`Cte.input`, `ViewScan.input`, and the write-op
-        // inputs). See REFACTORING_SAFETY_PLAN §4.1.
-        self.any_node(|node| matches!(node, LogicalPlan::Union(_)))
-    }
-
-    /// Count total number of nodes in the plan tree.
-    /// Used to detect plan explosion (e.g., exponential growth from UNION distribution).
-    /// Returns early with the cap value if the count exceeds `cap` to avoid
-    /// spending time counting a massive tree we're going to reject anyway.
-    pub fn count_plan_nodes(&self, cap: usize) -> usize {
-        self.count_plan_nodes_impl(cap, 0)
-    }
-
-    fn count_plan_nodes_impl(&self, cap: usize, current: usize) -> usize {
-        if current >= cap {
-            return current;
-        }
-        let current = current + 1;
-        match self {
-            LogicalPlan::Empty | LogicalPlan::ViewScan(_) | LogicalPlan::PageRank(_) => current,
-            LogicalPlan::Cte(cte) => cte.input.count_plan_nodes_impl(cap, current),
-            LogicalPlan::GraphNode(gn) => gn.input.count_plan_nodes_impl(cap, current),
-            LogicalPlan::Filter(f) => f.input.count_plan_nodes_impl(cap, current),
-            LogicalPlan::Projection(p) => p.input.count_plan_nodes_impl(cap, current),
-            LogicalPlan::GroupBy(gb) => gb.input.count_plan_nodes_impl(cap, current),
-            LogicalPlan::OrderBy(ob) => ob.input.count_plan_nodes_impl(cap, current),
-            LogicalPlan::Skip(s) => s.input.count_plan_nodes_impl(cap, current),
-            LogicalPlan::Limit(l) => l.input.count_plan_nodes_impl(cap, current),
-            LogicalPlan::GraphJoins(gj) => gj.input.count_plan_nodes_impl(cap, current),
-            LogicalPlan::Unwind(u) => u.input.count_plan_nodes_impl(cap, current),
-            LogicalPlan::WithClause(wc) => wc.input.count_plan_nodes_impl(cap, current),
-            LogicalPlan::GraphRel(gr) => {
-                let c = gr.left.count_plan_nodes_impl(cap, current);
-                let c = gr.center.count_plan_nodes_impl(cap, c);
-                gr.right.count_plan_nodes_impl(cap, c)
-            }
-            LogicalPlan::CartesianProduct(cp) => {
-                let c = cp.left.count_plan_nodes_impl(cap, current);
-                cp.right.count_plan_nodes_impl(cap, c)
-            }
-            LogicalPlan::Union(u) => {
-                let mut c = current;
-                for input in &u.inputs {
-                    c = input.count_plan_nodes_impl(cap, c);
-                    if c >= cap {
-                        return c;
-                    }
-                }
-                c
-            }
-            LogicalPlan::Create(c) => c.input.count_plan_nodes_impl(cap, current),
-            LogicalPlan::SetProperties(sp) => sp.input.count_plan_nodes_impl(cap, current),
-            LogicalPlan::Delete(d) => d.input.count_plan_nodes_impl(cap, current),
-            LogicalPlan::Remove(r) => r.input.count_plan_nodes_impl(cap, current),
-        }
-    }
 }
 
 /// Pruning signal returned by a [`LogicalPlan::walk`] visitor that wants to
@@ -1986,159 +1861,6 @@ pub enum Descend {
     Yes,
     /// Do NOT visit this node's children; continue the walk elsewhere.
     Skip,
-}
-
-/// The shape of post-`WITH` scope the "keep the hop's join" repair of #1182 is verified
-/// for (against a brute-force oracle on the standard, polymorphic and denormalized
-/// fixtures): ONE left-deep chain of directed hops, at least one of them a CTE-backed
-/// variable-length path written in its own direction, with a WITH-carried node only as
-/// the chain's FIRST node — or, for a path chain, two carried nodes joined by one fixed hop
-/// anywhere in it (#1294, #1297). Anything else — a comma pattern, an undirected hop, a path
-/// written backwards, a single carried node in the middle or at the end of the chain (a
-/// closed pattern included) — runs into other, older defects that the repair would turn
-/// from a loud error into silently wrong rows, so it is left exactly as it was.
-///
-/// `is_carried` says whether an alias is bound by a `WITH` CTE; `is_cte_backed_vlp`
-/// whether a variable-length `GraphRel` renders as a recursive CTE (a render-layer
-/// decision, hence a parameter). An inner `WITH` scope is not looked into.
-fn supported_chain(
-    want_vlp: bool,
-    plan: &LogicalPlan,
-    is_carried: &dyn Fn(&str) -> bool,
-    is_cte_backed_vlp: &dyn Fn(&GraphRel) -> bool,
-) -> bool {
-    fn collect<'a>(node: &'a LogicalPlan, rels: &mut Vec<&'a GraphRel>) -> bool {
-        match node {
-            LogicalPlan::WithClause(_) => true,
-            LogicalPlan::CartesianProduct(_) | LogicalPlan::Union(_) | LogicalPlan::Unwind(_) => {
-                false
-            }
-            LogicalPlan::GraphRel(gr) => {
-                rels.push(gr);
-                node.children().into_iter().all(|c| collect(c, rels))
-            }
-            _ => node.children().into_iter().all(|c| collect(c, rels)),
-        }
-    }
-    let mut rels: Vec<&GraphRel> = Vec::new();
-    let broke = if collect(plan, &mut rels) {
-        None
-    } else {
-        Some(())
-    };
-    if broke.is_some() || rels.is_empty() {
-        return false;
-    }
-    let mut has_vlp = false;
-    let mut has_right_nested = false;
-    let mut bottoms: Vec<&GraphRel> = Vec::new();
-    for gr in &rels {
-        if gr.direction == Direction::Either || gr.was_undirected == Some(true) {
-            return false;
-        }
-        if gr.is_optional.unwrap_or(false) && (!want_vlp || gr.variable_length.is_some()) {
-            return false;
-        }
-        if gr.variable_length.is_some() {
-            // `(a)<-[*]-(b)` is normalized to a path starting at `b`; a hop after it
-            // renders an extra, untied edge join even without a WITH.
-            if gr.direction == Direction::Incoming {
-                return false;
-            }
-            has_vlp |= is_cte_backed_vlp(gr);
-        }
-        // A chain nests on one side only: at most one child is itself a hop.
-        let nested = |p: &LogicalPlan| matches!(p, LogicalPlan::GraphRel(_));
-        match (nested(&gr.left), nested(&gr.right)) {
-            (true, true) => return false,
-            (false, true) => has_right_nested = true,
-            (false, false) => bottoms.push(gr),
-            _ => {}
-        }
-    }
-    // One chain, and a carried node only at its far end: in exactly one connection slot
-    // of the chain, that of its first hop.
-    let [bottom] = bottoms.as_slice() else {
-        return false;
-    };
-    // ... and only ONE carried node, except (path chains only) the two ends of ONE fixed hop
-    // of the chain: `WITH c, z MATCH (z)-[:R]->(c)-[:R*1..2]->(b)` (#1294, the first hop) or
-    // `MATCH (a)-[:R]->(z)-[:R]->(c)-[:R*1..2]->(b)` (#1297, a middle one). Each end may also
-    // be an end of one more hop (a second slot), never a third.
-    let carried_in_chain: std::collections::HashSet<&String> = rels
-        .iter()
-        .flat_map(|r| [&r.left_connection, &r.right_connection])
-        .filter(|a| is_carried(a))
-        .collect();
-    let carried_hop: Option<&&GraphRel> = if want_vlp && carried_in_chain.len() == 2 {
-        rels.iter().find(|r| {
-            r.variable_length.is_none()
-                && r.left_connection != r.right_connection
-                && is_carried(&r.left_connection)
-                && is_carried(&r.right_connection)
-        })
-    } else {
-        None
-    };
-    if carried_in_chain.len() > 1 && carried_hop.is_none() {
-        return false;
-    }
-    // An OPTIONAL hop at a carried node of the pair is not verified: its tie to the WITH CTE
-    // lands in the CTE's INNER join (the NULL-extended rows are lost), or the carried node is
-    // left untied (#1301 review: 0 rows vs 4, 30 vs 22).
-    if carried_hop.is_some()
-        && rels.iter().any(|r| {
-            r.is_optional.unwrap_or(false)
-                && (is_carried(&r.left_connection) || is_carried(&r.right_connection))
-        })
-    {
-        return false;
-    }
-    for gr in &rels {
-        for alias in [&gr.left_connection, &gr.right_connection] {
-            if is_carried(alias) {
-                let slots = rels
-                    .iter()
-                    .flat_map(|r| [&r.left_connection, &r.right_connection])
-                    .filter(|a| *a == alias)
-                    .count();
-                let ok = match carried_hop {
-                    Some(h) => {
-                        (*alias == h.left_connection || *alias == h.right_connection) && slots <= 2
-                    }
-                    None => std::ptr::eq(*gr, *bottom) && slots == 1,
-                };
-                if !ok {
-                    return false;
-                }
-            }
-        }
-    }
-    if want_vlp {
-        has_vlp
-    } else {
-        !has_vlp && has_right_nested
-    }
-}
-
-pub fn is_supported_with_vlp_chain(
-    plan: &LogicalPlan,
-    is_carried: &dyn Fn(&str) -> bool,
-    is_cte_backed_vlp: &dyn Fn(&GraphRel) -> bool,
-) -> bool {
-    supported_chain(true, plan, is_carried, is_cte_backed_vlp)
-}
-
-/// #1195: a post-`WITH` chain of FIXED hops (no path) in which a hop nests on the right of
-/// another (`WITH c MATCH (c)-[:R]->(n1)<-[:R]-(n2)`: the incoming second hop). The nested
-/// pattern's joins are regenerated by the render layer without the first hop's tie to the
-/// WITH CTE (nor its polymorphic type filter); the analyzer's joins are right, so they are kept.
-/// Same chain shape as [`is_supported_with_vlp_chain`].
-pub fn is_supported_right_nested_hop_chain(
-    plan: &LogicalPlan,
-    is_carried: &dyn Fn(&str) -> bool,
-) -> bool {
-    supported_chain(false, plan, is_carried, &|_| false)
 }
 
 impl LogicalPlan {
@@ -2249,21 +1971,6 @@ impl LogicalPlan {
             }
         }
         None
-    }
-
-    /// #1277: identity of a Cypher-UNION arm that survives the analyzer/render hand-off: the sorted
-    /// aliases of the GraphRels it contains.
-    pub fn arm_signature(&self) -> Vec<String> {
-        let mut aliases = Vec::new();
-        self.any_node(|n| {
-            if let LogicalPlan::GraphRel(gr) = n {
-                aliases.push(gr.alias.clone());
-            }
-            false
-        });
-        aliases.sort();
-        aliases.dedup();
-        aliases
     }
 
     /// `true` if any node in the tree satisfies `pred`. Descends fully (never
@@ -2601,17 +2308,6 @@ impl LogicalPlan {
             }
             LogicalPlan::Remove(r) => format!("Remove(items: {})", r.items.len()),
         }
-    }
-
-    /// Check if the logical plan tree contains any variable-length paths
-    pub fn contains_variable_length_path(&self) -> bool {
-        // Exhaustive walk: any GraphRel carrying `variable_length` anywhere in
-        // the tree. Equivalent to the previous fully-enumerated match (which
-        // already handled every variant including the write ops), but the
-        // recursion can no longer drift from the plan structure. §4.1.
-        self.any_node(
-            |node| matches!(node, LogicalPlan::GraphRel(gr) if gr.variable_length.is_some()),
-        )
     }
 }
 

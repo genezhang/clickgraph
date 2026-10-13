@@ -14,6 +14,5 @@ composition (plan builders, WITH→CTE, the 48 repair passes) was deleted.
 | `expression_utils.rs`, `from_table.rs`, `errors.rs` | small helpers |
 
 The SQL text is printed by `sql_generator/emitters/clickhouse/to_sql_query.rs`
-(`render_plan_to_sql_plain`). Fields kept only for the deleted pipeline
-(`variable_registry`, the VLP metadata on `RenderPlan` / `Cte` / `Join`) go in
-S14c5 (`docs/design/EXPLICIT_SCOPE.md` S14).
+(`render_plan_to_sql_plain`). `ViewTableRef.source` (a `LogicalPlan`) goes in
+S14c6 (`docs/design/EXPLICIT_SCOPE.md` S14).

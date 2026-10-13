@@ -103,10 +103,6 @@ pub fn infer_render_type(expr: &RenderExpr) -> Option<RenderType> {
         // ---- Operators ----
         RenderExpr::OperatorApplicationExp(op) => infer_operator_type(op.operator, &op.operands),
 
-        // ---- Known scalar-ish shapes ----
-        RenderExpr::InSubquery(_) | RenderExpr::ExistsSubquery(_) => Some(RenderType::Boolean),
-        RenderExpr::PatternCount(_) => Some(RenderType::Integer),
-
         // ---- Everything else: unknown (conservative) ----
         // Column (bare, no alias→label), TableAlias, ColumnAlias, Parameter,
         // Raw, Star, MapLiteral, Case, ReduceExpr, ArraySubscript (element type

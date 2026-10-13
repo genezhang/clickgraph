@@ -5174,9 +5174,25 @@ slice that will handle it.
       - `CLICKGRAPH_STATS_ENABLED` is now read by nothing: its fetch stays
         until decided (kept for the lowering's join ordering, S11o10, or
         removed).
-    - [ ] **S14c5: the printer and context cleanup** (the name-keyed
-      registries of `query_context`, the legacy fields of `RenderPlan` /
-      `Cte` / `Join`, the non-plain `ToSql` branches; coverage-guided).
+    - [x] **S14c5: the printer, the IR and the query context** (~5k
+      lines). The printer is plain only: the name-keyed `PropertyAccessExp`
+      resolution (variable registry, multi-type VLP JSON, `__vlp_bare_col`)
+      and the plain-render flag are gone. `QueryContext` keeps the dialect,
+      schema, counters, reduce binder types, list columns and the alias →
+      label map (type inference reads it); 24 registries are gone with
+      their accessors and guards (each read only a value no live code
+      wrote: denormalized and union-arm aliases, own-table joins,
+      relationship columns, multi-type VLP aliases, the VLP FROM alias,
+      now the constant, the CTE alias scope, the WITH CTE identity / labels
+      / scope generation, the EXISTS outer aliases, …). `RenderPlan`,
+      `Cte` and `Join` lose the fields no code read (`variable_registry`,
+      the VLP metadata, `fixed_path_info`, `pre_filter`, `graph_rel`, …),
+      `RenderExpr` the variants nothing built (`ExistsSubquery`,
+      `InSubquery`, `PatternCount`, `CteEntityRef`), `typed_variable` and
+      the legacy join context (its VLP constants kept). Found by removing
+      what no code references (pub items included) until none remained.
+      - The corpus goldens byte-identical, census 1477, the ratchet's
+        decreases recorded, chdb `writes_e2e` 18/20 (#1436).
     - [ ] **S14c6: the types** (`ViewTableRef.source`, the `LogicalExpr`
       subquery variants, `LogicalPlan` itself; PageRank's CALL to a
       config), then the survivors moved (`LogicalExpr` to `bound_plan`, the

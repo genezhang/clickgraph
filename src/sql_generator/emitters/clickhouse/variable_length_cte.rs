@@ -1670,19 +1670,10 @@ impl<'a> VariableLengthCteGenerator<'a> {
     pub fn generate_cte(&self) -> Cte {
         let cte_sql = self.generate_recursive_sql();
 
-        Cte::new_vlp(
+        Cte::new(
             self.cte_name.clone(),
             crate::render_plan::CteContent::RawSql(cte_sql),
             true, // is_recursive
-            self.start_node_alias.clone(),
-            self.end_node_alias.clone(),
-            self.start_node_table.clone(),
-            self.end_node_table.clone(),
-            self.start_cypher_alias.clone(),   // Add Cypher alias
-            self.end_cypher_alias.clone(),     // Add Cypher alias
-            self.start_node_id_column.clone(), // 🔧 FIX: Pass actual ID columns (from rel schema)
-            self.end_node_id_column.clone(),
-            self.path_variable.clone(), // Path variable for length(p), nodes(p) rewriting
         )
     }
 

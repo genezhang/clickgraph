@@ -1,11 +1,6 @@
 use serde::{Deserialize, Serialize};
 
 use crate::graph_catalog::expression_parser::PropertyValue;
-use crate::render_plan::RenderPlan;
-
-use crate::query_planner::logical_expr::{EntityType, PathPattern};
-use crate::query_planner::logical_plan::LogicalPlan;
-use crate::utils::serde_arc;
 
 // Re-export schema name accessors from the unified query context
 // See server/query_context.rs for the task_local! implementation with .scope() support
@@ -42,22 +37,12 @@ pub enum RenderExpr {
 
     Case(RenderCase),
 
-    InSubquery(InSubquery),
-
-    /// EXISTS subquery expression — checks if a pattern exists. Carries the
-    /// structural `subplan` plus a validated SQL cache (see [`ExistsSubquery`]).
-    ExistsSubquery(ExistsSubquery),
-
     /// Reduce expression: fold list into single value
     ReduceExpr(ReduceExpr),
 
     /// Map literal: {key1: value1, key2: value2}
     /// Used in duration({days: 5}), point({x: 1, y: 2}), etc.
     MapLiteral(Vec<(String, RenderExpr)>),
-
-    /// Pattern count for `size((n)-[:REL]->())` — carries the structural
-    /// `pattern` plus a validated SQL cache (see [`PatternCount`]).
-    PatternCount(PatternCount),
 
     /// Array subscript: `array[index]`
     /// Access element at specified index (1-based in Cypher, 0-based in ClickHouse)
@@ -73,10 +58,6 @@ pub enum RenderExpr {
         from: Option<Box<RenderExpr>>,
         to: Option<Box<RenderExpr>>,
     },
-
-    /// CTE Entity Reference: A node or relationship exported through a WITH clause
-    /// Contains information needed to expand the reference to all its properties
-    CteEntityRef(CteEntityRef),
 }
 
 /// Decision returned by a [`map_render_expr`] rewrite closure for a node.
@@ -187,11 +168,7 @@ where
         | RenderExpr::TableAlias(_)
         | RenderExpr::ColumnAlias(_)
         | RenderExpr::Column(_)
-        | RenderExpr::Parameter(_)
-        | RenderExpr::InSubquery(_)
-        | RenderExpr::ExistsSubquery(_)
-        | RenderExpr::PatternCount(_)
-        | RenderExpr::CteEntityRef(_) => expr.clone(),
+        | RenderExpr::Parameter(_) => expr.clone(),
     }
 }
 
@@ -310,54 +287,8 @@ where
         | RenderExpr::TableAlias(_)
         | RenderExpr::ColumnAlias(_)
         | RenderExpr::Column(_)
-        | RenderExpr::Parameter(_)
-        | RenderExpr::InSubquery(_)
-        | RenderExpr::ExistsSubquery(_)
-        | RenderExpr::PatternCount(_)
-        | RenderExpr::CteEntityRef(_) => {}
+        | RenderExpr::Parameter(_) => {}
     }
-}
-
-/// CTE Entity Reference for render plan
-/// Represents a node or relationship that was exported through a WITH clause
-#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
-pub struct CteEntityRef {
-    /// Name of the CTE containing the entity's data (e.g., "with_u_cte_1")
-    pub cte_name: String,
-    /// Original alias of the entity (e.g., "u")
-    pub alias: String,
-    /// Type of entity: Node or Relationship  
-    pub entity_type: EntityType,
-    /// List of column names available in the CTE (prefixed with alias_)
-    /// e.g., ["u_user_id", "u_name", "u_email"]
-    pub columns: Vec<String>,
-}
-
-/// Pattern count for `size()` on patterns.
-///
-/// Carries the structural `pattern` (the source of truth) alongside a `sql`
-/// cache that is rendered *and validated* once at `LogicalExpr` → `RenderExpr`
-/// conversion via [`render_pattern_count_sql`]. Today every consumer reads the
-/// `sql` cache; the `pattern` is retained so a later slice (#613) can make the
-/// expression rewriters recurse into it. Until then the rewriters still SKIP
-/// this variant, so the cache stays authoritative and generation is unaffected
-/// by scope rewriting.
-#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
-pub struct PatternCount {
-    /// Structural pattern being counted — source of truth for the `sql` cache.
-    pub pattern: PathPattern,
-    /// Validated pre-rendered SQL for the pattern-count subquery
-    /// (`coalesce(<count-subquery>, 0)`), cached from `pattern` at conversion.
-    pub sql: String,
-    /// #614: outer-scope aliases the correlated subquery references (the
-    /// pattern's correlation anchors — the start node for pattern counts),
-    /// recorded structurally at generation. Scanning the opaque SQL instead
-    /// also picks up table/database names, which made alias-classification
-    /// passes (e.g. the #479/#552 optional-join fold's exactly-one-alias
-    /// grouping) misclassify the expression. Empty means "unknown" —
-    /// consumers fall back to the SQL scan.
-    #[serde(default)]
-    pub correlated_aliases: Vec<String>,
 }
 
 /// Reduce expression for folding a list into a single value
@@ -373,38 +304,6 @@ pub struct ReduceExpr {
     pub list: Box<RenderExpr>,
     /// Expression evaluated for each element
     pub expression: Box<RenderExpr>,
-}
-
-/// EXISTS subquery for render plan.
-///
-/// Carries the structural `subplan` (the EXISTS pattern's logical plan, the
-/// source of truth) alongside a `sql` cache rendered *and validated* once at
-/// `LogicalExpr` → `RenderExpr` conversion via [`generate_exists_sql`]. Today
-/// every consumer reads the `sql` cache; the `subplan` is retained so a later
-/// slice (#595/#613 forward-resolution) can make the expression rewriters
-/// recurse into it. Until then the rewriters still SKIP this variant, so the
-/// cache stays authoritative and generation is unaffected by scope rewriting.
-#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
-pub struct ExistsSubquery {
-    /// Structural EXISTS pattern — source of truth for the `sql` cache.
-    #[serde(with = "serde_arc")]
-    pub subplan: std::sync::Arc<LogicalPlan>,
-    /// Validated pre-rendered SQL for the EXISTS subquery body (WITHOUT the
-    /// outer `EXISTS (...)` wrapper — that is applied at the emit sites),
-    /// cached from `subplan` at conversion.
-    pub sql: String,
-    /// #614: outer-scope aliases the correlated subquery references (the
-    /// endpoints classified outer-bound during generation, #596). Same
-    /// rationale and empty-means-unknown fallback as
-    /// [`PatternCount::correlated_aliases`].
-    #[serde(default)]
-    pub correlated_aliases: Vec<String>,
-}
-
-#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
-pub struct InSubquery {
-    pub expr: Box<RenderExpr>,
-    pub subplan: Box<RenderPlan>,
 }
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]

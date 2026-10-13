@@ -16,9 +16,4 @@ impl FromTable {
             joins: Vec::new(),
         }
     }
-
-    /// Add a join to this FromTable
-    pub fn add_join(&mut self, join: Join) {
-        self.joins.push(join);
-    }
 }
