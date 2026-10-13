@@ -33,8 +33,8 @@
 # the planner now lifts `DELETE` / `SET` / `REMOVE` to peel the write off
 # the root, runs the inner read pipeline through type inference (so an
 # untyped `MATCH (n)` expands to a Union of typed branches), then re-wraps;
-# the write_plan_builder fans out one DELETE per resolved node label via
-# `find_all_alias_labels` + `slice_plan_to_label`. Of the ungated scenarios:
+# the write planner (now `bound_plan::write`, P-4c S13) issues one DELETE
+# per resolved node label. Of the ungated scenarios:
 #   * [1] [2] — `MATCH (n) DELETE n` / `MATCH (n) DETACH DELETE n` after
 #     `CREATE ()` over the universal TCK schema. The Union expansion
 #     produces one DELETE per node label catalogued by `schema_gen.rs`;

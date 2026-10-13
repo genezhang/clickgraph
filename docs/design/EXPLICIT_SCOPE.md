@@ -5140,9 +5140,14 @@ slice that will handle it.
         their modules (S14c2, S14c3). The 29 parse-error goldens per
         dialect lock the legacy parser's text, which the read seam still
         answers with (`translate_text_read`).
-    - [ ] **S14c2: the legacy write planner** (`write_plan_builder`,
-      `write_clause_builder`, the rest of `write_guard`, the write
-      `LogicalPlan` variants).
+    - [x] **S14c2: the legacy write planner.** `write_plan_builder`,
+      `write_clause_builder`, `write_guard` and `write_sql_tests` (~3k
+      lines); the legacy plan builder refuses write clauses. `ExecutorKind`
+      (the chdb-only write gate) moved into `clickgraph-embedded`, the only
+      user, with its message. The write `LogicalPlan` variants stay until
+      the planner goes (S14c4: every analyzer match has their arm).
+      Corpus goldens byte-identical, census 1477, the ratchet's decreases
+      recorded; chdb `writes_e2e` 18/20 (#1436's 2, as on main).
     - [ ] **S14c3: render composition and the emitter's repairs**
       (`plan_builder*`, `with_to_cte`, the builders, `cte_extraction` but
       the two functions the path generator reads, `render_plan_to_sql`
