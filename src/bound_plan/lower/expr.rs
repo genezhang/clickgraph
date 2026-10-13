@@ -413,7 +413,7 @@ impl Lowerer<'_> {
                 {
                     return unsupported("CASE of nodes or relationships of a list");
                 }
-                RenderExpr::Case(self.case(c, items)?)
+                self.case(c, items)?
             }
             LogicalExpr::ReduceExpr(r) => RenderExpr::ReduceExpr(ReduceExpr {
                 accumulator: r.accumulator.clone(),
@@ -718,6 +718,13 @@ impl Lowerer<'_> {
         }))
     }
 
+    /// Whether `a` and `b` are a boolean and a number or a string (in either
+    /// order): never equal, of no order (#1470).
+    pub(super) fn apart(&self, a: &LogicalExpr, b: &LogicalExpr) -> bool {
+        let boolean = |e: &LogicalExpr| self.kind(e) == Kind::Boolean;
+        (boolean(a) && self.never_boolean(b)) || (self.never_boolean(a) && boolean(b))
+    }
+
     /// Whether list `e` may hold a boolean, and whether it may hold a
     /// number or a string (`never_boolean`), as far as known here.
     fn list_elements(&self, e: &LogicalExpr) -> (bool, bool) {
@@ -752,37 +759,35 @@ impl Lowerer<'_> {
     /// Cypher: they are not equal (`=` false, `<>` true), have no order
     /// (`<` … NULL), and are NULL when either is; `x IN [ … ]` is an `=` per
     /// element; `+` is a type error. `None`: not such an operator.
-    fn boolean_operator(&self, op: &LOp, items: &Items) -> Result<Option<RenderExpr>, LowerError> {
+    pub(super) fn boolean_operator(
+        &self,
+        op: &LOp,
+        items: &Items,
+    ) -> Result<Option<RenderExpr>, LowerError> {
         use lx::Operator as O;
         let boolean = |e: &LogicalExpr| self.kind(e) == Kind::Boolean;
-        let apart = |a: &LogicalExpr, b: &LogicalExpr| {
-            (boolean(a) && self.never_boolean(b)) || (self.never_boolean(a) && boolean(b))
-        };
+        let apart = |a: &LogicalExpr, b: &LogicalExpr| self.apart(a, b);
         let [a, b] = op.operands.as_slice() else {
             return Ok(None);
         };
-        // Lists whose elements at one position may be a boolean and a number
-        // or a string: ClickHouse compares them as numbers.
-        let lists_apart = match (a, b) {
-            (LogicalExpr::List(xs), LogicalExpr::List(ys)) => {
+        // Lists of which one may hold a boolean where the other holds a
+        // number or a string: ClickHouse compares them as numbers. Lists of
+        // different lengths are not equal whatever they hold.
+        let may_pair = || {
+            let (ea, eb) = (self.list_elements(a), self.list_elements(b));
+            (ea.0 && eb.1) || (ea.1 && eb.0)
+        };
+        let lists_apart = match (op.operator, a, b) {
+            (O::Equal | O::NotEqual, LogicalExpr::List(xs), LogicalExpr::List(ys)) => {
                 xs.len() == ys.len() && xs.iter().zip(ys).any(|(x, y)| apart(x, y))
             }
-            _ => {
-                let (ea, eb) = (self.list_elements(a), self.list_elements(b));
-                (ea.0 && eb.1) || (ea.1 && eb.0)
+            (O::Equal | O::NotEqual, _, _) => may_pair(),
+            (O::LessThan | O::GreaterThan | O::LessThanEqual | O::GreaterThanEqual, _, _) => {
+                may_pair()
             }
+            _ => false,
         };
-        if lists_apart
-            && matches!(
-                op.operator,
-                O::Equal
-                    | O::NotEqual
-                    | O::LessThan
-                    | O::GreaterThan
-                    | O::LessThanEqual
-                    | O::GreaterThanEqual
-            )
-        {
+        if lists_apart {
             return unsupported("a list of booleans compared with a list of other values");
         }
         match op.operator {
@@ -862,9 +867,18 @@ impl Lowerer<'_> {
                 }
                 Ok(None)
             }
-            O::Addition if boolean(a) || boolean(b) => {
-                // A list's `+` was lowered before (`list_addition`).
-                unsupported("+ of a boolean (Neo4j: a type error)")
+            // A list's `+` was lowered before (`list_addition`); with NULL
+            // it is NULL.
+            O::Addition
+            | O::Subtraction
+            | O::Multiplication
+            | O::Division
+            | O::ModuloDivision
+            | O::Exponentiation
+                if (boolean(a) && (boolean(b) || self.never_boolean(b)))
+                    || (boolean(b) && self.never_boolean(a)) =>
+            {
+                unsupported("arithmetic of a boolean (Neo4j: a type error)")
             }
             _ => Ok(None),
         }
@@ -1505,24 +1519,36 @@ impl Lowerer<'_> {
         })
     }
 
-    fn case(&self, c: &LogicalCase, items: &Items) -> Result<RenderCase, LowerError> {
-        Ok(RenderCase {
-            expr: c
-                .expr
-                .as_ref()
-                .map(|e| self.expr(e, items).map(Box::new))
-                .transpose()?,
-            when_then: c
-                .when_then
-                .iter()
-                .map(|(w, t)| Ok((self.expr(w, items)?, self.expr(t, items)?)))
-                .collect::<Result<_, LowerError>>()?,
-            else_expr: c
-                .else_expr
-                .as_ref()
-                .map(|e| self.expr(e, items).map(Box::new))
-                .transpose()?,
-        })
+    fn case(&self, c: &LogicalCase, items: &Items) -> Result<RenderExpr, LowerError> {
+        let mut when_then = Vec::new();
+        for (w, t) in &c.when_then {
+            let (w_sql, t_sql) = (self.expr(w, items)?, self.expr(t, items)?);
+            // `CASE b WHEN 1 …` of a boolean and a number or a string (or
+            // the other way): never equal, the branch never matches
+            // (ClickHouse would compare them as numbers, #1470).
+            if c.expr.as_ref().is_some_and(|x| self.apart(x, w)) {
+                continue;
+            }
+            when_then.push((w_sql, t_sql));
+        }
+        let expr = c
+            .expr
+            .as_ref()
+            .map(|e| self.expr(e, items).map(Box::new))
+            .transpose()?;
+        let else_expr = c
+            .else_expr
+            .as_ref()
+            .map(|e| self.expr(e, items).map(Box::new))
+            .transpose()?;
+        if when_then.is_empty() {
+            return Ok(else_expr.map_or(RenderExpr::Literal(Literal::Null), |e| *e));
+        }
+        Ok(RenderExpr::Case(RenderCase {
+            expr,
+            when_then,
+            else_expr,
+        }))
     }
 
     /// A bare variable: a projected item, a node / relationship identity, or

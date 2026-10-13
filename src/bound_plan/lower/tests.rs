@@ -6678,10 +6678,88 @@ fn a_boolean_compared_with_a_number_is_a_boolean() {
             "WITH 1 < 2 AS b RETURN b IN range(0, 3) AS w",
             "a boolean looked up in a list of other values (IN)",
         ),
-        ("WITH 1 < 2 AS b RETURN 'a' + b AS w", "+ of a boolean"),
+        (
+            "WITH 1 < 2 AS b RETURN [b] < [1, 2] AS w",
+            "a list of booleans compared with a list of other values",
+        ),
+        (
+            "WITH 1 < 2 AS b RETURN 'a' + b AS w",
+            "arithmetic of a boolean",
+        ),
+        (
+            "WITH 1 < 2 AS b RETURN b - 1 AS w",
+            "arithmetic of a boolean",
+        ),
     ] {
         not_lowered(q, why);
     }
+    // With NULL, `+` is NULL; lists of different lengths are not equal.
+    has(
+        "WITH 1 < 2 AS b RETURN b + null AS r, [b] = [true, false] AS l",
+        &["(1 < 2) + NULL AS \"r\""],
+    );
+    // A simple CASE's branch of the other kind never matches.
+    has(
+        "WITH 1 < 2 AS b RETURN CASE b WHEN 1 THEN 'one' ELSE 'other' END AS c, \
+         CASE b WHEN 1 THEN 'one' END AS d, \
+         CASE b WHEN true THEN 't' WHEN 1 THEN 'one' END AS e",
+        &[
+            "'other' AS \"c\"",
+            "NULL AS \"d\"",
+            "caseWithExpression(1 < 2, true, 't', NULL) AS \"e\"",
+        ],
+    );
+}
+
+/// #1470: a property the schema declares boolean or numeric is compared
+/// with the other kind as Cypher does, in a pattern's property map as in a
+/// WHERE.
+#[test]
+fn a_declared_property_against_the_other_kind() {
+    let schema = GraphSchemaConfig::from_yaml_str(
+        r#"
+name: typed
+graph_schema:
+  nodes:
+    - label: P
+      database: db
+      table: p
+      node_id: id
+      property_mappings: { id: id, ok: ok_flag, n: n }
+      property_types: { ok: boolean, n: integer }
+  edges: []
+"#,
+    )
+    .unwrap()
+    .to_graph_schema()
+    .unwrap();
+    let got = |q: &str| {
+        squash(
+            &translate_bound_plan(q, &schema, &ReadOptions::default())
+                .unwrap_or_else(|e| panic!("{q}: {e}"))
+                .sql,
+        )
+    };
+    for q in [
+        "MATCH (p:P {ok: 1}) RETURN p.id AS i",
+        "MATCH (p:P) WHERE p.ok = 1 RETURN p.id AS i",
+    ] {
+        let sql = got(q);
+        assert!(
+            sql.contains("CASE WHEN v0.ok_flag IS NULL THEN NULL ELSE false END"),
+            "{q}: {sql}"
+        );
+    }
+    let sql = got("MATCH (p:P {n: true}) WHERE NOT p.ok IN [1, 2] RETURN p.id AS i");
+    for part in [
+        "CASE WHEN v0.n IS NULL THEN NULL ELSE false END",
+        "NOT (CASE WHEN v0.ok_flag IS NULL THEN NULL ELSE false END \
+         OR CASE WHEN v0.ok_flag IS NULL THEN NULL ELSE false END)",
+    ] {
+        assert!(sql.contains(part), "missing `{part}` in {sql}");
+    }
+    // Of one kind: compared as before.
+    assert!(got("MATCH (p:P {ok: true}) RETURN p.id AS i").contains("v0.ok_flag = true"));
 }
 
 /// A comparison, `IN`, `IS NULL` or `NOT` operand of another is

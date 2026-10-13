@@ -4702,6 +4702,24 @@ impl<'s> Lowerer<'s> {
         props
             .iter()
             .map(|(prop, value)| {
+                // A boolean and a number or a string are never equal, as in
+                // a WHERE (#1470).
+                let read = LogicalExpr::PropertyAccessExp(
+                    crate::query_planner::logical_expr::PropertyAccess {
+                        table_alias: crate::query_planner::logical_expr::TableAlias(format!(
+                            "v{}",
+                            v.0
+                        )),
+                        column: PropertyValue::Column(prop.clone()),
+                    },
+                );
+                let equal = crate::query_planner::logical_expr::OperatorApplication {
+                    operator: Operator::Equal,
+                    operands: vec![read, value.clone()],
+                };
+                if let Some(e) = self.boolean_operator(&equal, &HashMap::new())? {
+                    return Ok(e);
+                }
                 let lhs = self.property(v, prop)?;
                 let rhs = self.expr(value, &HashMap::new())?;
                 Ok(RenderExpr::OperatorApplicationExp(eq(lhs, rhs)))
