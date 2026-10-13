@@ -5066,8 +5066,20 @@ slice that will handle it.
     - Acceptance: the seam test (`unsupported_reads_fail_on_every_dialect`:
       both dialects `Unsupported`); the census (1477 on both); the
       Databricks executor's mock-server tests.
-  - [ ] **S14b: the embedded write cutover.** What the write planner does
-    not plan is an error, not the legacy write planner's.
+  - [x] **S14b: the embedded write cutover.** What the write planner
+    (`bound_plan::write`, S13) does not plan is an error naming the
+    construct, with what to use instead where there is something ("Not
+    supported: RETURN after a CREATE (run the CREATE, then MATCH …
+    RETURN)", "CREATE of a relationship (use `Connection::create_edge`)",
+    "DELETE of a relationship (use `Connection::delete_edges`)", a reading
+    clause after an updating clause), before anything runs. The legacy
+    write planner (`build_write_plan`) and its write+RETURN re-read
+    (`cypher_to_sql_read_only`) are no longer reached from the embedded
+    connection. It refused the same shapes, so no statement that ran
+    before is lost.
+    - Adversarial review: no lost capability (each shape the legacy
+      planner ran, the write planner plans). Fixed: an unlowered value
+      read twice "not supported" (one prefix now).
   - [ ] **S14c…: the deletion PRs** (the legacy translate route and its
     tests, the analyzer passes, render composition, the repairs, the
     name-keyed maps), then #1392 closed.
