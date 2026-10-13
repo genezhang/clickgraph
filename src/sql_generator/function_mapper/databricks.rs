@@ -87,15 +87,6 @@ fn variant_key(x: &str, depth: usize) -> String {
 pub(crate) struct DatabricksFunctionMapper;
 
 impl FunctionMapper for DatabricksFunctionMapper {
-    fn collect_list(&self) -> &'static str {
-        "collect_list"
-    }
-
-    fn array_element(&self) -> &'static str {
-        // Spark/Databricks: element_at(array, index) is 1-based, matching CH's arrayElement.
-        "element_at"
-    }
-
     fn array_element_or_null(&self, arr: &str, idx: &str) -> String {
         // Spark `element_at(arr, i)` fails on an out-of-bounds index under
         // ANSI mode (Spark 4's and Databricks' default); `try_element_at` is
@@ -123,48 +114,13 @@ impl FunctionMapper for DatabricksFunctionMapper {
         format!("min(CASE WHEN {cond} THEN {val} END)")
     }
 
-    fn min_or_null(&self) -> &'static str {
-        // Spark's `min` already returns NULL on empty input (ANSI), so the
-        // CH-only `minOrNull` quirk doesn't apply — plain `min` is the
-        // direct equivalent.
-        "min"
-    }
-
-    fn array_count(&self) -> &'static str {
-        // Structural mismatch — see module docs. No single function name.
-        // Phase 1.1 resolved this at the call sites via
-        // `emit_array_count_call` in `plan_builder_utils.rs`; the panic
-        // stays as a tripwire for any future caller that doesn't go
-        // through the helper.
-        unimplemented!(
-            "DatabricksFunctionMapper::array_count: Spark has no `arrayCount(pred, arr)`; \
-             use `size(filter(arr, pred))` at the call site (see emit_array_count_call). \
-             This panics so callers can't silently emit broken SQL."
-        );
-    }
-
     fn arrays_overlap(&self) -> &'static str {
         "arrays_overlap"
-    }
-
-    fn json_extract_string(&self) -> &'static str {
-        // The function name is a clean swap; the *argument* needs JSONPath
-        // shape (`$.field` instead of `field`). The call site in
-        // `select_builder.rs` does that rewrite — see Phase 1.1 module docs.
-        "get_json_object"
     }
 
     fn cast_int64(&self) -> &'static str {
         // Spark function-call cast alias for BIGINT.
         "bigint"
-    }
-
-    fn cast_uint8(&self) -> &'static str {
-        // Spark has no unsigned integer type. The values cast here fit in a
-        // signed tinyint (1-byte, -128..127), which matches the range
-        // ClickHouse's UInt8 uses in this codebase (small enum-like values).
-        // Documented as a deliberate widening, not a bug.
-        "tinyint"
     }
 
     fn cast_uint16(&self) -> &'static str {
@@ -276,11 +232,6 @@ impl FunctionMapper for DatabricksFunctionMapper {
         format!("`{}`", name.replace('`', "``"))
     }
 
-    fn cast_as(&self, expr: &str, type_name: &str) -> String {
-        // Spark/ANSI CAST(expr AS TYPE) with an unquoted type keyword.
-        format!("CAST({} AS {})", expr, type_name)
-    }
-
     fn array_slice(&self, arr: &str, offset: &str, length: Option<&str>) -> String {
         // Spark slice(arr, start, length) requires a length, and ERRORS on a
         // negative one — whereas CH's 2-arg arraySlice(arr, offset) silently
@@ -310,21 +261,6 @@ impl FunctionMapper for DatabricksFunctionMapper {
 
     fn timestamp_to_epoch_millis(&self, expr: &str) -> String {
         format!("unix_millis({})", expr)
-    }
-
-    fn json_row_object(&self, columns: &str) -> String {
-        // Spark `to_json(struct(...))` — struct field names become JSON keys and
-        // native types are preserved. Verified live on Databricks SQL:
-        // to_json(struct(p.firstName AS firstName, p.id AS id)) ->
-        // {"firstName":"Alice","id":1} (id stays numeric), and a bare
-        // struct(p.col) yields key `col` (table prefix stripped).
-        format!("to_json(struct({}))", columns)
-    }
-
-    fn try_parse_int128(&self, expr: &str) -> String {
-        // DECIMAL(38,0) covers the full UInt64/Int64 ranges (max 20 digits)
-        // exactly; `try_cast` yields NULL (never an error) on non-integers.
-        format!("try_cast({} AS DECIMAL(38,0))", expr)
     }
 
     fn shortest_path_search(&self) -> Option<super::ShortestPathSearch> {
@@ -605,14 +541,6 @@ impl FunctionMapper for DatabricksFunctionMapper {
         })
     }
 
-    fn id_order_key_nulls_clause(&self) -> &'static str {
-        // Spark/Databricks defaults to NULLS FIRST for ASC (ANSI SQL) —
-        // opposite of ClickHouse's always-NULLS-LAST default. Force LAST
-        // explicitly so a union mixing numeric and non-numeric ids agrees
-        // with the ClickHouse-verified ordering (#556).
-        " NULLS LAST"
-    }
-
     fn string_literal_quote_escape(&self) -> &'static str {
         "\\'"
     }
@@ -663,8 +591,6 @@ mod tests {
     #[test]
     fn databricks_spellings() {
         let m = for_dialect(SqlDialect::Databricks);
-        assert_eq!(m.collect_list(), "collect_list");
-        assert_eq!(m.array_element(), "element_at");
         // element_at fails out of bounds under ANSI mode (Spark 4's and
         // Databricks' default): the NULL-returning accessor is try_element_at.
         assert_eq!(
@@ -676,10 +602,7 @@ mod tests {
             m.min_if("int(hop)", "node_id = 14"),
             "min(CASE WHEN node_id = 14 THEN int(hop) END)"
         );
-        assert_eq!(m.min_or_null(), "min");
-        assert_eq!(m.json_extract_string(), "get_json_object");
         assert_eq!(m.cast_int64(), "bigint");
-        assert_eq!(m.cast_uint8(), "tinyint");
         assert_eq!(m.cast_uint16(), "int");
         assert_eq!(m.cast_float64(), "double");
         assert_eq!(m.cast_string(), "string");
@@ -697,10 +620,6 @@ mod tests {
         assert_eq!(m.epoch_millis_to_timestamp("x"), "timestamp_millis(x)");
         assert_eq!(m.timestamp_to_epoch_millis("x"), "unix_millis(x)");
         assert_eq!(
-            m.json_row_object("a.x AS x, a.y AS y"),
-            "to_json(struct(a.x AS x, a.y AS y))"
-        );
-        assert_eq!(
             m.empty_string_array_cast(),
             "CAST(array() AS ARRAY<STRING>)"
         );
@@ -714,8 +633,6 @@ mod tests {
         // an alias like `` x`y `` would prematurely close the quote.
         assert_eq!(m.quote_alias("x`y"), "`x``y`");
         // ANSI CAST syntax with unquoted type keyword.
-        assert_eq!(m.cast_as("''", "STRING"), "CAST('' AS STRING)");
-        assert_eq!(m.cast_as("NULL", "BIGINT"), "CAST(NULL AS BIGINT)");
         // slice requires a length; the 2-arg CH form computes one.
         assert_eq!(m.array_slice("arr", "2", Some("3")), "slice(arr, 2, 3)");
         assert_eq!(
@@ -759,18 +676,6 @@ mod tests {
         );
         assert_eq!(m.in_list_predicate("x", &[], false), "FALSE");
         assert_eq!(m.in_list_predicate("x", &[], true), "TRUE");
-    }
-
-    /// Documented structural gap: `array_count` has no clean Spark mapping.
-    /// The panic is intentional — the two call sites in
-    /// `plan_builder_utils.rs` branch on dialect and build
-    /// `size(filter(...))` directly when Databricks is active, so they
-    /// never reach this method.
-    #[test]
-    #[should_panic(expected = "Spark has no `arrayCount(pred, arr)`")]
-    fn databricks_array_count_panics() {
-        let m = for_dialect(SqlDialect::Databricks);
-        m.array_count();
     }
 
     /// Outside a task-local scope `current_function_mapper()` defaults to

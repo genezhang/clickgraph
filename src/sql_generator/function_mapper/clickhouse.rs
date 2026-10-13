@@ -6,14 +6,6 @@ use super::FunctionMapper;
 pub(crate) struct ClickhouseFunctionMapper;
 
 impl FunctionMapper for ClickhouseFunctionMapper {
-    fn collect_list(&self) -> &'static str {
-        "groupArray"
-    }
-
-    fn array_element(&self) -> &'static str {
-        "arrayElement"
-    }
-
     fn array_element_or_null(&self, arr: &str, idx: &str) -> String {
         // CH `arr[i]`/`arrayElement` return the element type's default (0, '')
         // for an out-of-range index; `arrayElementOrNull` returns NULL instead,
@@ -43,28 +35,12 @@ impl FunctionMapper for ClickhouseFunctionMapper {
         format!("minIf({val}, {cond})")
     }
 
-    fn min_or_null(&self) -> &'static str {
-        "minOrNull"
-    }
-
-    fn array_count(&self) -> &'static str {
-        "arrayCount"
-    }
-
     fn arrays_overlap(&self) -> &'static str {
         "hasAny"
     }
 
-    fn json_extract_string(&self) -> &'static str {
-        "JSONExtractString"
-    }
-
     fn cast_int64(&self) -> &'static str {
         "toInt64"
-    }
-
-    fn cast_uint8(&self) -> &'static str {
-        "toUInt8"
     }
 
     fn cast_uint16(&self) -> &'static str {
@@ -173,11 +149,6 @@ impl FunctionMapper for ClickhouseFunctionMapper {
         format!("\"{}\"", name.replace('"', "\"\""))
     }
 
-    fn cast_as(&self, expr: &str, type_name: &str) -> String {
-        // ClickHouse function-call CAST with a quoted type string.
-        format!("CAST({}, '{}')", expr, type_name)
-    }
-
     fn array_slice(&self, arr: &str, offset: &str, length: Option<&str>) -> String {
         match length {
             Some(l) => format!("arraySlice({}, {}, {})", arr, offset, l),
@@ -196,14 +167,6 @@ impl FunctionMapper for ClickhouseFunctionMapper {
 
     fn timestamp_to_epoch_millis(&self, expr: &str) -> String {
         format!("toUnixTimestamp64Milli({})", expr)
-    }
-
-    fn json_row_object(&self, columns: &str) -> String {
-        format!("formatRowNoNewline('JSONEachRow', {})", columns)
-    }
-
-    fn try_parse_int128(&self, expr: &str) -> String {
-        format!("toInt128OrNull({})", expr)
     }
 
     fn shortest_path_search(&self) -> Option<super::ShortestPathSearch> {
@@ -415,12 +378,6 @@ impl FunctionMapper for ClickhouseFunctionMapper {
         })
     }
 
-    fn id_order_key_nulls_clause(&self) -> &'static str {
-        // No-op for CH — NULL already sorts last for both ASC and DESC by
-        // default — but explicit for parity with Databricks (#556).
-        " NULLS LAST"
-    }
-
     fn string_literal_quote_escape(&self) -> &'static str {
         "''"
     }
@@ -479,16 +436,6 @@ mod tests {
         let m = ClickhouseFunctionMapper;
         assert_eq!(m.quote_alias("b.id"), "\"b.id\"");
         assert_eq!(m.quote_alias("x\"y"), "\"x\"\"y\"");
-    }
-
-    #[test]
-    fn cast_as_uses_clickhouse_function_call_form() {
-        let m = ClickhouseFunctionMapper;
-        assert_eq!(m.cast_as("''", "String"), "CAST('', 'String')");
-        assert_eq!(
-            m.cast_as("NULL", "Nullable(Int64)"),
-            "CAST(NULL, 'Nullable(Int64)')"
-        );
     }
 
     #[test]
@@ -605,27 +552,12 @@ mod tests {
     }
 
     #[test]
-    fn json_row_object_uses_format_row_no_newline() {
-        let m = ClickhouseFunctionMapper;
-        assert_eq!(
-            m.json_row_object("a.x AS x, a.y AS y"),
-            "formatRowNoNewline('JSONEachRow', a.x AS x, a.y AS y)"
-        );
-    }
-
-    #[test]
     fn min_if_emits_native_clickhouse_form() {
         let m = ClickhouseFunctionMapper;
         assert_eq!(
             m.min_if("toUInt16(hop)", "node_id = 14"),
             "minIf(toUInt16(hop), node_id = 14)"
         );
-    }
-
-    #[test]
-    fn min_or_null_uses_clickhouse_specific_name() {
-        let m = ClickhouseFunctionMapper;
-        assert_eq!(m.min_or_null(), "minOrNull");
     }
 
     #[test]

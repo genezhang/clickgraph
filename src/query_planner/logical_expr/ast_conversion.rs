@@ -312,9 +312,10 @@ impl<'a> TryFrom<open_cypher_parser::ast::FunctionCall<'a>> for LogicalExpr {
             && args.len() == 1
             && matches!(args[0], LogicalExpr::PropertyAccessExp(_))
         {
-            return Ok(super::combinators::is_not_null(
-                args.into_iter().next().expect("len checked == 1"),
-            ));
+            return Ok(LogicalExpr::OperatorApplicationExp(OperatorApplication {
+                operator: Operator::IsNotNull,
+                operands: args,
+            }));
         }
 
         if is_standard_agg || is_passthrough_agg {

@@ -24,10 +24,7 @@ use crate::utils::serde_arc;
 // =============================================================================
 
 mod ast_conversion; // AST to LogicalExpr conversions (From/TryFrom impls)
-pub mod combinators;
 pub mod errors;
-pub mod expression_rewriter;
-pub mod visitors;
 
 /// Type of graph entity (node or relationship).
 /// Used in CteEntityRef to indicate what kind of entity is being referenced.

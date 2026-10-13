@@ -1,8 +1,4 @@
-use std::collections::HashMap;
-use std::sync::Arc;
-
 pub use errors::QueryPlannerError;
-use plan_ctx::PlanCtx;
 use types::QueryType;
 
 use crate::{
@@ -11,14 +7,11 @@ use crate::{
     query_planner::logical_plan::{LogicalPlan, PageRank},
 };
 
-pub mod analyzer;
 pub mod ast_transform;
 mod errors;
 pub mod join_context;
 pub mod logical_expr;
 pub mod logical_plan;
-pub mod optimizer;
-pub mod plan_ctx;
 pub mod transformed;
 pub mod typed_variable;
 pub mod types;
@@ -55,81 +48,6 @@ pub fn get_statement_query_type(statement: &CypherStatement) -> QueryType {
         CypherStatement::ProcedureCall(_) => QueryType::Procedure,
         CypherStatement::CopyTo(_) => QueryType::Read,
     }
-}
-
-/// Evaluate a read query AST and return both the logical plan and the plan context.
-/// The plan context contains analysis-phase metadata (VLP endpoints, property requirements, etc.)
-/// that is needed during the rendering phase.
-pub fn evaluate_read_query(
-    query_ast: OpenCypherQueryAst,
-    current_graph_schema: &GraphSchema,
-    tenant_id: Option<String>,
-    view_parameter_values: Option<HashMap<String, String>>,
-) -> Result<(LogicalPlan, PlanCtx), QueryPlannerError> {
-    let (logical_plan, mut plan_ctx) = logical_plan::evaluate_query(
-        query_ast,
-        current_graph_schema,
-        tenant_id,
-        view_parameter_values,
-        None, // default max_inferred_types
-    )?;
-
-    let logical_plan =
-        analyzer::initial_analyzing(logical_plan, &mut plan_ctx, current_graph_schema)?;
-
-    let logical_plan = optimizer::initial_optimization(logical_plan, &mut plan_ctx)?;
-
-    // Validation now happens in initial_analyzing, so errors propagate cleanly
-    let logical_plan =
-        analyzer::intermediate_analyzing(logical_plan, &mut plan_ctx, current_graph_schema)?;
-
-    let logical_plan = optimizer::final_optimization(logical_plan, &mut plan_ctx)?;
-
-    let logical_plan =
-        analyzer::final_analyzing(logical_plan, &mut plan_ctx, current_graph_schema)?;
-
-    // println!("\n\n plan_ctx after \n {}",plan_ctx);
-    // println!("\n plan after{}", logical_plan);
-
-    let logical_plan =
-        Arc::into_inner(logical_plan).ok_or(QueryPlannerError::LogicalPlanExtractor)?;
-    Ok((logical_plan, plan_ctx))
-}
-
-/// Evaluate a complete Cypher statement which may contain UNION clauses
-/// Returns both the LogicalPlan and the PlanCtx containing analysis-phase metadata
-/// (VLP endpoints, property requirements, etc.) that's needed during rendering.
-pub fn evaluate_read_statement(
-    statement: CypherStatement,
-    current_graph_schema: &GraphSchema,
-    tenant_id: Option<String>,
-    view_parameter_values: Option<HashMap<String, String>>,
-    max_inferred_types: Option<usize>,
-) -> Result<(LogicalPlan, PlanCtx), QueryPlannerError> {
-    let (logical_plan, mut plan_ctx) = logical_plan::evaluate_cypher_statement(
-        statement,
-        current_graph_schema,
-        tenant_id,
-        view_parameter_values,
-        max_inferred_types,
-    )?;
-
-    let logical_plan =
-        analyzer::initial_analyzing(logical_plan, &mut plan_ctx, current_graph_schema)?;
-
-    let logical_plan = optimizer::initial_optimization(logical_plan, &mut plan_ctx)?;
-
-    let logical_plan =
-        analyzer::intermediate_analyzing(logical_plan, &mut plan_ctx, current_graph_schema)?;
-
-    let logical_plan = optimizer::final_optimization(logical_plan, &mut plan_ctx)?;
-
-    let logical_plan =
-        analyzer::final_analyzing(logical_plan, &mut plan_ctx, current_graph_schema)?;
-
-    let logical_plan =
-        Arc::into_inner(logical_plan).ok_or(QueryPlannerError::LogicalPlanExtractor)?;
-    Ok((logical_plan, plan_ctx))
 }
 
 pub fn evaluate_call_query(

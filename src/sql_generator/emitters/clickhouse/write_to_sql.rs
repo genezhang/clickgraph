@@ -16,7 +16,6 @@
 //! ruled out the mutation path.
 
 use crate::render_plan::write_render::{DeleteOp, InsertOp, RowSource, UpdateOp, WriteRenderPlan};
-use crate::render_plan::RenderPlan;
 
 /// Render a `WriteRenderPlan` to one or more SQL statements, in execution
 /// order. Returned vector contains the statements; the executor (Phase 3)
@@ -160,17 +159,12 @@ pub fn probe_update_count_sql(op: &UpdateOp) -> String {
 
 fn render_id_source(source: &RowSource) -> String {
     match source {
-        RowSource::Subquery(plan) => format!("({})", render_subquery(plan.as_ref())),
         RowSource::Sql(sql) | RowSource::Read(sql) => format!("({sql})"),
         RowSource::Ids(ids) => {
             let parts = ids.iter().map(render_expr_inline).collect::<Vec<_>>();
             format!("({})", parts.join(", "))
         }
     }
-}
-
-fn render_subquery(plan: &RenderPlan) -> String {
-    super::to_sql_query::render_plan_to_sql(plan.clone(), 10)
 }
 
 /// Render a `RenderExpr` to an inline SQL fragment suitable for INSERT

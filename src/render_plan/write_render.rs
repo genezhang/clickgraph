@@ -32,7 +32,6 @@
 use serde::{Deserialize, Serialize};
 
 use super::render_expr::RenderExpr;
-use super::RenderPlan;
 
 /// Top-level write plan. Always produced via the dedicated write-render
 /// builder; never reached by the read renderer.
@@ -122,10 +121,6 @@ pub struct CheckTable {
 /// Where the IDs in the WHERE clause of `Update` / `Delete` come from.
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub enum RowSource {
-    /// Read pipeline rendered as a subquery yielding a single ID column.
-    /// The subquery is rendered via the regular `clickhouse_query_generator`,
-    /// then wrapped as `WHERE id_col IN (<subquery>)`.
-    Subquery(Box<RenderPlan>),
     /// A rendered SELECT of a single ID column (the bound plan's,
     /// `bound_plan::write`). Wrapped as `WHERE id_col IN (<sql>)`.
     Sql(String),

@@ -65,14 +65,13 @@
 use serde::{Deserialize, Serialize};
 use std::ops::ControlFlow;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::{collections::HashMap, fmt, sync::Arc};
+use std::{fmt, sync::Arc};
 
 // Import serde_arc modules for serialization
 use crate::utils::serde_arc;
 use crate::utils::serde_arc_vec;
 
 use crate::{
-    graph_catalog::graph_schema::GraphSchema,
     open_cypher_parser::ast::{
         Expression as CypherExpression, OrderByItem as CypherOrderByItem,
         OrerByOrder as CypherOrerByOrder, ReturnItem as CypherReturnItem, WithItem,
@@ -85,241 +84,23 @@ use crate::{
     },
 };
 
-use crate::{
-    open_cypher_parser::ast::{CypherStatement, OpenCypherQueryAst, UnionType as AstUnionType},
-    query_planner::logical_plan::plan_builder::LogicalPlanResult,
-};
-
-use super::plan_ctx::PlanCtx;
-
 pub mod errors;
 pub use errors::LogicalPlanError;
 // pub mod logical_plan;
-mod filter_view;
-pub mod match_clause; // Public for schema_inference to access ViewScan generation functions
-mod optional_match_clause;
-mod order_by_clause;
-pub mod plan_builder;
-mod projection_view;
-mod return_clause;
-mod skip_n_limit_clause;
-mod unwind_clause;
 mod view_scan;
-mod where_clause;
-mod with_clause;
 
 pub use view_scan::ViewScan;
 
-pub fn evaluate_query(
-    query_ast: OpenCypherQueryAst<'_>,
-    schema: &GraphSchema,
-    tenant_id: Option<String>,
-    view_parameter_values: Option<HashMap<String, String>>,
-    max_inferred_types: Option<usize>,
-) -> LogicalPlanResult<(Arc<LogicalPlan>, PlanCtx)> {
-    plan_builder::build_logical_plan(
-        &query_ast,
-        schema,
-        tenant_id,
-        view_parameter_values,
-        max_inferred_types,
-    )
-}
-
-/// Helper function to detect empty or filtered UNION branches
-///
-/// Track C filters branches to 0 types, but creates different "empty" representations:
-/// - Explicit: LogicalPlan::Empty (for nodes filtered to 0 types)
-/// - Implicit: GraphRel{labels: None} (for relationships filtered to 0 types)
-///
-/// This function detects both forms and recursively checks wrapped plans.
-fn is_empty_or_filtered_branch(plan: &LogicalPlan) -> bool {
-    match plan {
-        // Explicit empty
-        LogicalPlan::Empty => true,
-
-        // Implicit empty: relationship filtered to 0 types by Track C
-        // Check both None and empty vector cases for consistency with analyzer checks
-        LogicalPlan::GraphRel(rel)
-            if rel.labels.as_ref().is_none_or(|labels| labels.is_empty()) =>
-        {
-            log::debug!(
-                "Detected filtered GraphRel (labels=None or empty) for alias '{}'",
-                rel.alias
-            );
-            true
-        }
-
-        // Check if wrapped plan contains Empty
-        // BUT: GraphNode(input=Empty) with no label is a TypeInference placeholder,
-        // not a filtered-out branch. Only treat as empty if label was explicitly set.
-        LogicalPlan::GraphNode(node) => {
-            matches!(node.input.as_ref(), LogicalPlan::Empty) && node.label.is_some()
-        }
-
-        // Recursively check wrapped plans (common UNION branch structures)
-        // Includes all wrapper types that could appear in UNION branches
-        LogicalPlan::Projection(proj) => is_empty_or_filtered_branch(&proj.input),
-        LogicalPlan::Filter(f) => is_empty_or_filtered_branch(&f.input),
-        LogicalPlan::GraphJoins(joins) => is_empty_or_filtered_branch(&joins.input),
-        LogicalPlan::Limit(limit) => is_empty_or_filtered_branch(&limit.input),
-        LogicalPlan::Skip(skip) => is_empty_or_filtered_branch(&skip.input),
-        LogicalPlan::OrderBy(order) => is_empty_or_filtered_branch(&order.input),
-        LogicalPlan::GroupBy(group) => is_empty_or_filtered_branch(&group.input),
-
-        // Not empty
-        _ => false,
-    }
-}
-
-/// Evaluate a complete Cypher statement which may contain UNION clauses
-pub fn evaluate_cypher_statement(
-    statement: CypherStatement<'_>,
-    schema: &GraphSchema,
-    tenant_id: Option<String>,
-    view_parameter_values: Option<HashMap<String, String>>,
-    max_inferred_types: Option<usize>,
-) -> LogicalPlanResult<(Arc<LogicalPlan>, PlanCtx)> {
-    // Handle standalone procedure calls
-    match statement {
-        CypherStatement::ProcedureCall(proc_call) => {
-            // Procedure calls should be handled separately
-            Err(LogicalPlanError::QueryPlanningError(format!(
-                "Standalone procedure call '{}' should be handled by procedures module, not query planner",
-                proc_call.procedure_name
-            )))
-        }
-        CypherStatement::CopyTo(_) => Err(LogicalPlanError::QueryPlanningError(
-            "COPY TO statements are handled at the handler level, not by query planner".to_string(),
-        )),
-        CypherStatement::Query {
-            query,
-            union_clauses,
-        } => {
-            // If no union clauses, just evaluate the single query
-            if union_clauses.is_empty() {
-                return evaluate_query(
-                    *query,
-                    schema,
-                    tenant_id,
-                    view_parameter_values,
-                    max_inferred_types,
-                );
-            }
-
-            // Issue #514: Neo4j rejects a UNION chain that mixes UNION and UNION ALL
-            // ("Invalid combination of UNION and UNION ALL"). Previously this silently
-            // coerced the whole chain to the *first* clause's type. Validate up front,
-            // before building any logical plans, that every arm agrees.
-            if let Some(first_union) = union_clauses.first() {
-                let expected = &first_union.union_type;
-                if union_clauses.iter().any(|uc| &uc.union_type != expected) {
-                    return Err(LogicalPlanError::MixedUnionTypes);
-                }
-            }
-
-            // Build logical plans for all queries
-            let mut all_plans: Vec<Arc<LogicalPlan>> = Vec::new();
-            #[allow(unused_assignments)]
-            let mut combined_ctx: Option<PlanCtx> = None;
-
-            // Use the module-level is_empty_or_filtered_branch (no need for duplicate)
-
-            // First query
-            let (first_plan, first_ctx) = plan_builder::build_logical_plan(
-                &query,
-                schema,
-                tenant_id.clone(),
-                view_parameter_values.clone(),
-                max_inferred_types,
-            )?;
-            // Only add non-empty branches
-            if !is_empty_or_filtered_branch(&first_plan) {
-                all_plans.push(first_plan);
-                combined_ctx = Some(first_ctx);
-            } else {
-                log::info!(
-                    "🔀 UNION first branch filtered to 0 types by Track C - skipping empty branch"
-                );
-                // Don't use empty branch's context as base — it has incomplete variable info
-                // (e.g., relationship aliases registered with empty labels).
-                // The first non-empty branch's context will be used instead.
-                combined_ctx = None;
-            }
-
-            // Track the union type (all must be the same for simplicity, or we use the first UNION's type)
-            let union_type = if let Some(first_union) = union_clauses.first() {
-                match first_union.union_type {
-                    AstUnionType::All => UnionType::All,
-                    AstUnionType::Distinct => UnionType::Distinct,
-                }
-            } else {
-                UnionType::All
-            };
-
-            // Build plans for each union clause
-            for union_clause in union_clauses {
-                let (plan, ctx) = plan_builder::build_logical_plan(
-                    &union_clause.query,
-                    schema,
-                    tenant_id.clone(),
-                    view_parameter_values.clone(),
-                    max_inferred_types,
-                )?;
-
-                // Track C Property Optimization: Skip empty branches
-                // When Track C filters a branch to 0 matching types, detect and skip it
-                // This handles both explicit Empty and implicit GraphRel{labels: None}
-                if !is_empty_or_filtered_branch(plan.as_ref()) {
-                    all_plans.push(plan);
-                    // Merge the context from this union branch into combined context
-                    if let Some(ref mut combined) = combined_ctx {
-                        combined.merge(ctx);
-                    } else {
-                        // First non-empty branch becomes the base context
-                        combined_ctx = Some(ctx);
-                    }
-                } else {
-                    log::info!(
-                        "🔀 UNION branch filtered to 0 types by Track C - skipping empty branch"
-                    );
-                }
-            }
-
-            // Handle different scenarios based on non-empty branch count
-            let union_plan = match all_plans.len() {
-                0 => {
-                    // All branches filtered to 0 types - return empty result
-                    log::info!("🔀 All UNION branches empty - returning Empty plan (0 rows)");
-                    Arc::new(LogicalPlan::Empty)
-                }
-                1 => {
-                    // Only one branch has data - no UNION needed
-                    log::info!("🔀 Only 1 non-empty UNION branch - skipping UNION wrapper");
-                    all_plans.into_iter().next().unwrap()
-                }
-                _ => {
-                    // Multiple branches with data - create UNION
-                    log::info!(
-                        "🔀 Creating UNION with {} non-empty branches",
-                        all_plans.len()
-                    );
-                    Arc::new(LogicalPlan::Union(Union {
-                        inputs: all_plans,
-                        union_type,
-                        is_cypher_union: true,
-                    }))
-                }
-            };
-
-            let final_ctx = combined_ctx.ok_or_else(|| {
-                LogicalPlanError::QueryPlanningError(
-                    "Failed to merge plan contexts for UNION".to_string(),
-                )
-            })?;
-            Ok((union_plan, final_ctx))
-        }
-    }
+/// Type combination for multi-type pattern resolution
+/// Represents one valid (from_label, rel_type, to_label) tuple from schema
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct TypeCombination {
+    /// From node label (e.g., "User")
+    pub from_label: String,
+    /// Relationship type (e.g., "FOLLOWS")
+    pub rel_type: String,
+    /// To node label (e.g., "User")
+    pub to_label: String,
 }
 
 /// Process-global fallback for generated aliases, used only outside a query
@@ -983,7 +764,7 @@ pub struct GraphRel {
     /// Example: [(User, FOLLOWS, User), (User, AUTHORED, Post)]
     /// Scope: THIS pattern only (not query-level)
     #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub pattern_combinations: Option<Vec<crate::query_planner::plan_ctx::TypeCombination>>,
+    pub pattern_combinations: Option<Vec<TypeCombination>>,
 
     /// Set to true by BidirectionalUnion when this GraphRel was split from Direction::Either
     /// Allows downstream (CTE extraction) to know this was originally undirected
@@ -2841,6 +2622,7 @@ mod tests {
     use crate::query_planner::logical_expr::{
         Column, Literal, LogicalExpr, Operator, OperatorApplication, PropertyAccess, TableAlias,
     };
+    use std::collections::HashMap;
     // use crate::open_cypher_parser::ast;
 
     /// `map_children(identity)` must reproduce the input exactly — same variant,

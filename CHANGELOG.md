@@ -14,6 +14,8 @@
 
 ### 🧹 Infrastructure
 
+- **The legacy planner and renderer are gone** (P-4c S14c3, ~146k lines): the analyzer, optimizer and plan context, the clause builders, the RenderPlan composition (plan builders, WITH→CTE, the repair passes) and the legacy SQL renderer. Every query has been translated by the bound plan since the cutovers; the corpus SQL goldens are byte-identical. `CLICKGRAPH_STATS_ENABLED` is now read by nothing (only the legacy planner's join ordering read the stats).
+
 - **The legacy write planner is gone** (P-4c S14c2): `write_plan_builder`, `write_clause_builder` and `write_guard` (~3k lines). Embedded writes have been planned by `bound_plan::write` since S14b; the chdb-only gate (`ExecutorKind`) moved into `clickgraph-embedded`.
 
 - **The corpus SQL goldens now lock the bound plan's output** (P-4c S14c0). They were translated without the query text, which took the legacy pipeline, so the net that guards the legacy deletion checked the wrong pipeline. The census of the corpus now also asserts its count (1477 lowered on each dialect).

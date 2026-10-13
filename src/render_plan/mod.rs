@@ -1,37 +1,11 @@
-pub(crate) mod clause_extractors;
-pub(crate) mod cte_export;
-pub mod cte_extraction;
 pub mod cte_generation;
-pub(crate) mod cte_graph_joins_rewrite;
 pub mod cte_manager;
-pub(crate) mod cte_rewrite;
 pub(crate) mod expression_utils;
-mod filter_builder;
 mod filter_pipeline;
-mod from_builder;
+pub(crate) mod filter_sql;
 mod from_table;
-mod group_by_builder;
-mod hop_vlp_uniqueness;
-mod join_builder;
-mod join_deduplicator;
-mod path_segments;
-pub(crate) mod pattern_comprehension_sql;
-pub mod plan_builder_helpers; // Made public for JOIN dependency sorting in SQL generation
-mod plan_builder_utils;
-pub mod plan_optimizer;
-pub(crate) mod plan_predicates;
-mod properties_builder;
-pub mod property_expansion;
-mod select_builder;
-pub mod types;
-pub mod utils;
-pub mod variable_scope;
 mod view_table_ref;
-pub mod vlp_endpoint_resolution;
-pub(crate) mod vlp_rewrite;
-pub(crate) mod with_to_cte;
 
-use errors::RenderBuildError;
 use render_expr::{ColumnAlias, OperatorApplication, RenderExpr};
 
 pub use cte_generation::CteGenerationContext;
@@ -39,28 +13,8 @@ pub use cte_manager::{
     CteColumnMetadata, CteError, CteGenerationResult, CteManager, VlpEndpointInfo,
 };
 pub use filter_pipeline::CategorizedFilters;
-pub(crate) use from_builder::is_fixed_length_vlp;
 pub use from_table::FromTable;
 pub use view_table_ref::ViewTableRef;
-
-/// CTE schema metadata: captures the schema of a CTE for downstream resolution.
-#[derive(Debug, Clone)]
-pub struct CteSchemaMetadata {
-    /// The SELECT items in the CTE
-    pub select_items: Vec<SelectItem>,
-    /// Column names in the CTE
-    pub column_names: Vec<String>,
-    /// Maps alias → ID column name (for JOIN generation)
-    pub alias_to_id: HashMap<String, String>,
-    /// Maps (alias, property) → CTE column name (for property resolution)
-    pub property_mapping: HashMap<(String, String), String>,
-    /// P-4b export contract per exported alias (`cte_export.rs`); empty for the
-    /// VLP / UNION pseudo-schemas, which are not WITH CTEs.
-    pub exports: HashMap<String, cte_export::CteExport>,
-}
-pub type CteSchemas = HashMap<String, CteSchemaMetadata>;
-
-use std::collections::HashMap;
 
 /// Maximum recursion depth for plan/expression tree traversal functions.
 /// Prevents stack overflow and OOM from pathologically deep or cyclic plan trees.
@@ -80,62 +34,18 @@ pub use crate::server::query_context::{
 };
 
 use crate::query_planner::join_context::{VLP_END_ID_COLUMN, VLP_START_ID_COLUMN};
-use crate::query_planner::logical_plan::{
-    Join as LogicalJoin, JoinType as LogicalJoinType, OrderByItem as LogicalOrderByItem,
-    OrderByOrder as LogicalOrderByOrder, UnionType as LogicalUnionType,
-};
 
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
 pub mod errors;
-pub mod plan_builder;
 pub mod render_expr;
-pub mod view_plan;
 pub mod write_render;
 
 pub use write_render::{DeleteOp, InsertOp, RowSource, UpdateOp, WriteRenderPlan};
 
-#[cfg(test)]
-mod tests;
-
 pub trait ToSql {
     fn to_sql(&self) -> String;
-}
-
-/// Public wrapper over `to_render_plan_with_ctx`, mirroring the server pipeline.
-///
-/// The server (HTTP + Bolt handlers), `cg`, and embedded all render via
-/// `to_render_plan_with_ctx` so that analysis-phase metadata in `PlanCtx` (VLP
-/// endpoints, multi-type joins, etc.) is available during rendering. This is the
-/// ONLY public entry point for whole-plan rendering — the former ctx-less
-/// `logical_plan_to_render_plan` wrapper was removed in #459 (it had no production
-/// callers and demonstrably diverged from server output for polymorphic /
-/// multi-type expands, denorm node-scan unions, ORDER BY alias resolution, and the
-/// OPTIONAL denorm hop). The underlying ctx-less `RenderPlanBuilder::to_render_plan`
-/// method remains — it is the recursive sub-plan workhorse used internally (EXISTS
-/// subqueries, write plans, CTE extraction) and by `to_render_plan_with_ctx` itself.
-pub fn logical_plan_to_render_plan_with_ctx(
-    logical_plan: crate::query_planner::logical_plan::LogicalPlan,
-    schema: &crate::graph_catalog::graph_schema::GraphSchema,
-    plan_ctx: Option<&crate::query_planner::plan_ctx::PlanCtx>,
-) -> Result<RenderPlan, errors::RenderBuildError> {
-    use plan_builder::RenderPlanBuilder;
-
-    // #497/#498: fixed-path metadata (path variable, hop count, node/rel
-    // aliases, ID columns, relationship type names) is computed and set on
-    // `render_plan.fixed_path_info` inside `to_render_plan_with_ctx` itself
-    // (see the closure wrapping its body in plan_builder.rs) — schema-pattern-
-    // agnostic (walks the GraphRel chain directly and reads each hop's
-    // ViewScan.from_id/to_id, rather than guessing hop count from a
-    // post-optimization JOIN count, which is wrong for FK-edge where 1 hop =
-    // 1 JOIN instead of 2). That makes `render_plan_to_sql`'s later
-    // best-effort fallback (`extract_fixed_path_info_from_plan`, which DOES
-    // use the wrong JOINs-count heuristic) skip for the common case, and the
-    // join-pruning guards that already check `fixed_path_info.node_aliases`
-    // (plan_optimizer.rs) become effective instead of permanently inert. No
-    // need to recompute it here too.
-    logical_plan.to_render_plan_with_ctx(schema, plan_ctx, None)
 }
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
@@ -219,17 +129,6 @@ pub struct GroupByExpressions(pub Vec<RenderExpr>);
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct JoinItems(pub Vec<Join>);
-
-impl JoinItems {
-    /// Create JoinItems with automatic alias deduplication.
-    ///
-    /// This centralizes the deduplication logic to ensure all code paths
-    /// (including VLP CTE generation) benefit from collision detection.
-    pub fn new(joins: Vec<Join>) -> Self {
-        use crate::render_plan::join_deduplicator::deduplicate_join_aliases;
-        Self(deduplicate_join_aliases(joins))
-    }
-}
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct Join {
@@ -324,52 +223,6 @@ pub struct ArrayJoin {
     /// order): read with the list, which is evaluated once.
     #[serde(default)]
     pub position: Option<String>,
-}
-
-impl TryFrom<LogicalJoinType> for JoinType {
-    type Error = RenderBuildError;
-
-    fn try_from(value: LogicalJoinType) -> Result<Self, Self::Error> {
-        let join_type = match value {
-            LogicalJoinType::Join => JoinType::Join,
-            LogicalJoinType::Inner => JoinType::Inner,
-            LogicalJoinType::Left => JoinType::Left,
-            LogicalJoinType::Right => JoinType::Right,
-        };
-        Ok(join_type)
-    }
-}
-
-impl TryFrom<LogicalJoin> for Join {
-    type Error = RenderBuildError;
-
-    fn try_from(value: LogicalJoin) -> Result<Self, Self::Error> {
-        // Convert pre_filter from LogicalExpr to RenderExpr if present
-        let pre_filter = if let Some(logical_pre_filter) = value.pre_filter {
-            RenderExpr::try_from(logical_pre_filter).ok()
-        } else {
-            None
-        };
-
-        let join = Join {
-            table_alias: value.table_alias,
-            table_name: value.table_name,
-            joining_on: value
-                .joining_on
-                .clone()
-                .into_iter()
-                .map(OperatorApplication::try_from)
-                .collect::<Result<Vec<OperatorApplication>, RenderBuildError>>()?,
-            join_type: value.join_type.clone().try_into()?,
-            pre_filter,
-            from_id_column: value.from_id_column,
-            to_id_column: value.to_id_column,
-            graph_rel: None,
-            is_cartesian: value.is_cartesian,
-            use_final: false,
-        };
-        Ok(join)
-    }
 }
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
@@ -565,46 +418,10 @@ pub struct OrderByItem {
     pub order: OrderByOrder,
 }
 
-impl TryFrom<LogicalOrderByItem> for OrderByItem {
-    type Error = RenderBuildError;
-
-    fn try_from(value: LogicalOrderByItem) -> Result<Self, Self::Error> {
-        let order_by_item = OrderByItem {
-            expression: value.expression.try_into()?,
-            order: value.order.try_into()?,
-        };
-        Ok(order_by_item)
-    }
-}
-
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub enum OrderByOrder {
     Asc,
     Desc,
-}
-
-impl TryFrom<LogicalUnionType> for UnionType {
-    type Error = RenderBuildError;
-
-    fn try_from(value: LogicalUnionType) -> Result<Self, Self::Error> {
-        let union_type = match value {
-            LogicalUnionType::Distinct => UnionType::Distinct,
-            LogicalUnionType::All => UnionType::All,
-        };
-        Ok(union_type)
-    }
-}
-
-impl TryFrom<LogicalOrderByOrder> for OrderByOrder {
-    type Error = RenderBuildError;
-
-    fn try_from(value: LogicalOrderByOrder) -> Result<Self, Self::Error> {
-        let order_by = match value {
-            LogicalOrderByOrder::Asc => OrderByOrder::Asc,
-            LogicalOrderByOrder::Desc => OrderByOrder::Desc,
-        };
-        Ok(order_by)
-    }
 }
 
 impl fmt::Display for RenderPlan {

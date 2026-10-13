@@ -14,10 +14,10 @@ use crate::graph_catalog::{
 };
 use crate::query_planner::join_context::{VLP_END_ID_COLUMN, VLP_START_ID_COLUMN};
 use crate::query_planner::logical_plan::VariableLengthSpec;
-use crate::render_plan::cte_extraction::collect_parameters_from_filters;
 use crate::render_plan::cte_generation::CteGenerationContext;
 use crate::render_plan::errors::RenderBuildError;
 use crate::render_plan::filter_pipeline::CategorizedFilters;
+use crate::render_plan::filter_sql::collect_parameters_from_filters;
 
 /// Dialect-correct array literal. CH: `[a, b]`. Spark: `array(a, b)`.
 /// Thin shorthand over `FunctionMapper::array_literal` — CTE generation
@@ -775,7 +775,10 @@ impl DenormalizedCteStrategy {
         }
 
         let lowered = rewrite(expr, &resolve, &start_alias, &end_alias)?;
-        Ok(crate::render_plan::cte_extraction::render_expr_to_sql_string(&lowered, &[]))
+        Ok(crate::render_plan::filter_sql::render_expr_to_sql_string(
+            &lowered,
+            &[],
+        ))
     }
 
     pub fn validate(&self, pattern_ctx: &PatternSchemaContext) -> Result<(), CteError> {
@@ -2283,7 +2286,10 @@ fn lower_both_endpoint_filter_to_cte_columns(
         end_id_cols,
         properties,
     )?;
-    Ok(crate::render_plan::cte_extraction::render_expr_to_sql_string(&lowered, &[]))
+    Ok(crate::render_plan::filter_sql::render_expr_to_sql_string(
+        &lowered,
+        &[],
+    ))
 }
 
 /// Single-pass rewrite of every `<prefix><ident>` column reference in `sql` that
