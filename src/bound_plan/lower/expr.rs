@@ -38,6 +38,7 @@ use crate::sql_generator::emitters::clickhouse::to_sql_query::render_expr_to_sql
 use crate::sql_generator::function_mapper::{current_function_mapper, MapEntry};
 
 use super::elements::Elem;
+use super::null_list;
 use super::unwind::{comprehension, Comprehension, Kind};
 use super::{parse_var, unsupported, At, LowerError, Lowerer, Scan};
 use crate::bound_plan::expr::subquery_var;
@@ -403,7 +404,7 @@ impl Lowerer<'_> {
                     None => return unsupported("internal: a subquery expression not applied"),
                 }
             }
-            LogicalExpr::ScalarFnCall(f) => self.scalar_fn(f, items)?,
+            LogicalExpr::ScalarFnCall(f) => self.list_fn(e, f, items)?,
             LogicalExpr::AggregateFnCall(f) => self.aggregate_fn(f, items)?,
             LogicalExpr::Case(c) => {
                 if c.when_then.iter().any(|(_, t)| self.holds_elements(t))
@@ -618,6 +619,57 @@ impl Lowerer<'_> {
 
     /// `filter`: of a condition ([`Self::condition`]).
     fn operator(&self, op: &LOp, items: &Items, filter: bool) -> Result<RenderExpr, LowerError> {
+        use lx::Operator as O;
+        let list = |e: &LogicalExpr| matches!(self.kind(e), Kind::List(_));
+        match (op.operator, op.operands.as_slice()) {
+            // A NULL list is held as `[]` (`null_list.rs`): NULL where its
+            // source is.
+            (O::IsNull | O::IsNotNull, [x]) if list(x) => {
+                if let Some(c) = self.list_null(x, items)?.condition() {
+                    let null = op.operator == O::IsNull;
+                    return Ok(match c {
+                        RenderExpr::Literal(Literal::Boolean(b)) => {
+                            RenderExpr::Literal(Literal::Boolean(b == null))
+                        }
+                        c if null => c,
+                        c => RenderExpr::OperatorApplicationExp(OperatorApplication {
+                            operator: O::Not,
+                            operands: vec![c],
+                        }),
+                    });
+                }
+            }
+            // Lists compared: NULL where either is.
+            (O::Equal | O::NotEqual, [a, b]) if list(a) || list(b) => {
+                let mut parts = Vec::new();
+                for x in [a, b] {
+                    if list(x) {
+                        parts.push(self.list_null(x, items)?);
+                    }
+                }
+                if let null_list::ListNull::When(c) = null_list::ListNull::any(parts) {
+                    let value = self.operator_body(op, items, filter)?;
+                    // A boolean, as the comparison is (#1057).
+                    return Ok(RenderExpr::Raw(current_function_mapper().cast_bool(
+                        &render_expr_to_sql_plain(&RenderExpr::Case(RenderCase {
+                            expr: None,
+                            when_then: vec![(c, RenderExpr::Literal(Literal::Null))],
+                            else_expr: Some(Box::new(value)),
+                        })),
+                    )));
+                }
+            }
+            _ => {}
+        }
+        self.operator_body(op, items, filter)
+    }
+
+    fn operator_body(
+        &self,
+        op: &LOp,
+        items: &Items,
+        filter: bool,
+    ) -> Result<RenderExpr, LowerError> {
         use lx::Operator as O;
         if let Some(e) = self.id_comparison(op)? {
             return Ok(e);
@@ -1193,6 +1245,13 @@ impl Lowerer<'_> {
         };
         let x_sql = render_expr_to_sql_plain(&self.expr(x, items)?);
         let list_sql = render_expr_to_sql_plain(&self.expr(list, items)?);
+        // A NULL list is held as `[]` (`null_list.rs`): NULL where its
+        // source is.
+        let list_null = match self.list_null(list, items)?.condition() {
+            Some(RenderExpr::Literal(Literal::Boolean(false))) => String::new(),
+            Some(c) => format!("WHEN {} THEN NULL ", render_expr_to_sql_plain(&c)),
+            None => format!("WHEN ({list_sql}) IS NULL THEN NULL "),
+        };
         let (found, not_found) = match negated {
             true => ("false", "true"),
             false => ("true", "false"),
@@ -1200,15 +1259,14 @@ impl Lowerer<'_> {
         // A NULL `x`: not looked up (Spark refuses a NULL-typed one).
         if matches!(x, LogicalExpr::Literal(lx::Literal::Null)) || self.kind(x) == Kind::Null {
             return Ok(RenderExpr::Raw(m.cast_bool(&format!(
-                "CASE WHEN ({list_sql}) IS NULL THEN NULL WHEN {} = 0 THEN {not_found} \
-                 ELSE NULL END",
+                "CASE {list_null}WHEN {} = 0 THEN {not_found} ELSE NULL END",
                 m.list_size(&list_sql),
             ))));
         }
         const T: &str = "__cg_in";
         let nulls = (spelling.filter)(T, &format!("{T} IS NULL"), &list_sql);
         Ok(RenderExpr::Raw(m.cast_bool(&format!(
-            "CASE WHEN ({list_sql}) IS NULL THEN NULL WHEN {} = 0 THEN {not_found} \
+            "CASE {list_null}WHEN {} = 0 THEN {not_found} \
              WHEN ({x_sql}) IS NULL THEN NULL WHEN {}({list_sql}, {x_sql}) THEN {found} \
              WHEN {} > 0 THEN NULL ELSE {not_found} END",
             m.list_size(&list_sql),
@@ -1464,10 +1522,21 @@ impl Lowerer<'_> {
                 _ => self.expr(e, items)?,
             });
         }
-        Ok(Some(RenderExpr::ScalarFnCall(ScalarFnCall {
+        let concat = RenderExpr::ScalarFnCall(ScalarFnCall {
             name: current_function_mapper().array_concat().to_string(),
             args,
-        })))
+        });
+        // NULL (held as `[]`, `null_list.rs`) where either list is.
+        let mut parts = Vec::new();
+        for x in [a, b] {
+            if matches!(self.kind(x), Kind::List(_)) {
+                parts.push(self.list_null(x, items)?);
+            }
+        }
+        Ok(Some(match null_list::ListNull::any(parts) {
+            null_list::ListNull::When(c) => null_list::empty_where(c, concat, true),
+            _ => concat,
+        }))
     }
 
     /// `a = b` / `a <> b` between two nodes or two relationships: equal only
@@ -1619,7 +1688,7 @@ impl Lowerer<'_> {
     /// simple CASE, `CASE x WHEN w …` is `CASE WHEN x = w …`: three-valued,
     /// a NULL never matches (ClickHouse's `caseWithExpression` takes NULL for
     /// equal to NULL, #1412).
-    fn case_conditions(
+    pub(super) fn case_conditions(
         &self,
         c: &LogicalCase,
         items: &Items,
@@ -1652,22 +1721,49 @@ impl Lowerer<'_> {
     }
 
     fn case(&self, c: &LogicalCase, items: &Items) -> Result<RenderExpr, LowerError> {
+        // A CASE of lists: a NULL result is held as `[]` (`null_list.rs`);
+        // what reads it tells NULL by the CASE's conditions.
+        let lists = c
+            .when_then
+            .iter()
+            .map(|(_, t)| t)
+            .chain(c.else_expr.as_deref())
+            .any(|t| matches!(self.kind(t), Kind::List(_)));
+        // A list literal of several items may be of several types (a
+        // `Variant`), which ClickHouse converts no `[]` to: then the empty
+        // list of its type.
+        let empty = match c
+            .when_then
+            .iter()
+            .map(|(_, t)| t)
+            .chain(c.else_expr.as_deref())
+            .find(|t| matches!(t, LogicalExpr::List(xs) if xs.len() > 1))
+        {
+            Some(t) if lists => null_list::empty_like(&self.expr(t, items)?),
+            _ => RenderExpr::List(Vec::new()),
+        };
+        let result = |t: &LogicalExpr| -> Result<RenderExpr, LowerError> {
+            match t {
+                LogicalExpr::Literal(lx::Literal::Null) if lists => Ok(empty.clone()),
+                t => self.expr(t, items),
+            }
+        };
         let mut when_then = Vec::new();
         for (condition, (_, t)) in self
             .case_conditions(c, items)?
             .into_iter()
             .zip(&c.when_then)
         {
-            let t_sql = self.expr(t, items)?;
+            let t_sql = result(t)?;
             if let Some(w_sql) = condition {
                 when_then.push((w_sql, t_sql));
             }
         }
-        let else_expr = c
-            .else_expr
-            .as_ref()
-            .map(|e| self.expr(e, items).map(Box::new))
-            .transpose()?;
+        let else_expr = match &c.else_expr {
+            Some(e) => Some(Box::new(result(e)?)),
+            None if lists => Some(Box::new(empty.clone())),
+            None => None,
+        };
         if when_then.is_empty() {
             return Ok(else_expr.map_or(RenderExpr::Literal(Literal::Null), |e| *e));
         }
@@ -1887,7 +1983,7 @@ impl Lowerer<'_> {
         }
     }
 
-    fn scalar_fn(&self, f: &LScalar, items: &Items) -> Result<RenderExpr, LowerError> {
+    pub(super) fn scalar_fn(&self, f: &LScalar, items: &Items) -> Result<RenderExpr, LowerError> {
         // A value used as a node: of a node, its identity; of anything else,
         // Neo4j's type error (a relationship is no node).
         if f.name == crate::bound_plan::expr::NODE_TIE {
@@ -2040,7 +2136,16 @@ impl Lowerer<'_> {
                 // string's characters (S12).
                 Kind::List(_) => {
                     let list = render_expr_to_sql_plain(&self.expr(arg, items)?);
-                    return Ok(RenderExpr::Raw(current_function_mapper().list_size(&list)));
+                    let size = RenderExpr::Raw(current_function_mapper().list_size(&list));
+                    // NULL of a NULL list (held as `[]`, `null_list.rs`).
+                    return Ok(match self.list_null(arg, items)? {
+                        null_list::ListNull::When(c) => RenderExpr::Case(RenderCase {
+                            expr: None,
+                            when_then: vec![(c, RenderExpr::Literal(Literal::Null))],
+                            else_expr: Some(Box::new(size)),
+                        }),
+                        _ => size,
+                    });
                 }
                 _ => {}
             }
@@ -2203,6 +2308,15 @@ impl Lowerer<'_> {
                 && self.never_null_element_list(arg);
             if self.holds_elements(arg) && !collected_list {
                 return unsupported(format!("{}() of lists of nodes or relationships", f.name));
+            }
+        }
+        // A list that may be NULL, held as `[]` (`null_list.rs`): counted
+        // and collected where its source is not NULL.
+        if let (Some(arg), "count" | "collect") = (arg, name.as_str()) {
+            if matches!(self.kind(arg), Kind::List(_)) && !self.holds_elements(arg) {
+                if let null_list::ListNull::When(c) = self.list_null(arg, items)? {
+                    return self.aggregate_present_list(&name, arg, &c, distinct, items);
+                }
             }
         }
         let args = match (name.as_str(), arg) {

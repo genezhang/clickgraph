@@ -339,6 +339,7 @@ impl FunctionMapper for DatabricksFunctionMapper {
             contains: |l, x| format!("array_contains({l}, {x})"),
             intersect: |a, b| format!("array_intersect({a}, {b})"),
             sorted: |l| format!("array_sort({l})"),
+            null_list: |c, l| format!("CASE WHEN {c} THEN NULL ELSE {l} END"),
             fingerprint: |v| format!("xxhash64({v})"),
             // A VARIANT object's keys, sorted (its order).
             map_keys: |m| format!("map_keys(CAST({m} AS MAP<STRING, VARIANT>))"),

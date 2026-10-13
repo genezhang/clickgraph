@@ -369,6 +369,18 @@ WHERE u.nickname IS NULL
 WHERE u.email IS NOT NULL
 ```
 
+**A NULL list on ClickHouse.** ClickHouse has no NULL array, so a list that is NULL is held as `[]` while a query runs, and ClickGraph tells it apart from a real empty list by where the NULL comes from: a CASE's `null` (or missing) branch, `split()` / `tail()` / `reverse()` / a slice / a comprehension / `+` of a NULL list or string, `coalesce()` of lists. `IS [NOT] NULL`, `size()`, `coalesce()`, `count()`, `collect()`, `+`, `IN`, `=` / `<>`, grouping and DISTINCT answer as Neo4j does, also after a WITH (which carries the condition beside the list), and a returned NULL list is `null`:
+
+```cypher
+UNWIND ['a,b', null] AS s
+WITH split(s, ',') AS l
+RETURN l, l IS NULL AS n, size(l) AS sz, coalesce(l, ['d']) AS c
+-- ["a", "b"], false, 2, ["a", "b"]
+-- null,       true,  null, ["d"]
+```
+
+A list whose source is not one of these (an array property of a node an OPTIONAL MATCH left NULL, an UNWIND of a list of lists, a map's value, another function) is read as it is held: a NULL one as `[]`. `ORDER BY` a list sorts a NULL one as `[]`.
+
 ### Logical Operators
 
 ```cypher

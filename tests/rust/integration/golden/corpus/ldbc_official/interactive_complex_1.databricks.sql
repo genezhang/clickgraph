@@ -135,7 +135,7 @@ SELECT
       w6.p2_v7_lastName AS `p3_v14_lastName`, 
       w6.p2_v7_locationIP AS `p3_v14_locationIP`, 
       w6.p2_v7_speaks AS `p3_v14_speaks`, 
-      coalesce(collect_list(CASE WHEN CASE WHEN o8.v11__id IS NULL THEN false ELSE true END THEN CASE WHEN o8.v11__id IS NULL THEN array(o8.p3_v11_name, o8.p3_v10_classYear, o8.p3_v13_name) ELSE array(o8.p3_v11_name, o8.p3_v10_classYear, o8.p3_v13_name) END END), array()) AS `v15`, 
+      coalesce(collect_list(CASE WHEN NOT CASE WHEN o8.v11__id IS NULL THEN true ELSE false END THEN CASE WHEN o8.v11__id IS NULL THEN filter(array(o8.p3_v11_name, o8.p3_v10_classYear, o8.p3_v13_name), __cg_e -> false) ELSE array(o8.p3_v11_name, o8.p3_v10_classYear, o8.p3_v13_name) END END), array()) AS `v15`, 
       w6.v9__id AS `v16__id`, 
       w6.p2_v9_name AS `p3_v16_name`, 
       w6.v6 AS `v17`
@@ -177,7 +177,7 @@ SELECT
       w9.p3_v14_lastName AS `p3_v22_lastName`, 
       w9.p3_v14_locationIP AS `p3_v22_locationIP`, 
       w9.p3_v14_speaks AS `p3_v22_speaks`, 
-      coalesce(collect_list(CASE WHEN CASE WHEN o11.v19__id IS NULL THEN false ELSE true END THEN CASE WHEN o11.v19__id IS NULL THEN array(o11.p3_v19_name, o11.p3_v18_workFrom, o11.p3_v21_name) ELSE array(o11.p3_v19_name, o11.p3_v18_workFrom, o11.p3_v21_name) END END), array()) AS `v23`, 
+      coalesce(collect_list(CASE WHEN NOT CASE WHEN o11.v19__id IS NULL THEN true ELSE false END THEN CASE WHEN o11.v19__id IS NULL THEN filter(array(o11.p3_v19_name, o11.p3_v18_workFrom, o11.p3_v21_name), __cg_e -> false) ELSE array(o11.p3_v19_name, o11.p3_v18_workFrom, o11.p3_v21_name) END END), array()) AS `v23`, 
       any_value(w9.v15, true) AS `v24`, 
       w9.v16__id AS `v25__id`, 
       w9.p3_v16_name AS `p3_v25_name`, 

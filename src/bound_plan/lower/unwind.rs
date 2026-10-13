@@ -28,13 +28,13 @@ use std::collections::{BTreeSet, HashMap};
 use crate::graph_catalog::expression_parser::PropertyValue;
 use crate::graph_catalog::schema_types::SchemaType;
 use crate::query_planner::logical_expr::{self as lx, LogicalExpr};
-use crate::render_plan::render_expr::{Literal, RenderCase, RenderExpr, TableAlias};
+use crate::render_plan::render_expr::{Literal, RenderExpr, TableAlias};
 use crate::render_plan::RenderPlan;
 use crate::render_plan::{ArrayJoin, OrderByItem, OrderByOrder};
 use crate::sql_generator::emitters::clickhouse::to_sql_query::{
     order_keys_to_sql_plain, render_expr_to_sql_plain, render_plan_parts_plain,
 };
-use crate::sql_generator::function_mapper::{current_function_mapper, Unwind};
+use crate::sql_generator::function_mapper::current_function_mapper;
 
 use super::elements::Elem;
 use super::{
@@ -228,7 +228,14 @@ impl Kind {
                         .collect(),
                 )
             }
-            // A list that may be NULL: a ClickHouse array is never NULL.
+            // A list of values that may be NULL: held as `[]` where it is
+            // (`null_list.rs`), which what reads it tells by its source.
+            (Kind::Null, Kind::List(k)) | (Kind::List(k), Kind::Null)
+                if !matches!(*k, Kind::Element(_)) =>
+            {
+                Kind::List(k)
+            }
+            // A list of nodes or relationships that may be NULL.
             _ => Kind::Unknown,
         }
     }
@@ -536,7 +543,11 @@ impl<'s> Lowerer<'s> {
         // An expression can still be refused (a node in a list), and can be
         // NULL by the schema (a property of an element that matches nothing).
         let probe = self.expr(expr, &HashMap::new())?;
-        if empty || matches!(probe, RenderExpr::Literal(Literal::Null)) {
+        // (`split(null, …)` lowers to `[]`, `null_list.rs`.)
+        if empty
+            || matches!(&probe, RenderExpr::Literal(Literal::Null))
+            || matches!(&probe, RenderExpr::List(xs) if xs.is_empty())
+        {
             self.empty = true;
             self.values.insert(var, RenderExpr::Literal(Literal::Null));
             return Ok(());
@@ -553,7 +564,6 @@ impl<'s> Lowerer<'s> {
             self.number_rows()?;
         }
         let e = self.expr(expr, &HashMap::new())?;
-        let e = self.split_of_null(expr, e, &spelling)?;
         let element = kind.element();
         let list = match kind {
             Kind::List(_) => e,
@@ -625,35 +635,6 @@ impl<'s> Lowerer<'s> {
         self.close_segment(body, exports, alias)?;
         self.one_row = false;
         Ok(())
-    }
-
-    /// `split(s, d)` is NULL when `s` or `d` is (Cypher), and ClickHouse's
-    /// split of NULL is `['']`: UNWIND of it gives no rows.
-    fn split_of_null(
-        &self,
-        expr: &LogicalExpr,
-        list: RenderExpr,
-        spelling: &Unwind,
-    ) -> Result<RenderExpr, LowerError> {
-        let LogicalExpr::ScalarFnCall(f) = expr else {
-            return Ok(list);
-        };
-        if !f.name.eq_ignore_ascii_case("split") || f.args.is_empty() {
-            return Ok(list);
-        }
-        let mut null = Vec::new();
-        for a in &f.args {
-            let a = render_expr_to_sql_plain(&self.expr(a, &HashMap::new())?);
-            null.push((spelling.is_null)(&a));
-        }
-        Ok(RenderExpr::Case(RenderCase {
-            expr: None,
-            when_then: vec![(
-                RenderExpr::Raw(null.join(" OR ")),
-                RenderExpr::List(Vec::new()),
-            )],
-            else_expr: Some(Box::new(list)),
-        }))
     }
 
     /// The rows so far, in their order (rows in no order: in any, fixed by

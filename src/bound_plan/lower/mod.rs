@@ -68,6 +68,7 @@
 mod elements;
 mod embedded;
 mod expr;
+mod null_list;
 mod path;
 mod subquery;
 #[cfg(test)]
@@ -332,6 +333,7 @@ impl Query<'_> {
             grouped_paths: HashSet::new(),
             graph_values: HashMap::new(),
             map_keys: HashMap::new(),
+            list_nulls: HashMap::new(),
             kinds: HashMap::new(),
             never_boolean: HashSet::new(),
             local_kinds: RefCell::new(HashMap::new()),
@@ -571,6 +573,7 @@ struct Segment<'s> {
     elided: HashMap<VarId, VarId>,
     graph_values: HashMap<VarId, Carried>,
     map_keys: HashMap<VarId, MapKeys>,
+    list_nulls: HashMap<VarId, Option<RenderExpr>>,
 }
 
 /// One column an OPTIONAL MATCH's matches are joined to the input rows on:
@@ -629,6 +632,10 @@ struct Lowerer<'s> {
     /// Map values the segment's CTE carries with each key's value (S11m):
     /// a map literal a WITH projected; each is also in `values`.
     map_keys: HashMap<VarId, MapKeys>,
+    /// When each list value the segment's CTE carries is NULL (`null_list.rs`):
+    /// its `{v}__null` column (`None`: never NULL). A list not here is not
+    /// known to be either.
+    list_nulls: HashMap<VarId, Option<RenderExpr>>,
     /// What each projected or unwound value is (`unwind.rs`).
     kinds: HashMap<VarId, unwind::Kind>,
     /// Projected values that are never a boolean (`Lowerer::never_boolean`).
@@ -1844,6 +1851,7 @@ impl<'s> Lowerer<'s> {
         std::mem::swap(&mut self.elided, &mut s.elided);
         std::mem::swap(&mut self.graph_values, &mut s.graph_values);
         std::mem::swap(&mut self.map_keys, &mut s.map_keys);
+        std::mem::swap(&mut self.list_nulls, &mut s.list_nulls);
         s
     }
 
@@ -5654,14 +5662,38 @@ impl<'s> Lowerer<'s> {
                     continue;
                 }
             }
+            // A list that may be NULL, held as `[]` (`null_list.rs`): when
+            // it is NULL is grouped and made distinct by too; a WITH carries
+            // it, the final RETURN returns NULL where it holds. (`None`: not
+            // known; `Some(None)`: never NULL.)
+            let list_null = match self.kind(&it.expr) {
+                unwind::Kind::List(_) => match self.list_null(&it.expr, &HashMap::new())? {
+                    null_list::ListNull::Never => Some(None),
+                    // Of an aggregate's group, not a value of it.
+                    null_list::ListNull::When(_) if it.aggregate => None,
+                    null_list::ListNull::When(c) => Some(Some(c)),
+                    null_list::ListNull::Unknown => None,
+                },
+                _ => None,
+            };
+            if let (Some(Some(c)), true) = (&list_null, aggregating && !it.aggregate) {
+                body.group_by.push(c.clone());
+            }
             match cte {
                 // A constant needs no column: the next segment uses it as is.
                 Some(_) if is_constant(&e) => {
+                    if let Some(null) = list_null {
+                        exports.list_nulls.push((it.var, null));
+                    }
                     exports.values.push((it.var, e));
                 }
                 Some(alias) => {
                     let name = it.var.name();
                     body.select.push(select(e, &name));
+                    if let Some(null) = list_null {
+                        let null = export_list_null(it.var, null, alias, &mut body);
+                        exports.list_nulls.push((it.var, null));
+                    }
                     // Grouped by its key, not itself.
                     if map_key.is_some() {
                         body.determined.push(name.clone());
@@ -5708,8 +5740,28 @@ impl<'s> Lowerer<'s> {
                     }
                 }
                 None => {
+                    let (e, null) = match list_null {
+                        Some(Some(c)) => {
+                            let Some(spelling) = current_function_mapper().lists() else {
+                                return unsupported("a list that may be NULL in this SQL dialect");
+                            };
+                            // DISTINCT by the list (or its key) and whether
+                            // it is NULL; the column follows from them.
+                            if body.distinct && !aggregating {
+                                body.distinct_keys
+                                    .push(map_key.clone().unwrap_or_else(|| e.clone()));
+                                body.distinct_keys.push(c.clone());
+                            }
+                            let value = (spelling.null_list)(
+                                &render_expr_to_sql_plain(&c),
+                                &render_expr_to_sql_plain(&e),
+                            );
+                            (RenderExpr::Raw(value), true)
+                        }
+                        _ => (e, false),
+                    };
                     let column = body.column(e, &it.name);
-                    if map_key.is_some() {
+                    if map_key.is_some() || null {
                         body.determined.push(column.clone());
                     }
                     shape.push(ResultColumn {
@@ -6387,6 +6439,10 @@ impl<'s> Lowerer<'s> {
                     let keys = export_map_keys(v, keys, alias, body);
                     exports.maps.push((v, keys));
                 }
+                if let Some(null) = self.list_nulls.get(&v).cloned() {
+                    let null = export_list_null(v, null, alias, body);
+                    exports.list_nulls.push((v, null));
+                }
                 continue;
             }
             let scan = self.export_element(v, v, alias, body, &mut Vec::new())?;
@@ -6457,6 +6513,7 @@ impl<'s> Lowerer<'s> {
         self.values = exports.values.into_iter().collect();
         self.graph_values = exports.graph.into_iter().collect();
         self.map_keys = exports.maps.into_iter().collect();
+        self.list_nulls = exports.list_nulls.into_iter().collect();
         self.emitted = vec![alias.clone()];
         self.from = Some(table_ref(name, &alias));
         self.joins = Vec::new();
@@ -6715,6 +6772,8 @@ struct Exports<'s> {
     graph: Vec<(VarId, Carried)>,
     /// Each key's value of the map values among `values` (S11m).
     maps: Vec<(VarId, MapKeys)>,
+    /// When each list value among `values` is NULL (`null_list.rs`).
+    list_nulls: Vec<(VarId, Option<RenderExpr>)>,
 }
 
 /// A map value's keys and each one's value, in its own type (S11m): what
@@ -6759,6 +6818,24 @@ fn collected_map(e: &LogicalExpr) -> Option<(&[(String, LogicalExpr)], usize)> {
         },
         _ => None,
     }
+}
+
+/// Export when list `out` is NULL (`null`, `None`: never) from a CTE
+/// aliased `alias`: a column `{out}__null` (a constant stays as it is).
+/// Returns how the next segment reads it.
+fn export_list_null(
+    out: VarId,
+    null: Option<RenderExpr>,
+    alias: &str,
+    body: &mut Body,
+) -> Option<RenderExpr> {
+    let null = null?;
+    if is_constant(&null) {
+        return Some(null);
+    }
+    let name = format!("{}__null", out.name());
+    body.select.push(select(null, &name));
+    Some(col_at(alias, &name))
 }
 
 /// Export map `v`'s keys `keys` as `out`'s from a CTE aliased `alias`: each

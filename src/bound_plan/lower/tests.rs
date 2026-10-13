@@ -4110,14 +4110,10 @@ fn an_unwind_of_what_is_not_a_list() {
         "MATCH (c:Nope) UNWIND c.tags AS x RETURN count(*)",
         &["WHERE false"],
     );
-    // Elements that are all NULL: the value is NULL (ClickHouse cannot
-    // project the element of an `Array(Nothing)`).
+    // An empty list carried by a WITH: no rows.
     has(
         "WITH [] AS l UNWIND l AS x RETURN count(x)",
-        &[
-            "ARRAY JOIN [] AS __cg_element",
-            "CASE WHEN count(*) >= 0 THEN 0 ELSE 0 END",
-        ],
+        &["CASE WHEN count(*) >= 0 THEN 0 ELSE 0 END", "WHERE false"],
     );
     has(
         "UNWIND 5 AS x RETURN x",
@@ -4136,7 +4132,7 @@ fn an_unwind_of_what_is_not_a_list() {
     // `split()` of NULL is NULL: no rows (ClickHouse's is `['']`).
     has(
         "MATCH (a:User) UNWIND split(a.name, ',') AS s RETURN s",
-        &["ARRAY JOIN CASE WHEN isNull(v0.full_name) OR isNull(',') THEN [] ELSE"],
+        &["ARRAY JOIN CASE WHEN v0.full_name IS NULL THEN [] ELSE splitByChar(',', coalesce(v0.full_name, '')) END"],
     );
     has(
         "MATCH (a:User) UNWIND a.name AS x RETURN x",
@@ -4285,10 +4281,17 @@ fn databricks_size_of_a_list() {
         &social(),
     )
     .unwrap();
-    assert!(got.contains("array_size(split("), "{got}");
+    assert!(
+        got.contains("array_size(CASE WHEN v0.email_address IS NULL THEN array() ELSE split("),
+        "{got}"
+    );
+    // `split()` of NULL is NULL (held as `[]`), its size NULL (#1377).
     has(
         "MATCH (u:User) RETURN size(split(u.email, '@')) AS n",
-        &["length(splitByChar('@', v0.email_address))"],
+        &[
+            "CASE WHEN v0.email_address IS NULL THEN NULL ELSE length(CASE WHEN \
+           v0.email_address IS NULL THEN [] ELSE splitByChar('@', coalesce(v0.email_address, '')) END) END",
+        ],
     );
 }
 
@@ -4833,6 +4836,54 @@ fn comprehension_parameters_compare_as_values() {
     );
 }
 
+/// #1377 / #1364 / #1454 (user 2026-10-13): a NULL list is held as `[]`
+/// (ClickHouse has no NULL array); what tells NULL from `[]` reads where
+/// the NULL comes from, carried by a WITH as `{v}__null`; the final RETURN
+/// returns NULL there.
+#[test]
+fn a_null_list_is_told_by_its_source() {
+    has(
+        "UNWIND [1, 2] AS x WITH x, CASE WHEN x > 1 THEN [x] END AS l \
+         RETURN l, l IS NULL AS n, size(l) AS s, l + [9] AS p",
+        &[
+            r#"CASE WHEN w1.v0 > 1 THEN [w1.v0] ELSE [] END AS "v2""#,
+            r#"CASE WHEN w1.v0 > 1 THEN false ELSE true END AS "v2__null""#,
+            r#"if(w2.v2__null, NULL, CAST(w2.v2, 'Dynamic')) AS "l""#,
+            r#"w2.v2__null AS "n""#,
+            r#"CASE WHEN w2.v2__null THEN NULL ELSE length(w2.v2) END AS "s""#,
+            "CASE WHEN w2.v2__null THEN arrayFilter(__cg_e -> false, arrayConcat(w2.v2, [9])) \
+             ELSE arrayConcat(w2.v2, [9]) END",
+        ],
+    );
+    // count() / collect() skip it; grouped by it too.
+    has(
+        "UNWIND [1, 2] AS x WITH CASE WHEN x > 1 THEN [x] END AS l \
+         RETURN count(l) AS c, count(DISTINCT l) AS d, collect(l) AS cl",
+        &[
+            r#"count(CASE WHEN w2.v1__null THEN NULL ELSE 1 END) AS "c""#,
+            r#"length(arrayDistinct(groupArrayIf(w2.v1, NOT w2.v1__null))) AS "d""#,
+            r#"groupArrayIf((w2.__o0, w2.v1), NOT w2.v1__null))), []) AS "cl""#,
+        ],
+    );
+    has(
+        "UNWIND [1, 2] AS x WITH CASE WHEN x > 1 THEN [x] END AS l RETURN l, count(*) AS c",
+        &["toString(w2.v1))), w2.v1__null"],
+    );
+    // split() of NULL: NULL, split as '' (an array is no `Nullable`).
+    has(
+        "UNWIND ['a,b', null] AS s RETURN split(s, ',') IS NULL AS n",
+        &[r#"w1.v0 IS NULL AS Nullable(Bool)) AS "n""#],
+    );
+    // A list that is never NULL: no condition.
+    has(
+        "UNWIND [1, 2] AS x WITH collect(x) AS l RETURN l IS NULL AS n, size(l) AS s",
+        &[
+            r#"CAST(false AS Nullable(Bool)) AS "n""#,
+            r#"length(w2.v1) AS "s""#,
+        ],
+    );
+}
+
 /// #1423: `x IN` a list expression is three-valued, as for a list of items
 /// (ClickHouse's `x IN l` is false where an element is NULL): NULL where no
 /// element is `x` and one is NULL, or `x` is NULL and the list is not empty.
@@ -4842,7 +4893,7 @@ fn in_a_list_expression_is_three_valued() {
     has(
         "UNWIND [2] AS x RETURN x IN [y IN [1, null] | y] AS a",
         &[&format!(
-            "CASE WHEN ({l}) IS NULL THEN NULL WHEN length({l}) = 0 THEN false \
+            "CASE WHEN length({l}) = 0 THEN false \
              WHEN (w1.v0) IS NULL THEN NULL WHEN has({l}, w1.v0) THEN true \
              WHEN length(arrayFilter(__cg_in -> __cg_in IS NULL, {l})) > 0 THEN NULL \
              ELSE false END"
@@ -4863,7 +4914,7 @@ fn in_a_list_expression_is_three_valued() {
          AND NOT u.user_id IN [y IN [2] | y] RETURN u.name",
         &[
             "v0.user_id IN arrayMap(v1 -> v1, [1, NULL])",
-            "NOT CAST(CASE WHEN (arrayMap(v2 -> v2, [2])) IS NULL",
+            "NOT CAST(CASE WHEN length(arrayMap(v2 -> v2, [2])) = 0",
         ],
     );
     has(
@@ -4873,8 +4924,12 @@ fn in_a_list_expression_is_three_valued() {
     // A NULL value is not looked up (Spark refuses a NULL-typed one).
     has(
         "RETURN null IN [y IN [1] | y] AS a",
-        &["CASE WHEN (arrayMap(v0 -> v0, [1])) IS NULL THEN NULL \
-           WHEN length(arrayMap(v0 -> v0, [1])) = 0 THEN false ELSE NULL END"],
+        &["CASE WHEN length(arrayMap(v0 -> v0, [1])) = 0 THEN false ELSE NULL END"],
+    );
+    // A NULL list (held as `[]`, `null_list.rs`): NULL by its source.
+    has(
+        "UNWIND [1, 2] AS x WITH x, CASE WHEN x > 1 THEN [x] END AS l RETURN 5 IN l AS i",
+        &["CASE WHEN w2.v2__null THEN NULL WHEN length(w2.v2) = 0 THEN false"],
     );
     // `null IN []` is false; `x IN null` is NULL.
     has(
@@ -6505,9 +6560,11 @@ fn a_collect_of_lists_or_null_and_a_list_grouping_key() {
     has(
         "MATCH (u:User) OPTIONAL MATCH (u)-[:FOLLOWS]->(f:User) \
          RETURN u.user_id AS id, collect(CASE WHEN f IS NULL THEN null ELSE [f.name, f.age] END) AS l",
-        &["coalesce(groupArrayIf(CASE WHEN o1.v2__user_id IS NULL THEN [o1.p2_v2_name, \
-           o1.p2_v2_age] ELSE [o1.p2_v2_name, o1.p2_v2_age] END, CASE WHEN o1.v2__user_id IS \
-           NULL THEN false ELSE true END), [])"],
+        // A NULL list is held as the empty list of the list's type (a
+        // Variant here: `null_list.rs`), not collected.
+        &["coalesce(groupArrayIf(CASE WHEN o1.v2__user_id IS NULL THEN arrayFilter(__cg_e -> \
+           false, [o1.p2_v2_name, o1.p2_v2_age]) ELSE [o1.p2_v2_name, o1.p2_v2_age] END, NOT \
+           CASE WHEN o1.v2__user_id IS NULL THEN true ELSE false END), [])"],
     );
     // Over ordered rows (S11o6 review): the ordered collect has the flag.
     let got = squash(&sql(
@@ -6515,7 +6572,10 @@ fn a_collect_of_lists_or_null_and_a_list_grouping_key() {
          RETURN u.user_id AS id, collect(CASE WHEN f IS NULL THEN null ELSE [f.name, f.age] END) AS l",
     ));
     assert!(!got.contains("THEN [] ELSE"), "{got}");
-    assert!(got.contains("THEN false ELSE true END"), "{got}");
+    assert!(
+        got.contains("NOT CASE WHEN w3.v4__user_id IS NULL THEN true ELSE false END"),
+        "{got}"
+    );
     let got = squash(&sql(
         "MATCH (u:User) WITH [u.name, u.age] AS l, count(*) AS c RETURN l, c",
     ));
@@ -6784,7 +6844,7 @@ fn a_simple_case_never_matches_null() {
     // and of NULL is not compared (review).
     has(
         "UNWIND [1, null] AS x RETURN collect(CASE x WHEN null THEN [0] WHEN 1 THEN [1] END) AS c",
-        &["CASE WHEN w1.v0 = 1 THEN [1] ELSE [0] END), CASE WHEN w1.v0 = 1 THEN true ELSE false END"],
+        &["CASE WHEN w1.v0 = 1 THEN [1] ELSE [] END), NOT CASE WHEN w1.v0 = 1 THEN false ELSE true END"],
     );
     has(
         "MATCH (n:User), (m:User) RETURN sum(CASE n WHEN null THEN 1 ELSE 0 END) AS a, \

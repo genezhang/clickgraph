@@ -496,6 +496,10 @@ pub(crate) struct Lists {
     pub intersect: fn(&str, &str) -> String,
     /// The list `{0}` in ascending order.
     pub sorted: fn(&str) -> String,
+    /// The list `{1}` as a result column, NULL where `{0}` holds: a NULL
+    /// list is held as `[]` (`bound_plan::lower::null_list`), and returned
+    /// as NULL.
+    pub null_list: fn(&str, &str) -> String,
     /// A 64-bit hash of the value `{0}` (a list of tuples).
     pub fingerprint: fn(&str) -> String,
 }
