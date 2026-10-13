@@ -230,9 +230,9 @@ pub struct QueryRequest {
 
 ### Upstream (this module calls)
 - `open_cypher_parser` — parse Cypher queries
-- `query_planner` — logical planning (`evaluate_read_statement`, `evaluate_call_query`)
-- `render_plan` — logical plan → render plan conversion
-- `clickhouse_query_generator` — render plan → SQL string
+- `translate` — the read seam (`translate_read`: bind, lower, print SQL)
+- `query_planner` — statement classification, `evaluate_call_query` (PageRank's arguments)
+- `sql_generator` — PageRank SQL, dialects
 - `graph_catalog` — schema types and config parsing
 - `procedures` — procedure execution (schema_info, etc.)
 - `config` — `ServerConfig` from CLI/env
@@ -303,9 +303,8 @@ The `bolt_protocol/` directory (7,986 lines, 11 files) implements the Neo4j Bolt
 | `result_transformer.rs` | 2145 | **Largest** — transforms ClickHouse rows → Neo4j Node/Relationship/Path graph objects |
 | `graph_objects.rs` | 716 | `Node`, `Relationship`, `Path` structs with packstream binary encoding |
 | `connection.rs` | 604 | Handshake, version negotiation, message read/write loop, chunked encoding |
-| `id_mapper.rs` | 570 | Deterministic int↔elementId mapping (53-bit JS-safe, label-encoded, session-scoped) |
+| `id_mapper.rs` | 757 | Deterministic int↔elementId mapping (53-bit JS-safe, label-encoded, session-scoped); `resolve_node_id` for the bound plan's `id()` reads |
 | `messages.rs` | 562 | `BoltMessage`, `BoltValue`, message signatures (HELLO=0x01, RUN=0x10, SUCCESS=0x70, etc.) |
-| `id_rewriter.rs` | 411 | Rewrites `id(alias) = N` queries → property filters for Neo4j Browser expand |
 | `auth.rs` | 401 | `AuthScheme` (None/Basic/Kerberos), `AuthToken`, `Authenticator` with SHA-256 |
 | `errors.rs` | 213 | `BoltError` enum with Neo4j-compatible error codes |
 | `websocket.rs` | 156 | `WebSocketBoltAdapter` — wraps WebSocket as AsyncRead/AsyncWrite for Bolt-over-WS |
@@ -316,7 +315,7 @@ Neo4j Browser/Driver → TCP or WebSocket
     │
     ├── connection.rs: handshake + version negotiation (4.1–5.8)
     ├── handler.rs: HELLO → LOGON → RUN(cypher) → PULL
-    │   ├── Query pipeline same as HTTP (parse→plan→render→SQL→execute)
+    │   ├── Query pipeline same as HTTP (parse→bind→lower→SQL→execute)
     │   ├── result_transformer.rs: flat rows → Node/Relationship/Path objects
     │   └── id_mapper.rs: generate integer IDs for id() compat
     └── connection.rs: serialize BoltMessage → packstream → chunked TCP
@@ -326,7 +325,7 @@ Neo4j Browser/Driver → TCP or WebSocket
 - **State machine**: Connected → Negotiated → Authentication → Ready → Streaming → Failed
 - **Version negotiation**: Server picks highest mutually supported version from client's 4 proposals
 - **ID mapping**: `id_mapper.rs` encodes label (6 bits) + id hash (47 bits) within JS MAX_SAFE_INTEGER
-- **`id_rewriter.rs`**: Neo4j Browser expand/double-click sends `id(n) = 12345`; rewriter decodes to property filter
+- **`id()` reads**: Neo4j Browser expand/double-click sends `id(n) = 12345`; the bound plan resolves it through `id_mapper::resolve_node_id` to the node's label and key
 - **Thread safety**: `BoltContext` wrapped in `Arc<Mutex<>>` per connection (NOT task-local like HTTP)
 - **All bolt_protocol files have unit tests** (13 test modules total)
 

@@ -2413,171 +2413,134 @@ impl BoltHandler {
             }
         };
 
-        // Transform id() functions using IdMapper (AST-level transformation)
-        // Clone IdMapper snapshot for transformation (read-only access)
-        let id_mapper_snapshot = {
-            let context = lock_context!(self.context);
-            context.id_mapper.clone()
-        };
+        // Parse in a limited scope to extract metadata
+        let (is_procedure, _is_union, exec_plan, query_type) = if legacy_parse_error.is_none() {
+            let parsed_stmt = match open_cypher_parser::parse_cypher_statement(query) {
+                Ok((_, stmt)) => stmt,
+                Err(parse_error) => {
+                    return Err(BoltError::query_error(format!(
+                        "Statement parsing failed: {}",
+                        parse_error
+                    )));
+                }
+            };
+            let is_procedure = crate::procedures::is_procedure_only_statement(&parsed_stmt);
+            let is_union = crate::procedures::is_procedure_union_query(&parsed_stmt);
 
-        // Parse and transform in a limited scope to extract metadata
-        let ast_arena = crate::query_planner::ast_transform::StringArena::new();
-        let (is_procedure, _is_union, exec_plan, query_type, _label_constraints) =
-            if legacy_parse_error.is_none() {
-                let parsed_stmt = match open_cypher_parser::parse_cypher_statement(query) {
-                    Ok((_, stmt)) => stmt,
-                    Err(parse_error) => {
-                        return Err(BoltError::query_error(format!(
-                            "Statement parsing failed: {}",
-                            parse_error
-                        )));
+            log::debug!("Query execution using schema: {}", effective_schema);
+            log::debug!(
+                "Routing decision: is_procedure={}, is_union={}",
+                is_procedure,
+                is_union
+            );
+
+            // Extract execution plan for procedures
+            let exec_plan = if is_procedure {
+                Some(match &parsed_stmt {
+                    CypherStatement::ProcedureCall(proc_call) => ExecutionPlan::SimpleProcedure {
+                        proc_name: proc_call.procedure_name.to_string(),
+                    },
+                    CypherStatement::CopyTo(_) => {
+                        // COPY TO is handled by the early intercept above;
+                        // this branch is unreachable for valid COPY TO queries.
+                        return Err(BoltError::query_error(
+                            "Unexpected COPY TO in execution plan phase".to_string(),
+                        ));
                     }
-                };
-                // Transform id() functions with schema available
-                let (transformed_stmt, label_constraints) =
-                    crate::query_planner::ast_transform::transform_id_functions(
-                        &ast_arena,
-                        parsed_stmt,
-                        &id_mapper_snapshot,
-                        graph_schema.as_ref(),
-                    );
-
-                let is_procedure =
-                    crate::procedures::is_procedure_only_statement(&transformed_stmt);
-                let is_union = crate::procedures::is_procedure_union_query(&transformed_stmt);
-
-                log::debug!("Query execution using schema: {}", effective_schema);
-                log::debug!(
-                    "Routing decision: is_procedure={}, is_union={}",
-                    is_procedure,
-                    is_union
-                );
-
-                // Extract execution plan for procedures
-                let exec_plan = if is_procedure {
-                    Some(match &transformed_stmt {
-                        CypherStatement::ProcedureCall(proc_call) => {
-                            ExecutionPlan::SimpleProcedure {
-                                proc_name: proc_call.procedure_name.to_string(),
-                            }
-                        }
-                        CypherStatement::CopyTo(_) => {
-                            // COPY TO is handled by the early intercept above;
-                            // this branch is unreachable for valid COPY TO queries.
-                            return Err(BoltError::query_error(
-                                "Unexpected COPY TO in execution plan phase".to_string(),
-                            ));
-                        }
-                        CypherStatement::Query {
-                            query: query_ast,
-                            union_clauses,
-                        } => {
-                            if !union_clauses.is_empty() {
-                                // Extract branch metadata
-                                let mut branches = Vec::new();
-
-                                // Main branch
-                                if let Some(call_clause) = &query_ast.call_clause {
-                                    branches.push(ProcedureBranch {
-                                        proc_name: call_clause.procedure_name.to_string(),
-                                        has_return: query_ast.return_clause.is_some(),
-                                    });
-                                }
-
-                                // Union branches
-                                for union_clause in union_clauses {
-                                    if let Some(call_clause) = &union_clause.query.call_clause {
-                                        branches.push(ProcedureBranch {
-                                            proc_name: call_clause.procedure_name.to_string(),
-                                            has_return: union_clause.query.return_clause.is_some(),
-                                        });
-                                    }
-                                }
-
-                                ExecutionPlan::Union { branches }
-                            } else {
-                                // Single procedure with possible RETURN
-                                if let Some(call_clause) = &query_ast.call_clause {
-                                    if query_ast.return_clause.is_some() {
-                                        ExecutionPlan::ProcedureWithReturn {
-                                            proc_name: call_clause.procedure_name.to_string(),
-                                        }
-                                    } else {
-                                        ExecutionPlan::SimpleProcedure {
-                                            proc_name: call_clause.procedure_name.to_string(),
-                                        }
-                                    }
-                                } else {
-                                    return Err(BoltError::query_error(
-                                        "No call clause found".to_string(),
-                                    ));
-                                }
-                            }
-                        }
-                    })
-                } else {
-                    None
-                };
-
-                // Extract query type for regular queries
-                let query_type = match &transformed_stmt {
                     CypherStatement::Query {
-                        query,
+                        query: query_ast,
                         union_clauses,
                     } => {
-                        // Check main query type
-                        let main_type = query_planner::get_query_type(query);
-
-                        // For UNION queries, all branches must be Read queries
                         if !union_clauses.is_empty() {
-                            // Check each union branch
+                            // Extract branch metadata
+                            let mut branches = Vec::new();
+
+                            // Main branch
+                            if let Some(call_clause) = &query_ast.call_clause {
+                                branches.push(ProcedureBranch {
+                                    proc_name: call_clause.procedure_name.to_string(),
+                                    has_return: query_ast.return_clause.is_some(),
+                                });
+                            }
+
+                            // Union branches
                             for union_clause in union_clauses {
-                                let branch_type =
-                                    query_planner::get_query_type(&union_clause.query);
-                                if branch_type != query_planner::types::QueryType::Read {
-                                    log::debug!(
-                                        "UNION branch has non-Read type: {:?}",
-                                        branch_type
-                                    );
-                                    return Err(BoltError::query_error(
+                                if let Some(call_clause) = &union_clause.query.call_clause {
+                                    branches.push(ProcedureBranch {
+                                        proc_name: call_clause.procedure_name.to_string(),
+                                        has_return: union_clause.query.return_clause.is_some(),
+                                    });
+                                }
+                            }
+
+                            ExecutionPlan::Union { branches }
+                        } else {
+                            // Single procedure with possible RETURN
+                            if let Some(call_clause) = &query_ast.call_clause {
+                                if query_ast.return_clause.is_some() {
+                                    ExecutionPlan::ProcedureWithReturn {
+                                        proc_name: call_clause.procedure_name.to_string(),
+                                    }
+                                } else {
+                                    ExecutionPlan::SimpleProcedure {
+                                        proc_name: call_clause.procedure_name.to_string(),
+                                    }
+                                }
+                            } else {
+                                return Err(BoltError::query_error(
+                                    "No call clause found".to_string(),
+                                ));
+                            }
+                        }
+                    }
+                })
+            } else {
+                None
+            };
+
+            // Extract query type for regular queries
+            let query_type = match &parsed_stmt {
+                CypherStatement::Query {
+                    query,
+                    union_clauses,
+                } => {
+                    // Check main query type
+                    let main_type = query_planner::get_query_type(query);
+
+                    // For UNION queries, all branches must be Read queries
+                    if !union_clauses.is_empty() {
+                        // Check each union branch
+                        for union_clause in union_clauses {
+                            let branch_type = query_planner::get_query_type(&union_clause.query);
+                            if branch_type != query_planner::types::QueryType::Read {
+                                log::debug!("UNION branch has non-Read type: {:?}", branch_type);
+                                return Err(BoltError::query_error(
                                     "Only read queries are currently supported via Bolt protocol"
                                         .to_string(),
                                 ));
-                                }
                             }
                         }
+                    }
 
-                        main_type
-                    }
-                    CypherStatement::ProcedureCall(_) => {
-                        // Procedures are handled above, this shouldn't happen
-                        query_planner::types::QueryType::Read // dummy value
-                    }
-                    CypherStatement::CopyTo(_) => {
-                        // COPY TO is handled by the early intercept above
-                        return Err(BoltError::query_error(
-                            "Unexpected COPY TO in query type phase".to_string(),
-                        ));
-                    }
-                };
-
-                // transformed_stmt is dropped here at end of scope!
-                (
-                    is_procedure,
-                    is_union,
-                    exec_plan,
-                    query_type,
-                    label_constraints,
-                )
-            } else {
-                (
-                    false,
-                    false,
-                    None,
-                    query_planner::types::QueryType::Read,
-                    HashMap::new(),
-                )
+                    main_type
+                }
+                CypherStatement::ProcedureCall(_) => {
+                    // Procedures are handled above, this shouldn't happen
+                    query_planner::types::QueryType::Read // dummy value
+                }
+                CypherStatement::CopyTo(_) => {
+                    // COPY TO is handled by the early intercept above
+                    return Err(BoltError::query_error(
+                        "Unexpected COPY TO in query type phase".to_string(),
+                    ));
+                }
             };
+
+            // parsed_stmt is dropped here at end of scope!
+            (is_procedure, is_union, exec_plan, query_type)
+        } else {
+            (false, false, None, query_planner::types::QueryType::Read)
+        };
 
         // ============================================================
         // PHASE 3: Route to Procedure or Regular Query Handler

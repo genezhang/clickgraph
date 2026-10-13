@@ -30,8 +30,8 @@ flowchart TD
         B2[Bolt Protocol<br/>Port 7687]
         C[Request Router]
         D[Cypher Parser]
-        E[Query Planner]
-        F[SQL Generator]
+        E[Binder + Lowering]
+        F[SQL Printer]
         G[ClickHouse Client]
     end
     
@@ -45,7 +45,7 @@ flowchart TD
     B1 & B2 --> C
     C --> D
     D -->|AST| E
-    E -->|Logical Plan| F
+    E -->|Render plan| F
     F -->|SQL| G
     G -->|Query| H
     H --> I
@@ -63,7 +63,7 @@ flowchart TD
 
 1. **Stateless Architecture**: No query state stored in ClickGraph (scales horizontally)
 2. **View-Based Model**: Map existing tables to graphs (non-invasive)
-3. **Optimization-First**: Multiple optimization passes before SQL generation
+3. **Explicit Scope**: Each clause's names are bound once, then lowered clause by clause to SQL
 4. **Protocol Agnostic**: Support HTTP REST and Neo4j Bolt protocol
 5. **Rust Performance**: Zero-cost abstractions, memory safety, concurrency
 
@@ -118,100 +118,25 @@ QueryAst {
 }
 ```
 
-### 2. query_planner/
+### 2. bound_plan/
 
-**Purpose**: Transform AST into optimized logical plan.
-
-**Key Submodules**:
-- `analyzer/` - Semantic analysis and validation
-  - `view_resolver.rs` - Map labels to schema views
-  - `graph_traversal_planning.rs` - Plan multi-hop traversals
-  - `property_resolver.rs` - Resolve property mappings
-  
-- `logical_plan/` - Logical plan structures
-  - `plan.rs` - LogicalPlan enum (Scan, Join, Filter, Project, etc.)
-  - `plan_builder.rs` - Builder pattern for plan construction
-  
-- `optimizer/` - Optimization passes
-  - `filter_pushdown.rs` - Push filters to table scans
-  - `join_reorder.rs` - Optimize JOIN order
-  - `view_optimizer.rs` - Apply view-specific optimizations
-  - `chained_join_optimizer.rs` - Optimize fixed-length paths
-
-**Optimization Pipeline**:
-```rust
-// Query: MATCH (u:User)-[:FOLLOWS]->(:User)-[:FOLLOWS]->(f:User) 
-//        WHERE u.user_id = 1 RETURN f.name
-
-// 1. Initial Plan (unoptimized)
-LogicalPlan::Project {
-    input: LogicalPlan::Filter {
-        condition: "u.user_id = 1",
-        input: LogicalPlan::Join {
-            left: LogicalPlan::Scan("User"),
-            right: LogicalPlan::Join {
-                left: LogicalPlan::Scan("User"),
-                right: LogicalPlan::Scan("User")
-            }
-        }
-    }
-}
-
-// 2. After filter pushdown
-LogicalPlan::Project {
-    input: LogicalPlan::Join {
-        left: LogicalPlan::Filter {  // Filter pushed to scan
-            condition: "user_id = 1",
-            input: LogicalPlan::Scan("User")
-        },
-        right: LogicalPlan::Join {
-            left: LogicalPlan::Scan("User"),
-            right: LogicalPlan::Scan("User")
-        }
-    }
-}
-
-// 3. After chained join optimization
-LogicalPlan::Project {
-    input: LogicalPlan::ChainedJoin {  // Single multi-table join
-        base: LogicalPlan::Filter {
-            condition: "user_id = 1",
-            input: LogicalPlan::Scan("User")
-        },
-        joins: vec![
-            JoinStep { table: "user_follows", ... },
-            JoinStep { table: "User", ... },
-            JoinStep { table: "user_follows", ... },
-            JoinStep { table: "User", ... }
-        ]
-    }
-}
-```
-
-### 3. clickhouse_query_generator/
-
-**Purpose**: Generate ClickHouse SQL from logical plan.
+**Purpose**: Bind the parsed clauses once and lower them clause by clause to the SQL IR (`docs/design/EXPLICIT_SCOPE.md`).
 
 **Key Files**:
-- `mod.rs` - Main SQL generation logic
-- `cte_generator.rs` - Common Table Expression (CTE) generation
-- `join_generator.rs` - JOIN clause construction
-- `recursive_query_generator.rs` - Recursive CTE for variable-length paths
+- `binder.rs`, `expr.rs` - Names → bindings, scopes (WITH, UNION, subqueries), expressions
+- `labels.rs` - Label inference over the schema
+- `lower/` - Bound statement → `RenderPlan` (CTEs, joins, SELECT); dialect spellings via `FunctionMapper`
+- `lower/path.rs` - Variable-length walks (the generator in `sql_generator/emitters/clickhouse/variable_length_cte.rs`)
+- `write.rs` - Embedded writes → `WriteRenderPlan`
 
-**Example SQL Generation**:
-```rust
-// Logical Plan → SQL
+`translate.rs` is the one read translation every entry point (HTTP, Bolt, embedded, `cg`) calls.
 
-// Input: LogicalPlan::ChainedJoin (2-hop FOLLOWS)
-let plan = LogicalPlan::ChainedJoin {
-    base: Filter { condition: "user_id = 1", input: Scan("User") },
-    joins: vec![
-        Join { table: "user_follows", on: "follower_id = user_id" },
-        Join { table: "users", on: "followed_id = user_id" }
-    ]
-};
+### 3. render_plan/ and the SQL printer
 
-// Output SQL:
+**Purpose**: `render_plan/` is the SQL IR the lowering builds; `sql_generator/emitters/clickhouse/to_sql_query.rs` prints it as ClickHouse or Databricks SQL.
+
+**Example SQL** (`MATCH (u:User)-[:FOLLOWS]->(:User)-[:FOLLOWS]->(f:User) WHERE u.user_id = 1 RETURN f.name`, illustrative):
+```sql
 SELECT t2.full_name AS name
 FROM users_bench t0
 JOIN user_follows_bench r0 ON t0.user_id = r0.follower_id
@@ -221,40 +146,7 @@ JOIN users_bench t2 ON r1.followed_id = t2.user_id
 WHERE t0.user_id = 1;
 ```
 
-**Variable-Length Path SQL**:
-```rust
-// Input: MATCH (u:User)-[:FOLLOWS*1..3]->(f:User) WHERE u.user_id = 1
-
-// Output: Recursive CTE
-WITH RECURSIVE path_cte AS (
-    -- Base case (depth 0)
-    SELECT 
-        user_id AS start_id,
-        user_id AS end_id,
-        0 AS depth,
-        [user_id] AS path_ids
-    FROM users_bench
-    WHERE user_id = 1
-    
-    UNION ALL
-    
-    -- Recursive case (depth 1-3)
-    SELECT
-        p.start_id,
-        u.user_id AS end_id,
-        p.depth + 1 AS depth,
-        arrayConcat(p.path_ids, [u.user_id]) AS path_ids
-    FROM path_cte p
-    JOIN user_follows_bench r ON p.end_id = r.follower_id
-    JOIN users_bench u ON r.followed_id = u.user_id
-    WHERE p.depth < 3
-)
-SELECT DISTINCT
-    u.full_name AS name
-FROM path_cte p
-JOIN users_bench u ON p.end_id = u.user_id
-WHERE p.depth >= 1 AND p.depth <= 3;
-```
+**Variable-length paths** become a recursive CTE of the walks (start, end, hops), joined back to the end node's table.
 
 ### 4. graph_catalog/
 
@@ -307,9 +199,9 @@ pub struct RelationshipDefinition {
 - `bolt_protocol/` - Neo4j Bolt protocol implementation
   - `connection.rs` - Connection state management
   - `messages.rs` - Bolt message types
-  - `packstream.rs` - PackStream encoding/decoding
   - `auth.rs` - Authentication handlers
 - `clickhouse_client.rs` - ClickHouse connection pooling
+- `../packstream/` - PackStream encoding/decoding (vendored)
 
 **HTTP API**:
 ```rust
@@ -321,12 +213,8 @@ pub async fn execute_query(
     // 1. Parse Cypher
     let ast = parse_cypher(&request.query)?;
     
-    // 2. Plan & optimize
-    let logical_plan = plan_query(ast, &app_state.schema)?;
-    let optimized_plan = optimize(logical_plan)?;
-    
-    // 3. Generate SQL
-    let sql = generate_sql(optimized_plan)?;
+    // 2. Bind, lower and print SQL (translate.rs, the one read seam)
+    let sql = translate_read(ast, &schema, options)?.sql;
     
     // 4. Execute on ClickHouse
     let rows = app_state.clickhouse_client.query(&sql).await?;
@@ -386,58 +274,15 @@ QueryAst {
 }
 ```
 
-**4. View Resolution**
-```rust
-// Map "User" label → schema node definition
-let user_node = schema.views[0].nodes.get("User")?;
-// → source_table: "users_bench"
-// → property_mappings: { name: "full_name", user_id: "user_id", ... }
+**4. Schema Lookup**
 
-// Map "FOLLOWS" type → schema relationship definition
-let follows_rel = schema.views[0].relationships.get("FOLLOWS")?;
-// → source_table: "user_follows_bench"
-// → from_property: "follower_id", to_property: "followed_id"
-```
+The schema maps `User` to its table (`users_bench`) and properties to columns (`name` → `full_name`), and `FOLLOWS` to its table (`user_follows_bench`) and endpoint columns (`follower_id` → `followed_id`).
 
-**5. Query Planning**
-```rust
-// Build logical plan
-let plan = LogicalPlan::Project {
-    columns: vec!["f.name"],
-    input: Box::new(LogicalPlan::Limit {
-        count: 10,
-        input: Box::new(LogicalPlan::Join {
-            left: Box::new(LogicalPlan::Filter {
-                condition: Expr::Eq("user_id", 1),
-                input: Box::new(LogicalPlan::Scan {
-                    table: "users_bench",
-                    alias: "u"
-                })
-            }),
-            right: Box::new(LogicalPlan::Scan {
-                table: "users_bench",
-                alias: "f"
-            }),
-            on: JoinCondition::RelationshipTable {
-                table: "user_follows_bench",
-                from_col: "follower_id",
-                to_col: "followed_id"
-            }
-        })
-    })
-};
-```
+**5. Binding and Lowering**
 
-**6. Optimization**
-```rust
-// Apply optimization passes
-let optimized = plan
-    .apply(FilterPushdownOptimizer)
-    .apply(ViewOptimizer)
-    .apply(ChainedJoinOptimizer);
-```
+The binder resolves `u`, `f` and the relationship to bindings and their labels; the lowering builds the render plan: `users_bench AS t0` filtered on `user_id = 1`, joined through `user_follows_bench` to `users_bench AS t1`, projecting `t1.full_name AS name` with `LIMIT 10`.
 
-**7. SQL Generation**
+**6. SQL Printing**
 ```sql
 -- Generated ClickHouse SQL
 SELECT t1.full_name AS name
@@ -448,13 +293,13 @@ WHERE t0.user_id = 1
 LIMIT 10;
 ```
 
-**8. ClickHouse Execution**
+**7. ClickHouse Execution**
 ```rust
 let rows = clickhouse_client.query(&sql).await?;
 // → [[Row { name: "Alice" }], [Row { name: "Bob" }], ...]
 ```
 
-**9. Result Transformation**
+**8. Result Transformation**
 ```json
 {
   "results": [
@@ -473,46 +318,9 @@ let rows = clickhouse_client.query(&sql).await?;
 
 ## Extension Points
 
-### 1. Custom Optimization Passes
+### 1. Lowering a New Construct
 
-**Create New Optimizer**:
-```rust
-// src/query_planner/optimizer/my_optimizer.rs
-
-use crate::query_planner::logical_plan::LogicalPlan;
-use crate::query_planner::optimizer::OptimizerPass;
-
-pub struct MyCustomOptimizer;
-
-impl OptimizerPass for MyCustomOptimizer {
-    fn optimize(&self, plan: LogicalPlan) -> Result<LogicalPlan, Error> {
-        match plan {
-            LogicalPlan::Filter { condition, input } => {
-                // Apply custom optimization logic
-                let optimized_input = self.optimize(*input)?;
-                Ok(LogicalPlan::Filter {
-                    condition,
-                    input: Box::new(optimized_input)
-                })
-            }
-            _ => Ok(plan)
-        }
-    }
-}
-```
-
-**Register Optimizer**:
-```rust
-// src/query_planner/optimizer/mod.rs
-
-pub fn optimize_plan(plan: LogicalPlan) -> Result<LogicalPlan, Error> {
-    plan
-        .apply(FilterPushdownOptimizer)
-        .apply(ViewOptimizer)
-        .apply(ChainedJoinOptimizer)
-        .apply(MyCustomOptimizer)  // Add your optimizer
-}
-```
+A new Cypher construct is bound in `bound_plan/binder.rs` / `expr.rs` (refuse what is not supported with `BindError::Unsupported`) and lowered in `bound_plan/lower/`; dialect-specific SQL goes through `FunctionMapper`, schema layouts through `PatternSchemaContext`. Add the query to the corpus (`tests/corpus/`) so its SQL is locked by a golden.
 
 ### 2. Custom Cypher Functions
 
@@ -529,7 +337,7 @@ pub enum Expression {
 
 **Implement Function Logic**:
 ```rust
-// src/clickhouse_query_generator/function_generator.rs
+// src/sql_generator/emitters/clickhouse/function_registry.rs (illustrative)
 
 pub fn generate_custom_function(
     name: &str,
@@ -555,25 +363,7 @@ RETURN u.name, my_custom_func(u.age, u.score)
 
 ### 3. Custom Graph Algorithms
 
-**Implement Algorithm**:
-```rust
-// src/query_planner/algorithms/my_algorithm.rs
-
-use crate::query_planner::logical_plan::LogicalPlan;
-
-pub fn generate_my_algorithm_plan(
-    start_node: &str,
-    params: &AlgorithmParams
-) -> Result<LogicalPlan, Error> {
-    // 1. Generate recursive CTE for algorithm
-    let cte_sql = format!(
-        "WITH RECURSIVE algo_cte AS ( ... ) SELECT * FROM algo_cte"
-    );
-    
-    // 2. Return as RawSql plan
-    Ok(LogicalPlan::RawSql { sql: cte_sql })
-}
-```
+**Implement Algorithm**: graph algorithms are procedures that generate their SQL directly, as PageRank does (`sql_generator/emitters/clickhouse/pagerank.rs`, its CALL arguments read by `query_planner::evaluate_call_query`); other procedures live in `src/procedures/`.
 
 **Register as Cypher Procedure**:
 ```cypher
@@ -599,7 +389,7 @@ Expression::Function {
 
 **2. Generate ClickHouse SQL**:
 ```rust
-// function_generator.rs
+// function_registry.rs (illustrative)
 "levenshtein" => {
     format!("editDistance({}, {})", 
         generate_expression(&args[0])?,

@@ -52,9 +52,9 @@ This guide documents all regression tests and testing procedures for ClickGraph.
 
 **Example**:
 ```rust
-// src/query_planner/logical_plan/mod.rs
+// src/bound_plan/tests.rs
 #[test]
-fn test_simple_match_query() { ... }
+fn a_simple_match_binds() { ... }
 ```
 
 ---

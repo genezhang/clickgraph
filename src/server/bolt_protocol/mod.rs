@@ -78,7 +78,6 @@ pub enum ConnectionState {
 }
 
 pub mod id_mapper;
-pub mod id_rewriter;
 use id_mapper::IdMapper;
 
 /// Bolt connection context

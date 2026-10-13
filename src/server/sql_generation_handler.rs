@@ -371,14 +371,11 @@ async fn sql_generation_handler_inner(
         // The same conversion the cache key used.
         let view_parameter_values = vp_strings.clone();
 
-        // Same pre-pass and pipeline as `/query`, so this endpoint returns
-        // the SQL `/query` would run: the id() rewrite, then the translate
-        // seam (which runs the analyzer passes this endpoint used to skip).
-        use crate::query_planner::ast_transform;
+        // The same translate seam as `/query`, so this endpoint returns the
+        // SQL `/query` would run (`id()` values read through this mapper).
         use crate::server::bolt_protocol::id_mapper::IdMapper;
         let mut id_mapper = IdMapper::new();
         id_mapper.set_scope(Some(schema_name.to_string()), None);
-        let ast_arena = ast_transform::StringArena::new();
         let read_options = crate::translate::ReadOptions {
             view_parameter_values,
             cypher: clean_query.to_string(),
@@ -387,12 +384,6 @@ async fn sql_generation_handler_inner(
         };
         let translated = match cypher_statement {
             Some(statement) => {
-                let (statement, _label_constraints) = ast_transform::transform_id_functions(
-                    &ast_arena,
-                    statement,
-                    &id_mapper,
-                    Some(&graph_schema),
-                );
                 crate::translate::translate_read(statement, &graph_schema, read_options)
             }
             None => match crate::translate::translate_text_read(

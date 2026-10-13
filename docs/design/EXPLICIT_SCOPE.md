@@ -5216,12 +5216,30 @@ slice that will handle it.
       `LogicalExpr` stays in `query_planner` (a move is a rename only).
       - The corpus goldens byte-identical, census 1477, the ratchet's 8
         decreases recorded; the removed tests are `LogicalPlan`'s own.
-    - [ ] **S14c7: the entry points** (`transform_id_functions`, the dead
-      `id_rewriter.rs` and `src/testing/`, `include_plan`, the generator's
-      branches the bound plan never reaches, e.g. `pattern_schema`'s
-      coupled-edge context and the strategies' fields no code reads) and
-      the docs (`.github/copilot-instructions.md`, `DEVELOPMENT_PROCESS.md`,
-      `KNOWN_ISSUES.md`), then #1392 closed.
+    - [x] **S14c7: the entry points and the docs.** The `id()` AST rewrite
+      (`ast_transform`, `transform_id_functions`) goes: every caller used
+      its output only to classify the statement (read / write / CALL), which
+      it does not change (it rewrote WHERE / ORDER BY expressions, injected
+      labels and could copy the query into one UNION branch per label of an
+      `id()` list, each branch the main query's clauses; it only read the id
+      mapper); the bound plan reads ids itself through
+      `id_mapper::resolve_node_id` (moved there). The one consequence: over
+      Bolt, a procedure call filtered by `id(x) IN` ids of several labels
+      was planned as a UNION of one identical procedure branch per label;
+      now it is one call. The regex `id_rewriter.rs`,
+      `cte_naming` and `src/testing/` (not compiled: not in `lib.rs`) go with
+      four uncompiled test files of the legacy APIs. `include_plan` stays
+      (the `/sql` API's field: the result's shape since S14c1). The docs
+      (`.github/copilot-instructions.md`, `DEVELOPMENT_PROCESS.md`,
+      `KNOWN_ISSUES.md`, `STATUS.md`, the AGENTS.md files) describe the
+      bound plan.
+    - [ ] **S14c8: the walk generator's unreached inputs.** The bound plan
+      calls `variable_length_cte.rs` / `cte_manager` with constant inputs
+      (the standard layout, no path variable, no shortest-path mode, no
+      weight, no BFS, not undirected, the `RenderExpr` filters `None`,
+      `composite_by_columns`): the branches for the others, the
+      denormalized strategy, `pattern_schema`'s coupled-edge context and
+      the fields no code reads go; then #1392 closed.
 
 ## Appendix A — post-assembly repair passes (48, plus CTE flattening, at `e1241a9c`)
 

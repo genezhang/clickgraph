@@ -286,7 +286,6 @@ pub fn translate_text_read(
 /// text only the clause-list parser reads included, S10b). Errors are
 /// messages prefixed `Inner Cypher …`.
 pub fn translate_inner_read(cypher: &str, schema: &GraphSchema) -> Result<String, String> {
-    use crate::query_planner::ast_transform;
     // Stateless for export: no IdMapper scope.
     let id_mapper = crate::server::bolt_protocol::id_mapper::IdMapper::new();
     let options = || ReadOptions {
@@ -300,14 +299,9 @@ pub fn translate_inner_read(cypher: &str, schema: &GraphSchema) -> Result<String
         TranslateError::Internal(e) => format!("Inner Cypher internal error: {}", e),
     };
     match crate::open_cypher_parser::parse_cypher_statement(cypher) {
-        Ok((_, statement)) => {
-            let arena = ast_transform::StringArena::new();
-            let (statement, _) =
-                ast_transform::transform_id_functions(&arena, statement, &id_mapper, Some(schema));
-            translate_read(statement, schema, options())
-                .map(|t| t.sql)
-                .map_err(message)
-        }
+        Ok((_, statement)) => translate_read(statement, schema, options())
+            .map(|t| t.sql)
+            .map_err(message),
         Err(e) => {
             let parse_error = format!("Inner Cypher parse error: {}", e);
             match translate_text_read(cypher, schema, options()) {
@@ -492,7 +486,7 @@ fn bound_plan_or_reason(
                 let schema = crate::server::query_context::get_current_schema()
                     .unwrap_or_else(|| std::sync::Arc::new(schema.clone()));
                 crate::bound_plan::lower::IdLookup(std::sync::Arc::new(move |id| {
-                    crate::query_planner::ast_transform::id_function::resolve_node_id(
+                    crate::server::bolt_protocol::id_mapper::resolve_node_id(
                         &mapper,
                         Some(&schema),
                         id,

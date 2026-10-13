@@ -135,7 +135,7 @@ pub struct LowerOptions {
 
 /// The node an integer `id()` value names on the server: its label and key
 /// (a composite key's parts joined by `|`), `None` for none
-/// (`ast_transform::id_function::resolve_node_id`).
+/// (`id_mapper::resolve_node_id`).
 #[derive(Clone)]
 pub struct IdLookup(pub Arc<dyn Fn(i64) -> Option<(String, String)> + Send + Sync>);
 

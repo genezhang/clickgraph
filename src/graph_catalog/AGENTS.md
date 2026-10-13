@@ -169,7 +169,7 @@ Auto-discovery populates `column_names` on schemas and detects MergeTree engine 
 
 ### Downstream (who imports graph_catalog)
 - **server/** — `graph_catalog.rs` (schema admin), `mod.rs` (init), `query_context.rs` (task-local),
-  `bolt_protocol/id_rewriter.rs`, `bolt_protocol/result_transformer.rs`
+  `bolt_protocol/id_mapper.rs`, `bolt_protocol/result_transformer.rs`
 - **bound_plan/** — the binder (labels, union labels), lowering (`lower/`), writes
 - **query_planner/** — `logical_expr/`
 - **sql_generator/emitters/clickhouse/** — `variable_length_cte.rs`, `pagerank.rs`, `to_sql_query.rs`
