@@ -21,30 +21,16 @@ use std::time::{Duration, Instant};
 use crate::bound_plan::lower::{ResultColumn, ResultKind};
 use crate::graph_catalog::graph_schema::GraphSchema;
 use crate::open_cypher_parser::ast::CypherStatement;
-use crate::query_planner::{self, logical_plan::LogicalPlan, plan_ctx::PlanCtx};
-use crate::render_plan::plan_builder::RenderPlanBuilder;
-use crate::server::bolt_protocol::result_transformer::{
-    extract_return_metadata, ReturnItemMetadata, ReturnItemType,
-};
+use crate::server::bolt_protocol::result_transformer::{ReturnItemMetadata, ReturnItemType};
 
 /// Caller-supplied inputs that change how a read query is planned or rendered.
 #[derive(Debug, Clone, Default)]
 pub struct ReadOptions {
     pub tenant_id: Option<String>,
     pub view_parameter_values: Option<HashMap<String, String>>,
-    pub max_inferred_types: Option<usize>,
-    /// `WHERE`-derived label constraints computed by the Bolt `id()` rewrite
-    /// (second pass); injected into the plan context before rendering.
-    pub where_label_constraints: Option<HashMap<String, std::collections::HashSet<String>>>,
-    pub max_cte_depth: u32,
-    /// The query text `statement` was parsed from (comments stripped). The
-    /// bound-plan path (P-4c) parses it with the clause-list parser; a caller
-    /// that leaves it `None` gets the legacy pipeline (the read half of an
-    /// embedded write+RETURN, whose statement no longer matches its text).
-    pub cypher: Option<String>,
-    /// `Some(Off)`: the legacy pipeline (its own tests, until it is
-    /// deleted). `None` is `On`.
-    pub bound_plan: Option<BoundPlanMode>,
+    /// The query text `statement` was parsed from (comments stripped): the
+    /// bound plan (P-4c) parses it with the clause-list parser.
+    pub cypher: String,
     /// The server's id mapper (HTTP, Bolt): the bound plan reads an integer
     /// compared with `id(n)` as the `id()` rewrite does (P-4c S11e). `None`
     /// (library, `cg`): `id(n)` is the node's key.
@@ -53,24 +39,6 @@ pub struct ReadOptions {
     /// `None`: the server's setting (`server_neo4j_compat`). The corpus
     /// goldens lock both modes in one process (P-4c S14c0).
     pub neo4j_compat: Option<bool>,
-}
-
-/// Which pipeline translates a read query ([`ReadOptions::bound_plan`]).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BoundPlanMode {
-    /// The legacy pipeline only: its own tests, until it is deleted.
-    Off,
-    /// The bound plan. What it does not lower is an error on every dialect
-    /// (P-4c S11j, S14a), as is a query it rejects as
-    /// Neo4j does.
-    On,
-}
-
-/// Which pipeline produced a translation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Route {
-    Legacy,
-    BoundPlan,
 }
 
 /// Wall-clock time spent in each translation stage (HTTP metrics).
@@ -86,26 +54,17 @@ pub struct TranslateTimings {
 pub struct ReadTranslation {
     /// SQL for an executor that applies the semantic session settings.
     pub sql: String,
-    /// The analyzed plan and its context (legacy route), for the result
-    /// shape and `include_plan` debugging. `LogicalPlan::Empty` and an empty
-    /// context when `route` is `BoundPlan`.
-    pub logical_plan: LogicalPlan,
-    pub plan_ctx: PlanCtx,
-    /// What each RETURN item is, when `route` is `BoundPlan`.
-    pub shape: Option<Vec<ResultColumn>>,
+    /// What each RETURN item is.
+    pub shape: Vec<ResultColumn>,
     pub timings: TranslateTimings,
-    pub route: Route,
 }
 
 impl ReadTranslation {
     /// What each RETURN item is and which columns hold it (§4.13): Bolt, the
     /// HTTP graph output and embedded `query_graph` build nodes and
-    /// relationships from it, whichever pipeline translated the query.
-    pub fn return_metadata(&self) -> Result<Vec<ReturnItemMetadata>, String> {
-        match &self.shape {
-            Some(shape) => Ok(shape.iter().map(return_item_metadata).collect()),
-            None => extract_return_metadata(&self.logical_plan, &self.plan_ctx),
-        }
+    /// relationships from it.
+    pub fn return_metadata(&self) -> Vec<ReturnItemMetadata> {
+        self.shape.iter().map(return_item_metadata).collect()
     }
 }
 
@@ -155,31 +114,24 @@ impl BoundTranslation {
     fn into_read_translation(self, start: Instant) -> ReadTranslation {
         ReadTranslation {
             sql: self.sql,
-            logical_plan: LogicalPlan::Empty,
-            plan_ctx: PlanCtx::new_empty(),
-            shape: Some(self.shape),
+            shape: self.shape,
             timings: TranslateTimings {
                 planning: start.elapsed(),
                 ..Default::default()
             },
-            route: Route::BoundPlan,
         }
     }
 }
 
-/// The stage a translation failed in. Callers map planning errors to client
-/// errors and render errors to internal errors, as before.
+/// Why a read query was not translated.
 #[derive(Debug)]
 pub enum TranslateError {
-    Planning(query_planner::QueryPlannerError),
-    Render(crate::render_plan::errors::RenderBuildError),
     /// The query is invalid Cypher, as Neo4j rejects it (an undefined or
     /// redeclared variable, a misplaced aggregate, …): the bound plan's
     /// binder (P-4c S10; the legacy pipeline is not tried).
     Invalid(String),
-    /// The bound plan does not translate the query, and the dialect has no
-    /// legacy fallback (P-4c S11j): a form not supported, or one Neo4j also
-    /// refuses.
+    /// The bound plan does not translate the query (P-4c S11j, S14a): a form
+    /// not supported, or one Neo4j also refuses.
     Unsupported(String),
     /// The bound plan broke one of its own invariants: a defect, not the
     /// query's (an internal error, HTTP 500).
@@ -189,8 +141,6 @@ pub enum TranslateError {
 impl std::fmt::Display for TranslateError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            TranslateError::Planning(e) => write!(f, "{}", e),
-            TranslateError::Render(e) => write!(f, "{}", e),
             TranslateError::Invalid(e) => write!(f, "{}", e),
             TranslateError::Unsupported(e) => write!(f, "{}", e),
             TranslateError::Internal(e) => write!(f, "{}", e),
@@ -200,10 +150,9 @@ impl std::fmt::Display for TranslateError {
 
 impl std::error::Error for TranslateError {}
 
-/// Translate a parsed read statement to SQL.
-///
-/// The statement must already have gone through the caller's AST pre-passes
-/// (`USE` extraction, the `id()` rewrite). Server entry points call this
+/// Translate a read query to SQL: the bound plan translates
+/// `options.cypher`; `statement` (its legacy parse) only tells a read from
+/// a CALL or a write (`is_read` / `not_a_read`). Server entry points call this
 /// inside their `with_query_context` scope (schema, dialect, table stats set).
 /// A caller without one (library code, unit tests) gets a fresh per-query
 /// context holding `schema`, so a translation never runs on process-global
@@ -233,82 +182,24 @@ fn translate_in_context(
 ) -> Result<ReadTranslation, TranslateError> {
     // Deterministic generated aliases: restart THIS query's counters.
     crate::query_planner::logical_plan::reset_all_counters();
-
-    let mode = options.bound_plan.unwrap_or(BoundPlanMode::On);
+    let start = Instant::now();
     // `id()` comparisons: the bound plan reads them from `cypher` with the
-    // server's id mapper (S11e), as the `id()` rewrite did in `statement`.
-    if mode == BoundPlanMode::On {
-        if let Some(cypher) = options.cypher.as_deref() {
-            let start = Instant::now();
-            match bound_plan_or_reason(cypher, schema, &options) {
-                Err(BoundPlanError::Invalid(e)) => return Err(TranslateError::Invalid(e)),
-                // Text the clause-list parser rejects is not Cypher (a query
-                // without RETURN, which the legacy pipeline answered with the
-                // matched nodes; user 2026-10-11: as Neo4j, an error).
-                // A CALL or updating query (`NotARead`, or text only the
-                // legacy parser reads: `CALL p() YIELD x WHERE …`) is not a
-                // read. Entry points answer standalone procedures and writes
-                // before this; one that gets here (a CALL inside a query, a
-                // CREATE) the legacy pipeline answered wrongly (the CALL
-                // dropped, `WHERE false` rows): an error where reads do not
-                // fall back (S11j review).
-                // What the bound plan does not translate is an error on
-                // every dialect (P-4c S11j, S14a).
-                Err(BoundPlanError::Unparsed(_)) if !is_read(&statement) => {
-                    return Err(not_a_read(&statement));
-                }
-                Err(BoundPlanError::Unparsed(reason)) => {
-                    return Err(TranslateError::Invalid(reason));
-                }
-                Err(BoundPlanError::Fallback(reason)) => {
-                    return Err(not_translated(&reason));
-                }
-                Err(BoundPlanError::NotARead(_)) => {
-                    return Err(not_a_read(&statement));
-                }
-                Ok(bound) => return Ok(bound.into_read_translation(start)),
-            }
-        }
+    // server's id mapper (S11e).
+    match bound_plan_or_reason(&options.cypher, schema, &options) {
+        Err(BoundPlanError::Invalid(e)) => Err(TranslateError::Invalid(e)),
+        // Text the clause-list parser rejects is not Cypher (a query without
+        // RETURN; user 2026-10-11: as Neo4j, an error). A CALL or updating
+        // query (`NotARead`, or text only the legacy parser reads: `CALL p()
+        // YIELD x WHERE …`) is not a read: entry points answer standalone
+        // procedures and writes before this.
+        Err(BoundPlanError::Unparsed(_)) if !is_read(&statement) => Err(not_a_read(&statement)),
+        Err(BoundPlanError::Unparsed(reason)) => Err(TranslateError::Invalid(reason)),
+        // What the bound plan does not translate is an error (P-4c S11j,
+        // S14a).
+        Err(BoundPlanError::Fallback(reason)) => Err(not_translated(&reason)),
+        Err(BoundPlanError::NotARead(_)) => Err(not_a_read(&statement)),
+        Ok(bound) => Ok(bound.into_read_translation(start)),
     }
-
-    let planning_start = Instant::now();
-    let (logical_plan, mut plan_ctx) = query_planner::evaluate_read_statement(
-        statement,
-        schema,
-        options.tenant_id,
-        options.view_parameter_values,
-        options.max_inferred_types,
-    )
-    .map_err(TranslateError::Planning)?;
-    if let Some(constraints) = options.where_label_constraints {
-        if !constraints.is_empty() {
-            plan_ctx.set_where_label_constraints(constraints);
-        }
-    }
-    let planning = planning_start.elapsed();
-
-    let render_start = Instant::now();
-    let render_plan = logical_plan
-        .to_render_plan_with_ctx(schema, Some(&plan_ctx), None)
-        .map_err(TranslateError::Render)?;
-    let render = render_start.elapsed();
-
-    let sql_start = Instant::now();
-    let sql = crate::clickhouse_query_generator::generate_sql(render_plan, options.max_cte_depth);
-    let sql_generation = sql_start.elapsed();
-
-    Ok(ReadTranslation {
-        sql,
-        logical_plan,
-        plan_ctx,
-        shape: None,
-        timings: TranslateTimings {
-            planning,
-            render,
-            sql_generation,
-        },
-        route: Route::Legacy,
-    })
 }
 
 /// The error for a statement that is not a read reaching the read path.
@@ -359,8 +250,8 @@ fn is_read(statement: &CypherStatement<'_>) -> bool {
 /// after an OPTIONAL MATCH after a WITH, free-standing ORDER BY / SKIP /
 /// LIMIT. Entry points call it when the legacy parser rejects the text.
 ///
-/// `Ok(None)`: the clause-list parser rejects it too, or the route is off:
-/// the caller reports its own parse error. `Err(Invalid)`: a query Neo4j
+/// `Ok(None)`: the clause-list parser rejects it too: the caller reports its
+/// own parse error. `Err(Invalid)`: a query Neo4j
 /// rejects as well. `Err(Unsupported)`: parsed, but not lowered.
 pub fn translate_text_read(
     cypher: &str,
@@ -375,9 +266,6 @@ pub fn translate_text_read(
             set_current_schema(std::sync::Arc::new(schema.clone()));
             translate_text_read(cypher, schema, options)
         });
-    }
-    if options.bound_plan == Some(BoundPlanMode::Off) {
-        return Ok(None);
     }
     crate::query_planner::logical_plan::reset_all_counters();
     let start = Instant::now();
@@ -394,26 +282,19 @@ pub fn translate_text_read(
 }
 
 /// The SQL of an inner read query (`COPY (<query>) TO`, the query argument of
-/// `apoc.export.*.query`), translated as `/query` would: the legacy parse
-/// with the `id()` rewrite, or text only the clause-list parser reads on the
-/// bound plan (S10b). Errors are messages prefixed `Inner Cypher …`.
-pub fn translate_inner_read(
-    cypher: &str,
-    schema: &GraphSchema,
-    max_cte_depth: u32,
-) -> Result<String, String> {
+/// `apoc.export.*.query`), translated as `/query` would (the bound plan;
+/// text only the clause-list parser reads included, S10b). Errors are
+/// messages prefixed `Inner Cypher …`.
+pub fn translate_inner_read(cypher: &str, schema: &GraphSchema) -> Result<String, String> {
     use crate::query_planner::ast_transform;
     // Stateless for export: no IdMapper scope.
     let id_mapper = crate::server::bolt_protocol::id_mapper::IdMapper::new();
     let options = || ReadOptions {
-        max_cte_depth,
-        cypher: Some(cypher.to_string()),
+        cypher: cypher.to_string(),
         id_mapper: Some(id_mapper.clone()),
         ..Default::default()
     };
     let message = |e: TranslateError| match e {
-        TranslateError::Planning(e) => format!("Inner Cypher planning error: {}", e),
-        TranslateError::Render(e) => format!("Inner Cypher render error: {}", e),
         TranslateError::Invalid(e) => format!("Inner Cypher query error: {}", e),
         TranslateError::Unsupported(e) => format!("Inner Cypher not supported: {}", e),
         TranslateError::Internal(e) => format!("Inner Cypher internal error: {}", e),
@@ -653,10 +534,7 @@ fn merged_view_parameters(
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        clause_list_use_name, translate_text_read, BoundPlanMode, ReadOptions, Route,
-        TranslateError,
-    };
+    use super::{clause_list_use_name, translate_text_read, ReadOptions, TranslateError};
 
     fn social() -> super::GraphSchema {
         crate::graph_catalog::config::GraphSchemaConfig::from_yaml_str(include_str!(
@@ -668,11 +546,7 @@ mod tests {
     }
 
     fn on() -> ReadOptions {
-        ReadOptions {
-            max_cte_depth: 100,
-            bound_plan: Some(BoundPlanMode::On),
-            ..Default::default()
-        }
+        ReadOptions::default()
     }
 
     /// Syntax only the clause-list parser reads (P-4c S10b) is translated by
@@ -696,13 +570,11 @@ mod tests {
             let t = translate_text_read(q, &schema, on())
                 .unwrap()
                 .unwrap_or_else(|| panic!("not translated: {q}"));
-            assert_eq!(t.route, Route::BoundPlan, "{q}");
-            let lib = crate::clickhouse_query_generator::cypher_to_sql(q, &schema, 100);
+            let lib = crate::clickhouse_query_generator::cypher_to_sql(q, &schema);
             assert_eq!(lib.as_deref(), Ok(t.sql.as_str()), "{q}");
         }
-        let text_only = "MATCH (a:User) ORDER BY a.name LIMIT 3 RETURN a.name";
-        // An updating clause, which the clause-list parser rejects, or the
-        // route off: the caller reports its parse error.
+        // An updating clause, which the clause-list parser rejects: the
+        // caller reports its parse error.
         let create = "MATCH (a:User) ORDER BY a.name LIMIT 3 CREATE (b:User) RETURN a.name";
         assert!(
             translate_text_read(create, &schema, on())
@@ -721,13 +593,6 @@ mod tests {
             ),
             "{id_gt}"
         );
-        let off = ReadOptions {
-            bound_plan: Some(BoundPlanMode::Off),
-            ..on()
-        };
-        assert!(translate_text_read(text_only, &schema, off)
-            .unwrap()
-            .is_none());
         assert!(matches!(
             translate_text_read(
                 "MATCH (a:User) ORDER BY a.name LIMIT 3 RETURN z.name",
@@ -744,17 +609,17 @@ mod tests {
     fn an_inner_export_query_translates_as_a_query_does() {
         let schema = social();
         let text_only = "MATCH (a:User) ORDER BY a.name LIMIT 1 RETURN a.name";
-        let sql = super::translate_inner_read(text_only, &schema, 100).unwrap();
+        let sql = super::translate_inner_read(text_only, &schema).unwrap();
         assert_eq!(
             Ok(sql),
-            crate::clickhouse_query_generator::cypher_to_sql(text_only, &schema, 100)
+            crate::clickhouse_query_generator::cypher_to_sql(text_only, &schema)
         );
         let read = "MATCH (a:User) RETURN a.name";
         assert_eq!(
-            super::translate_inner_read(read, &schema, 100),
-            crate::clickhouse_query_generator::cypher_to_sql(read, &schema, 100)
+            super::translate_inner_read(read, &schema),
+            crate::clickhouse_query_generator::cypher_to_sql(read, &schema)
         );
-        let err = super::translate_inner_read("MATCH (a:User) RETRUN a", &schema, 100);
+        let err = super::translate_inner_read("MATCH (a:User) RETRUN a", &schema);
         assert!(
             matches!(&err, Err(e) if e.starts_with("Inner Cypher parse error")),
             "{err:?}"
@@ -762,7 +627,6 @@ mod tests {
         let err = super::translate_inner_read(
             "MATCH (a:User) ORDER BY a.name LIMIT 1 RETURN z.name",
             &schema,
-            100,
         );
         assert!(
             matches!(&err, Err(e) if e.starts_with("Inner Cypher query error")),
@@ -849,7 +713,7 @@ mod tests {
                 stmt,
                 &schema,
                 super::ReadOptions {
-                    max_cte_depth: 100,
+                    cypher: cypher.to_string(),
                     ..Default::default()
                 },
             )
@@ -861,12 +725,6 @@ mod tests {
         let after: u32 = generate_id()[1..].parse().unwrap();
         assert_eq!(after, before + 1, "translation touched the global counter");
         assert_eq!(first, translate(), "translation is not deterministic");
-        // Numbered from this query's own counter (`t1` is the pruned middle
-        // node), whatever the global counter's value.
-        assert!(
-            first.contains("AS t2 ") && first.contains("AS t3 "),
-            "{first}"
-        );
     }
 
     /// A query's generated aliases are numbered by its OWN counters: another
@@ -901,10 +759,9 @@ mod tests {
         );
     }
     /// Bolt, the HTTP graph output and embedded `query_graph` read the
-    /// result shape through `return_metadata`, whichever pipeline translated
-    /// the query (§4.13).
+    /// result shape through `return_metadata` (§4.13).
     #[test]
-    fn return_metadata_on_both_routes() {
+    fn return_metadata_of_the_result_shape() {
         use crate::server::bolt_protocol::result_transformer::ReturnItemType as T;
         let schema = crate::graph_catalog::config::GraphSchemaConfig::from_yaml_str(include_str!(
             "../schemas/test/social_integration.yaml"
@@ -913,25 +770,17 @@ mod tests {
         .to_graph_schema()
         .unwrap();
         let cypher = "MATCH (a:User)<-[r:FOLLOWS]-(b:User) RETURN a AS x, r, id(b), b.name";
-        let translate = |mode| {
-            let (_, stmt) = crate::open_cypher_parser::parse_cypher_statement(cypher).unwrap();
-            super::translate_read(
-                stmt,
-                &schema,
-                super::ReadOptions {
-                    max_cte_depth: 100,
-                    cypher: Some(cypher.to_string()),
-                    bound_plan: Some(mode),
-                    // Bolt passes the (empty) constraints of its id() rewrite.
-                    where_label_constraints: Some(Default::default()),
-                    ..Default::default()
-                },
-            )
-            .unwrap()
-        };
-        let bound = translate(super::BoundPlanMode::On);
-        assert_eq!(bound.route, super::Route::BoundPlan);
-        let metadata = bound.return_metadata().unwrap();
+        let (_, stmt) = crate::open_cypher_parser::parse_cypher_statement(cypher).unwrap();
+        let bound = super::translate_read(
+            stmt,
+            &schema,
+            super::ReadOptions {
+                cypher: cypher.to_string(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let metadata = bound.return_metadata();
         let x_columns = metadata[0].columns.as_ref().expect("explicit columns");
         assert!(
             x_columns.contains(&("name".to_string(), "x.name".to_string())),
@@ -939,7 +788,6 @@ mod tests {
         );
         let items: Vec<(String, String)> = bound
             .return_metadata()
-            .unwrap()
             .into_iter()
             .map(|m| (m.field_name, format!("{:?}", m.item_type)))
             .collect();
@@ -982,10 +830,5 @@ mod tests {
             ]
             .map(|(n, t)| (n.to_string(), t))
         );
-        let legacy = translate(super::BoundPlanMode::Off);
-        assert_eq!(legacy.route, super::Route::Legacy);
-        let legacy_metadata = legacy.return_metadata().unwrap();
-        assert_eq!(legacy_metadata.len(), 4);
-        assert!(legacy_metadata.iter().all(|m| m.columns.is_none()));
     }
 }

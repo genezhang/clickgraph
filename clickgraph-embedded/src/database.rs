@@ -624,9 +624,9 @@ graph_schema:
 
     #[test]
     fn sql_only_with_dialect_rejects_unimplemented_dialects() {
-        // Guards against the runtime panic that `emitter_for(<x>)` would
-        // otherwise produce for not-yet-implemented dialects. Copilot
-        // (PR #332) flagged the original unconditional acceptance.
+        // Only ClickHouse and Databricks are translated to: the others are
+        // refused up front. Copilot (PR #332) flagged the original
+        // unconditional acceptance.
         let schema = write_schema();
         for d in [
             SqlDialect::PostgreSQL,

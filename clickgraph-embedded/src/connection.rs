@@ -18,9 +18,6 @@ use super::query_result::QueryResult;
 use super::value::Value;
 use super::write_helpers;
 
-/// Default maximum CTE recursion depth for Cypher→SQL translation.
-const DEFAULT_MAX_CTE_DEPTH: u32 = 100;
-
 /// One pending edge insertion: `(from_raw_id, to_raw_id, properties)`.
 type PendingEdge = (String, String, HashMap<String, Value>);
 
@@ -112,7 +109,7 @@ impl<'db> Connection<'db> {
                 set_current_schema(Arc::clone(&schema));
                 // #1314: SQL handed to the caller (for running elsewhere)
                 // carries the semantic session settings in the statement.
-                cypher_to_sql(&cypher, &schema, 100)
+                cypher_to_sql(&cypher, &schema)
                     .map(|sql| clickgraph::sql_generator::portable_sql(&sql, dialect))
                     .map_err(EmbeddedError::Query)
             })
@@ -823,7 +820,7 @@ impl<'db> Connection<'db> {
         let output_path = output_path.to_string();
         with_query_context(QueryContext::new(None), async move {
             set_current_schema(Arc::clone(&schema));
-            let select_sql = cypher_to_sql(&cypher, &schema, 100).map_err(EmbeddedError::Query)?;
+            let select_sql = cypher_to_sql(&cypher, &schema).map_err(EmbeddedError::Query)?;
             let export_sql = build_export_sql(&select_sql, &output_path, &options)
                 .map_err(EmbeddedError::Query)?;
             executor
@@ -882,7 +879,7 @@ impl<'db> Connection<'db> {
             let args =
                 apoc_export::parse_export_call(&expressions).map_err(EmbeddedError::Query)?;
             let inner_sql =
-                cypher_to_sql(&args.cypher_query, &schema, 100).map_err(EmbeddedError::Query)?;
+                cypher_to_sql(&args.cypher_query, &schema).map_err(EmbeddedError::Query)?;
             let export_sql = apoc_export::build_export_sql(
                 &inner_sql,
                 &args.destination,
@@ -940,8 +937,7 @@ impl<'db> Connection<'db> {
         let destination = destination.to_string();
         with_query_context(QueryContext::new(None), async move {
             set_current_schema(Arc::clone(&schema));
-            let inner_sql =
-                cypher_to_sql(&inner_cypher, &schema, 100).map_err(EmbeddedError::Query)?;
+            let inner_sql = cypher_to_sql(&inner_cypher, &schema).map_err(EmbeddedError::Query)?;
             let export_sql =
                 apoc_export::build_export_sql(&inner_sql, &destination, ch_format, &config)
                     .map_err(EmbeddedError::Query)?;
@@ -1147,8 +1143,7 @@ impl<'db> Connection<'db> {
             // `id(r)` columns hold an element id, returned as Bolt's number
             // for it (P-4c S11l).
             let (final_sql, id_columns) =
-                cypher_to_sql_with_id_columns(&cypher, &schema, DEFAULT_MAX_CTE_DEPTH)
-                    .map_err(EmbeddedError::Query)?;
+                cypher_to_sql_with_id_columns(&cypher, &schema).map_err(EmbeddedError::Query)?;
             let compile_time_ms = compile_start.elapsed().as_secs_f64() * 1000.0;
             let exec_start = Instant::now();
             let json_rows = executor
@@ -1208,8 +1203,7 @@ impl<'db> Connection<'db> {
             set_current_dialect(dialect);
             set_current_schema(Arc::clone(&schema));
             let (sql, metadata) =
-                cypher_to_sql_with_metadata(&cypher, &schema, DEFAULT_MAX_CTE_DEPTH)
-                    .map_err(EmbeddedError::Query)?;
+                cypher_to_sql_with_metadata(&cypher, &schema).map_err(EmbeddedError::Query)?;
             let json_rows = executor
                 .execute_json(&sql, None)
                 .await

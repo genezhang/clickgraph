@@ -2355,9 +2355,8 @@ impl BoltHandler {
             crate::server::query_context::set_current_schema(Arc::new(graph_schema_obj.clone()));
 
             // Translate inner Cypher → SQL
-            let inner_sql =
-                crate::translate::translate_inner_read(&inner_query, &graph_schema_obj, 1000)
-                    .map_err(BoltError::query_error)?;
+            let inner_sql = crate::translate::translate_inner_read(&inner_query, &graph_schema_obj)
+                .map_err(BoltError::query_error)?;
 
             let export_sql = crate::procedures::apoc_export::build_export_sql(
                 &inner_sql,
@@ -2645,12 +2644,8 @@ impl BoltHandler {
                             // own strip_comments() before this independent parse.
                             let stripped_inner =
                                 open_cypher_parser::strip_comments(&export_args.cypher_query);
-                            crate::translate::translate_inner_read(
-                                &stripped_inner,
-                                &graph_schema,
-                                1000,
-                            )
-                            .map_err(BoltError::query_error)?
+                            crate::translate::translate_inner_read(&stripped_inner, &graph_schema)
+                                .map_err(BoltError::query_error)?
                         };
 
                         // Build export SQL
@@ -3032,8 +3027,8 @@ impl BoltHandler {
         // (no-op unless CLICKGRAPH_STATS_ENABLED installed the cache).
         crate::server::query_context::attach_current_table_stats(&graph_schema).await;
 
-        // The session's ids: `id()` comparisons read them (the `id()`
-        // rewrite below, and the bound plan).
+        // The session's ids: the bound plan reads `id()` comparisons with
+        // them.
         let id_mapper_snapshot = {
             let context = lock_context!(self.context);
             context.id_mapper.clone()
@@ -3045,11 +3040,7 @@ impl BoltHandler {
                 crate::translate::ReadOptions {
                     tenant_id,
                     view_parameter_values: view_parameters,
-                    max_inferred_types: Some(20),
-                    where_label_constraints: None,
-                    max_cte_depth: 1000,
-                    cypher: Some(query.to_string()),
-                    bound_plan: None,
+                    cypher: query.to_string(),
                     id_mapper: Some(id_mapper_snapshot.clone()),
                     neo4j_compat: None,
                 },
@@ -3059,43 +3050,22 @@ impl BoltHandler {
                 Err(e) => Err(e),
             }
         } else {
-            // Re-parse and transform for planning (after async boundary)
-            // Note: This is unavoidable due to Rc<RefCell<>> in AST not being Send
-            let parsed_stmt_for_planning = match open_cypher_parser::parse_cypher_statement(query) {
+            // Re-parse after the async boundary (the AST holds `Rc`s, not
+            // `Send`): the bound plan reads the text, the statement is how
+            // the seam tells a read from a CALL or a write.
+            let parsed_stmt = match open_cypher_parser::parse_cypher_statement(query) {
                 Ok((_, stmt)) => stmt,
                 Err(e) => {
                     return Err(BoltError::query_error(format!("Re-parse failed: {}", e)));
                 }
             };
-
-            let (transformed_for_planning, label_constraints_from_second_pass) =
-                crate::query_planner::ast_transform::transform_id_functions(
-                    &ast_arena, // Reuse same arena
-                    parsed_stmt_for_planning,
-                    &id_mapper_snapshot,
-                    Some(&graph_schema), // Pass schema for node_id property lookup
-                );
-
-            // Use label_constraints from the second pass (not first) since it has schema context
-            log::info!(
-                "🎯 Passing {} label constraints to query planner (from second pass)",
-                label_constraints_from_second_pass.len()
-            );
-
-            // Plan, render and generate SQL through the single translate seam.
-            // The WHERE label constraints from the second id() pass are injected
-            // into the plan context before rendering (UNION pruning).
             crate::translate::translate_read(
-                transformed_for_planning,
+                parsed_stmt,
                 &graph_schema,
                 crate::translate::ReadOptions {
                     tenant_id,
                     view_parameter_values: view_parameters,
-                    max_inferred_types: Some(20), // increased for UNION branches
-                    where_label_constraints: Some(label_constraints_from_second_pass),
-                    max_cte_depth: 1000,
-                    cypher: Some(query.to_string()),
-                    bound_plan: None,
+                    cypher: query.to_string(),
                     id_mapper: Some(id_mapper_snapshot.clone()),
                     neo4j_compat: None,
                 },
@@ -3103,18 +3073,6 @@ impl BoltHandler {
         };
         let translation = match translated {
             Ok(t) => t,
-            Err(crate::translate::TranslateError::Planning(e)) => {
-                return Err(BoltError::query_error(format!(
-                    "Query planning failed: {}",
-                    e
-                )));
-            }
-            Err(crate::translate::TranslateError::Render(e)) => {
-                return Err(BoltError::query_error(format!(
-                    "Render plan generation failed: {}",
-                    e
-                )));
-            }
             Err(crate::translate::TranslateError::Invalid(e)) => {
                 return Err(BoltError::query_error(format!("Invalid query: {}", e)));
             }
@@ -3125,14 +3083,8 @@ impl BoltHandler {
                 return Err(BoltError::internal(e));
             }
         };
-        // Extract return metadata for result transformation
-        let return_metadata = match translation.return_metadata() {
-            Ok(metadata) => metadata,
-            Err(e) => {
-                log::warn!("Failed to extract return metadata: {}", e);
-                Vec::new() // Fall back to no transformation
-            }
-        };
+        // Return metadata for result transformation
+        let return_metadata = translation.return_metadata();
         let has_graph_objects = return_metadata.iter().any(|m| {
             matches!(
                 m.item_type,

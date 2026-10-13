@@ -946,8 +946,7 @@ curl -X POST http://localhost:8080/query \
   -H "Content-Type: application/json" \
   -d '{
     "query": "MATCH (e:Entity {name: \"Machine Learning\"})-[r]-(related) RETURN e, r, related LIMIT 50",
-    "format": "Graph",
-    "max_inferred_types": 15
+    "format": "Graph"
   }'
 ```
 

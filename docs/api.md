@@ -49,11 +49,7 @@ Content-Type: application/json
   - No `SET ROLE` overhead on query execution
   - Example: `"analyst"`, `"admin"`
 - `schema_name` (string, optional): Graph schema/database name to use for this query. Defaults to `"default"`. Enables multi-database support for queries. **Note**: The `USE` clause in the query itself takes precedence over this parameter. See [Default Schema Behavior](#default-schema-behavior) for details on how the default is determined.
-- `max_inferred_types` (integer, optional): Maximum number of relationship types to infer for generic patterns ✅ **[ADDED: v0.6.1]**
-  - Default: 5 (prevents excessive UNION expansion)
-  - Recommended for GraphRAG: 10-20 (complex knowledge graphs with many relationship types)
-  - Example: `{"query": "MATCH (n)-[*1..3]->(m) RETURN m", "max_inferred_types": 15}`
-  - Use case: Override when your schema has more than 5 relationship types between nodes
+- `max_inferred_types` (integer, optional): **Ignored** since P-4c S14c1. It capped the relationship types the legacy planner inferred for an untyped pattern; the bound plan follows every type the schema allows. Still accepted so existing requests parse.
 
 **Response Format:**
 ```http
@@ -142,7 +138,7 @@ Content-Type: application/json
 - `role` (string, optional): ClickHouse RBAC role name (adds `SET ROLE` to SQL array)
 - `schema_name` (string, optional): Graph schema to use (defaults to `"default"`)
 - `target_database` (string, optional): Target SQL dialect (defaults to `"clickhouse"`)
-- `include_plan` (boolean, optional): Include logical plan in response (defaults to `false`)
+- `include_plan` (boolean, optional): Include the result shape (each RETURN item's kind and columns) in response (defaults to `false`)
 
 **Response Format:**
 ```http
@@ -189,7 +185,7 @@ Content-Type: application/json
   - `planning_time_ms` (number): Time to plan query
   - `sql_generation_time_ms` (number): Time to generate SQL
   - `total_time_ms` (number): Total translation time
-- `logical_plan` (string, optional): Logical plan representation (when `include_plan=true`)
+- `logical_plan` (string, optional): The result shape, each RETURN item's kind and columns (when `include_plan=true`; for a PageRank CALL, its plan)
 
 **Example Usage:**
 

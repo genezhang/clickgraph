@@ -260,8 +260,7 @@ async fn unsupported_reads_fail_on_every_dialect() {
                 statement,
                 &schema,
                 ReadOptions {
-                    max_cte_depth: 100,
-                    cypher: Some(q.to_string()),
+                    cypher: q.to_string(),
                     ..Default::default()
                 },
             )
@@ -274,7 +273,7 @@ async fn unsupported_reads_fail_on_every_dialect() {
             "{dialect:?}: {got:?}"
         );
     }
-    let lib = clickgraph::clickhouse_query_generator::cypher_to_sql(q, &schema, 100);
+    let lib = clickgraph::clickhouse_query_generator::cypher_to_sql(q, &schema);
     assert!(
         matches!(&lib, Err(e) if e.starts_with("Not supported: ")),
         "{lib:?}"
@@ -306,7 +305,7 @@ async fn a_query_without_return_is_a_syntax_error() {
         .unwrap()
         .to_graph_schema()
         .unwrap();
-    let lib = clickgraph::clickhouse_query_generator::cypher_to_sql("MATCH (u:User)", &schema, 100);
+    let lib = clickgraph::clickhouse_query_generator::cypher_to_sql("MATCH (u:User)", &schema);
     assert!(
         matches!(&lib, Err(e) if e.contains("Invalid syntax") && e.contains("RETURN")),
         "{lib:?}"
@@ -340,7 +339,7 @@ async fn statements_other_than_reads_are_not_supported_on_clickhouse() {
         "MATCH (u:User) CALL db.labels() YIELD label RETURN count(*) AS c",
         "MATCH (u:User) CREATE (x:User)",
     ] {
-        let lib = clickgraph::clickhouse_query_generator::cypher_to_sql(q, &schema, 100);
+        let lib = clickgraph::clickhouse_query_generator::cypher_to_sql(q, &schema);
         assert!(
             matches!(&lib, Err(e) if e.starts_with("Not supported")),
             "{q}: {lib:?}"
@@ -373,8 +372,7 @@ fn a_union_label_schema_does_not_fall_back() {
             statement,
             &schema,
             ReadOptions {
-                max_cte_depth: 100,
-                cypher: Some(q.to_string()),
+                cypher: q.to_string(),
                 ..Default::default()
             },
         )

@@ -65,9 +65,10 @@ handlers.rs::query_handler()
     │      └── set_current_schema(Arc<GraphSchema>) in task-local context
     │
     ├── 8. Parse:  open_cypher_parser::parse_cypher_statement()
-    ├── 9. Plan:   query_planner::evaluate_read_statement()
-    ├── 10. Render: logical_plan.to_render_plan_with_ctx()
-    ├── 11. SQL:    clickhouse_query_generator::generate_sql()
+    │      (classification: read / CALL / write)
+    ├── 9-11. Translate: translate::translate_read() — the bound plan
+    │      (clause list → bind → lower → print; P-4c, the legacy
+    │      planner/renderer is unreachable since S14c1)
     │
     ├── 12. Cache SQL template (GLOBAL_QUERY_CACHE)
     │
@@ -93,7 +94,7 @@ handlers.rs::query_handler()
 | `query_context.rs` | 456 | **Task-local context** via `tokio::task_local!`: schema, denormalized aliases, relationship columns, CTE property mappings, multi-type VLP aliases, **VariableRegistry** (PR #120) |
 | `parameter_substitution.rs` | 368 | `substitute_parameters()`, `find_unsubstituted_parameter()`, SQL injection prevention via string escaping |
 | `models.rs` | 300 | `QueryRequest`, `OutputFormat` (incl. `Graph`), `SqlDialect`, `SqlGenerationRequest/Response`, `SqlOnlyResponse`, `GraphNode`, `GraphEdge`, `GraphQueryResponse`, `QueryStats` |
-| `graph_output.rs` | 100 | `transform_to_graph()` — converts flat JSON rows to deduplicated `(Vec<GraphNode>, Vec<GraphEdge>)` by reusing Bolt's `extract_return_metadata`/`transform_to_node`/`transform_to_relationship` |
+| `graph_output.rs` | 100 | `transform_to_graph()` — converts flat JSON rows to deduplicated `(Vec<GraphNode>, Vec<GraphEdge>)` by reusing the translation's `return_metadata()` and Bolt's `transform_to_node`/`transform_to_relationship` |
 | `connection_pool.rs` | 260 | `RoleConnectionPool`: lazy-initialized per-role ClickHouse client pools with read/write lock, cluster load balancing via round-robin |
 | `clickhouse_client.rs` | 75 | `try_get_client()`: creates ClickHouse client from env vars with safety limits (60s timeout, 1M rows, 1GB result) |
 | `bolt_protocol/` | 7986 | Neo4j Bolt v4.1–5.8 wire protocol (see separate section below) |
@@ -219,7 +220,7 @@ pub struct QueryRequest {
     pub parameters: Option<HashMap<String, Value>>,  // Query params ($userId)
     pub view_parameters: Option<HashMap<String, Value>>,  // View params (tenant_id)
     pub role: Option<String>,               // ClickHouse RBAC role
-    pub max_inferred_types: Option<usize>,  // For generic patterns [*1]
+    pub max_inferred_types: Option<usize>,  // Ignored (legacy planner's cap)
     pub tenant_id: Option<String>,          // Multi-tenant deployments
 }
 ```

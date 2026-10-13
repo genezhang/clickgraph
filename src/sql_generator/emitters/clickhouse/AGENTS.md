@@ -56,7 +56,7 @@ as a flat comma-separated list.
 RenderPlan (from render_plan)
     │
     ▼
-mod.rs (50)                ← Entry point: generate_sql(plan, max_cte_depth) → String
+mod.rs (50)                ← Library entry points: cypher_to_sql*(cypher, schema) (the read seam, translate.rs)
     │
     ▼
 to_sql_query.rs (3,240)    ← MAIN FILE: render_plan_to_sql()
@@ -100,8 +100,8 @@ to_sql_query.rs (3,240)    ← MAIN FILE: render_plan_to_sql()
 
 ```
               ┌─────────────────────────────────────────────────────────┐
-              │                  generate_sql()                         │
-              │                     mod.rs                              │
+              │     render_plan_to_sql_plain() (the bound plan)         │
+              │     render_plan_to_sql() (legacy; unreachable, S14c1)    │
               └─────────────┬───────────────────────────────────────────┘
                             │
                             ▼
@@ -446,21 +446,19 @@ the `source/target/weight` alias pattern AND a `shortestPath()` call in the quer
 - `utils::cte_naming` — is_generated_cte_name()
 
 ### What Depends On This Module:
-- `server/handlers.rs` — HTTP query handler calls `generate_sql()`
-- `server/sql_generation_handler.rs` — SQL generation handler calls `generate_sql()`
-- `server/bolt_protocol/handler.rs` — Bolt protocol calls `generate_sql()`
+- `translate.rs` / `bound_plan/lower` — the plain printer (`render_*_sql_plain`)
+- `clickgraph-embedded` — `cypher_to_sql*` (the read seam)
 - `render_plan/cte_extraction.rs` — Imports `NodeProperty`, `MultiTypeVlpJoinGenerator`
 - `render_plan/cte_generation.rs` — Imports `NodeProperty`
 - `render_plan/cte_manager/mod.rs` — Imports `VariableLengthCteGenerator`, `ShortestPathMode`, `NodeProperty`
 - `render_plan/render_expr.rs` — Imports `render_plan_to_sql` (for RenderPlan::to_sql trait)
-- `query_planner/tests/integration_tests.rs` — Tests call `generate_sql()`
-- `render_plan/tests/` — Various test files call `generate_sql()`
+- (`generate_sql()` and its legacy test callers were removed, P-4c S14c1)
 
 ## Public API
 
 ### From mod.rs:
 ```rust
-pub fn generate_sql(plan: RenderPlan, max_cte_depth: u32) -> String
+pub fn cypher_to_sql(cypher: &str, schema: &GraphSchema) -> Result<String, String>
 ```
 
 ### Re-exported types and functions:

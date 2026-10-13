@@ -1,5 +1,13 @@
 # Stats-informed SQL generation (P-5)
 
+> **Status (P-4c S14c1, 2026-10-12): inert.** The stats fed the legacy
+> planner's anchor selection (`analyzer/graph_join/join_generation.rs`), which
+> no read reaches since the P-4c cutovers (S11j, S14a); the bound plan joins in
+> pattern order and reads no stats. `stats_anchor_golden_tests.rs` and its
+> goldens went with the legacy tests (S14c1). Whether the fetch stays, for a
+> join ordering in the lowering (S11o10, LDBC BI 17), or goes with the planner
+> is decided at S14c4 (`EXPLICIT_SCOPE.md` S14).
+
 Status: **S1 implemented** (this document + row-count cache + anchor ranking,
 flag-gated). S2/S3 are design sketches only. Owner lane: P-5
 (`docs/design/PRIORITIES.md` §2). Last updated: 2026-07-19.

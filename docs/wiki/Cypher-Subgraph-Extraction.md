@@ -202,10 +202,10 @@ The Graph format is particularly useful for GraphRAG because:
 - **Performance stats**: Included in every response for monitoring retrieval latency
 - **Direct use**: Structured output maps directly to graph data structures in Python, JavaScript, etc.
 
-For schemas with many relationship types, set `max_inferred_types` higher (default 5):
+An untyped pattern such as `-[*1..2]-` follows every relationship type the schema allows between its ends; no setting caps them (the former `max_inferred_types` request field is ignored).
 
 ```json
-{"query": "MATCH (e:Entity)-[*1..2]-(related) RETURN e, related", "format": "Graph", "max_inferred_types": 15}
+{"query": "MATCH (e:Entity)-[*1..2]-(related) RETURN e, related", "format": "Graph"}
 ```
 
 ## Best Practices
