@@ -4895,6 +4895,36 @@ fn a_null_list_is_told_by_its_source() {
             "(w2.v2__null = o4.v2__null OR (w2.v2__null IS NULL AND o4.v2__null IS NULL))",
         ],
     );
+    // A grouping projection's WHERE (HAVING) / ORDER BY read its item's
+    // group: any one of the held lists, and the flag, a key (review).
+    has(
+        "UNWIND [1, 2] AS x WITH CASE WHEN x > 1 THEN [x] END AS l, count(*) AS c \
+         WHERE size(l) > 0 RETURN l, c",
+        &[
+            "HAVING CASE WHEN CASE WHEN w1.v0 > 1 THEN false ELSE true END THEN NULL ELSE \
+           length(any(CASE WHEN w1.v0 > 1 THEN [w1.v0] ELSE [] END)) END > 0",
+        ],
+    );
+    // max() of a group with no list that is not NULL: NULL.
+    has(
+        "UNWIND [1, 2] AS x WITH x % 2 AS g, CASE WHEN x > 5 THEN [x] END AS l \
+         RETURN g, max(l) AS m",
+        &[
+            "CASE WHEN count(CASE WHEN w2.v2__null THEN NULL ELSE 1 END) = 0 THEN NULL \
+           ELSE maxIf(w2.v2__held, NOT w2.v2__null) END",
+        ],
+    );
+    // A DISTINCT's sort key of a list item is no grouping key (it is an
+    // `any()`; main failed with it in the GROUP BY).
+    let got = squash(&sql(
+        "MATCH (u:User) WITH DISTINCT [u.name] AS l ORDER BY l LIMIT 2 RETURN l",
+    ));
+    assert!(got.contains(r#"any([v0.full_name]) AS "__o0""#), "{got}");
+    assert!(
+        !got.contains("GROUP BY tuple(multiIf(dynamicType(CAST(any("),
+        "{got}"
+    );
+    assert!(!got.contains("toString([v0.full_name]))), any("), "{got}");
     // Not held outside a reader: inside a list a NULL stays NULL (review).
     has(
         "UNWIND [1, 2] AS x RETURN [CASE WHEN x > 1 THEN [x] END, [5]] AS ll",

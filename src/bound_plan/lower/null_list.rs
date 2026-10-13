@@ -126,9 +126,7 @@ impl Lowerer<'_> {
                 // WHERE / ORDER BY: held as the projection holds it).
                 LogicalExpr::TableAlias(lx::TableAlias(n)) => parse_var(n).is_some_and(|v| {
                     if items.contains_key(&v) {
-                        self.projected
-                            .get(&v)
-                            .is_some_and(|p| self.held_form(p, &HashMap::new()))
+                        self.held_items.borrow().contains_key(&v)
                     } else {
                         matches!(self.list_nulls.get(&v), Some(Some(_)))
                     }
@@ -153,9 +151,10 @@ impl Lowerer<'_> {
     fn held_raw(&self, e: &LogicalExpr, items: &Items) -> Result<RenderExpr, LowerError> {
         match e {
             LogicalExpr::TableAlias(lx::TableAlias(n)) => match parse_var(n) {
-                // An item of this projection: as it holds it.
-                Some(v) if items.contains_key(&v) => match self.projected.get(&v) {
-                    Some(p) => self.held_list(p, &HashMap::new()),
+                // An item of this projection: as it holds it (of its group,
+                // where it groups).
+                Some(v) if items.contains_key(&v) => match self.held_items.borrow().get(&v) {
+                    Some(n) => Ok(n.held.clone()),
                     None => self.expr(e, items),
                 },
                 Some(v) => match self.list_nulls.get(&v) {
@@ -283,10 +282,18 @@ impl Lowerer<'_> {
             LogicalExpr::ArraySlicing { array, .. } => self.list_null(array, items)?,
             LogicalExpr::TableAlias(lx::TableAlias(n)) => match parse_var(n) {
                 // An item of this projection, in its ORDER BY / WHERE.
-                Some(v) if items.contains_key(&v) => match self.projected.get(&v) {
-                    Some(p) => self.list_null(p, &HashMap::new())?,
-                    None => ListNull::Unknown,
-                },
+                Some(v) if items.contains_key(&v) => {
+                    let held = self.held_items.borrow().get(&v).map(|n| n.flag.clone());
+                    match (held, self.projected.get(&v)) {
+                        (Some(flag), _) => ListNull::When(flag),
+                        (None, Some(p)) => match self.list_null(p, &HashMap::new())? {
+                            // (Its condition unknown to the projection.)
+                            ListNull::When(_) => ListNull::Unknown,
+                            n => n,
+                        },
+                        (None, None) => ListNull::Unknown,
+                    }
+                }
                 Some(v) => match self.list_nulls.get(&v) {
                     Some(Some(n)) => ListNull::When(n.flag.clone()),
                     Some(None) => ListNull::Never,

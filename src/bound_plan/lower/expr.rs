@@ -2434,13 +2434,30 @@ impl Lowerer<'_> {
                     let present = render_expr_to_sql_plain(&RenderExpr::OperatorApplicationExp(
                         OperatorApplication {
                             operator: lx::Operator::Not,
-                            operands: vec![c],
+                            operands: vec![c.clone()],
                         },
                     ));
                     let value = render_expr_to_sql_plain(&self.held_list(arg, items)?);
-                    return Ok(RenderExpr::Raw((spelling.aggregate_if)(
-                        &name, &value, &present,
-                    )));
+                    // NULL of a group with no list that is not NULL.
+                    let counted = RenderExpr::AggregateFnCall(AggregateFnCall {
+                        name: "count".to_string(),
+                        args: vec![RenderExpr::Case(RenderCase {
+                            expr: None,
+                            when_then: vec![(c, RenderExpr::Literal(Literal::Null))],
+                            else_expr: Some(Box::new(RenderExpr::Literal(Literal::Integer(1)))),
+                        })],
+                    });
+                    let none = RenderExpr::OperatorApplicationExp(OperatorApplication {
+                        operator: lx::Operator::Equal,
+                        operands: vec![counted, RenderExpr::Literal(Literal::Integer(0))],
+                    });
+                    return Ok(RenderExpr::Case(RenderCase {
+                        expr: None,
+                        when_then: vec![(none, RenderExpr::Literal(Literal::Null))],
+                        else_expr: Some(Box::new(RenderExpr::Raw((spelling.aggregate_if)(
+                            &name, &value, &present,
+                        )))),
+                    }));
                 }
             }
         }
