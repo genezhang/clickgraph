@@ -9,9 +9,9 @@
 //!   `render_plan_to_sql_plain`, and the result shape Bolt / graph output
 //!   read; what it does not lower is `LowerError::Unsupported`.
 //!
-//! Routing is in `crate::translate`: ClickHouse reads go through the bound
-//! plan only (S11j); other dialects fall back to the legacy pipeline
-//! for what it does not lower.
+//! Routing is in `crate::translate`: reads go through the bound plan only,
+//! on every dialect (P-4c S11j, S14a); what it does not
+//! lower is an error.
 
 pub mod binder;
 mod expr;

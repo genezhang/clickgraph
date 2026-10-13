@@ -2,7 +2,7 @@
 //!
 //! * No corpus query panics the binder.
 //! * Every query Neo4j answers (the S1 result goldens' scorecard) binds, or
-//!   is reported `Unsupported` (falls back to the legacy pipeline). A semantic
+//!   is reported `Unsupported` (an error: "Not supported"). A semantic
 //!   bind error ("Variable `x` not defined", ...) on a query Neo4j accepts
 //!   would be a binder bug.
 //!

@@ -77,15 +77,6 @@ impl SqlDialect {
         matches!(self, SqlDialect::ClickHouse)
     }
 
-    /// Whether a read query the bound plan does not lower falls back to the
-    /// legacy pipeline (P-4c). ClickHouse reads go through the bound plan
-    /// only (S11j): what it does not lower is an error. Other dialects keep
-    /// the fallback until the bound plan has their spellings (S12); the
-    /// legacy pipeline is deleted after that.
-    pub fn reads_fall_back_to_legacy(&self) -> bool {
-        !matches!(self, SqlDialect::ClickHouse)
-    }
-
     /// Whether this dialect supports the `FINAL` table modifier. `FINAL` is a
     /// ClickHouse MergeTree-family read-time dedup hint; it is invalid SQL on
     /// other backends (notably Databricks/Spark, which has no such storage
