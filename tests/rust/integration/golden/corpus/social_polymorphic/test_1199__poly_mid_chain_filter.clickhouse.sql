@@ -1,6 +1,10 @@
 SELECT 
       count(*) AS "count(*)"
-FROM brahmand.interactions AS t0
-INNER JOIN brahmand.interactions AS t1 ON t1.from_id = t0.to_id AND t1.interaction_type = 'FOLLOWS' AND t1.from_type = 'User' AND t1.to_type = 'User'
-INNER JOIN brahmand.users_bench AS a ON t0.from_id = a.user_id
-WHERE (t0.interaction_type = 'FOLLOWS' AND t0.from_type = 'User' AND t0.to_type = 'User' AND (t0.to_id = 3 AND (t1.from_id <> t0.from_id OR t1.to_id <> t0.to_id OR t1.interaction_type <> t0.interaction_type OR t1.timestamp <> t0.timestamp)))
+FROM brahmand.users_bench AS v0
+JOIN brahmand.interactions AS v1 ON v1.from_id = v0.user_id
+JOIN brahmand.users_bench AS v2 ON v1.to_id = v2.user_id
+JOIN brahmand.interactions AS v3 ON v3.from_id = v2.user_id
+JOIN brahmand.users_bench AS v4 ON v3.to_id = v4.user_id
+WHERE (((((v1."interaction_type" = 'FOLLOWS') AND (v1."from_type" = 'User')) AND (v1."to_type" = 'User'))) AND ((((v3."interaction_type" = 'FOLLOWS') AND (v3."from_type" = 'User')) AND (v3."to_type" = 'User'))) AND (v1.from_id <> v3.from_id OR v1.to_id <> v3.to_id OR v1.interaction_type <> v3.interaction_type OR v1.timestamp <> v3.timestamp) AND v2.user_id = 3)
+
+-- column count(*): Value [("count(*)", "count(*)")]

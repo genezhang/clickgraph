@@ -1,5 +1,6 @@
 SELECT 
-      u.name AS "u.name"
-FROM data_security.ds_users AS u
-ORDER BY u.name ASC
+      v0.name AS "u.name"
+FROM data_security.ds_users AS v0
+ORDER BY v0.name ASC
 LIMIT 2, 3
+-- column u.name: Value [("u.name", "u.name")]

@@ -1,4 +1,7 @@
 SELECT 
-      minOrNull(u.age) AS "min_age", 
-      maxOrNull(u.age) AS "max_age"
-FROM test_integration.users AS u
+      minOrNull(v0.age) AS "min_age", 
+      maxOrNull(v0.age) AS "max_age"
+FROM test_integration.users AS v0
+
+-- column min_age: Value [("min_age", "min_age")]
+-- column max_age: Value [("max_age", "max_age")]

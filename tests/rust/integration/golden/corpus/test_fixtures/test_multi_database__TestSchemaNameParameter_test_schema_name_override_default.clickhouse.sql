@@ -1,4 +1,6 @@
 SELECT 
-      n.name AS "n.name"
-FROM test_integration.users AS n
-WHERE n.name = 'Alice'
+      v0.name AS "n.name"
+FROM test_integration.users AS v0
+WHERE v0.name = 'Alice'
+
+-- column n.name: Value [("n.name", "n.name")]

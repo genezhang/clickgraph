@@ -1,3 +1,4 @@
 SELECT 
       42 AS "x"
-ORDER BY x ASC
+
+-- column x: Value [("x", "x")]

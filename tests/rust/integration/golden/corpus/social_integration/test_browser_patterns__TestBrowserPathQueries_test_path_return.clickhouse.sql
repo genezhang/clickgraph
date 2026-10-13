@@ -1,25 +1,7 @@
 SELECT 
-      u.age AS "u.age", 
-      u.city AS "u.city", 
-      u.country AS "u.country", 
-      u.email_address AS "u.email", 
-      u.is_active AS "u.is_active", 
-      u.full_name AS "u.name", 
-      u.registration_date AS "u.registration_date", 
-      u.user_id AS "u.user_id", 
-      f.age AS "f.age", 
-      f.city AS "f.city", 
-      f.country AS "f.country", 
-      f.email_address AS "f.email", 
-      f.is_active AS "f.is_active", 
-      f.full_name AS "f.name", 
-      f.registration_date AS "f.registration_date", 
-      f.user_id AS "f.user_id", 
-      r.follower_id AS "r.from_id", 
-      r.followed_id AS "r.to_id", 
-      r.follow_date AS "r.follow_date", 
-      tuple('fixed_path', 'u', 'f', 'r') AS "p"
-FROM test_integration.users_test AS u
-INNER JOIN test_integration.user_follows_test AS r ON r.follower_id = u.user_id
-INNER JOIN test_integration.users_test AS f ON f.user_id = r.followed_id
+      [map('elementId', CAST(concat('User:', toString(v0.user_id), '-'), 'Dynamic'), 'labels', CAST(['User'], 'Dynamic'), 'properties', CAST(mapFilter((__k, __v) -> __v IS NOT NULL, map('age', CAST(v0.age, 'Dynamic'), 'city', CAST(v0.city, 'Dynamic'), 'country', CAST(v0.country, 'Dynamic'), 'email', CAST(v0.email_address, 'Dynamic'), 'is_active', CAST(v0.is_active, 'Dynamic'), 'name', CAST(v0.full_name, 'Dynamic'), 'registration_date', CAST(v0.registration_date, 'Dynamic'), 'user_id', CAST(v0.user_id, 'Dynamic'))), 'Dynamic')), map('elementId', CAST(concat('FOLLOWS:', toString(v1.follower_id), '->', toString(v1.followed_id), '-'), 'Dynamic'), 'startNodeElementId', CAST(concat('User:', toString(v1.follower_id), '-'), 'Dynamic'), 'endNodeElementId', CAST(concat('User:', toString(v1.followed_id), '-'), 'Dynamic'), 'type', CAST('FOLLOWS', 'Dynamic'), 'properties', CAST(mapFilter((__k, __v) -> __v IS NOT NULL, map('follow_date', CAST(v1.follow_date, 'Dynamic'))), 'Dynamic')), map('elementId', CAST(concat('User:', toString(v2.user_id), '-'), 'Dynamic'), 'labels', CAST(['User'], 'Dynamic'), 'properties', CAST(mapFilter((__k, __v) -> __v IS NOT NULL, map('age', CAST(v2.age, 'Dynamic'), 'city', CAST(v2.city, 'Dynamic'), 'country', CAST(v2.country, 'Dynamic'), 'email', CAST(v2.email_address, 'Dynamic'), 'is_active', CAST(v2.is_active, 'Dynamic'), 'name', CAST(v2.full_name, 'Dynamic'), 'registration_date', CAST(v2.registration_date, 'Dynamic'), 'user_id', CAST(v2.user_id, 'Dynamic'))), 'Dynamic'))] AS "p"
+FROM test_integration.users_test AS v0
+JOIN test_integration.user_follows_test AS v1 ON v1.follower_id = v0.user_id
+JOIN test_integration.users_test AS v2 ON v1.followed_id = v2.user_id
 LIMIT 5
+-- column p: Graph(Path) [("p", "p")]

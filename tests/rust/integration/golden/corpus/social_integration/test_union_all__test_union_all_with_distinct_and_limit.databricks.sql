@@ -1,19 +1,33 @@
-(SELECT * FROM (
+WITH with_w1 AS (
 SELECT DISTINCT 
-      'node' AS `entity`, 
-      n.full_name AS `name`
-FROM test_integration.users_test AS n
-WHERE n.user_id < 5
-)
-LIMIT 2
-)
-UNION ALL 
-(SELECT * FROM (
+      'node' AS `__cg_w1_c0`, 
+      v0.full_name AS `__cg_w1_c1`
+FROM test_integration.users_test AS v0
+WHERE v0.user_id < 5
+LIMIT 2), 
+with_w2 AS (
 SELECT DISTINCT 
-      'post' AS `entity`, 
-      p.post_content AS `name`
-FROM test_integration.posts_test AS p
-WHERE p.post_id < 5
+      'post' AS `__cg_w2_c0`, 
+      v3.post_content AS `__cg_w2_c1`
+FROM test_integration.posts_test AS v3
+WHERE v3.post_id < 5
+LIMIT 2), 
+with_w3 AS (
+SELECT 
+      CAST(w1.__cg_w1_c0 AS VARIANT) AS `__cg_c0`, 
+      CAST(w1.__cg_w1_c1 AS VARIANT) AS `__cg_c1`
+FROM with_w1 AS w1
+
+UNION ALL
+SELECT 
+      CAST(w2.__cg_w2_c0 AS VARIANT) AS `__cg_c0`, 
+      CAST(w2.__cg_w2_c1 AS VARIANT) AS `__cg_c1`
+FROM with_w2 AS w2
 )
-LIMIT 2
-)
+SELECT 
+      w3.__cg_c0 AS `entity`, 
+      w3.__cg_c1 AS `name`
+FROM with_w3 AS w3
+
+-- column entity: Value [("entity", "entity")]
+-- column name: Value [("name", "name")]

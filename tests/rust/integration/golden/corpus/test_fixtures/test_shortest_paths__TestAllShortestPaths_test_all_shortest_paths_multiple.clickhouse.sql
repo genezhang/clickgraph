@@ -1,38 +1,31 @@
-WITH RECURSIVE vlp_a_b_inner AS (
-    SELECT 
-        start_node.user_id as start_id,
-        end_node.user_id as end_id,
-        1 as hop_count,
-        ['TEST_FOLLOWS'] as path_relationships,
-        [start_node.user_id, end_node.user_id] as path_nodes,
-        end_node.name as end_name
+WITH RECURSIVE vlp_v1_bfs AS (
+    SELECT DISTINCT start_node.user_id AS start_id, start_node.user_id AS node, CAST(0 AS UInt32) AS depth, CAST(1 AS UInt256) AS paths, CAST(1 AS UInt8) AS new
     FROM test_integration.users AS start_node
-    JOIN test_integration.follows AS rel ON start_node.user_id = rel.follower_id
-    JOIN test_integration.users AS end_node ON rel.followed_id = end_node.user_id
-    WHERE start_node.name = 'Alice'
+    WHERE start_node.user_id IS NOT NULL AND (start_node.name = 'Alice')
     UNION ALL
-    SELECT
-        vp.start_id,
-        end_node.user_id as end_id,
-        vp.hop_count + 1 as hop_count,
-        arrayConcat(vp.path_relationships, ['TEST_FOLLOWS']) as path_relationships,
-        arrayConcat(vp.path_nodes, [end_node.user_id]) as path_nodes,
-        end_node.name as end_name
-    FROM vlp_a_b_inner vp
-    JOIN test_integration.follows AS rel ON vp.end_id = rel.follower_id
-    JOIN test_integration.users AS end_node ON rel.followed_id = end_node.user_id
-    WHERE vp.hop_count < 5
-      AND NOT has(vp.path_nodes, end_node.user_id)
-),
-vlp_a_b_to_target AS (
-    SELECT * FROM vlp_a_b_inner WHERE end_name = 'Diana'
-),
-vlp_a_b AS (
-    SELECT * FROM (
-        SELECT *, MIN(hop_count) OVER (PARTITION BY start_id, end_id) AS min_hops_for_pair
-        FROM vlp_a_b_to_target
-    ) WHERE hop_count = min_hops_for_pair
+    SELECT f.start_id AS start_id, end_node.user_id AS node, CAST(f.depth + 1 AS UInt32) AS depth, CAST(sum(f.paths) AS UInt256) AS paths, CAST(1 AS UInt8) AS new
+    FROM vlp_v1_bfs AS f
+    JOIN test_integration.follows AS rel ON rel.follower_id = f.node
+    JOIN test_integration.users AS end_node ON end_node.user_id = rel.followed_id
+    WHERE f.new = 1
+      AND (f.start_id, end_node.user_id) NOT IN (SELECT start_id, node FROM vlp_v1_bfs)
+      AND f.start_id NOT IN (SELECT start_id FROM vlp_v1_bfs GROUP BY start_id HAVING countIf(node IN (SELECT end_node.user_id FROM test_integration.users AS end_node WHERE (end_node.name = 'Diana'))) >= (SELECT count(DISTINCT end_node.user_id) FROM (SELECT end_node.user_id FROM test_integration.users AS end_node WHERE (end_node.name = 'Diana')) AS end_node))
+    GROUP BY f.start_id, end_node.user_id, f.depth
+    UNION ALL
+    SELECT start_id, node, depth, paths, CAST(0 AS UInt8) AS new
+    FROM vlp_v1_bfs
+    WHERE start_id IN (SELECT start_id FROM vlp_v1_bfs WHERE new = 1)
+), 
+vlp_v1_path AS (
+    SELECT start_id, node AS end_id, depth AS hop_count FROM vlp_v1_bfs ARRAY JOIN range(accurateCast(paths, 'UInt64')) AS copy
+    WHERE new = 1 AND depth >= 1
+      AND node IN (SELECT end_node.user_id FROM test_integration.users AS end_node WHERE (end_node.name = 'Diana'))
 )
 SELECT 
       count(*) AS "path_count"
-FROM vlp_a_b AS t
+FROM vlp_v1_path AS v1
+JOIN test_integration.users AS v0 ON v1.start_id = v0.user_id
+JOIN test_integration.users AS v2 ON v1.end_id = v2.user_id
+WHERE (v0.name = 'Alice' AND v2.name = 'Diana')
+
+-- column path_count: Value [("path_count", "path_count")]

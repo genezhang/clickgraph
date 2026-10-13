@@ -1,70 +1,61 @@
-WITH RECURSIVE vlp_u1_u2 AS (
+WITH RECURSIVE vlp_v1_path AS (
     SELECT 
         start_node.user_id as start_id,
         end_node.user_id as end_id,
         1 as hop_count,
-        ['FOLLOWS'] as path_relationships,
+        CAST([] AS Array(String)) as path_relationships,
         [start_node.user_id, end_node.user_id] as path_nodes,
-        [rel.follow_id] as path_edges,
-        start_node.age as start_age,
-        start_node.city as start_city,
-        start_node.country as start_country,
-        start_node.email_address as start_email,
-        start_node.is_active as start_is_active,
-        start_node.full_name as start_name,
-        start_node.registration_date as start_registration_date,
-        end_node.age as end_age,
-        end_node.city as end_city,
-        end_node.country as end_country,
-        end_node.email_address as end_email,
-        end_node.is_active as end_is_active,
-        end_node.full_name as end_name,
-        end_node.registration_date as end_registration_date
+        [map('elementId', CAST(concat('User:', toString(start_node.user_id), '-'), 'Dynamic'), 'labels', CAST(['User'], 'Dynamic'), 'properties', CAST(mapFilter((__k, __v) -> __v IS NOT NULL, map('age', CAST(start_node.age, 'Dynamic'), 'city', CAST(start_node.city, 'Dynamic'), 'country', CAST(start_node.country, 'Dynamic'), 'email', CAST(start_node.email_address, 'Dynamic'), 'is_active', CAST(start_node.is_active, 'Dynamic'), 'name', CAST(start_node.full_name, 'Dynamic'), 'registration_date', CAST(start_node.registration_date, 'Dynamic'), 'user_id', CAST(start_node.user_id, 'Dynamic'))), 'Dynamic')), map('elementId', CAST(concat('User:', toString(end_node.user_id), '-'), 'Dynamic'), 'labels', CAST(['User'], 'Dynamic'), 'properties', CAST(mapFilter((__k, __v) -> __v IS NOT NULL, map('age', CAST(end_node.age, 'Dynamic'), 'city', CAST(end_node.city, 'Dynamic'), 'country', CAST(end_node.country, 'Dynamic'), 'email', CAST(end_node.email_address, 'Dynamic'), 'is_active', CAST(end_node.is_active, 'Dynamic'), 'name', CAST(end_node.full_name, 'Dynamic'), 'registration_date', CAST(end_node.registration_date, 'Dynamic'), 'user_id', CAST(end_node.user_id, 'Dynamic'))), 'Dynamic'))] as path_node_values,
+        [map('elementId', CAST(concat('FOLLOWS:', toString(rel.follower_id), '->', toString(rel.followed_id), '-'), 'Dynamic'), 'startNodeElementId', CAST(concat('User:', toString(rel.follower_id), '-'), 'Dynamic'), 'endNodeElementId', CAST(concat('User:', toString(rel.followed_id), '-'), 'Dynamic'), 'type', CAST('FOLLOWS', 'Dynamic'), 'properties', CAST(mapFilter((__k, __v) -> __v IS NOT NULL, map('follow_date', CAST(rel.follow_date, 'Dynamic'))), 'Dynamic'))] as path_rel_values,
+        [tuple(start_node.user_id, start_node.age, start_node.city, start_node.country, start_node.email_address, start_node.is_active, start_node.full_name, start_node.registration_date, start_node.user_id), tuple(end_node.user_id, end_node.age, end_node.city, end_node.country, end_node.email_address, end_node.is_active, end_node.full_name, end_node.registration_date, end_node.user_id)] as path_node_tuples,
+        [tuple(rel.follower_id, rel.followed_id, rel.follow_id, rel.follow_date)] as path_rel_tuples,
+        [rel.follow_id] as path_edges
     FROM test_integration.users_test AS start_node
     JOIN test_integration.user_follows_test AS rel ON start_node.user_id = rel.follower_id
     JOIN test_integration.users_test AS end_node ON rel.followed_id = end_node.user_id
-    WHERE start_node.user_id = 1
+    WHERE (start_node.user_id = 1)
     UNION ALL
     SELECT
         vp.start_id,
         end_node.user_id as end_id,
         vp.hop_count + 1 as hop_count,
-        arrayConcat(vp.path_relationships, ['FOLLOWS']) as path_relationships,
+        CAST([] AS Array(String)) as path_relationships,
         arrayConcat(vp.path_nodes, [end_node.user_id]) as path_nodes,
-        arrayConcat(vp.path_edges, [rel.follow_id]) as path_edges,
-        vp.start_age as start_age,
-        vp.start_city as start_city,
-        vp.start_country as start_country,
-        vp.start_email as start_email,
-        vp.start_is_active as start_is_active,
-        vp.start_name as start_name,
-        vp.start_registration_date as start_registration_date,
-        end_node.age as end_age,
-        end_node.city as end_city,
-        end_node.country as end_country,
-        end_node.email_address as end_email,
-        end_node.is_active as end_is_active,
-        end_node.full_name as end_name,
-        end_node.registration_date as end_registration_date
-    FROM vlp_u1_u2 vp
+        arrayConcat(vp.path_node_values, [map('elementId', CAST(concat('User:', toString(end_node.user_id), '-'), 'Dynamic'), 'labels', CAST(['User'], 'Dynamic'), 'properties', CAST(mapFilter((__k, __v) -> __v IS NOT NULL, map('age', CAST(end_node.age, 'Dynamic'), 'city', CAST(end_node.city, 'Dynamic'), 'country', CAST(end_node.country, 'Dynamic'), 'email', CAST(end_node.email_address, 'Dynamic'), 'is_active', CAST(end_node.is_active, 'Dynamic'), 'name', CAST(end_node.full_name, 'Dynamic'), 'registration_date', CAST(end_node.registration_date, 'Dynamic'), 'user_id', CAST(end_node.user_id, 'Dynamic'))), 'Dynamic'))]) as path_node_values,
+        arrayConcat(vp.path_rel_values, [map('elementId', CAST(concat('FOLLOWS:', toString(rel.follower_id), '->', toString(rel.followed_id), '-'), 'Dynamic'), 'startNodeElementId', CAST(concat('User:', toString(rel.follower_id), '-'), 'Dynamic'), 'endNodeElementId', CAST(concat('User:', toString(rel.followed_id), '-'), 'Dynamic'), 'type', CAST('FOLLOWS', 'Dynamic'), 'properties', CAST(mapFilter((__k, __v) -> __v IS NOT NULL, map('follow_date', CAST(rel.follow_date, 'Dynamic'))), 'Dynamic'))]) as path_rel_values,
+        arrayConcat(vp.path_node_tuples, [tuple(end_node.user_id, end_node.age, end_node.city, end_node.country, end_node.email_address, end_node.is_active, end_node.full_name, end_node.registration_date, end_node.user_id)]) as path_node_tuples,
+        arrayConcat(vp.path_rel_tuples, [tuple(rel.follower_id, rel.followed_id, rel.follow_id, rel.follow_date)]) as path_rel_tuples,
+        arrayConcat(vp.path_edges, [rel.follow_id]) as path_edges
+    FROM vlp_v1_path vp
     JOIN test_integration.user_follows_test AS rel ON vp.end_id = rel.follower_id
     JOIN test_integration.users_test AS end_node ON rel.followed_id = end_node.user_id
     WHERE vp.hop_count < 2
       AND NOT has(vp.path_edges, rel.follow_id)
 ), 
-with_hops_path_nodes_path_rels_u1_u2_cte_0 AS (SELECT 
-      start_name AS "p2_u1_name", 
-      end_name AS "p2_u2_name", 
-      hop_count AS "hops", 
-      path_nodes AS "path_nodes", 
-      path_relationships AS "path_rels"
-FROM vlp_u1_u2 AS t
-WHERE hops = 2
+with_w2 AS (
+SELECT 
+      v0.user_id AS "v4__user_id", 
+      v0.full_name AS "p2_v4_name", 
+      v2.user_id AS "v5__user_id", 
+      v2.full_name AS "p2_v5_name", 
+      v1.hop_count AS "v6", 
+      arrayConcat([tuple(v0.user_id, v0.age, v0.city, v0.country, v0.email_address, v0.is_active, v0.full_name, v0.registration_date, v0.user_id)], arraySlice(v1.path_node_tuples, 2)) AS "v7", 
+      v1.path_rel_tuples AS "v8"
+FROM vlp_v1_path AS v1
+JOIN test_integration.users_test AS v0 ON v1.start_id = v0.user_id
+JOIN test_integration.users_test AS v2 ON v1.end_id = v2.user_id
+WHERE (v0.user_id = 1 AND v1.hop_count = 2)
 )
 SELECT 
-      hops_path_nodes_path_rels_u1_u2.p2_u1_name AS "u1.name", 
-      hops_path_nodes_path_rels_u1_u2.p2_u2_name AS "u2.name", 
-      hops_path_nodes_path_rels_u1_u2.hops AS "hops", 
-      length(hops_path_nodes_path_rels_u1_u2.path_nodes) AS "node_count", 
-      length(hops_path_nodes_path_rels_u1_u2.path_rels) AS "rel_count"
-FROM with_hops_path_nodes_path_rels_u1_u2_cte_0 AS hops_path_nodes_path_rels_u1_u2
+      w2.p2_v4_name AS "u1.name", 
+      w2.p2_v5_name AS "u2.name", 
+      w2.v6 AS "hops", 
+      length(w2.v7) AS "node_count", 
+      length(w2.v8) AS "rel_count"
+FROM with_w2 AS w2
+
+-- column u1.name: Value [("u1.name", "u1.name")]
+-- column u2.name: Value [("u2.name", "u2.name")]
+-- column hops: Value [("hops", "hops")]
+-- column node_count: Value [("node_count", "node_count")]
+-- column rel_count: Value [("rel_count", "rel_count")]

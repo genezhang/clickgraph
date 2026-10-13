@@ -1,13 +1,28 @@
+WITH v1_both AS (
 SELECT 
-      a.full_name AS "a.name", 
-      b.full_name AS "b.name"
-FROM db_standard.users AS a
-INNER JOIN db_standard.friendships AS t0 ON t0.user_id_1 = a.user_id
-INNER JOIN db_standard.users AS b ON b.user_id = t0.user_id_2
-UNION ALL 
+      e.since AS "since", 
+      e.user_id_1 AS "user_id_1", 
+      e.user_id_2 AS "user_id_2", 
+      e.user_id_1 AS "__cg_start_0", 
+      e.user_id_2 AS "__cg_end_0"
+FROM db_standard.friendships AS e
+
+UNION ALL
 SELECT 
-      a.full_name AS "a.name", 
-      b.full_name AS "b.name"
-FROM db_standard.users AS b
-INNER JOIN db_standard.friendships AS t0 ON t0.user_id_1 = b.user_id
-INNER JOIN db_standard.users AS a ON a.user_id = t0.user_id_2
+      e.since AS "since", 
+      e.user_id_1 AS "user_id_1", 
+      e.user_id_2 AS "user_id_2", 
+      e.user_id_2 AS "__cg_start_0", 
+      e.user_id_1 AS "__cg_end_0"
+FROM db_standard.friendships AS e
+WHERE e.user_id_1 <> e.user_id_2
+)
+SELECT 
+      v0.full_name AS "a.name", 
+      v2.full_name AS "b.name"
+FROM db_standard.users AS v0
+JOIN v1_both AS v1 ON v1.__cg_start_0 = v0.user_id
+JOIN db_standard.users AS v2 ON v1.__cg_end_0 = v2.user_id
+
+-- column a.name: Value [("a.name", "a.name")]
+-- column b.name: Value [("b.name", "b.name")]

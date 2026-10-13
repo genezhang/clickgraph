@@ -1,7 +1,17 @@
+WITH optional_o1 AS (
 SELECT 
-      a.name AS `a.name`, 
-      CASE b.name WHEN NULL THEN 'No follow' ELSE b.name END AS `followed`
-FROM test_integration.users AS a
-LEFT JOIN test_integration.follows AS t0 ON t0.follower_id = a.user_id
-LEFT JOIN test_integration.users AS b ON b.user_id = t0.followed_id
-ORDER BY a.name ASC NULLS LAST, followed ASC NULLS LAST
+      v1.follower_id AS `v0__user_id`, 
+      v2.user_id AS `v2__user_id`, 
+      v2.name AS `p2_v2_name`
+FROM test_integration.follows AS v1
+JOIN test_integration.users AS v2 ON v1.followed_id = v2.user_id
+)
+SELECT 
+      v0.name AS `a.name`, 
+      CASE o1.p2_v2_name WHEN NULL THEN 'No follow' ELSE o1.p2_v2_name END AS `followed`
+FROM test_integration.users AS v0
+LEFT JOIN optional_o1 AS o1 ON v0.user_id = o1.v0__user_id
+ORDER BY v0.name ASC NULLS LAST, CASE o1.p2_v2_name WHEN NULL THEN 'No follow' ELSE o1.p2_v2_name END ASC NULLS LAST
+
+-- column a.name: Value [("a.name", "a.name")]
+-- column followed: Value [("followed", "followed")]

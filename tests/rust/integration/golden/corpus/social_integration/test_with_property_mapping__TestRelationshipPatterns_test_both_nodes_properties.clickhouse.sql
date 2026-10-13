@@ -1,12 +1,15 @@
-WITH with_aName_bName_cte_0 AS (SELECT 
-      a.full_name AS "aName", 
-      b.full_name AS "bName"
-FROM test_integration.users_test AS a
-INNER JOIN test_integration.user_follows_test AS t0 ON t0.follower_id = a.user_id
-INNER JOIN test_integration.users_test AS b ON b.user_id = t0.followed_id
+WITH with_w1 AS (
+SELECT 
+      v0.full_name AS "v3", 
+      v2.full_name AS "v4"
+FROM test_integration.users_test AS v0
+JOIN test_integration.user_follows_test AS v1 ON v1.follower_id = v0.user_id
+JOIN test_integration.users_test AS v2 ON v1.followed_id = v2.user_id
 )
 SELECT 
-      aName_bName.aName AS "aName", 
-      aName_bName.bName AS "bName"
-FROM with_aName_bName_cte_0 AS aName_bName
+      w1.v3 AS "aName", 
+      w1.v4 AS "bName"
+FROM with_w1 AS w1
 LIMIT 3
+-- column aName: Value [("aName", "aName")]
+-- column bName: Value [("bName", "bName")]

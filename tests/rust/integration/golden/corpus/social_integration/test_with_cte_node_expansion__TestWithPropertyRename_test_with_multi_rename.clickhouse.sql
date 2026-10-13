@@ -1,44 +1,45 @@
-WITH with_followed_follower_cte_0 AS (SELECT 
-      a.age AS "p1_a_age", 
-      a.city AS "p1_a_city", 
-      a.country AS "p1_a_country", 
-      a.email_address AS "p1_a_email", 
-      a.is_active AS "p1_a_is_active", 
-      a.full_name AS "p1_a_name", 
-      a.registration_date AS "p1_a_registration_date", 
-      a.user_id AS "p1_a_user_id", 
-      b.age AS "p1_b_age", 
-      b.city AS "p1_b_city", 
-      b.country AS "p1_b_country", 
-      b.email_address AS "p1_b_email", 
-      b.is_active AS "p1_b_is_active", 
-      b.full_name AS "p1_b_name", 
-      b.registration_date AS "p1_b_registration_date", 
-      b.user_id AS "p1_b_user_id"
-FROM test_integration.users_test AS a
-INNER JOIN test_integration.user_follows_test AS t0 ON t0.follower_id = a.user_id
-INNER JOIN test_integration.users_test AS b ON b.user_id = t0.followed_id
+WITH with_w1 AS (
+SELECT 
+      v0.user_id AS "v3__user_id", 
+      v0.age AS "p2_v3_age", 
+      v0.city AS "p2_v3_city", 
+      v0.country AS "p2_v3_country", 
+      v0.email_address AS "p2_v3_email", 
+      v0.is_active AS "p2_v3_is_active", 
+      v0.full_name AS "p2_v3_name", 
+      v0.registration_date AS "p2_v3_registration_date", 
+      v0.user_id AS "p2_v3_user_id", 
+      v2.user_id AS "v4__user_id", 
+      v2.age AS "p2_v4_age", 
+      v2.city AS "p2_v4_city", 
+      v2.country AS "p2_v4_country", 
+      v2.email_address AS "p2_v4_email", 
+      v2.is_active AS "p2_v4_is_active", 
+      v2.full_name AS "p2_v4_name", 
+      v2.registration_date AS "p2_v4_registration_date", 
+      v2.user_id AS "p2_v4_user_id"
+FROM test_integration.users_test AS v0
+JOIN test_integration.user_follows_test AS v1 ON v1.follower_id = v0.user_id
+JOIN test_integration.users_test AS v2 ON v1.followed_id = v2.user_id
 )
 SELECT 
-      followed_follower.p1_a_age AS "follower.age", 
-      followed_follower.p1_a_city AS "follower.city", 
-      followed_follower.p1_a_country AS "follower.country", 
-      followed_follower.p1_a_email AS "follower.email", 
-      followed_follower.p1_a_email AS "follower.email_address", 
-      followed_follower.p1_a_name AS "follower.full_name", 
-      followed_follower.p1_a_is_active AS "follower.is_active", 
-      followed_follower.p1_a_name AS "follower.name", 
-      followed_follower.p1_a_registration_date AS "follower.registration_date", 
-      followed_follower.p1_a_user_id AS "follower.user_id", 
-      followed_follower.p1_b_age AS "followed.age", 
-      followed_follower.p1_b_city AS "followed.city", 
-      followed_follower.p1_b_country AS "followed.country", 
-      followed_follower.p1_b_email AS "followed.email", 
-      followed_follower.p1_b_email AS "followed.email_address", 
-      followed_follower.p1_b_name AS "followed.full_name", 
-      followed_follower.p1_b_is_active AS "followed.is_active", 
-      followed_follower.p1_b_name AS "followed.name", 
-      followed_follower.p1_b_registration_date AS "followed.registration_date", 
-      followed_follower.p1_b_user_id AS "followed.user_id"
-FROM with_followed_follower_cte_0 AS followed_follower
+      w1.p2_v3_age AS "follower.age", 
+      w1.p2_v3_city AS "follower.city", 
+      w1.p2_v3_country AS "follower.country", 
+      w1.p2_v3_email AS "follower.email", 
+      w1.p2_v3_is_active AS "follower.is_active", 
+      w1.p2_v3_name AS "follower.name", 
+      w1.p2_v3_registration_date AS "follower.registration_date", 
+      w1.p2_v3_user_id AS "follower.user_id", 
+      w1.p2_v4_age AS "followed.age", 
+      w1.p2_v4_city AS "followed.city", 
+      w1.p2_v4_country AS "followed.country", 
+      w1.p2_v4_email AS "followed.email", 
+      w1.p2_v4_is_active AS "followed.is_active", 
+      w1.p2_v4_name AS "followed.name", 
+      w1.p2_v4_registration_date AS "followed.registration_date", 
+      w1.p2_v4_user_id AS "followed.user_id"
+FROM with_w1 AS w1
 LIMIT 1
+-- column follower: Node { label: "User" } [("age", "follower.age"), ("city", "follower.city"), ("country", "follower.country"), ("email", "follower.email"), ("is_active", "follower.is_active"), ("name", "follower.name"), ("registration_date", "follower.registration_date"), ("user_id", "follower.user_id")]
+-- column followed: Node { label: "User" } [("age", "followed.age"), ("city", "followed.city"), ("country", "followed.country"), ("email", "followed.email"), ("is_active", "followed.is_active"), ("name", "followed.name"), ("registration_date", "followed.registration_date"), ("user_id", "followed.user_id")]

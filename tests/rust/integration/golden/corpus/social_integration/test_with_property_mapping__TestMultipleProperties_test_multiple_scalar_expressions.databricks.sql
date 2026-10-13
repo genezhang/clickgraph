@@ -1,12 +1,16 @@
-WITH with_e_id_n_cte_0 AS (SELECT 
-      u.full_name AS `n`, 
-      u.email_address AS `e`, 
-      u.user_id AS `id`
-FROM test_integration.users_test AS u
+WITH with_w1 AS (
+SELECT 
+      v0.full_name AS `v1`, 
+      v0.email_address AS `v2`, 
+      v0.user_id AS `v3`
+FROM test_integration.users_test AS v0
 )
 SELECT 
-      e_id_n.n AS `n`, 
-      e_id_n.e AS `e`, 
-      e_id_n.id AS `id`
-FROM with_e_id_n_cte_0 AS e_id_n
+      w1.v1 AS `n`, 
+      w1.v2 AS `e`, 
+      w1.v3 AS `id`
+FROM with_w1 AS w1
 LIMIT 1
+-- column n: Value [("n", "n")]
+-- column e: Value [("e", "e")]
+-- column id: Value [("id", "id")]

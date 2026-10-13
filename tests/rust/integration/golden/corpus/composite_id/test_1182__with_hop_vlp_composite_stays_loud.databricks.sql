@@ -1,0 +1,60 @@
+WITH RECURSIVE with_w1 AS (
+SELECT 
+      v2.bank_id AS `v3__bank_id`, 
+      v2.account_number AS `v3__account_number`, 
+      v2.account_number AS `p2_v3_account_number`
+FROM db_composite_id.accounts AS v0
+JOIN db_composite_id.transfers AS v1 ON v1.from_bank_id = v0.bank_id AND v1.from_account_number = v0.account_number
+JOIN db_composite_id.accounts AS v2 ON v1.to_bank_id = v2.bank_id AND v1.to_account_number = v2.account_number
+), 
+vlp_v6_path AS (
+    SELECT 
+        to_json(CAST(struct(start_node.bank_id, start_node.account_number) AS STRUCT<_1: STRING, _2: STRING>), map('ignoreNullFields', 'false')) as start_id,
+        to_json(CAST(struct(end_node.bank_id, end_node.account_number) AS STRUCT<_1: STRING, _2: STRING>), map('ignoreNullFields', 'false')) as end_id,
+        1 as hop_count,
+        CAST(array() AS ARRAY<STRING>) as path_relationships,
+        array(to_json(CAST(struct(start_node.bank_id, start_node.account_number) AS STRUCT<_1: STRING, _2: STRING>), map('ignoreNullFields', 'false')), to_json(CAST(struct(end_node.bank_id, end_node.account_number) AS STRUCT<_1: STRING, _2: STRING>), map('ignoreNullFields', 'false'))) as path_nodes,
+        array(rel.transfer_id) as path_edges,
+        start_node.bank_id as start_bank_id,
+        start_node.account_number as start_account_number,
+        end_node.bank_id as end_bank_id,
+        end_node.account_number as end_account_number
+    FROM db_composite_id.accounts AS start_node
+    JOIN db_composite_id.transfers AS rel ON start_node.bank_id = rel.from_bank_id AND start_node.account_number = rel.from_account_number
+    JOIN db_composite_id.accounts AS end_node ON rel.to_bank_id = end_node.bank_id AND rel.to_account_number = end_node.account_number
+    WHERE ((start_node.bank_id, start_node.account_number) IN (SELECT DISTINCT 
+      v5.bank_id AS `id_0`, 
+      v5.account_number AS `id_1`
+FROM with_w1 AS w1
+JOIN db_composite_id.transfers AS v4 ON v4.from_bank_id = w1.v3__bank_id AND v4.from_account_number = w1.v3__account_number
+JOIN db_composite_id.accounts AS v5 ON v4.to_bank_id = v5.bank_id AND v4.to_account_number = v5.account_number))
+    UNION ALL
+    SELECT
+        vp.start_id,
+        to_json(CAST(struct(end_node.bank_id, end_node.account_number) AS STRUCT<_1: STRING, _2: STRING>), map('ignoreNullFields', 'false')) as end_id,
+        vp.hop_count + 1 as hop_count,
+        CAST(array() AS ARRAY<STRING>) as path_relationships,
+        concat(vp.path_nodes, array(to_json(CAST(struct(end_node.bank_id, end_node.account_number) AS STRUCT<_1: STRING, _2: STRING>), map('ignoreNullFields', 'false')))) as path_nodes,
+        concat(vp.path_edges, array(rel.transfer_id)) as path_edges,
+        vp.start_bank_id as start_bank_id,
+        vp.start_account_number as start_account_number,
+        end_node.bank_id as end_bank_id,
+        end_node.account_number as end_account_number
+    FROM vlp_v6_path vp
+    JOIN db_composite_id.transfers AS rel ON vp.end_bank_id = rel.from_bank_id AND vp.end_account_number = rel.from_account_number
+    JOIN db_composite_id.accounts AS end_node ON rel.to_bank_id = end_node.bank_id AND rel.to_account_number = end_node.account_number
+    WHERE vp.hop_count < 2
+      AND NOT array_contains(vp.path_edges, rel.transfer_id)
+)
+SELECT 
+      w1.p2_v3_account_number AS `c.account_number`, 
+      v7.account_number AS `n2.account_number`
+FROM vlp_v6_path AS v6
+JOIN db_composite_id.accounts AS v5 ON v6.start_bank_id = v5.bank_id AND v6.start_account_number = v5.account_number
+JOIN db_composite_id.transfers AS v4 ON v4.to_bank_id = v5.bank_id AND v4.to_account_number = v5.account_number
+JOIN with_w1 AS w1 ON v4.from_bank_id = w1.v3__bank_id AND v4.from_account_number = w1.v3__account_number
+JOIN db_composite_id.accounts AS v7 ON v6.end_bank_id = v7.bank_id AND v6.end_account_number = v7.account_number
+WHERE NOT array_contains(v6.path_edges, v4.transfer_id)
+
+-- column c.account_number: Value [("c.account_number", "c.account_number")]
+-- column n2.account_number: Value [("n2.account_number", "n2.account_number")]

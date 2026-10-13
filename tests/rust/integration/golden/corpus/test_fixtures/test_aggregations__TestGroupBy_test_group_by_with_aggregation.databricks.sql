@@ -1,9 +1,13 @@
 SELECT 
-      a.name AS `a.name`, 
-      count(b.user_id) AS `follow_count`, 
-      avg(b.age) AS `avg_age`
-FROM test_integration.users AS a
-INNER JOIN test_integration.follows AS t0 ON t0.follower_id = a.user_id
-INNER JOIN test_integration.users AS b ON b.user_id = t0.followed_id
-GROUP BY a.name
-ORDER BY a.name ASC NULLS LAST
+      v0.name AS `a.name`, 
+      count(v2.user_id) AS `follow_count`, 
+      avg(v2.age) AS `avg_age`
+FROM test_integration.users AS v0
+JOIN test_integration.follows AS v1 ON v1.follower_id = v0.user_id
+JOIN test_integration.users AS v2 ON v1.followed_id = v2.user_id
+GROUP BY v0.name
+ORDER BY v0.name ASC NULLS LAST
+
+-- column a.name: Value [("a.name", "a.name")]
+-- column follow_count: Value [("follow_count", "follow_count")]
+-- column avg_age: Value [("avg_age", "avg_age")]

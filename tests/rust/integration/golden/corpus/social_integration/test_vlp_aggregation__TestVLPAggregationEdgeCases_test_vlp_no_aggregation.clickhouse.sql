@@ -1,21 +1,36 @@
-WITH RECURSIVE undir_edges_u1_u2_test_integration_user_follows_test AS (
-    SELECT e.follower_id, e.followed_id, e.follow_date, e.follow_id, e.follower_id AS __cg_orig_from, e.followed_id AS __cg_orig_to FROM test_integration.user_follows_test AS e
-    UNION ALL
-    SELECT e.followed_id AS follower_id, e.follower_id AS followed_id, e.follow_date, e.follow_id, e.follower_id AS __cg_orig_from, e.followed_id AS __cg_orig_to FROM test_integration.user_follows_test AS e
-),
-vlp_u1_u2 AS (
+WITH RECURSIVE v1_both AS (
+SELECT 
+      e.follow_date AS "follow_date", 
+      e.follow_id AS "follow_id", 
+      e.followed_id AS "followed_id", 
+      e.follower_id AS "follower_id", 
+      e.follower_id AS "__cg_start_0", 
+      e.followed_id AS "__cg_end_0"
+FROM test_integration.user_follows_test AS e
+
+UNION ALL
+SELECT 
+      e.follow_date AS "follow_date", 
+      e.follow_id AS "follow_id", 
+      e.followed_id AS "followed_id", 
+      e.follower_id AS "follower_id", 
+      e.followed_id AS "__cg_start_0", 
+      e.follower_id AS "__cg_end_0"
+FROM test_integration.user_follows_test AS e
+WHERE e.follower_id <> e.followed_id
+), 
+vlp_v1_path AS (
     SELECT 
         start_node.user_id as start_id,
         end_node.user_id as end_id,
         1 as hop_count,
         CAST([] AS Array(String)) as path_relationships,
         [start_node.user_id, end_node.user_id] as path_nodes,
-        [rel.follow_id] as path_edges,
-        end_node.full_name as end_name
+        [rel.follow_id] as path_edges
     FROM test_integration.users_test AS start_node
-    JOIN undir_edges_u1_u2_test_integration_user_follows_test AS rel ON start_node.user_id = rel.follower_id
-    JOIN test_integration.users_test AS end_node ON rel.followed_id = end_node.user_id
-    WHERE start_node.user_id = 1
+    JOIN v1_both AS rel ON start_node.user_id = rel.__cg_start_0
+    JOIN test_integration.users_test AS end_node ON rel.__cg_end_0 = end_node.user_id
+    WHERE (start_node.user_id = 1)
     UNION ALL
     SELECT
         vp.start_id,
@@ -23,18 +38,24 @@ vlp_u1_u2 AS (
         vp.hop_count + 1 as hop_count,
         CAST([] AS Array(String)) as path_relationships,
         arrayConcat(vp.path_nodes, [end_node.user_id]) as path_nodes,
-        arrayConcat(vp.path_edges, [rel.follow_id]) as path_edges,
-        end_node.full_name as end_name
-    FROM vlp_u1_u2 vp
-    JOIN undir_edges_u1_u2_test_integration_user_follows_test AS rel ON vp.end_id = rel.follower_id
-    JOIN test_integration.users_test AS end_node ON rel.followed_id = end_node.user_id
+        arrayConcat(vp.path_edges, [rel.follow_id]) as path_edges
+    FROM vlp_v1_path vp
+    JOIN v1_both AS rel ON vp.end_id = rel.__cg_start_0
+    JOIN test_integration.users_test AS end_node ON rel.__cg_end_0 = end_node.user_id
     WHERE vp.hop_count < 2
       AND NOT has(vp.path_edges, rel.follow_id)
 )
 SELECT 
-      t.end_id AS "u2.user_id", 
-      t.end_name AS "u2.name", 
-      p.post_id AS "p.post_id"
-FROM vlp_u1_u2 AS t
-INNER JOIN test_integration.posts_test AS p ON p.author_id = t.end_id
+      v2.user_id AS "u2.user_id", 
+      v2.full_name AS "u2.name", 
+      v4.post_id AS "p.post_id"
+FROM vlp_v1_path AS v1
+JOIN test_integration.users_test AS v0 ON v1.start_id = v0.user_id
+JOIN test_integration.users_test AS v2 ON v1.end_id = v2.user_id
+JOIN test_integration.posts_test AS v3 ON v3.author_id = v2.user_id
+JOIN test_integration.posts_test AS v4 ON v3.post_id = v4.post_id
+WHERE v0.user_id = 1
 LIMIT 10
+-- column u2.user_id: Value [("u2.user_id", "u2.user_id")]
+-- column u2.name: Value [("u2.name", "u2.name")]
+-- column p.post_id: Value [("p.post_id", "p.post_id")]

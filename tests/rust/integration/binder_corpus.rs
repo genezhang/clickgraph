@@ -98,15 +98,29 @@ fn the_corpus_binds() {
 /// `LOWER_TRACE=<text>`, prints why each query containing `<text>` is not.
 #[test]
 fn the_corpus_lowers() {
-    census(SqlDialect::ClickHouse);
+    locked(census(SqlDialect::ClickHouse));
 }
 
-/// P-4c S12: as `the_corpus_lowers`, on Databricks, where the queries the
-/// bound plan does not lower still go to the legacy pipeline. Prints the
-/// count and the reasons (`LOWER_TRACE` / `LOWERED_LIST` as there).
+/// P-4c S12: as `the_corpus_lowers`, on Databricks. Prints the count and
+/// the reasons (`LOWER_TRACE` / `LOWERED_LIST` as there).
 #[test]
 fn the_corpus_lowers_on_databricks() {
-    census(SqlDialect::Databricks);
+    locked(census(SqlDialect::Databricks));
+}
+
+/// How many corpus queries lower, on each dialect (P-4c S14c0): the legacy
+/// pipeline's deletion must not change it. A slice that lowers more raises
+/// it (with the corpus goldens, `corpus_sweep.rs`).
+const LOWERED: usize = 1477;
+
+/// The census of the corpus (not of `CENSUS_CORPUS`) lowers [`LOWERED`].
+fn locked(lowered: usize) {
+    if std::env::var("CENSUS_CORPUS").is_err() {
+        assert_eq!(
+            lowered, LOWERED,
+            "corpus queries lowered (raise LOWERED with a new slice)"
+        );
+    }
 }
 
 /// Lower every corpus query on `dialect`: no panic, and every lowered

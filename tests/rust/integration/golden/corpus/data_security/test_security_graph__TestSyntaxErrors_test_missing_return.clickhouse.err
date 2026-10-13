@@ -1,0 +1,1 @@
+query error: Invalid syntax: Query cannot conclude with this clause (must be RETURN, an update clause or CALL) at the end of the query

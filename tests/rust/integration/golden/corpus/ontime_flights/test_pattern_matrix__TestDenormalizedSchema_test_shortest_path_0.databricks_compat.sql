@@ -1,0 +1,56 @@
+WITH RECURSIVE __cg_nodes_Airport__cg_rows AS (
+SELECT 
+      e.Origin AS `code`, 
+      e.OriginCityName AS `city__cg0`, 
+      NULL AS `city__cg1`, 
+      e.OriginState AS `state__cg0`, 
+      NULL AS `state__cg1`
+FROM default.flights AS e
+
+UNION ALL
+SELECT 
+      e.Dest AS `code`, 
+      NULL AS `city__cg0`, 
+      e.DestCityName AS `city__cg1`, 
+      NULL AS `state__cg0`, 
+      e.DestState AS `state__cg1`
+FROM default.flights AS e
+), 
+__cg_nodes_Airport AS (
+SELECT 
+      e.code AS `code`, 
+      any_value(CASE WHEN regexp_replace(regexp_replace(typeof(e.city__cg0), '^(tinyint|smallint|int|bigint)$', 'int'), '^((var)?char\\(\\d+\\)|string( collate .*)?)$', 'string') = regexp_replace(regexp_replace(typeof(e.city__cg1), '^(tinyint|smallint|int|bigint)$', 'int'), '^((var)?char\\(\\d+\\)|string( collate .*)?)$', 'string') THEN coalesce(e.city__cg0, e.city__cg1) ELSE raise_error('ClickGraph: a property has different types on different labels or types') END, true) AS `city`, 
+      any_value(CASE WHEN regexp_replace(regexp_replace(typeof(e.state__cg0), '^(tinyint|smallint|int|bigint)$', 'int'), '^((var)?char\\(\\d+\\)|string( collate .*)?)$', 'string') = regexp_replace(regexp_replace(typeof(e.state__cg1), '^(tinyint|smallint|int|bigint)$', 'int'), '^((var)?char\\(\\d+\\)|string( collate .*)?)$', 'string') THEN coalesce(e.state__cg0, e.state__cg1) ELSE raise_error('ClickGraph: a property has different types on different labels or types') END, true) AS `state`
+FROM __cg_nodes_Airport__cg_rows AS e
+WHERE NOT isnull(e.code)
+GROUP BY e.code
+), 
+vlp_v1_bfs AS (
+    SELECT DISTINCT start_node.code AS start_id, start_node.code AS node, CAST(0 AS INT) AS depth, CAST(1 AS INT) AS new
+    FROM __cg_nodes_Airport AS start_node
+    WHERE start_node.code IS NOT NULL
+    UNION ALL
+    (SELECT DISTINCT f.start_id AS start_id, end_node.code AS node, CAST(f.depth + 1 AS INT) AS depth, CAST(1 AS INT) AS new
+    FROM vlp_v1_bfs AS f
+    JOIN default.flights AS rel ON rel.Origin = f.node
+    JOIN __cg_nodes_Airport AS end_node ON end_node.code = rel.Dest
+    WHERE f.new = 1
+      AND f.depth < 5
+      AND (f.start_id, end_node.code) NOT IN (SELECT start_id, node FROM vlp_v1_bfs)
+    UNION ALL
+    SELECT start_id, node, depth, CAST(0 AS INT) AS new
+    FROM vlp_v1_bfs
+    WHERE start_id IN (SELECT start_id FROM vlp_v1_bfs WHERE new = 1))
+), 
+vlp_v1_path AS (
+    SELECT start_id, node AS end_id, depth AS hop_count FROM vlp_v1_bfs
+    WHERE new = 1 AND depth >= 1
+)
+SELECT 
+      v1.hop_count AS `length(p)`
+FROM vlp_v1_path AS v1
+JOIN __cg_nodes_Airport AS v0 ON v1.start_id = v0.code
+JOIN __cg_nodes_Airport AS v2 ON v1.end_id = v2.code
+WHERE null
+LIMIT 5
+-- column length(p): Value [("length(p)", "length(p)")]

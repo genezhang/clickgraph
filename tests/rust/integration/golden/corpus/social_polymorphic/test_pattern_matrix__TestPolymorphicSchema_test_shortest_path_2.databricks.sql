@@ -1,38 +1,134 @@
-WITH RECURSIVE vlp_a_b_inner AS (
-    SELECT 
-        start_node.user_id as start_id,
-        end_node.user_id as end_id,
-        1 as hop_count,
-        array('LIKES') as path_relationships,
-        array(start_node.user_id, end_node.user_id) as path_nodes
-    FROM brahmand.users_bench AS start_node
-    JOIN brahmand.interactions AS rel ON start_node.user_id = rel.from_id
-    JOIN brahmand.users_bench AS end_node ON rel.to_id = end_node.user_id
-    WHERE rel.interaction_type = 'LIKES' AND rel.from_type = 'User' AND rel.to_type = 'User'
+WITH RECURSIVE vlp_v1_nodes AS (
+SELECT 
+      'Post' AS `__cg_label`, 
+      e.post_id AS `__cg_id_0`, 
+      concat('Post', ':', CAST(e.post_id AS STRING)) AS `__cg_key`
+FROM brahmand.posts_bench AS e
+
+UNION ALL
+SELECT 
+      'User' AS `__cg_label`, 
+      e.user_id AS `__cg_id_0`, 
+      concat('User', ':', CAST(e.user_id AS STRING)) AS `__cg_key`
+FROM brahmand.users_bench AS e
+), 
+v1_rels AS (
+SELECT 
+      'LIKES' AS `__cg_type`, 
+      'Post' AS `__cg_from_label`, 
+      'Post' AS `__cg_to_label`, 
+      e.from_id AS `__cg_rid_0`, 
+      e.to_id AS `__cg_rid_1`, 
+      e.interaction_type AS `__cg_rid_2`, 
+      e.timestamp AS `__cg_rid_3`, 
+      e.from_id AS `__cg_from_0`, 
+      e.to_id AS `__cg_to_0`, 
+      e.from_id AS `__cg_start_0`, 
+      e.to_id AS `__cg_end_0`, 
+      'Post' AS `__cg_start_label`, 
+      'Post' AS `__cg_end_label`, 
+      concat('LIKES:Post:Post:', to_json(named_struct('_1', CAST(e.from_id AS STRING), '_2', CAST(e.to_id AS STRING), '_3', CAST(e.interaction_type AS STRING), '_4', CAST(e.timestamp AS STRING)), map('ignoreNullFields', 'false'))) AS `__cg_key`, 
+      concat('Post', ':', CAST(e.from_id AS STRING)) AS `__cg_start_key`, 
+      concat('Post', ':', CAST(e.to_id AS STRING)) AS `__cg_end_key`
+FROM brahmand.interactions AS e
+WHERE ((((e.`interaction_type` = 'LIKES') AND (e.`from_type` = 'Post')) AND (e.`to_type` = 'Post')))
+
+UNION ALL
+SELECT 
+      'LIKES' AS `__cg_type`, 
+      'Post' AS `__cg_from_label`, 
+      'User' AS `__cg_to_label`, 
+      e.from_id AS `__cg_rid_0`, 
+      e.to_id AS `__cg_rid_1`, 
+      e.interaction_type AS `__cg_rid_2`, 
+      e.timestamp AS `__cg_rid_3`, 
+      e.from_id AS `__cg_from_0`, 
+      e.to_id AS `__cg_to_0`, 
+      e.from_id AS `__cg_start_0`, 
+      e.to_id AS `__cg_end_0`, 
+      'Post' AS `__cg_start_label`, 
+      'User' AS `__cg_end_label`, 
+      concat('LIKES:Post:User:', to_json(named_struct('_1', CAST(e.from_id AS STRING), '_2', CAST(e.to_id AS STRING), '_3', CAST(e.interaction_type AS STRING), '_4', CAST(e.timestamp AS STRING)), map('ignoreNullFields', 'false'))) AS `__cg_key`, 
+      concat('Post', ':', CAST(e.from_id AS STRING)) AS `__cg_start_key`, 
+      concat('User', ':', CAST(e.to_id AS STRING)) AS `__cg_end_key`
+FROM brahmand.interactions AS e
+WHERE ((((e.`interaction_type` = 'LIKES') AND (e.`from_type` = 'Post')) AND (e.`to_type` = 'User')))
+
+UNION ALL
+SELECT 
+      'LIKES' AS `__cg_type`, 
+      'User' AS `__cg_from_label`, 
+      'Post' AS `__cg_to_label`, 
+      e.from_id AS `__cg_rid_0`, 
+      e.to_id AS `__cg_rid_1`, 
+      e.interaction_type AS `__cg_rid_2`, 
+      e.timestamp AS `__cg_rid_3`, 
+      e.from_id AS `__cg_from_0`, 
+      e.to_id AS `__cg_to_0`, 
+      e.from_id AS `__cg_start_0`, 
+      e.to_id AS `__cg_end_0`, 
+      'User' AS `__cg_start_label`, 
+      'Post' AS `__cg_end_label`, 
+      concat('LIKES:User:Post:', to_json(named_struct('_1', CAST(e.from_id AS STRING), '_2', CAST(e.to_id AS STRING), '_3', CAST(e.interaction_type AS STRING), '_4', CAST(e.timestamp AS STRING)), map('ignoreNullFields', 'false'))) AS `__cg_key`, 
+      concat('User', ':', CAST(e.from_id AS STRING)) AS `__cg_start_key`, 
+      concat('Post', ':', CAST(e.to_id AS STRING)) AS `__cg_end_key`
+FROM brahmand.interactions AS e
+WHERE ((((e.`interaction_type` = 'LIKES') AND (e.`from_type` = 'User')) AND (e.`to_type` = 'Post')))
+
+UNION ALL
+SELECT 
+      'LIKES' AS `__cg_type`, 
+      'User' AS `__cg_from_label`, 
+      'User' AS `__cg_to_label`, 
+      e.from_id AS `__cg_rid_0`, 
+      e.to_id AS `__cg_rid_1`, 
+      e.interaction_type AS `__cg_rid_2`, 
+      e.timestamp AS `__cg_rid_3`, 
+      e.from_id AS `__cg_from_0`, 
+      e.to_id AS `__cg_to_0`, 
+      e.from_id AS `__cg_start_0`, 
+      e.to_id AS `__cg_end_0`, 
+      'User' AS `__cg_start_label`, 
+      'User' AS `__cg_end_label`, 
+      concat('LIKES:User:User:', to_json(named_struct('_1', CAST(e.from_id AS STRING), '_2', CAST(e.to_id AS STRING), '_3', CAST(e.interaction_type AS STRING), '_4', CAST(e.timestamp AS STRING)), map('ignoreNullFields', 'false'))) AS `__cg_key`, 
+      concat('User', ':', CAST(e.from_id AS STRING)) AS `__cg_start_key`, 
+      concat('User', ':', CAST(e.to_id AS STRING)) AS `__cg_end_key`
+FROM brahmand.interactions AS e
+WHERE ((((e.`interaction_type` = 'LIKES') AND (e.`from_type` = 'User')) AND (e.`to_type` = 'User')))
+), 
+vlp_v1_bfs AS (
+    SELECT DISTINCT start_node.__cg_key AS start_id, start_node.__cg_key AS node, CAST(0 AS INT) AS depth, CAST(1 AS INT) AS new
+    FROM vlp_v1_nodes AS start_node
+    WHERE start_node.__cg_key IS NOT NULL AND (start_node.__cg_label = 'User')
     UNION ALL
-    SELECT
-        vp.start_id,
-        end_node.user_id as end_id,
-        vp.hop_count + 1 as hop_count,
-        concat(vp.path_relationships, array('LIKES')) as path_relationships,
-        concat(vp.path_nodes, array(end_node.user_id)) as path_nodes
-    FROM vlp_a_b_inner vp
-    JOIN brahmand.interactions AS rel ON vp.end_id = rel.from_id
-    JOIN brahmand.users_bench AS end_node ON rel.to_id = end_node.user_id
-    WHERE vp.hop_count < 5
-      AND NOT array_contains(vp.path_nodes, end_node.user_id)
-      AND rel.interaction_type = 'LIKES' AND rel.from_type = 'User' AND rel.to_type = 'User'
-),
-vlp_a_b_to_target AS (
-    SELECT * FROM vlp_a_b_inner WHERE start_id != end_id
-),
-vlp_a_b AS (
-    SELECT * FROM (
-        SELECT *, ROW_NUMBER() OVER (PARTITION BY start_id, end_id ORDER BY hop_count ASC) as rn
-        FROM vlp_a_b_to_target
-    ) WHERE rn = 1
+    (SELECT DISTINCT f.start_id AS start_id, end_node.__cg_key AS node, CAST(f.depth + 1 AS INT) AS depth, CAST(1 AS INT) AS new
+    FROM vlp_v1_bfs AS f
+    JOIN v1_rels AS rel ON rel.__cg_start_key = f.node
+    JOIN vlp_v1_nodes AS end_node ON end_node.__cg_key = rel.__cg_end_key
+    WHERE f.new = 1
+      AND f.depth < 5
+      AND (f.start_id, end_node.__cg_key) NOT IN (SELECT start_id, node FROM vlp_v1_bfs)
+    UNION ALL
+    SELECT start_id, node, depth, CAST(0 AS INT) AS new
+    FROM vlp_v1_bfs
+    WHERE start_id IN (SELECT start_id FROM vlp_v1_bfs WHERE new = 1))
+), 
+vlp_v1_path AS (
+    SELECT start_id, node AS end_id, depth AS hop_count FROM vlp_v1_bfs
+    WHERE new = 1 AND depth >= 1
+      AND node IN (SELECT end_node.__cg_key FROM vlp_v1_nodes AS end_node WHERE (end_node.__cg_label = 'User'))
+), 
+vlp_v1_ends AS (
+    SELECT start_node.__cg_label AS start_label, start_node.__cg_id_0 AS start_id, end_node.__cg_label AS end_label, end_node.__cg_id_0 AS end_id, p.hop_count AS hop_count
+    FROM vlp_v1_path AS p
+    JOIN vlp_v1_nodes AS start_node ON start_node.__cg_key = p.start_id
+    JOIN vlp_v1_nodes AS end_node ON end_node.__cg_key = p.end_id
 )
 SELECT 
-      t.hop_count AS `length(p)`
-FROM vlp_a_b AS t
+      v1.hop_count AS `length(p)`
+FROM vlp_v1_ends AS v1
+JOIN brahmand.users_bench AS v0 ON v1.start_id = v0.user_id
+JOIN brahmand.users_bench AS v2 ON v1.end_id = v2.user_id
+WHERE (v1.end_label = 'User' AND v0.user_id <> v2.user_id)
 LIMIT 5
+-- column length(p): Value [("length(p)", "length(p)")]

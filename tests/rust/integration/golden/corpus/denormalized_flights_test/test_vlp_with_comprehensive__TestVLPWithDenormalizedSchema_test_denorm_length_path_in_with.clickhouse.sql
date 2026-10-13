@@ -1,36 +1,75 @@
-WITH RECURSIVE vlp_a_b AS (
-    SELECT
-        t0.Origin as start_id,
-        t0.Dest as end_id,
+WITH RECURSIVE __cg_nodes_Airport__cg_rows AS (
+SELECT 
+      e.Origin AS "code", 
+      e.OriginCityName AS "city__cg0", 
+      NULL AS "city__cg1", 
+      e.OriginState AS "state__cg0", 
+      NULL AS "state__cg1"
+FROM test_integration.flights AS e
+
+UNION ALL
+SELECT 
+      e.Dest AS "code", 
+      NULL AS "city__cg0", 
+      e.DestCityName AS "city__cg1", 
+      NULL AS "state__cg0", 
+      e.DestState AS "state__cg1"
+FROM test_integration.flights AS e
+), 
+__cg_nodes_Airport AS (
+SELECT 
+      e.code AS "code", 
+      anyIfOrNull(CAST(coalesce(e.city__cg0, e.city__cg1), if(replaceRegexpOne(replaceRegexpOne(replaceRegexpAll(toTypeName(e.city__cg0), 'Nullable\\(|LowCardinality\\(|\\)', ''), '^U?Int\\d+$', 'Int'), '^(String|FixedString\\(\\d+)$', 'String') = replaceRegexpOne(replaceRegexpOne(replaceRegexpAll(toTypeName(e.city__cg1), 'Nullable\\(|LowCardinality\\(|\\)', ''), '^U?Int\\d+$', 'Int'), '^(String|FixedString\\(\\d+)$', 'String') AND toTypeName(coalesce(e.city__cg0, e.city__cg1)) NOT LIKE 'Variant(%', toTypeName(coalesce(e.city__cg0, e.city__cg1)), 'ClickGraph_property_has_different_types_on_different_labels_or_types')), NOT isNull(CAST(coalesce(e.city__cg0, e.city__cg1), if(replaceRegexpOne(replaceRegexpOne(replaceRegexpAll(toTypeName(e.city__cg0), 'Nullable\\(|LowCardinality\\(|\\)', ''), '^U?Int\\d+$', 'Int'), '^(String|FixedString\\(\\d+)$', 'String') = replaceRegexpOne(replaceRegexpOne(replaceRegexpAll(toTypeName(e.city__cg1), 'Nullable\\(|LowCardinality\\(|\\)', ''), '^U?Int\\d+$', 'Int'), '^(String|FixedString\\(\\d+)$', 'String') AND toTypeName(coalesce(e.city__cg0, e.city__cg1)) NOT LIKE 'Variant(%', toTypeName(coalesce(e.city__cg0, e.city__cg1)), 'ClickGraph_property_has_different_types_on_different_labels_or_types')))) AS "city", 
+      anyIfOrNull(CAST(coalesce(e.state__cg0, e.state__cg1), if(replaceRegexpOne(replaceRegexpOne(replaceRegexpAll(toTypeName(e.state__cg0), 'Nullable\\(|LowCardinality\\(|\\)', ''), '^U?Int\\d+$', 'Int'), '^(String|FixedString\\(\\d+)$', 'String') = replaceRegexpOne(replaceRegexpOne(replaceRegexpAll(toTypeName(e.state__cg1), 'Nullable\\(|LowCardinality\\(|\\)', ''), '^U?Int\\d+$', 'Int'), '^(String|FixedString\\(\\d+)$', 'String') AND toTypeName(coalesce(e.state__cg0, e.state__cg1)) NOT LIKE 'Variant(%', toTypeName(coalesce(e.state__cg0, e.state__cg1)), 'ClickGraph_property_has_different_types_on_different_labels_or_types')), NOT isNull(CAST(coalesce(e.state__cg0, e.state__cg1), if(replaceRegexpOne(replaceRegexpOne(replaceRegexpAll(toTypeName(e.state__cg0), 'Nullable\\(|LowCardinality\\(|\\)', ''), '^U?Int\\d+$', 'Int'), '^(String|FixedString\\(\\d+)$', 'String') = replaceRegexpOne(replaceRegexpOne(replaceRegexpAll(toTypeName(e.state__cg1), 'Nullable\\(|LowCardinality\\(|\\)', ''), '^U?Int\\d+$', 'Int'), '^(String|FixedString\\(\\d+)$', 'String') AND toTypeName(coalesce(e.state__cg0, e.state__cg1)) NOT LIKE 'Variant(%', toTypeName(coalesce(e.state__cg0, e.state__cg1)), 'ClickGraph_property_has_different_types_on_different_labels_or_types')))) AS "state"
+FROM __cg_nodes_Airport__cg_rows AS e
+WHERE NOT isNull(e.code)
+GROUP BY e.code
+), 
+vlp_v1_path AS (
+    SELECT 
+        start_node.code as start_id,
+        end_node.code as end_id,
         1 as hop_count,
-        [tuple(t0.flight_id, t0.flight_number)] as path_edges,
-        [t0.Origin, t0.Dest] as path_nodes,
-        ['FLIGHT'] as path_relationships
-    FROM test_integration.flights AS t0
-    WHERE t0.Origin = 'LAX' AND 1 <= 2
+        CAST([] AS Array(String)) as path_relationships,
+        [start_node.code, end_node.code] as path_nodes,
+        [tuple(rel.flight_id, rel.flight_number)] as path_edges
+    FROM __cg_nodes_Airport AS start_node
+    JOIN test_integration.flights AS rel ON start_node.code = rel.Origin
+    JOIN __cg_nodes_Airport AS end_node ON rel.Dest = end_node.code
+    WHERE (start_node.code = 'LAX')
     UNION ALL
     SELECT
-        vp.start_id as start_id,
-        next.Dest as end_id,
-        vp.hop_count + 1,
-        arrayConcat(vp.path_edges, [tuple(next.flight_id, next.flight_number)]),
-        arrayConcat(vp.path_nodes, [next.Dest]),
-        arrayConcat(vp.path_relationships, ['FLIGHT']) as path_relationships
-    FROM vlp_a_b vp
-    JOIN test_integration.flights next ON next.Origin = vp.end_id
-    WHERE vp.hop_count < 2 AND NOT has(vp.path_edges, tuple(next.flight_id, next.flight_number))
+        vp.start_id,
+        end_node.code as end_id,
+        vp.hop_count + 1 as hop_count,
+        CAST([] AS Array(String)) as path_relationships,
+        arrayConcat(vp.path_nodes, [end_node.code]) as path_nodes,
+        arrayConcat(vp.path_edges, [tuple(rel.flight_id, rel.flight_number)]) as path_edges
+    FROM vlp_v1_path vp
+    JOIN test_integration.flights AS rel ON vp.end_id = rel.Origin
+    JOIN __cg_nodes_Airport AS end_node ON rel.Dest = end_node.code
+    WHERE vp.hop_count < 2
+      AND NOT has(vp.path_edges, tuple(rel.flight_id, rel.flight_number))
 ), 
-with_a_b_hops_cte_0 AS (SELECT 
-      start_city AS "p1_a_city", 
-      end_city AS "p1_b_city", 
-      hop_count AS "hops"
-FROM vlp_a_b AS t
-WHERE hops = 2
+with_w4 AS (
+SELECT 
+      v0.code AS "v4__code", 
+      v0.city AS "p2_v4_city", 
+      v2.code AS "v5__code", 
+      v2.city AS "p2_v5_city", 
+      v1.hop_count AS "v6"
+FROM vlp_v1_path AS v1
+JOIN __cg_nodes_Airport AS v0 ON v1.start_id = v0.code
+JOIN __cg_nodes_Airport AS v2 ON v1.end_id = v2.code
+WHERE (v0.code = 'LAX' AND v1.hop_count = 2)
 )
 SELECT 
-      a_b_hops.p1_a_city AS "a.city", 
-      a_b_hops.p1_b_city AS "b.city", 
-      a_b_hops.hops AS "hops"
-FROM with_a_b_hops_cte_0 AS a_b_hops
-ORDER BY a_b_hops.p1_b_city ASC
+      w4.p2_v4_city AS "a.city", 
+      w4.p2_v5_city AS "b.city", 
+      w4.v6 AS "hops"
+FROM with_w4 AS w4
+ORDER BY w4.p2_v5_city ASC
 LIMIT 5
+-- column a.city: Value [("a.city", "a.city")]
+-- column b.city: Value [("b.city", "b.city")]
+-- column hops: Value [("hops", "hops")]

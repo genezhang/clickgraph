@@ -1,13 +1,25 @@
-WITH with_y_cte_0 AS (SELECT 
-      x AS "y"
-FROM system.one
-ARRAY JOIN [1, 2, 3] AS x
+WITH with_w1 AS (
+SELECT 
+      __cg_element AS "v0", 
+      __cg_position AS "__o0"
+FROM system.one AS __cg_one
+ARRAY JOIN [1, 2, 3] AS __cg_element, arrayEnumerate([1, 2, 3]) AS __cg_position
 ), 
-with_z_cte_1 AS (SELECT 
-      y.y AS "z"
-FROM with_y_cte_0 AS y
-WHERE y.y > 0
+with_w2 AS (
+SELECT 
+      w1.v0 AS "v1", 
+      w1.__o0 AS "__o0"
+FROM with_w1 AS w1
+), 
+with_w3 AS (
+SELECT 
+      w2.v1 AS "v2", 
+      w2.__o0 AS "__o0"
+FROM with_w2 AS w2
+WHERE w2.v1 > 0
 )
 SELECT 
-      count(z.z) AS "c"
-FROM with_z_cte_1 AS z
+      count(w3.v2) AS "c"
+FROM with_w3 AS w3
+
+-- column c: Value [("c", "c")]

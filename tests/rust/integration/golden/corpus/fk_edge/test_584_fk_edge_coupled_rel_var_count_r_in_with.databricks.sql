@@ -1,11 +1,18 @@
-WITH with_o_rc_cte_0 AS (SELECT 
-      o.order_id AS `p1_o_order_id`, 
-      count(o.order_id) AS `rc`
-FROM test_integration.orders_fk AS o
-GROUP BY o.order_id
+WITH with_w1 AS (
+SELECT 
+      v0.order_id AS `v3__order_id`, 
+      v0.order_id AS `p2_v3_order_id`, 
+      count(v1.order_id) AS `v4`
+FROM test_integration.orders_fk AS v0
+JOIN test_integration.orders_fk AS v1 ON v1.order_id = v0.order_id
+JOIN test_integration.customers_fk AS v2 ON v1.customer_id = v2.customer_id
+GROUP BY v0.order_id, v0.order_id
 )
 SELECT 
-      o_rc.p1_o_order_id AS `o.order_id`, 
-      o_rc.rc AS `rc`
-FROM with_o_rc_cte_0 AS o_rc
-ORDER BY o_rc.p1_o_order_id ASC NULLS LAST
+      w1.p2_v3_order_id AS `o.order_id`, 
+      w1.v4 AS `rc`
+FROM with_w1 AS w1
+ORDER BY w1.p2_v3_order_id ASC NULLS LAST
+
+-- column o.order_id: Value [("o.order_id", "o.order_id")]
+-- column rc: Value [("rc", "rc")]

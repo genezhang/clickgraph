@@ -1,28 +1,43 @@
-WITH __denorm_scan_a AS (
+WITH __cg_nodes_Airport__cg_rows AS (
 SELECT 
-      "code" AS "code",
-      min("city") AS "city",
-      min("state") AS "state"
-FROM (
-SELECT 
-      a.origin_city AS `city`, 
-      a.origin_code AS `code`, 
-      a.origin_state AS `state`
-FROM db_denormalized.flights_denorm AS a
-UNION DISTINCT 
-SELECT 
-      a.dest_city AS `city`, 
-      a.dest_code AS `code`, 
-      a.dest_state AS `state`
-FROM db_denormalized.flights_denorm AS a
+      e.origin_code AS `code`, 
+      e.origin_city AS `city__cg0`, 
+      NULL AS `city__cg1`, 
+      e.origin_state AS `state__cg0`, 
+      NULL AS `state__cg1`
+FROM db_denormalized.flights_denorm AS e
 
-)
-GROUP BY "code"
-
+UNION ALL
+SELECT 
+      e.dest_code AS `code`, 
+      NULL AS `city__cg0`, 
+      e.dest_city AS `city__cg1`, 
+      NULL AS `state__cg0`, 
+      e.dest_state AS `state__cg1`
+FROM db_denormalized.flights_denorm AS e
+), 
+__cg_nodes_Airport AS (
+SELECT 
+      e.code AS `code`, 
+      any_value(CASE WHEN regexp_replace(regexp_replace(typeof(e.city__cg0), '^(tinyint|smallint|int|bigint)$', 'int'), '^((var)?char\\(\\d+\\)|string( collate .*)?)$', 'string') = regexp_replace(regexp_replace(typeof(e.city__cg1), '^(tinyint|smallint|int|bigint)$', 'int'), '^((var)?char\\(\\d+\\)|string( collate .*)?)$', 'string') THEN coalesce(e.city__cg0, e.city__cg1) ELSE raise_error('ClickGraph: a property has different types on different labels or types') END, true) AS `city`, 
+      any_value(CASE WHEN regexp_replace(regexp_replace(typeof(e.state__cg0), '^(tinyint|smallint|int|bigint)$', 'int'), '^((var)?char\\(\\d+\\)|string( collate .*)?)$', 'string') = regexp_replace(regexp_replace(typeof(e.state__cg1), '^(tinyint|smallint|int|bigint)$', 'int'), '^((var)?char\\(\\d+\\)|string( collate .*)?)$', 'string') THEN coalesce(e.state__cg0, e.state__cg1) ELSE raise_error('ClickGraph: a property has different types on different labels or types') END, true) AS `state`
+FROM __cg_nodes_Airport__cg_rows AS e
+WHERE NOT isnull(e.code)
+GROUP BY e.code
+), 
+optional_o3 AS (
+SELECT 
+      v1.origin_code AS `v0__code`, 
+      v1.dest_code AS `v2__code`
+FROM db_denormalized.flights_denorm AS v1
+WHERE v1.dest_code IS NOT NULL
 )
 SELECT 
-      a.code AS `a.code`, 
-      count(t0.dest_code) AS `cnt`
-FROM __denorm_scan_a AS a
-LEFT JOIN db_denormalized.flights_denorm AS t0 ON a.code = t0.origin_code
-GROUP BY a.code
+      v0.code AS `a.code`, 
+      count(o3.v2__code) AS `cnt`
+FROM __cg_nodes_Airport AS v0
+LEFT JOIN optional_o3 AS o3 ON v0.code = o3.v0__code
+GROUP BY v0.code
+
+-- column a.code: Value [("a.code", "a.code")]
+-- column cnt: Value [("cnt", "cnt")]

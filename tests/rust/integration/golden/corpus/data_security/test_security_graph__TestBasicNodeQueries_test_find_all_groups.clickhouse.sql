@@ -1,5 +1,8 @@
 SELECT 
-      g.name AS "g.name", 
-      g.description AS "g.description"
-FROM data_security.ds_groups AS g
-ORDER BY g.name ASC
+      v0.name AS "g.name", 
+      v0.description AS "g.description"
+FROM data_security.ds_groups AS v0
+ORDER BY v0.name ASC
+
+-- column g.name: Value [("g.name", "g.name")]
+-- column g.description: Value [("g.description", "g.description")]

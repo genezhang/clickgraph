@@ -1,7 +1,7 @@
 SELECT 
-      r1.domain_name AS "a.domain_name", 
-      r2.query AS "c.domain_name"
-FROM zeek.dns_log AS r1
-INNER JOIN zeek.dns_log AS r2 ON r2."id.orig_h" = r1.query
-WHERE r2.uid <> r1.uid
+      NULL AS "a.domain_name", 
+      NULL AS "c.domain_name"
+WHERE false
 LIMIT 5
+-- column a.domain_name: Value [("a.domain_name", "a.domain_name")]
+-- column c.domain_name: Value [("c.domain_name", "c.domain_name")]

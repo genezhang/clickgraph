@@ -1,4 +1,6 @@
 SELECT 
-      toUInt8(u.age_str) AS `u.age_int`
-FROM test_integration.users_expressions_test AS u
-WHERE u.user_id = 1
+      toUInt8(v0.age_str) AS `u.age_int`
+FROM test_integration.users_expressions_test AS v0
+WHERE v0.user_id = 1
+
+-- column u.age_int: Value [("u.age_int", "u.age_int")]

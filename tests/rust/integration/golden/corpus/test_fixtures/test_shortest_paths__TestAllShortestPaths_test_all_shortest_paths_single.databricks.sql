@@ -1,41 +1,32 @@
-WITH RECURSIVE vlp_a_b_inner AS (
-    SELECT 
-        start_node.user_id as start_id,
-        end_node.user_id as end_id,
-        1 as hop_count,
-        array('TEST_FOLLOWS') as path_relationships,
-        array(start_node.user_id, end_node.user_id) as path_nodes,
-        start_node.name as start_name,
-        end_node.name as end_name
-    FROM test_integration.users AS start_node
-    JOIN test_integration.follows AS rel ON start_node.user_id = rel.follower_id
-    JOIN test_integration.users AS end_node ON rel.followed_id = end_node.user_id
-    WHERE start_node.name = 'Charlie'
+WITH RECURSIVE vlp_v1_bfs AS (
+    SELECT s.start_id AS start_id, s.start_id AS node, CAST(0 AS INT) AS depth, CAST(1 AS INT) AS new
+    FROM (SELECT DISTINCT start_node.user_id AS start_id FROM test_integration.users AS start_node WHERE start_node.user_id IS NOT NULL AND (start_node.name = 'Charlie')) AS s
     UNION ALL
-    SELECT
-        vp.start_id,
-        end_node.user_id as end_id,
-        vp.hop_count + 1 as hop_count,
-        concat(vp.path_relationships, array('TEST_FOLLOWS')) as path_relationships,
-        concat(vp.path_nodes, array(end_node.user_id)) as path_nodes,
-        vp.start_name as start_name,
-        end_node.name as end_name
-    FROM vlp_a_b_inner vp
-    JOIN test_integration.follows AS rel ON vp.end_id = rel.follower_id
-    JOIN test_integration.users AS end_node ON rel.followed_id = end_node.user_id
-    WHERE vp.hop_count < 5
-      AND NOT array_contains(vp.path_nodes, end_node.user_id)
-),
-vlp_a_b_to_target AS (
-    SELECT * FROM vlp_a_b_inner WHERE end_name = 'Eve'
-),
-vlp_a_b AS (
-    SELECT * FROM (
-        SELECT *, MIN(hop_count) OVER (PARTITION BY start_id, end_id) AS min_hops_for_pair
-        FROM vlp_a_b_to_target
-    ) WHERE hop_count = min_hops_for_pair
+    (SELECT f.start_id AS start_id, end_node.user_id AS node, CAST(f.depth + 1 AS INT) AS depth,
+      CAST(1 AS INT) AS new
+    FROM vlp_v1_bfs AS f
+    JOIN test_integration.follows AS rel ON rel.follower_id = f.node
+    JOIN test_integration.users AS end_node ON end_node.user_id = rel.followed_id
+    WHERE f.new = 1
+      AND (f.start_id, end_node.user_id) NOT IN (SELECT start_id, node FROM vlp_v1_bfs)
+    UNION ALL
+    SELECT start_id, node, depth, CAST(0 AS INT) AS new FROM (
+      SELECT DISTINCT start_id, node, depth FROM vlp_v1_bfs
+      WHERE start_id IN (SELECT start_id FROM vlp_v1_bfs WHERE new = 1)
+    ) AS reached)
+), 
+vlp_v1_path AS (
+    SELECT start_id, node AS end_id, depth AS hop_count FROM vlp_v1_bfs
+    WHERE new = 1 AND depth >= 1
+      AND node IN (SELECT end_node.user_id FROM test_integration.users AS end_node WHERE (end_node.name = 'Eve'))
 )
 SELECT 
-      t.start_name AS `a.name`, 
-      t.end_name AS `b.name`
-FROM vlp_a_b AS t
+      v0.name AS `a.name`, 
+      v2.name AS `b.name`
+FROM vlp_v1_path AS v1
+JOIN test_integration.users AS v0 ON v1.start_id = v0.user_id
+JOIN test_integration.users AS v2 ON v1.end_id = v2.user_id
+WHERE (v0.name = 'Charlie' AND v2.name = 'Eve')
+
+-- column a.name: Value [("a.name", "a.name")]
+-- column b.name: Value [("b.name", "b.name")]

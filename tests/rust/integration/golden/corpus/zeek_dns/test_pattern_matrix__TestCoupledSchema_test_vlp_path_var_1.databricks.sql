@@ -1,5 +1,7 @@
 SELECT 
-      1 AS `length(p)`, 
-      array(t0.`id.orig_h`, t0.query) AS `nodes(p)`
-FROM zeek.dns_log AS t0
+      NULL AS `length(p)`, 
+      NULL AS `nodes(p)`
+WHERE false
 LIMIT 5
+-- column length(p): Value [("length(p)", "length(p)")]
+-- column nodes(p): Graph(List(Node)) [("nodes(p)", "nodes(p)")]

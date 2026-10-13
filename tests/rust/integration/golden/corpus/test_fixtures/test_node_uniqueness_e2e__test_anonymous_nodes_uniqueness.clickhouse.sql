@@ -1,7 +1,11 @@
 SELECT DISTINCT 
-      t0.followed_id AS "fof.user_id"
-FROM test_integration.users AS user
-INNER JOIN test_integration.follows AS t1 ON t1.follower_id = user.user_id
-INNER JOIN test_integration.follows AS t0 ON t0.follower_id = t1.followed_id
-WHERE (user.user_id = 1 AND (t0.follower_id <> t1.follower_id OR t0.followed_id <> t1.followed_id))
-ORDER BY t0.followed_id ASC
+      v4.user_id AS "fof.user_id"
+FROM test_integration.users AS v0
+JOIN test_integration.follows AS v1 ON v1.follower_id = v0.user_id
+JOIN test_integration.users AS v2 ON v1.followed_id = v2.user_id
+JOIN test_integration.follows AS v3 ON v3.follower_id = v2.user_id
+JOIN test_integration.users AS v4 ON v3.followed_id = v4.user_id
+WHERE ((v1.follower_id <> v3.follower_id OR v1.followed_id <> v3.followed_id) AND v0.user_id = 1)
+ORDER BY v4.user_id ASC
+
+-- column fof.user_id: Value [("fof.user_id", "fof.user_id")]

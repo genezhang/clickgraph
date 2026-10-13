@@ -1,11 +1,17 @@
-WITH with_c_cte_0 AS (SELECT 
-      t0.Dest AS `p1_c_code`
-FROM test_integration.flights AS t0
+WITH with_w1 AS (
+SELECT 
+      v1.Dest AS `v3__code`, 
+      v1.Dest AS `p2_v3_code`
+FROM test_integration.flights AS v1
+WHERE (v1.Origin IS NOT NULL AND v1.Dest IS NOT NULL)
 )
 SELECT 
-      c.p1_c_code AS `c.code`, 
-      t1.Dest AS `a.code`
-FROM test_integration.flights AS t2
-INNER JOIN with_c_cte_0 AS c ON t2.Origin = c.p1_c_code
-INNER JOIN test_integration.flights AS t1 ON t1.Origin = t2.Dest
-WHERE (t1.flight_id <> t2.flight_id OR t1.flight_number <> t2.flight_number)
+      w1.p2_v3_code AS `c.code`, 
+      v6.Dest AS `a.code`
+FROM with_w1 AS w1
+JOIN test_integration.flights AS v4 ON v4.Origin = w1.v3__code
+JOIN test_integration.flights AS v6 ON v6.Origin = v4.Dest
+WHERE (v4.Dest IS NOT NULL AND v6.Dest IS NOT NULL AND (v4.flight_id <> v6.flight_id OR v4.flight_number <> v6.flight_number))
+
+-- column c.code: Value [("c.code", "c.code")]
+-- column a.code: Value [("a.code", "a.code")]

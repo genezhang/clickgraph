@@ -1,13 +1,22 @@
-WITH with_c_cte_0 AS (SELECT 
-      t0.followed_id AS "p1_c_user_id"
-FROM test_integration.users_test AS z
-INNER JOIN test_integration.user_follows_test AS t0 ON t0.follower_id = z.user_id
+WITH with_w1 AS (
+SELECT 
+      v2.user_id AS "v3__user_id", 
+      v2.user_id AS "p2_v3_user_id"
+FROM test_integration.users_test AS v0
+JOIN test_integration.user_follows_test AS v1 ON v1.follower_id = v0.user_id
+JOIN test_integration.users_test AS v2 ON v1.followed_id = v2.user_id
 )
 SELECT 
-      c.p1_c_user_id AS "c.user_id", 
-      t1.followed_id AS "n1.user_id", 
-      t2.follower_id AS "n2.user_id"
-FROM with_c_cte_0 AS c
-INNER JOIN test_integration.user_follows_test AS t1 ON t1.follower_id = c.p1_c_user_id
-INNER JOIN test_integration.user_follows_test AS t2 ON t2.followed_id = t1.followed_id
-WHERE t2.follow_id <> t1.follow_id
+      w1.p2_v3_user_id AS "c.user_id", 
+      v5.user_id AS "n1.user_id", 
+      v7.user_id AS "n2.user_id"
+FROM with_w1 AS w1
+JOIN test_integration.user_follows_test AS v4 ON v4.follower_id = w1.v3__user_id
+JOIN test_integration.users_test AS v5 ON v4.followed_id = v5.user_id
+JOIN test_integration.user_follows_test AS v6 ON v6.followed_id = v5.user_id
+JOIN test_integration.users_test AS v7 ON v6.follower_id = v7.user_id
+WHERE v4.follow_id <> v6.follow_id
+
+-- column c.user_id: Value [("c.user_id", "c.user_id")]
+-- column n1.user_id: Value [("n1.user_id", "n1.user_id")]
+-- column n2.user_id: Value [("n2.user_id", "n2.user_id")]

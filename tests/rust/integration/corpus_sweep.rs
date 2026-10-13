@@ -1,57 +1,41 @@
 //! Corpus translation-snapshot sweep — Phase 0 slice P0.6
-//! (`docs/design/REFACTORING_SAFETY_PLAN.md` §3.2).
+//! (`docs/design/REFACTORING_SAFETY_PLAN.md` §3.2), on the bound plan since
+//! P-4c S14c0.
 //!
-//! A mass "translate everything, lock the bytes" regression net over a
-//! ~1,070-query corpus harvested from the Python integration test suite
-//! (`scripts/dev/harvest_corpus.py` -> `tests/corpus/queries.jsonl` +
-//! `tests/corpus/schema_map.json`). Unlike `sql_golden_tests.rs` (a curated,
-//! hand-picked ~370-case net across 5 schema variations), this sweep proves
-//! no-op-ness over the FULL surface of query shapes the test suite actually
-//! exercises, at the cost of the byte-locks being less individually
-//! documented.
+//! A "translate everything, lock the bytes" regression net over the corpus
+//! (`tests/corpus/queries.jsonl` + `schema_map.json`: the queries harvested
+//! from the Python integration suite by `scripts/dev/harvest_corpus.py`, and
+//! the official LDBC queries and curated client queries added by
+//! `scripts/dev/corpus_add_ldbc.py`; 1548 entries). It is the net that keeps
+//! the legacy pipeline's deletion (S14c…) from changing what the bound plan
+//! emits; until S14c0 it locked the legacy pipeline's SQL (it translated
+//! without the query text, which took the legacy route).
 //!
-//! For every corpus entry, parse -> plan -> render is run ONCE PER DIALECT
-//! (ClickHouse + Databricks), reusing the exact production render path
-//! (`sql_golden_tests::render`'s sibling here, `try_render`) and the same
-//! `normalize()` counter-anonymization. Unlike `sql_golden_tests.rs`, a
-//! translation FAILURE is not a test bug — it is locked too (`.err` golden
-//! with the normalized error string), because an error<->success transition
-//! is exactly the kind of regression this net exists to catch (and because
-//! the corpus, being harvested rather than curated, inevitably contains
-//! queries that hit known-unimplemented paths — see the module docs in
-//! `sql_golden_tests.rs` for examples of that class of gap). A genuine Rust
-//! panic (`unimplemented!`/`panic!` deep in the planner/renderer) is also
-//! caught (`catch_unwind`) and locked as a `PANIC: ...` error golden rather
-//! than crashing the whole sweep — one bad corpus entry must not blind the
-//! net to every other entry.
+//! Each entry is translated through the production read seam
+//! (`translate_read` with the query text, as every entry point) on each
+//! dialect (ClickHouse, Databricks), with the default options and again with
+//! the server's (Neo4j-compat mode, Bolt's id mapper). Locked, per (schema,
+//! name), in `golden/corpus/{schema}/{name}.{dialect}.{sql,err}`:
+//! - the SQL, then the result's shape (each RETURN item's kind and columns,
+//!   which the HTTP and Bolt rows are read by) as `-- column` lines; or the
+//!   error (an error<->success transition is a regression too);
+//! - the server options' result, as `{dialect}_compat`, where it differs.
 //!
-//! Golden layout: `golden/corpus/{schema}/{name}.{dialect}.{sql,err}` — one
-//! file per (schema, name, dialect), matching `sql_golden_tests.rs`'s
-//! layout convention (chosen over the spec's escape-hatch concatenated
-//! layout since 1,072 queries x 2 dialects = ~2,140 files, well under the
-//! ~6,000 threshold where that trade-off would flip).
+//! `normalize()` anonymizes process-global counters (the bound plan's SQL has
+//! none it changes). A panic fails the sweep. A golden of no corpus entry
+//! fails it too (`UPDATE_GOLDEN=1` deletes it). The census
+//! (`binder_corpus.rs`) asserts how many entries lower.
 //!
 //! Regenerate with:
 //! ```text
 //! UPDATE_GOLDEN=1 cargo test -p clickgraph --test integration corpus_sweep -- --nocapture
 //! ```
 //!
-//! NONDETERMINISM: `tests/corpus/nondeterministic.txt` lists entries excluded
-//! from the byte-lock comparison because their render is not byte-stable.
-//! The 19 historical HashMap-order entries (15 column-order flaps for #480,
-//! 4 coupled-edge middle-node WRONG-COLUMN flaps for #481) were fixed by
-//! sorting every such iteration on the cypher property key and by
-//! owning-edge-first role resolution in `PlanCtx::get_node_strategy`; 14 of
-//! them are now byte-locked. The 5 that remain listed are excluded for a
-//! DIFFERENT, harness-level reason: their CTE name embeds the process-global
-//! anonymous-alias counter (`pattern_union_t<n>`), which `normalize()`'s
-//! `\bt\d+\b` regex cannot remap, so the bytes shift with test order inside
-//! the shared cargo-test process (fully deterministic per fresh process).
-//! See the file's header for the full history and the triage rule for any
-//! new flap (a property/column-ORDER or endpoint-binding diff is a
-//! #480/#481 regression, not an "add to the list" event). Any listed entry
-//! is still RENDERED here (so a panic regression would still be caught) but
-//! excluded from the byte-lock comparison/regeneration.
+//! NONDETERMINISM: `tests/corpus/nondeterministic.txt` lists entries
+//! excluded from the byte-lock comparison because their translation is not
+//! byte-stable (rendered, not compared). It is empty: the bound plan's SQL
+//! is stable across fresh processes and the whole test binary (S14c0). A new
+//! flap is a bug to fix (see the file's header), not an entry to add.
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -59,6 +43,7 @@ use std::sync::Arc;
 use clickgraph::{
     graph_catalog::{config::GraphSchemaConfig, graph_schema::GraphSchema},
     open_cypher_parser::{parse_cypher_statement, strip_comments},
+    server::bolt_protocol::id_mapper::IdMapper,
     server::query_context::{set_current_schema, with_query_context, QueryContext},
     sql_generator::SqlDialect,
     translate::{translate_read, ReadOptions, TranslateError},
@@ -103,13 +88,6 @@ pub(crate) fn load_schema_map() -> std::collections::HashMap<String, SchemaMapEn
 /// per line, blank lines and `#`-comments ignored.
 fn load_nondeterministic_set() -> HashSet<(String, String)> {
     load_entry_list("nondeterministic.txt")
-}
-
-/// Entries of the bound plan's census only (`census_only.txt`, written by
-/// `scripts/dev/corpus_add_ldbc.py`): added after the P-4c cutover, so this
-/// net of the legacy pipeline's output does not lock them.
-fn load_census_only_set() -> HashSet<(String, String)> {
-    load_entry_list("census_only.txt")
 }
 
 /// A `schema/name<TAB>…` list of corpus entries in the corpus directory.
@@ -186,6 +164,7 @@ async fn try_render(
     schema: &GraphSchema,
     cypher: &str,
     dialect: SqlDialect,
+    compat: bool,
 ) -> Result<String, String> {
     let schema = schema.clone();
     let cypher = cypher.to_string();
@@ -200,16 +179,34 @@ async fn try_render(
                 let cleaned = strip_comments(&cypher);
                 let (_rest, statement) =
                     parse_cypher_statement(&cleaned).map_err(|e| format!("parse error: {e}"))?;
-                // The production read seam (every entry point translates here).
+                // The production read seam (every entry point translates
+                // here, with the query text: the bound plan).
                 translate_read(
                     statement,
                     &schema,
                     ReadOptions {
                         max_cte_depth: 100,
+                        cypher: Some(cleaned.to_string()),
+                        // The server's options (Neo4j-compat, Bolt's ids).
+                        neo4j_compat: Some(compat),
+                        id_mapper: compat.then(IdMapper::new),
                         ..Default::default()
                     },
                 )
-                .map(|t| t.sql)
+                .map(|t| {
+                    // The result's shape (how the rows are read: HTTP,
+                    // Bolt), locked with its SQL as comment lines.
+                    let shape: String = match &t.shape {
+                        Some(columns) => columns
+                            .iter()
+                            .map(|c| {
+                                format!("\n-- column {}: {:?} {:?}", c.name, c.kind, c.columns)
+                            })
+                            .collect(),
+                        None => "\n-- no shape".to_string(),
+                    };
+                    format!("{}{shape}", t.sql)
+                })
                 .map_err(|e| match e {
                     TranslateError::Planning(e) => format!("plan error: {e}"),
                     TranslateError::Render(e) => format!("render error: {e}"),
@@ -234,6 +231,18 @@ fn golden_path(schema: &str, name: &str, dialect: &str, ext: &str) -> String {
     )
 }
 
+/// Every file under `dir`, recursively.
+fn collect_files(dir: &std::path::Path, out: &mut Vec<String>) {
+    for entry in std::fs::read_dir(dir).unwrap_or_else(|e| panic!("read {dir:?}: {e}")) {
+        let path = entry.expect("dir entry").path();
+        if path.is_dir() {
+            collect_files(&path, out);
+        } else {
+            out.push(path.to_string_lossy().into_owned());
+        }
+    }
+}
+
 const DIALECTS: &[(SqlDialect, &str)] = &[
     (SqlDialect::ClickHouse, "clickhouse"),
     (SqlDialect::Databricks, "databricks"),
@@ -245,7 +254,6 @@ async fn corpus_sweep() {
     let entries = load_entries();
     let schema_map = load_schema_map();
     let nondeterministic = load_nondeterministic_set();
-    let census_only = load_census_only_set();
 
     // Cache loaded GraphSchema per schema key — many entries share a schema.
     let mut schema_cache: std::collections::HashMap<String, GraphSchema> =
@@ -255,11 +263,10 @@ async fn corpus_sweep() {
     let mut locked_ok = 0usize;
     let mut locked_err = 0usize;
     let mut skipped_nondeterministic = 0usize;
+    // The golden files the entries have.
+    let mut expected: HashSet<String> = HashSet::new();
 
     for entry in &entries {
-        if census_only.contains(&(entry.schema.clone(), entry.name.clone())) {
-            continue;
-        }
         let schema = schema_cache.entry(entry.schema.clone()).or_insert_with(|| {
             let map_entry = schema_map.get(&entry.schema).unwrap_or_else(|| {
                 panic!(
@@ -275,7 +282,10 @@ async fn corpus_sweep() {
             nondeterministic.contains(&(entry.schema.clone(), entry.name.clone()));
 
         for (dialect, dname) in DIALECTS {
-            let result = try_render(schema, &entry.cypher, *dialect).await;
+            let result = try_render(schema, &entry.cypher, *dialect, false).await;
+            // In Neo4j-compat mode with Bolt's ids (the server's options):
+            // locked where it differs.
+            let compat = try_render(schema, &entry.cypher, *dialect, true).await;
 
             if is_nondeterministic {
                 // Still exercised (a panic here would still fail the test
@@ -284,47 +294,85 @@ async fn corpus_sweep() {
                 skipped_nondeterministic += 1;
                 continue;
             }
-
-            let (ext, content) = match &result {
-                Ok(sql) => ("sql", normalize(sql)),
-                Err(e) => ("err", normalize(e)),
-            };
-            let other_ext = if ext == "sql" { "err" } else { "sql" };
-            let path = golden_path(&entry.schema, &entry.name, dname, ext);
-            let other_path = golden_path(&entry.schema, &entry.name, dname, other_ext);
-
-            if update {
-                if let Some(dir) = std::path::Path::new(&path).parent() {
-                    std::fs::create_dir_all(dir).expect("create golden dir");
-                }
-                std::fs::remove_file(&other_path).ok();
-                std::fs::write(&path, &content).expect("write golden");
-                if ext == "sql" {
-                    locked_ok += 1;
-                } else {
-                    locked_err += 1;
-                }
-            } else {
-                match std::fs::read_to_string(&path) {
-                    Ok(expected) if normalize_golden_text(&expected) == content => {}
-                    Ok(expected) => mismatches.push(format!(
-                        "--- {}/{}__{dname} MISMATCH ---\nEXPECTED:\n{expected}\nACTUAL:\n{content}\n",
-                        entry.schema, entry.name
-                    )),
-                    Err(_) => mismatches.push(format!(
-                        "--- {}/{}__{dname} MISSING golden ({ext}) — possibly an Ok<->Err transition \
-                        (run UPDATE_GOLDEN=1) ---",
-                        entry.schema, entry.name
-                    )),
-                }
-                if std::path::Path::new(&other_path).exists() {
+            let compat_name = format!("{dname}_compat");
+            let compat_differs = compat != result;
+            for (dname, result, locked) in [
+                (*dname, &result, true),
+                (compat_name.as_str(), &compat, compat_differs),
+            ] {
+                let content = |r: &Result<String, String>| match r {
+                    Ok(sql) => ("sql", normalize(sql)),
+                    Err(e) => ("err", normalize(e)),
+                };
+                let (ext, content) = content(result);
+                if content.starts_with("PANIC") {
                     mismatches.push(format!(
-                        "--- {}/{}__{dname} STALE {other_ext} golden present alongside the current {ext} \
-                        result — an Ok<->Err transition wasn't regenerated (run UPDATE_GOLDEN=1) ---",
+                        "--- {}/{}__{dname} PANIC: {content}",
                         entry.schema, entry.name
                     ));
                 }
+                let other_ext = if ext == "sql" { "err" } else { "sql" };
+                let path = golden_path(&entry.schema, &entry.name, dname, ext);
+                let other_path = golden_path(&entry.schema, &entry.name, dname, other_ext);
+                expected.insert(path.clone());
+                if !locked {
+                    // Equal to the default options' result: no golden.
+                    expected.remove(&path);
+                    continue;
+                }
+
+                if update {
+                    if let Some(dir) = std::path::Path::new(&path).parent() {
+                        std::fs::create_dir_all(dir).expect("create golden dir");
+                    }
+                    std::fs::remove_file(&other_path).ok();
+                    std::fs::write(&path, &content).expect("write golden");
+                    if ext == "sql" {
+                        locked_ok += 1;
+                    } else {
+                        locked_err += 1;
+                    }
+                } else {
+                    match std::fs::read_to_string(&path) {
+                        Ok(expected) if normalize_golden_text(&expected) == content => {}
+                        Ok(expected) => mismatches.push(format!(
+                            "--- {}/{}__{dname} MISMATCH ---\nEXPECTED:\n{expected}\nACTUAL:\n{content}\n",
+                            entry.schema, entry.name
+                        )),
+                        Err(_) => mismatches.push(format!(
+                            "--- {}/{}__{dname} MISSING golden ({ext}) — possibly an Ok<->Err transition \
+                            (run UPDATE_GOLDEN=1) ---",
+                            entry.schema, entry.name
+                        )),
+                    }
+                    if std::path::Path::new(&other_path).exists() {
+                        mismatches.push(format!(
+                            "--- {}/{}__{dname} STALE {other_ext} golden present alongside the current {ext} \
+                            result — an Ok<->Err transition wasn't regenerated (run UPDATE_GOLDEN=1) ---",
+                            entry.schema, entry.name
+                        ));
+                    }
+                }
             }
+        }
+    }
+
+    // Every golden is one of an entry's (a stale one: deleted on update).
+    let mut files = Vec::new();
+    collect_files(
+        std::path::Path::new(&format!(
+            "{}/tests/rust/integration/golden/corpus",
+            env!("CARGO_MANIFEST_DIR")
+        )),
+        &mut files,
+    );
+    for f in files.iter().filter(|f| !expected.contains(*f)) {
+        if update {
+            std::fs::remove_file(f).expect("remove a stale golden");
+        } else {
+            mismatches.push(format!(
+                "--- STALE golden of no corpus entry: {f} (run UPDATE_GOLDEN=1) ---"
+            ));
         }
     }
 

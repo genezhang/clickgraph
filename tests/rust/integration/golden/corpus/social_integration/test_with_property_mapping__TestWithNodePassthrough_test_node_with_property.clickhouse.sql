@@ -1,8 +1,11 @@
-WITH with_u_userName_cte_0 AS (SELECT 
-      u.full_name AS "userName"
-FROM test_integration.users_test AS u
+WITH with_w1 AS (
+SELECT 
+      v0.user_id AS "v1__user_id", 
+      v0.full_name AS "v2"
+FROM test_integration.users_test AS v0
 )
 SELECT 
-      u_userName.userName AS "userName"
-FROM with_u_userName_cte_0 AS u_userName
+      w1.v2 AS "userName"
+FROM with_w1 AS w1
 LIMIT 1
+-- column userName: Value [("userName", "userName")]

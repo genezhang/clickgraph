@@ -1,13 +1,41 @@
+WITH v1_both AS (
 SELECT 
-      u.full_name AS "u.name", 
-      f.full_name AS "f.name"
-FROM db_polymorphic.users AS u
-INNER JOIN db_polymorphic.interactions AS t0 ON t0.from_id = u.user_id AND t0.interaction_type = 'FOLLOWS' AND t0.from_type = 'User' AND t0.to_type = 'User'
-INNER JOIN db_polymorphic.users AS f ON f.user_id = t0.to_id
-UNION ALL 
+      e.from_id AS "from_id", 
+      e.interaction_type AS "interaction_type", 
+      e.interaction_weight AS "interaction_weight", 
+      e.timestamp AS "timestamp", 
+      e.to_id AS "to_id", 
+      e.from_id AS "__cg_start_0", 
+      e.to_id AS "__cg_end_0"
+FROM db_polymorphic.interactions AS e
+WHERE ((((e."interaction_type" = 'FOLLOWS') AND (e."from_type" = 'User')) AND (e."to_type" = 'User')))
+
+UNION ALL
 SELECT 
-      u.full_name AS "u.name", 
-      f.full_name AS "f.name"
-FROM db_polymorphic.users AS f
-INNER JOIN db_polymorphic.interactions AS t0 ON t0.from_id = f.user_id AND t0.interaction_type = 'FOLLOWS' AND t0.from_type = 'User' AND t0.to_type = 'User'
-INNER JOIN db_polymorphic.users AS u ON u.user_id = t0.to_id
+      e.from_id AS "from_id", 
+      e.interaction_type AS "interaction_type", 
+      e.interaction_weight AS "interaction_weight", 
+      e.timestamp AS "timestamp", 
+      e.to_id AS "to_id", 
+      e.to_id AS "__cg_start_0", 
+      e.from_id AS "__cg_end_0"
+FROM db_polymorphic.interactions AS e
+WHERE (((((e."interaction_type" = 'FOLLOWS') AND (e."from_type" = 'User')) AND (e."to_type" = 'User'))) AND e.from_id <> e.to_id)
+), 
+with_w2 AS (
+SELECT 
+      v0.user_id AS "v3__user_id", 
+      v0.full_name AS "p2_v3_name", 
+      v2.user_id AS "v4__user_id", 
+      v2.full_name AS "p2_v4_name"
+FROM db_polymorphic.users AS v0
+JOIN v1_both AS v1 ON v1.__cg_start_0 = v0.user_id
+JOIN db_polymorphic.users AS v2 ON v1.__cg_end_0 = v2.user_id
+)
+SELECT 
+      w2.p2_v3_name AS "u.name", 
+      w2.p2_v4_name AS "f.name"
+FROM with_w2 AS w2
+
+-- column u.name: Value [("u.name", "u.name")]
+-- column f.name: Value [("f.name", "f.name")]

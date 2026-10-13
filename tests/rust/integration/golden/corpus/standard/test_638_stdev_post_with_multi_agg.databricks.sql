@@ -1,12 +1,20 @@
-WITH with_a_fc_cte_0 AS (SELECT 
-      count(t0.followed_id) AS `fc`
-FROM test_integration.users_test AS a
-INNER JOIN test_integration.user_follows_test AS t0 ON t0.follower_id = a.user_id
-GROUP BY a.user_id
+WITH with_w1 AS (
+SELECT 
+      v0.user_id AS `v3__user_id`, 
+      count(v2.user_id) AS `v4`
+FROM test_integration.users_test AS v0
+JOIN test_integration.user_follows_test AS v1 ON v1.follower_id = v0.user_id
+JOIN test_integration.users_test AS v2 ON v1.followed_id = v2.user_id
+GROUP BY v0.user_id
 )
 SELECT 
-      min(a_fc.fc) AS `min(fc)`, 
-      max(a_fc.fc) AS `max(fc)`, 
-      sum(a_fc.fc) AS `sum(fc)`, 
-      stddev_samp(a_fc.fc) AS `stDev(fc)`
-FROM with_a_fc_cte_0 AS a_fc
+      min(w1.v4) AS `min(fc)`, 
+      max(w1.v4) AS `max(fc)`, 
+      coalesce(sum(w1.v4), 0) AS `sum(fc)`, 
+      stddev_samp(w1.v4) AS `stDev(fc)`
+FROM with_w1 AS w1
+
+-- column min(fc): Value [("min(fc)", "min(fc)")]
+-- column max(fc): Value [("max(fc)", "max(fc)")]
+-- column sum(fc): Value [("sum(fc)", "sum(fc)")]
+-- column stDev(fc): Value [("stDev(fc)", "stDev(fc)")]

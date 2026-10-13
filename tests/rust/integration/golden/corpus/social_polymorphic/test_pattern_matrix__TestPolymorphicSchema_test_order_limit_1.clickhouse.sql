@@ -1,6 +1,7 @@
 SELECT 
-      n.email_address AS "n.email"
-FROM brahmand.users_bench AS n
-WHERE n.email_address IS NOT NULL
-ORDER BY n.email_address DESC NULLS FIRST
+      v0.email_address AS "n.email"
+FROM brahmand.users_bench AS v0
+WHERE v0.email_address IS NOT NULL
+ORDER BY v0.email_address DESC NULLS FIRST
 LIMIT 5, 10
+-- column n.email: Value [("n.email", "n.email")]

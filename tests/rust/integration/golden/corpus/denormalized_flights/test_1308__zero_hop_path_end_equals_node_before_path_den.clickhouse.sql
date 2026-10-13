@@ -1,48 +1,68 @@
-WITH RECURSIVE vlp_c_b AS (
-    SELECT
-        node_universe.__node_id as start_id,
-        node_universe.__node_id as end_id,
+WITH RECURSIVE __cg_nodes_Airport__cg_rows AS (
+SELECT 
+      e.Origin AS "code", 
+      e.OriginCityName AS "city__cg0", 
+      NULL AS "city__cg1", 
+      e.OriginState AS "state__cg0", 
+      NULL AS "state__cg1"
+FROM test_integration.flights AS e
+
+UNION ALL
+SELECT 
+      e.Dest AS "code", 
+      NULL AS "city__cg0", 
+      e.DestCityName AS "city__cg1", 
+      NULL AS "state__cg0", 
+      e.DestState AS "state__cg1"
+FROM test_integration.flights AS e
+), 
+__cg_nodes_Airport AS (
+SELECT 
+      e.code AS "code", 
+      anyIfOrNull(CAST(coalesce(e.city__cg0, e.city__cg1), if(replaceRegexpOne(replaceRegexpOne(replaceRegexpAll(toTypeName(e.city__cg0), 'Nullable\\(|LowCardinality\\(|\\)', ''), '^U?Int\\d+$', 'Int'), '^(String|FixedString\\(\\d+)$', 'String') = replaceRegexpOne(replaceRegexpOne(replaceRegexpAll(toTypeName(e.city__cg1), 'Nullable\\(|LowCardinality\\(|\\)', ''), '^U?Int\\d+$', 'Int'), '^(String|FixedString\\(\\d+)$', 'String') AND toTypeName(coalesce(e.city__cg0, e.city__cg1)) NOT LIKE 'Variant(%', toTypeName(coalesce(e.city__cg0, e.city__cg1)), 'ClickGraph_property_has_different_types_on_different_labels_or_types')), NOT isNull(CAST(coalesce(e.city__cg0, e.city__cg1), if(replaceRegexpOne(replaceRegexpOne(replaceRegexpAll(toTypeName(e.city__cg0), 'Nullable\\(|LowCardinality\\(|\\)', ''), '^U?Int\\d+$', 'Int'), '^(String|FixedString\\(\\d+)$', 'String') = replaceRegexpOne(replaceRegexpOne(replaceRegexpAll(toTypeName(e.city__cg1), 'Nullable\\(|LowCardinality\\(|\\)', ''), '^U?Int\\d+$', 'Int'), '^(String|FixedString\\(\\d+)$', 'String') AND toTypeName(coalesce(e.city__cg0, e.city__cg1)) NOT LIKE 'Variant(%', toTypeName(coalesce(e.city__cg0, e.city__cg1)), 'ClickGraph_property_has_different_types_on_different_labels_or_types')))) AS "city", 
+      anyIfOrNull(CAST(coalesce(e.state__cg0, e.state__cg1), if(replaceRegexpOne(replaceRegexpOne(replaceRegexpAll(toTypeName(e.state__cg0), 'Nullable\\(|LowCardinality\\(|\\)', ''), '^U?Int\\d+$', 'Int'), '^(String|FixedString\\(\\d+)$', 'String') = replaceRegexpOne(replaceRegexpOne(replaceRegexpAll(toTypeName(e.state__cg1), 'Nullable\\(|LowCardinality\\(|\\)', ''), '^U?Int\\d+$', 'Int'), '^(String|FixedString\\(\\d+)$', 'String') AND toTypeName(coalesce(e.state__cg0, e.state__cg1)) NOT LIKE 'Variant(%', toTypeName(coalesce(e.state__cg0, e.state__cg1)), 'ClickGraph_property_has_different_types_on_different_labels_or_types')), NOT isNull(CAST(coalesce(e.state__cg0, e.state__cg1), if(replaceRegexpOne(replaceRegexpOne(replaceRegexpAll(toTypeName(e.state__cg0), 'Nullable\\(|LowCardinality\\(|\\)', ''), '^U?Int\\d+$', 'Int'), '^(String|FixedString\\(\\d+)$', 'String') = replaceRegexpOne(replaceRegexpOne(replaceRegexpAll(toTypeName(e.state__cg1), 'Nullable\\(|LowCardinality\\(|\\)', ''), '^U?Int\\d+$', 'Int'), '^(String|FixedString\\(\\d+)$', 'String') AND toTypeName(coalesce(e.state__cg0, e.state__cg1)) NOT LIKE 'Variant(%', toTypeName(coalesce(e.state__cg0, e.state__cg1)), 'ClickGraph_property_has_different_types_on_different_labels_or_types')))) AS "state"
+FROM __cg_nodes_Airport__cg_rows AS e
+WHERE NOT isNull(e.code)
+GROUP BY e.code
+), 
+vlp_v3_path AS (
+    SELECT 
+        start_node.code as start_id,
+        start_node.code as end_id,
         0 as hop_count,
+        CAST([] AS Array(String)) as path_relationships,
+        [start_node.code] as path_nodes,
         (
             SELECT arraySlice([tuple(__seed_edge.flight_id, __seed_edge.flight_number)], 1, 0)
             FROM test_integration.flights AS __seed_edge
             LIMIT 1
-        ) as path_edges,
-        [node_universe.__node_id] as path_nodes,
-        CAST([] AS Array(String)) as path_relationships,
-        node_universe.__prop_0 as start_OriginCityName,
-        node_universe.__prop_1 as start_Origin,
-        node_universe.__prop_2 as start_OriginState,
-        node_universe.__prop_3 as end_DestCityName,
-        node_universe.__prop_4 as end_Dest,
-        node_universe.__prop_5 as end_DestState
-    FROM (
-            SELECT DISTINCT Origin AS __node_id, OriginCityName AS __prop_0, Origin AS __prop_1, OriginState AS __prop_2, OriginCityName AS __prop_3, Origin AS __prop_4, OriginState AS __prop_5
-            FROM test_integration.flights
-            UNION DISTINCT
-            SELECT DISTINCT Dest AS __node_id, DestCityName AS __prop_0, Dest AS __prop_1, DestState AS __prop_2, DestCityName AS __prop_3, Dest AS __prop_4, DestState AS __prop_5
-            FROM test_integration.flights
-        ) AS node_universe
+        ) as path_edges
+    FROM __cg_nodes_Airport AS start_node
+    WHERE (start_node.code IN (SELECT DISTINCT 
+      v2.code AS "id"
+FROM test_integration.flights AS v1
+JOIN __cg_nodes_Airport AS v2 ON v1.Dest = v2.code
+WHERE v1.Origin IS NOT NULL))
     UNION ALL
     SELECT
-        vp.start_id as start_id,
-        next.Dest as end_id,
-        vp.hop_count + 1,
-        arrayConcat(vp.path_edges, [tuple(next.flight_id, next.flight_number)]),
-        arrayConcat(vp.path_nodes, [next.Dest]),
-        [] as path_relationships,
-        vp."start_OriginCityName" as "start_OriginCityName",
-        vp."start_Origin" as "start_Origin",
-        vp."start_OriginState" as "start_OriginState",
-        next."DestCityName" as "end_DestCityName",
-        next."Dest" as "end_Dest",
-        next."DestState" as "end_DestState"
-    FROM vlp_c_b vp
-    JOIN test_integration.flights next ON next.Origin = vp.end_id
-    WHERE vp.hop_count < 2 AND NOT has(vp.path_edges, tuple(next.flight_id, next.flight_number))
+        vp.start_id,
+        end_node.code as end_id,
+        vp.hop_count + 1 as hop_count,
+        CAST([] AS Array(String)) as path_relationships,
+        arrayConcat(vp.path_nodes, [end_node.code]) as path_nodes,
+        arrayConcat(vp.path_edges, [tuple(rel.flight_id, rel.flight_number)]) as path_edges
+    FROM vlp_v3_path vp
+    JOIN test_integration.flights AS rel ON vp.end_id = rel.Origin
+    JOIN __cg_nodes_Airport AS end_node ON rel.Dest = end_node.code
+    WHERE vp.hop_count < 2
+      AND NOT has(vp.path_edges, tuple(rel.flight_id, rel.flight_number))
 )
 SELECT 
       count(*) AS "k"
-FROM vlp_c_b AS t
-INNER JOIN test_integration.flights AS t0 ON t0.Dest = t.start_id
-WHERE (t.end_id = t0.Origin AND NOT has(t.path_edges, tuple(t0.flight_id, t0.flight_number)))
+FROM vlp_v3_path AS v3
+JOIN __cg_nodes_Airport AS v2 ON v3.start_id = v2.code
+JOIN test_integration.flights AS v1 ON v1.Dest = v2.code
+JOIN __cg_nodes_Airport AS v4 ON v3.end_id = v4.code
+WHERE (v1.Origin IS NOT NULL AND NOT has(v3.path_edges, tuple(v1.flight_id, v1.flight_number)) AND v4.code = v1.Origin)
+
+-- column k: Value [("k", "k")]

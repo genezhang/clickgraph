@@ -1,8 +1,10 @@
-WITH with_lowerName_cte_0 AS (SELECT 
-      lowerUTF8(u.full_name) AS "lowerName"
-FROM test_integration.users_test AS u
+WITH with_w1 AS (
+SELECT 
+      lowerUTF8(v0.full_name) AS "v1"
+FROM test_integration.users_test AS v0
 )
 SELECT 
-      lowerName.lowerName AS "lowerName"
-FROM with_lowerName_cte_0 AS lowerName
+      w1.v1 AS "lowerName"
+FROM with_w1 AS w1
 LIMIT 1
+-- column lowerName: Value [("lowerName", "lowerName")]

@@ -1,13 +1,39 @@
-WITH vlp_multi_type_a_b AS (
-SELECT 'Post' AS end_type, p2.post_id AS end_id, a_1.user_id AS start_id, 'User' AS start_type, toString(p2.author_id) AS r_from_id, toString(p2.post_id) AS r_to_id, 1 AS hop_count, ['AUTHORED'] AS path_relationships, ['{}'] AS rel_properties, [toString(a_1.user_id), toString(p2.post_id)] AS path_nodes
-FROM test_integration.users_test a_1
-INNER JOIN test_integration.posts_test p2 ON a_1.user_id = p2.author_id
+WITH v1_rels AS (
+SELECT 
+      'AUTHORED' AS "__cg_type", 
+      'User' AS "__cg_from_label", 
+      'Post' AS "__cg_to_label", 
+      e.author_id AS "__cg_rid_0", 
+      e.post_id AS "__cg_rid_1", 
+      e.author_id AS "__cg_from_0", 
+      e.post_id AS "__cg_to_0", 
+      e.author_id AS "__cg_start_0", 
+      e.post_id AS "__cg_end_0", 
+      'User' AS "__cg_start_label", 
+      'Post' AS "__cg_end_label", 
+      concat('AUTHORED:User:Post:', toString(tuple(e.author_id, e.post_id))) AS "__cg_key"
+FROM test_integration.posts_test AS e
+
 UNION ALL
-SELECT 'Post' AS end_type, p2.post_id AS end_id, a_1.user_id AS start_id, 'User' AS start_type, toString(r1.user_id) AS r_from_id, toString(r1.post_id) AS r_to_id, 1 AS hop_count, ['LIKED'] AS path_relationships, [formatRowNoNewline('JSONEachRow', r1.like_date)] AS rel_properties, [toString(a_1.user_id), toString(p2.post_id)] AS path_nodes
-FROM test_integration.users_test a_1
-INNER JOIN test_integration.post_likes_test r1 ON a_1.user_id = r1.user_id
-INNER JOIN test_integration.posts_test p2 ON r1.post_id = p2.post_id
+SELECT 
+      'LIKED' AS "__cg_type", 
+      'User' AS "__cg_from_label", 
+      'Post' AS "__cg_to_label", 
+      e.like_id AS "__cg_rid_0", 
+      NULL AS "__cg_rid_1", 
+      e.user_id AS "__cg_from_0", 
+      e.post_id AS "__cg_to_0", 
+      e.user_id AS "__cg_start_0", 
+      e.post_id AS "__cg_end_0", 
+      'User' AS "__cg_start_label", 
+      'Post' AS "__cg_end_label", 
+      concat('LIKED:User:Post:', toString(e.like_id)) AS "__cg_key"
+FROM test_integration.post_likes_test AS e
 )
 SELECT 
       count(*) AS "total"
-FROM vlp_multi_type_a_b AS t
+FROM test_integration.users_test AS v0
+JOIN v1_rels AS v1 ON v1.__cg_start_0 = v0.user_id
+JOIN test_integration.posts_test AS v2 ON v1.__cg_end_0 = v2.post_id
+
+-- column total: Value [("total", "total")]

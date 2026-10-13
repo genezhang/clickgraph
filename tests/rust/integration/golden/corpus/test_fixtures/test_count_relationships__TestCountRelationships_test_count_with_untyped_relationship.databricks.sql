@@ -1,10 +1,67 @@
-WITH pattern_union_r AS (
-(SELECT 'TestUser' AS start_type, string(from_node.user_id) as start_id, string(to_node.user_id) as end_id, 'TestUser' AS end_type, array('TEST_FOLLOWS') as path_relationships, array(to_json(struct(test_integration.follows.since AS since))) as rel_properties, to_json(struct(from_node.age AS _s_age, from_node.name AS _s_name, from_node.user_id AS _s_user_id)) as start_properties, to_json(struct(to_node.age AS _e_age, to_node.name AS _e_name, to_node.user_id AS _e_user_id)) as end_properties, NULL AS purchase_date, NULL AS quantity, test_integration.follows.since AS since FROM test_integration.follows INNER JOIN test_integration.users AS from_node ON from_node.user_id = test_integration.follows.follower_id INNER JOIN test_integration.users AS to_node ON to_node.user_id = test_integration.follows.followed_id)
+WITH v2_labels AS (
+SELECT 
+      'TestProduct' AS `__cg_label`, 
+      e.product_id AS `__cg_id_0`
+FROM test_integration.products AS e
+
 UNION ALL
-(SELECT 'TestUser' AS start_type, string(from_node.user_id) as start_id, string(to_node.user_id) as end_id, 'TestUser' AS end_type, array('TEST_FRIENDS_WITH') as path_relationships, array(to_json(struct(test_integration.friendships.since AS since))) as rel_properties, to_json(struct(from_node.age AS _s_age, from_node.name AS _s_name, from_node.user_id AS _s_user_id)) as start_properties, to_json(struct(to_node.age AS _e_age, to_node.name AS _e_name, to_node.user_id AS _e_user_id)) as end_properties, NULL AS purchase_date, NULL AS quantity, test_integration.friendships.since AS since FROM test_integration.friendships INNER JOIN test_integration.users AS from_node ON from_node.user_id = test_integration.friendships.user_id_1 INNER JOIN test_integration.users AS to_node ON to_node.user_id = test_integration.friendships.user_id_2)
+SELECT 
+      'TestUser' AS `__cg_label`, 
+      e.user_id AS `__cg_id_0`
+FROM test_integration.users AS e
+), 
+v1_rels AS (
+SELECT 
+      'TEST_FOLLOWS' AS `__cg_type`, 
+      'TestUser' AS `__cg_from_label`, 
+      'TestUser' AS `__cg_to_label`, 
+      e.follower_id AS `__cg_rid_0`, 
+      e.followed_id AS `__cg_rid_1`, 
+      e.follower_id AS `__cg_from_0`, 
+      e.followed_id AS `__cg_to_0`, 
+      e.follower_id AS `__cg_start_0`, 
+      e.followed_id AS `__cg_end_0`, 
+      'TestUser' AS `__cg_start_label`, 
+      'TestUser' AS `__cg_end_label`, 
+      concat('TEST_FOLLOWS:TestUser:TestUser:', to_json(named_struct('_1', CAST(e.follower_id AS STRING), '_2', CAST(e.followed_id AS STRING)), map('ignoreNullFields', 'false'))) AS `__cg_key`
+FROM test_integration.follows AS e
+
 UNION ALL
-(SELECT 'TestUser' AS start_type, string(test_integration.users.user_id) as start_id, string(test_integration.products.product_id) as end_id, 'TestProduct' AS end_type, array('TEST_PURCHASED') as path_relationships, array(to_json(struct(test_integration.purchases.purchase_date AS purchase_date, test_integration.purchases.quantity AS quantity))) as rel_properties, to_json(struct(test_integration.users.age AS _s_age, test_integration.users.name AS _s_name, test_integration.users.user_id AS _s_user_id)) as start_properties, to_json(struct(test_integration.products.category AS _e_category, test_integration.products.name AS _e_name, test_integration.products.price AS _e_price, test_integration.products.product_id AS _e_product_id)) as end_properties, test_integration.purchases.purchase_date AS purchase_date, test_integration.purchases.quantity AS quantity, NULL AS since FROM test_integration.purchases INNER JOIN test_integration.users ON test_integration.users.user_id = test_integration.purchases.user_id INNER JOIN test_integration.products ON test_integration.products.product_id = test_integration.purchases.product_id)
+SELECT 
+      'TEST_FRIENDS_WITH' AS `__cg_type`, 
+      'TestUser' AS `__cg_from_label`, 
+      'TestUser' AS `__cg_to_label`, 
+      e.user_id_1 AS `__cg_rid_0`, 
+      e.user_id_2 AS `__cg_rid_1`, 
+      e.user_id_1 AS `__cg_from_0`, 
+      e.user_id_2 AS `__cg_to_0`, 
+      e.user_id_1 AS `__cg_start_0`, 
+      e.user_id_2 AS `__cg_end_0`, 
+      'TestUser' AS `__cg_start_label`, 
+      'TestUser' AS `__cg_end_label`, 
+      concat('TEST_FRIENDS_WITH:TestUser:TestUser:', to_json(named_struct('_1', CAST(e.user_id_1 AS STRING), '_2', CAST(e.user_id_2 AS STRING)), map('ignoreNullFields', 'false'))) AS `__cg_key`
+FROM test_integration.friendships AS e
+
+UNION ALL
+SELECT 
+      'TEST_PURCHASED' AS `__cg_type`, 
+      'TestUser' AS `__cg_from_label`, 
+      'TestProduct' AS `__cg_to_label`, 
+      e.user_id AS `__cg_rid_0`, 
+      e.product_id AS `__cg_rid_1`, 
+      e.user_id AS `__cg_from_0`, 
+      e.product_id AS `__cg_to_0`, 
+      e.user_id AS `__cg_start_0`, 
+      e.product_id AS `__cg_end_0`, 
+      'TestUser' AS `__cg_start_label`, 
+      'TestProduct' AS `__cg_end_label`, 
+      concat('TEST_PURCHASED:TestUser:TestProduct:', to_json(named_struct('_1', CAST(e.user_id AS STRING), '_2', CAST(e.product_id AS STRING)), map('ignoreNullFields', 'false'))) AS `__cg_key`
+FROM test_integration.purchases AS e
 )
 SELECT 
-      count(r.start_id) AS `total`
-FROM pattern_union_r AS r
+      count(v1.__cg_type) AS `total`
+FROM test_integration.users AS v0
+JOIN v1_rels AS v1 ON v1.__cg_start_0 = v0.user_id
+JOIN v2_labels AS v2 ON v1.__cg_end_label = v2.__cg_label AND v1.__cg_end_0 = v2.__cg_id_0
+
+-- column total: Value [("total", "total")]

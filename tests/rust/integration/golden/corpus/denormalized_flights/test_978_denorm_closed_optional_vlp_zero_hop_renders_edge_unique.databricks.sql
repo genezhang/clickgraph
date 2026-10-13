@@ -1,59 +1,83 @@
-WITH RECURSIVE __denorm_scan_a AS (
+WITH RECURSIVE __cg_nodes_Airport__cg_rows AS (
 SELECT 
-      "Origin" AS "Origin",
-      min("OriginCityName") AS "OriginCityName",
-      min("OriginState") AS "OriginState"
-FROM (
+      e.Origin AS `code`, 
+      e.OriginCityName AS `city__cg0`, 
+      NULL AS `city__cg1`, 
+      e.OriginState AS `state__cg0`, 
+      NULL AS `state__cg1`
+FROM test_integration.flights AS e
+
+UNION ALL
 SELECT 
-      s.Origin AS "Origin",
-      s.OriginCityName AS "OriginCityName",
-      s.OriginState AS "OriginState"
-FROM test_integration.flights AS s
-UNION DISTINCT 
-SELECT 
-      s.Dest AS "Origin",
-      s.DestCityName AS "OriginCityName",
-      s.DestState AS "OriginState"
-FROM test_integration.flights AS s
-)
-GROUP BY "Origin"
+      e.Dest AS `code`, 
+      NULL AS `city__cg0`, 
+      e.DestCityName AS `city__cg1`, 
+      NULL AS `state__cg0`, 
+      e.DestState AS `state__cg1`
+FROM test_integration.flights AS e
 ), 
-vlp_a_a AS (
-    SELECT
-        node_universe.__node_id as start_id,
-        node_universe.__node_id as end_id,
+__cg_nodes_Airport AS (
+SELECT 
+      e.code AS `code`, 
+      any_value(CASE WHEN regexp_replace(regexp_replace(typeof(e.city__cg0), '^(tinyint|smallint|int|bigint)$', 'int'), '^((var)?char\\(\\d+\\)|string( collate .*)?)$', 'string') = regexp_replace(regexp_replace(typeof(e.city__cg1), '^(tinyint|smallint|int|bigint)$', 'int'), '^((var)?char\\(\\d+\\)|string( collate .*)?)$', 'string') THEN coalesce(e.city__cg0, e.city__cg1) ELSE raise_error('ClickGraph: a property has different types on different labels or types') END, true) AS `city`, 
+      any_value(CASE WHEN regexp_replace(regexp_replace(typeof(e.state__cg0), '^(tinyint|smallint|int|bigint)$', 'int'), '^((var)?char\\(\\d+\\)|string( collate .*)?)$', 'string') = regexp_replace(regexp_replace(typeof(e.state__cg1), '^(tinyint|smallint|int|bigint)$', 'int'), '^((var)?char\\(\\d+\\)|string( collate .*)?)$', 'string') THEN coalesce(e.state__cg0, e.state__cg1) ELSE raise_error('ClickGraph: a property has different types on different labels or types') END, true) AS `state`
+FROM __cg_nodes_Airport__cg_rows AS e
+WHERE NOT isnull(e.code)
+GROUP BY e.code
+), 
+with_w3 AS (
+SELECT 
+      v0.code AS `v0__code`, 
+      v0.code AS `p2_v0_code`
+FROM __cg_nodes_Airport AS v0
+), 
+optional_d4 AS (
+SELECT DISTINCT 
+      w3.v0__code AS `v0__code`
+FROM with_w3 AS w3
+), 
+vlp_v1_path AS (
+    SELECT 
+        start_node.code as start_id,
+        start_node.code as end_id,
         0 as hop_count,
+        CAST(array() AS ARRAY<STRING>) as path_relationships,
+        array(start_node.code) as path_nodes,
         (
             SELECT slice(array(struct(__seed_edge.flight_id, __seed_edge.flight_number)), 1, 0)
             FROM test_integration.flights AS __seed_edge
             LIMIT 1
-        ) as path_edges,
-        array(node_universe.__node_id) as path_nodes,
-        CAST(array() AS ARRAY<STRING>) as path_relationships,
-        node_universe.__prop_0 as start_Origin
-    FROM (
-            SELECT DISTINCT Origin AS __node_id, Origin AS __prop_0
-            FROM test_integration.flights
-            UNION DISTINCT
-            SELECT DISTINCT Dest AS __node_id, Dest AS __prop_0
-            FROM test_integration.flights
-        ) AS node_universe
+        ) as path_edges
+    FROM __cg_nodes_Airport AS start_node
+    WHERE (start_node.code IN (SELECT DISTINCT 
+      d4.v0__code AS `id`
+FROM optional_d4 AS d4))
     UNION ALL
     SELECT
-        vp.start_id as start_id,
-        next.Dest as end_id,
-        vp.hop_count + 1,
-        concat(vp.path_edges, array(struct(next.flight_id, next.flight_number))),
-        concat(vp.path_nodes, array(next.Dest)),
-        array() as path_relationships,
-        vp.`start_Origin` as `start_Origin`
-    FROM vlp_a_a vp
-    JOIN test_integration.flights next ON next.Origin = vp.end_id
-    WHERE vp.hop_count < 10 AND NOT array_contains(vp.path_edges, struct(next.flight_id, next.flight_number))
+        vp.start_id,
+        end_node.code as end_id,
+        vp.hop_count + 1 as hop_count,
+        CAST(array() AS ARRAY<STRING>) as path_relationships,
+        concat(vp.path_nodes, array(end_node.code)) as path_nodes,
+        concat(vp.path_edges, array(struct(rel.flight_id, rel.flight_number))) as path_edges
+    FROM vlp_v1_path vp
+    JOIN test_integration.flights AS rel ON vp.end_id = rel.Origin
+    JOIN __cg_nodes_Airport AS end_node ON rel.Dest = end_node.code
+    WHERE vp.hop_count < 2147483647
+      AND NOT array_contains(vp.path_edges, struct(rel.flight_id, rel.flight_number))
+), 
+optional_o5 AS (
+SELECT 
+      d4.v0__code AS `v0__code`
+FROM vlp_v1_path AS v1
+JOIN optional_d4 AS d4 ON v1.start_id = d4.v0__code AND v1.end_id = d4.v0__code
 )
 SELECT 
-      a.Origin AS `a.code`, 
+      w3.p2_v0_code AS `a.code`, 
       count(*) AS `count(*)`
-FROM __denorm_scan_a AS a
-LEFT JOIN vlp_a_a AS vt0 ON a.Origin = vt0.start_id AND a.Origin = vt0.end_id
-GROUP BY a.Origin
+FROM with_w3 AS w3
+LEFT JOIN optional_o5 AS o5 ON w3.v0__code = o5.v0__code
+GROUP BY w3.p2_v0_code
+
+-- column a.code: Value [("a.code", "a.code")]
+-- column count(*): Value [("count(*)", "count(*)")]

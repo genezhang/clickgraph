@@ -1,9 +1,14 @@
-WITH with_a_follows_cte_0 AS (SELECT 
-      count(t0.followed_id) AS `follows`
-FROM test_integration.users AS a
-INNER JOIN test_integration.follows AS t0 ON t0.follower_id = a.user_id
-GROUP BY a.user_id
+WITH with_w1 AS (
+SELECT 
+      v0.user_id AS `v3__user_id`, 
+      count(v2.user_id) AS `v4`
+FROM test_integration.users AS v0
+JOIN test_integration.follows AS v1 ON v1.follower_id = v0.user_id
+JOIN test_integration.users AS v2 ON v1.followed_id = v2.user_id
+GROUP BY v0.user_id
 )
 SELECT 
-      avg(a_follows.follows) AS `avg_follows_per_user`
-FROM with_a_follows_cte_0 AS a_follows
+      avg(w1.v4) AS `avg_follows_per_user`
+FROM with_w1 AS w1
+
+-- column avg_follows_per_user: Value [("avg_follows_per_user", "avg_follows_per_user")]

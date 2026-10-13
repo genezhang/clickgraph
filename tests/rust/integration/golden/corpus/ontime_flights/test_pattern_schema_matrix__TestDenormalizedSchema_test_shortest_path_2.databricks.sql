@@ -1,33 +1,56 @@
-WITH RECURSIVE vlp_a_b_inner AS (
-    SELECT
-        t0.Origin as start_id,
-        t0.Dest as end_id,
-        1 as hop_count,
-        array(t0.Origin) as path_edges,
-        array(t0.Origin, t0.Dest) as path_nodes,
-        array('FLIGHT') as path_relationships,
-        t0.`OriginCityName` as `start_OriginCityName`,
-        t0.`DestCityName` as `end_DestCityName`
-    FROM default.flights AS t0
-    WHERE 1 <= 5
+WITH RECURSIVE __cg_nodes_Airport__cg_rows AS (
+SELECT 
+      e.Origin AS `code`, 
+      e.OriginCityName AS `city__cg0`, 
+      NULL AS `city__cg1`, 
+      e.OriginState AS `state__cg0`, 
+      NULL AS `state__cg1`
+FROM default.flights AS e
+
+UNION ALL
+SELECT 
+      e.Dest AS `code`, 
+      NULL AS `city__cg0`, 
+      e.DestCityName AS `city__cg1`, 
+      NULL AS `state__cg0`, 
+      e.DestState AS `state__cg1`
+FROM default.flights AS e
+), 
+__cg_nodes_Airport AS (
+SELECT 
+      e.code AS `code`, 
+      any_value(CASE WHEN regexp_replace(regexp_replace(typeof(e.city__cg0), '^(tinyint|smallint|int|bigint)$', 'int'), '^((var)?char\\(\\d+\\)|string( collate .*)?)$', 'string') = regexp_replace(regexp_replace(typeof(e.city__cg1), '^(tinyint|smallint|int|bigint)$', 'int'), '^((var)?char\\(\\d+\\)|string( collate .*)?)$', 'string') THEN coalesce(e.city__cg0, e.city__cg1) ELSE raise_error('ClickGraph: a property has different types on different labels or types') END, true) AS `city`, 
+      any_value(CASE WHEN regexp_replace(regexp_replace(typeof(e.state__cg0), '^(tinyint|smallint|int|bigint)$', 'int'), '^((var)?char\\(\\d+\\)|string( collate .*)?)$', 'string') = regexp_replace(regexp_replace(typeof(e.state__cg1), '^(tinyint|smallint|int|bigint)$', 'int'), '^((var)?char\\(\\d+\\)|string( collate .*)?)$', 'string') THEN coalesce(e.state__cg0, e.state__cg1) ELSE raise_error('ClickGraph: a property has different types on different labels or types') END, true) AS `state`
+FROM __cg_nodes_Airport__cg_rows AS e
+WHERE NOT isnull(e.code)
+GROUP BY e.code
+), 
+vlp_v1_bfs AS (
+    SELECT DISTINCT start_node.code AS start_id, start_node.code AS node, CAST(0 AS INT) AS depth, CAST(1 AS INT) AS new
+    FROM __cg_nodes_Airport AS start_node
+    WHERE start_node.code IS NOT NULL
     UNION ALL
-    SELECT
-        vp.start_id as start_id,
-        next.Dest as end_id,
-        vp.hop_count + 1,
-        concat(vp.path_edges, array(next.Origin)),
-        concat(vp.path_nodes, array(next.Dest)),
-        concat(vp.path_relationships, array('FLIGHT')) as path_relationships,
-        vp.`start_OriginCityName` as `start_OriginCityName`,
-        next.`DestCityName` as `end_DestCityName`
-    FROM vlp_a_b_inner vp
-    JOIN default.flights next ON next.Origin = vp.end_id
-    WHERE vp.hop_count < 5 AND NOT array_contains(vp.path_nodes, next.Dest)
-),
-vlp_a_b AS (
-    SELECT * FROM vlp_a_b_inner WHERE (start_OriginCityName != end_DestCityName)
+    (SELECT DISTINCT f.start_id AS start_id, end_node.code AS node, CAST(f.depth + 1 AS INT) AS depth, CAST(1 AS INT) AS new
+    FROM vlp_v1_bfs AS f
+    JOIN default.flights AS rel ON rel.Origin = f.node
+    JOIN __cg_nodes_Airport AS end_node ON end_node.code = rel.Dest
+    WHERE f.new = 1
+      AND f.depth < 5
+      AND (f.start_id, end_node.code) NOT IN (SELECT start_id, node FROM vlp_v1_bfs)
+    UNION ALL
+    SELECT start_id, node, depth, CAST(0 AS INT) AS new
+    FROM vlp_v1_bfs
+    WHERE start_id IN (SELECT start_id FROM vlp_v1_bfs WHERE new = 1))
+), 
+vlp_v1_path AS (
+    SELECT start_id, node AS end_id, depth AS hop_count FROM vlp_v1_bfs
+    WHERE new = 1 AND depth >= 1
 )
 SELECT 
-      t.hop_count AS `length(p)`
-FROM vlp_a_b AS t
+      v1.hop_count AS `length(p)`
+FROM vlp_v1_path AS v1
+JOIN __cg_nodes_Airport AS v0 ON v1.start_id = v0.code
+JOIN __cg_nodes_Airport AS v2 ON v1.end_id = v2.code
+WHERE v0.city <> v2.city
 LIMIT 5
+-- column length(p): Value [("length(p)", "length(p)")]

@@ -1,10 +1,14 @@
-WITH with_one_cte_0 AS (SELECT 
-      1 AS `one`
+WITH with_w1 AS (
+SELECT 
+      1 AS `__row`
 ), 
-with_two_cte_1 AS (SELECT 
-      one.one AS `two`
-FROM with_one_cte_0 AS one
+with_w2 AS (
+SELECT 
+      1 AS `__row`
+FROM with_w1 AS w1
 )
 SELECT 
-      count(two.two) AS `c`
-FROM with_two_cte_1 AS two
+      count(1) AS `c`
+FROM with_w2 AS w2
+
+-- column c: Value [("c", "c")]

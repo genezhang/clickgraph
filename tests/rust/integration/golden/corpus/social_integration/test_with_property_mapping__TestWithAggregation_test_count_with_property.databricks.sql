@@ -1,7 +1,10 @@
-WITH with_nameCount_cte_0 AS (SELECT 
-      count(u.full_name) AS `nameCount`
-FROM test_integration.users_test AS u
+WITH with_w1 AS (
+SELECT 
+      count(v0.full_name) AS `v1`
+FROM test_integration.users_test AS v0
 )
 SELECT 
-      nameCount.nameCount AS `nameCount`
-FROM with_nameCount_cte_0 AS nameCount
+      w1.v1 AS `nameCount`
+FROM with_w1 AS w1
+
+-- column nameCount: Value [("nameCount", "nameCount")]

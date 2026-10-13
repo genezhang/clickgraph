@@ -1,8 +1,10 @@
 SELECT 
-      r.timestamp AS "r.created_at", 
-      neighbor.full_name AS "neighbor.name"
-FROM brahmand.users_bench AS u
-INNER JOIN brahmand.interactions AS r ON r.from_id = u.user_id AND r.interaction_type = 'FOLLOWS' AND r.from_type = 'User' AND r.to_type = 'User'
-INNER JOIN brahmand.users_bench AS neighbor ON neighbor.user_id = r.to_id
-WHERE u.user_id = 1
+      v1.timestamp AS "r.created_at", 
+      v2.full_name AS "neighbor.name"
+FROM brahmand.users_bench AS v0
+JOIN brahmand.interactions AS v1 ON v1.from_id = v0.user_id
+JOIN brahmand.users_bench AS v2 ON v1.to_id = v2.user_id
+WHERE (((((v1."interaction_type" = 'FOLLOWS') AND (v1."from_type" = 'User')) AND (v1."to_type" = 'User'))) AND v0.user_id = 1)
 LIMIT 5
+-- column r.created_at: Value [("r.created_at", "r.created_at")]
+-- column neighbor.name: Value [("neighbor.name", "neighbor.name")]

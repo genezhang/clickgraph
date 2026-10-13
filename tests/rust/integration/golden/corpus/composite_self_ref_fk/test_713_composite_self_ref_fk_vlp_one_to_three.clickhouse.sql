@@ -1,32 +1,42 @@
-WITH RECURSIVE vlp_a_b AS (
+WITH RECURSIVE vlp_v1_path AS (
     SELECT 
-        concat(toString(start_node.region), '|', toString(start_node.object_id)) as start_id,
-        concat(toString(end_node.region), '|', toString(end_node.object_id)) as end_id,
+        toString(tuple(start_node.region, start_node.object_id)) as start_id,
+        toString(tuple(end_node.region, end_node.object_id)) as end_id,
         1 as hop_count,
         CAST([] AS Array(String)) as path_relationships,
-        [concat(toString(start_node.region), '|', toString(start_node.object_id)), concat(toString(end_node.region), '|', toString(end_node.object_id))] as path_nodes,
-        [tuple(start_node.region, start_node.object_id, end_node.region, end_node.object_id)] as path_edges,
-        start_node.name as start_name,
-        end_node.name as end_name
-    FROM test_integration.fs_objects_composite start_node
-    JOIN test_integration.fs_objects_composite end_node ON start_node.parent_region = end_node.region AND start_node.parent_id = end_node.object_id
+        [toString(tuple(start_node.region, start_node.object_id)), toString(tuple(end_node.region, end_node.object_id))] as path_nodes,
+        [tuple(rel.region, rel.object_id, rel.parent_region, rel.parent_id)] as path_edges,
+        start_node.region as start_region,
+        start_node.object_id as start_object_id,
+        end_node.region as end_region,
+        end_node.object_id as end_object_id
+    FROM test_integration.fs_objects_composite AS start_node
+    JOIN test_integration.fs_objects_composite AS rel ON start_node.region = rel.region AND start_node.object_id = rel.object_id
+    JOIN test_integration.fs_objects_composite AS end_node ON rel.parent_region = end_node.region AND rel.parent_id = end_node.object_id
     UNION ALL
     SELECT
-        concat(toString(new_start.region), '|', toString(new_start.object_id)) as start_id,
-        vp.end_id,
+        vp.start_id,
+        toString(tuple(end_node.region, end_node.object_id)) as end_id,
         vp.hop_count + 1 as hop_count,
         CAST([] AS Array(String)) as path_relationships,
-        arrayConcat([concat(toString(new_start.region), '|', toString(new_start.object_id))], vp.path_nodes) as path_nodes,
-        arrayConcat([tuple(new_start.region, new_start.object_id, current_node.region, current_node.object_id)], vp.path_edges) as path_edges,
-        new_start.name as start_name,
-        vp.end_name as end_name
-    FROM vlp_a_b vp
-    JOIN test_integration.fs_objects_composite current_node ON vp.start_id = concat(toString(current_node.region), '|', toString(current_node.object_id))
-    JOIN test_integration.fs_objects_composite new_start ON new_start.parent_region = current_node.region AND new_start.parent_id = current_node.object_id
+        arrayConcat(vp.path_nodes, [toString(tuple(end_node.region, end_node.object_id))]) as path_nodes,
+        arrayConcat(vp.path_edges, [tuple(rel.region, rel.object_id, rel.parent_region, rel.parent_id)]) as path_edges,
+        vp.start_region as start_region,
+        vp.start_object_id as start_object_id,
+        end_node.region as end_region,
+        end_node.object_id as end_object_id
+    FROM vlp_v1_path vp
+    JOIN test_integration.fs_objects_composite AS rel ON vp.end_region = rel.region AND vp.end_object_id = rel.object_id
+    JOIN test_integration.fs_objects_composite AS end_node ON rel.parent_region = end_node.region AND rel.parent_id = end_node.object_id
     WHERE vp.hop_count < 3
-      AND NOT has(vp.path_edges, tuple(new_start.region, new_start.object_id, current_node.region, current_node.object_id))
+      AND NOT has(vp.path_edges, tuple(rel.region, rel.object_id, rel.parent_region, rel.parent_id))
 )
 SELECT 
-      t.start_name AS "a.name", 
-      t.end_name AS "b.name"
-FROM vlp_a_b AS t
+      v0.name AS "a.name", 
+      v2.name AS "b.name"
+FROM vlp_v1_path AS v1
+JOIN test_integration.fs_objects_composite AS v0 ON v1.start_region = v0.region AND v1.start_object_id = v0.object_id
+JOIN test_integration.fs_objects_composite AS v2 ON v1.end_region = v2.region AND v1.end_object_id = v2.object_id
+
+-- column a.name: Value [("a.name", "a.name")]
+-- column b.name: Value [("b.name", "b.name")]

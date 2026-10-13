@@ -1,8 +1,12 @@
 SELECT DISTINCT 
-      t0."id.orig_h" AS "source", 
-      t0.query AS "domain", 
-      t1."id.resp_h" AS "accessed"
-FROM zeek.dns_log AS t0
-JOIN zeek.conn_log AS t1 ON 1 = 1
-WHERE t0."id.orig_h" = t1."id.orig_h"
-ORDER BY source ASC
+      v1."id.orig_h" AS "source", 
+      v1.query AS "domain", 
+      v4."id.resp_h" AS "accessed"
+FROM zeek.dns_log AS v1
+CROSS JOIN zeek.conn_log AS v4
+WHERE (v1."id.orig_h" IS NOT NULL AND v1.query IS NOT NULL AND v4."id.orig_h" IS NOT NULL AND v4."id.resp_h" IS NOT NULL AND v1."id.orig_h" = v4."id.orig_h")
+ORDER BY v1."id.orig_h" ASC
+
+-- column source: Value [("source", "source")]
+-- column domain: Value [("domain", "domain")]
+-- column accessed: Value [("accessed", "accessed")]

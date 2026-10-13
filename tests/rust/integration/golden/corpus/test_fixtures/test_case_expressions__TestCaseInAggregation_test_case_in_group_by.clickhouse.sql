@@ -1,6 +1,9 @@
 SELECT 
-      CASE WHEN n.age < 30 THEN 'Young' ELSE 'Mature' END AS "age_group", 
-      count(n.user_id) AS "count"
-FROM test_integration.users AS n
-GROUP BY CASE WHEN n.age < 30 THEN 'Young' ELSE 'Mature' END
-ORDER BY age_group ASC
+      CASE WHEN v0.age < 30 THEN 'Young' ELSE 'Mature' END AS "age_group", 
+      count(v0.user_id) AS "count"
+FROM test_integration.users AS v0
+GROUP BY CASE WHEN v0.age < 30 THEN 'Young' ELSE 'Mature' END
+ORDER BY CASE WHEN v0.age < 30 THEN 'Young' ELSE 'Mature' END ASC
+
+-- column age_group: Value [("age_group", "age_group")]
+-- column count: Value [("count", "count")]

@@ -1,11 +1,15 @@
-WITH with_a_cte_0 AS (SELECT 
-      u.age AS `a`
-FROM test_integration.users_test AS u
+WITH with_w1 AS (
+SELECT 
+      v0.age AS `v1`
+FROM test_integration.users_test AS v0
 ), 
-with_b_cte_1 AS (SELECT 
-      a.a AS `b`
-FROM with_a_cte_0 AS a
+with_w2 AS (
+SELECT 
+      w1.v1 AS `v2`
+FROM with_w1 AS w1
 )
 SELECT 
-      collect_list(b.b) AS `ages`
-FROM with_b_cte_1 AS b
+      coalesce(collect_list(w2.v2), array()) AS `ages`
+FROM with_w2 AS w2
+
+-- column ages: Value [("ages", "ages")]

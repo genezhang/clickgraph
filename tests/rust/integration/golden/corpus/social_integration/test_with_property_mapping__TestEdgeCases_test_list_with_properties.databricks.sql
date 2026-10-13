@@ -1,8 +1,10 @@
-WITH with_info_cte_0 AS (SELECT 
-      array(string(u.full_name), string(u.email_address)) AS `info`
-FROM test_integration.users_test AS u
+WITH with_w1 AS (
+SELECT 
+      array(v0.full_name, v0.email_address) AS `v1`
+FROM test_integration.users_test AS v0
 )
 SELECT 
-      info.info AS `info`
-FROM with_info_cte_0 AS info
+      w1.v1 AS `info`
+FROM with_w1 AS w1
 LIMIT 1
+-- column info: Value [("info", "info")]

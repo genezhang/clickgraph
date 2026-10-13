@@ -1,42 +1,43 @@
-WITH RECURSIVE vlp_u1_u2 AS (
+WITH RECURSIVE vlp_v1_path AS (
     SELECT 
         start_node.user_id as start_id,
         end_node.user_id as end_id,
         1 as hop_count,
-        array('FOLLOWS') as path_relationships,
+        CAST(array() AS ARRAY<STRING>) as path_relationships,
         array(start_node.user_id, end_node.user_id) as path_nodes,
-        array(rel.follow_id) as path_edges,
-        start_node.full_name as start_name,
-        end_node.full_name as end_name
+        array(rel.follow_id) as path_edges
     FROM test_integration.users_test AS start_node
     JOIN test_integration.user_follows_test AS rel ON start_node.user_id = rel.follower_id
     JOIN test_integration.users_test AS end_node ON rel.followed_id = end_node.user_id
-    WHERE start_node.user_id = 1
+    WHERE (start_node.user_id = 1)
     UNION ALL
     SELECT
         vp.start_id,
         end_node.user_id as end_id,
         vp.hop_count + 1 as hop_count,
-        concat(vp.path_relationships, array('FOLLOWS')) as path_relationships,
+        CAST(array() AS ARRAY<STRING>) as path_relationships,
         concat(vp.path_nodes, array(end_node.user_id)) as path_nodes,
-        concat(vp.path_edges, array(rel.follow_id)) as path_edges,
-        vp.start_name as start_name,
-        end_node.full_name as end_name
-    FROM vlp_u1_u2 vp
+        concat(vp.path_edges, array(rel.follow_id)) as path_edges
+    FROM vlp_v1_path vp
     JOIN test_integration.user_follows_test AS rel ON vp.end_id = rel.follower_id
     JOIN test_integration.users_test AS end_node ON rel.followed_id = end_node.user_id
     WHERE vp.hop_count < 2
       AND NOT array_contains(vp.path_edges, rel.follow_id)
 ), 
-with_end_name_start_name_cte_0 AS (SELECT 
-      t.start_name AS `start_name`, 
-      t.end_name AS `end_name`
-FROM vlp_u1_u2 AS t
-WHERE t.start_name IS NOT NULL
+with_w2 AS (
+SELECT 
+      v0.full_name AS `v4`, 
+      v2.full_name AS `v5`
+FROM vlp_v1_path AS v1
+JOIN test_integration.users_test AS v0 ON v1.start_id = v0.user_id
+JOIN test_integration.users_test AS v2 ON v1.end_id = v2.user_id
+WHERE (v0.user_id = 1 AND v0.full_name IS NOT NULL)
 )
 SELECT 
-      end_name_start_name.start_name AS `start_name`, 
-      end_name_start_name.end_name AS `end_name`
-FROM with_end_name_start_name_cte_0 AS end_name_start_name
-ORDER BY end_name_start_name.end_name ASC NULLS LAST
+      w2.v4 AS `start_name`, 
+      w2.v5 AS `end_name`
+FROM with_w2 AS w2
+ORDER BY w2.v5 ASC NULLS LAST
 LIMIT 5
+-- column start_name: Value [("start_name", "start_name")]
+-- column end_name: Value [("end_name", "end_name")]

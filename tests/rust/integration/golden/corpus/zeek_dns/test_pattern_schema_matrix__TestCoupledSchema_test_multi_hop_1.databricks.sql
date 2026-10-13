@@ -1,5 +1,7 @@
 SELECT 
-      r1.answers AS `a.resolved_ip`, 
-      r1.answers AS `c.resolved_ip`
-FROM zeek.dns_log AS r1
+      NULL AS `a.resolved_ip`, 
+      NULL AS `c.resolved_ip`
+WHERE false
 LIMIT 5
+-- column a.resolved_ip: Value [("a.resolved_ip", "a.resolved_ip")]
+-- column c.resolved_ip: Value [("c.resolved_ip", "c.resolved_ip")]

@@ -1,8 +1,11 @@
 SELECT 
-      r1.Origin AS `a.code`, 
-      r2.Origin AS `b.code`, 
-      r2.Dest AS `c.code`
-FROM default.flights AS r1
-INNER JOIN default.flights AS r2 ON r2.Origin = r1.Dest
-WHERE (r2.flight_id <> r1.flight_id OR r2.flight_number <> r1.flight_number)
+      v1.Origin AS `a.code`, 
+      v1.Dest AS `b.code`, 
+      v3.Dest AS `c.code`
+FROM default.flights AS v1
+JOIN default.flights AS v3 ON v3.Origin = v1.Dest
+WHERE (v1.Origin IS NOT NULL AND v1.Dest IS NOT NULL AND v3.Dest IS NOT NULL AND (v1.flight_id <> v3.flight_id OR v1.flight_number <> v3.flight_number))
 LIMIT 10
+-- column a.code: Value [("a.code", "a.code")]
+-- column b.code: Value [("b.code", "b.code")]
+-- column c.code: Value [("c.code", "c.code")]

@@ -1,28 +1,31 @@
-WITH RECURSIVE vlp_a_a AS (
+WITH RECURSIVE vlp_v1_path AS (
     SELECT 
         start_node.commentId as start_id,
         end_node.commentId as end_id,
         1 as hop_count,
         CAST([] AS Array(String)) as path_relationships,
         [start_node.commentId, end_node.commentId] as path_nodes,
-        [tuple(start_node.commentId, end_node.commentId)] as path_edges
-    FROM ldbc.comment start_node
-    JOIN ldbc.comment end_node ON start_node.replyOfCommentId = end_node.commentId
+        [tuple(rel.commentId, rel.replyOfCommentId)] as path_edges
+    FROM ldbc.comment AS start_node
+    JOIN ldbc.comment AS rel ON start_node.commentId = rel.commentId
+    JOIN ldbc.comment AS end_node ON rel.replyOfCommentId = end_node.commentId
     UNION ALL
     SELECT
-        new_start.commentId as start_id,
-        vp.end_id,
+        vp.start_id,
+        end_node.commentId as end_id,
         vp.hop_count + 1 as hop_count,
         CAST([] AS Array(String)) as path_relationships,
-        arrayConcat([new_start.commentId], vp.path_nodes) as path_nodes,
-        arrayConcat([tuple(new_start.commentId, current_node.commentId)], vp.path_edges) as path_edges
-    FROM vlp_a_a vp
-    JOIN ldbc.comment current_node ON vp.start_id = current_node.commentId
-    JOIN ldbc.comment new_start ON new_start.replyOfCommentId = current_node.commentId
+        arrayConcat(vp.path_nodes, [end_node.commentId]) as path_nodes,
+        arrayConcat(vp.path_edges, [tuple(rel.commentId, rel.replyOfCommentId)]) as path_edges
+    FROM vlp_v1_path vp
+    JOIN ldbc.comment AS rel ON vp.end_id = rel.commentId
+    JOIN ldbc.comment AS end_node ON rel.replyOfCommentId = end_node.commentId
     WHERE vp.hop_count < 2
-      AND NOT has(vp.path_edges, tuple(new_start.commentId, current_node.commentId))
+      AND NOT has(vp.path_edges, tuple(rel.commentId, rel.replyOfCommentId))
 )
 SELECT 
       count(*) AS "c"
-FROM vlp_a_a AS t
-WHERE t.start_id = t.end_id
+FROM vlp_v1_path AS v1
+JOIN ldbc.comment AS v0 ON v1.start_id = v0.commentId AND v1.end_id = v0.commentId
+
+-- column c: Value [("c", "c")]

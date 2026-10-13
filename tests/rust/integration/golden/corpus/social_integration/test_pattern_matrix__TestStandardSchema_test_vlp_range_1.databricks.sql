@@ -1,13 +1,11 @@
-WITH RECURSIVE vlp_a_b AS (
+WITH RECURSIVE vlp_v1_path AS (
     SELECT 
         start_node.user_id as start_id,
         end_node.user_id as end_id,
         1 as hop_count,
         CAST(array() AS ARRAY<STRING>) as path_relationships,
         array(start_node.user_id, end_node.user_id) as path_nodes,
-        array(rel.follow_id) as path_edges,
-        start_node.country as start_country,
-        end_node.country as end_country
+        array(rel.follow_id) as path_edges
     FROM test_integration.users_test AS start_node
     JOIN test_integration.user_follows_test AS rel ON start_node.user_id = rel.follower_id
     JOIN test_integration.users_test AS end_node ON rel.followed_id = end_node.user_id
@@ -18,17 +16,19 @@ WITH RECURSIVE vlp_a_b AS (
         vp.hop_count + 1 as hop_count,
         CAST(array() AS ARRAY<STRING>) as path_relationships,
         concat(vp.path_nodes, array(end_node.user_id)) as path_nodes,
-        concat(vp.path_edges, array(rel.follow_id)) as path_edges,
-        vp.start_country as start_country,
-        end_node.country as end_country
-    FROM vlp_a_b vp
+        concat(vp.path_edges, array(rel.follow_id)) as path_edges
+    FROM vlp_v1_path vp
     JOIN test_integration.user_follows_test AS rel ON vp.end_id = rel.follower_id
     JOIN test_integration.users_test AS end_node ON rel.followed_id = end_node.user_id
     WHERE vp.hop_count < 3
       AND NOT array_contains(vp.path_edges, rel.follow_id)
 )
 SELECT 
-      t.start_country AS `a.country`, 
-      t.end_country AS `b.country`
-FROM vlp_a_b AS t
+      v0.country AS `a.country`, 
+      v2.country AS `b.country`
+FROM vlp_v1_path AS v1
+JOIN test_integration.users_test AS v0 ON v1.start_id = v0.user_id
+JOIN test_integration.users_test AS v2 ON v1.end_id = v2.user_id
 LIMIT 10
+-- column a.country: Value [("a.country", "a.country")]
+-- column b.country: Value [("b.country", "b.country")]

@@ -1,8 +1,10 @@
-WITH with_email_cte_0 AS (SELECT 
-      u.email_address AS "email"
-FROM test_integration.users_test AS u
+WITH with_w1 AS (
+SELECT 
+      v0.email_address AS "v1"
+FROM test_integration.users_test AS v0
 )
 SELECT 
-      email.email AS "email"
-FROM with_email_cte_0 AS email
+      w1.v1 AS "email"
+FROM with_w1 AS w1
 LIMIT 1
+-- column email: Value [("email", "email")]

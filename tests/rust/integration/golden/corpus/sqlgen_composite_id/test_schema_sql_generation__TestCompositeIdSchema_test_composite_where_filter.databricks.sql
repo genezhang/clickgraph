@@ -1,8 +1,11 @@
 SELECT 
-      c.name AS `c.name`, 
-      a.balance AS `a.balance`
-FROM db_composite_id.accounts AS a
-INNER JOIN db_composite_id.account_ownership AS t0 ON a.bank_id = t0.bank_id AND a.account_number = t0.account_number
-INNER JOIN db_composite_id.customers AS c ON t0.customer_id = c.customer_id
-WHERE a.balance > 1000
-ORDER BY a.balance DESC NULLS FIRST
+      v0.name AS `c.name`, 
+      v2.balance AS `a.balance`
+FROM db_composite_id.customers AS v0
+JOIN db_composite_id.account_ownership AS v1 ON v1.customer_id = v0.customer_id
+JOIN db_composite_id.accounts AS v2 ON v1.bank_id = v2.bank_id AND v1.account_number = v2.account_number
+WHERE v2.balance > 1000
+ORDER BY v2.balance DESC NULLS FIRST
+
+-- column c.name: Value [("c.name", "c.name")]
+-- column a.balance: Value [("a.balance", "a.balance")]

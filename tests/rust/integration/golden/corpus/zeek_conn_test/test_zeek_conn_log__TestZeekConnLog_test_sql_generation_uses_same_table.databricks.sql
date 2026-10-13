@@ -1,4 +1,8 @@
 SELECT 
-      t0.orig_h AS `s.ip`, 
-      t0.resp_h AS `d.ip`
-FROM test_zeek.conn_log AS t0
+      v1.orig_h AS `s.ip`, 
+      v1.resp_h AS `d.ip`
+FROM test_zeek.conn_log AS v1
+WHERE (v1.orig_h IS NOT NULL AND v1.resp_h IS NOT NULL)
+
+-- column s.ip: Value [("s.ip", "s.ip")]
+-- column d.ip: Value [("d.ip", "d.ip")]

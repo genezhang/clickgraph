@@ -49,6 +49,10 @@ pub struct ReadOptions {
     /// compared with `id(n)` as the `id()` rewrite does (P-4c S11e). `None`
     /// (library, `cg`): `id(n)` is the node's key.
     pub id_mapper: Option<crate::server::bolt_protocol::id_mapper::IdMapper>,
+    /// Neo4j-compat mode for this query (an undeclared property is NULL);
+    /// `None`: the server's setting (`server_neo4j_compat`). The corpus
+    /// goldens lock both modes in one process (P-4c S14c0).
+    pub neo4j_compat: Option<bool>,
 }
 
 /// Which pipeline translates a read query ([`ReadOptions::bound_plan`]).
@@ -599,7 +603,9 @@ fn bound_plan_or_reason(
                 options.tenant_id.as_deref(),
                 options.view_parameter_values.as_ref(),
             ),
-            neo4j_compat: crate::server::query_context::server_neo4j_compat(),
+            neo4j_compat: options
+                .neo4j_compat
+                .unwrap_or_else(crate::server::query_context::server_neo4j_compat),
             id_lookup: options.id_mapper.clone().map(|mapper| {
                 // The query's schema (the context's: an `Arc`, not a copy).
                 let schema = crate::server::query_context::get_current_schema()

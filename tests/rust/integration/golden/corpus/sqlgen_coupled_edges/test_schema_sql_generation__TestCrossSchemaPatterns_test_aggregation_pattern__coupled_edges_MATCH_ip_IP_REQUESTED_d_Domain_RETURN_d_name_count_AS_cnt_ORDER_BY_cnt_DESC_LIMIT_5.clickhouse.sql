@@ -1,7 +1,10 @@
 SELECT 
-      t0.query AS "d.name", 
+      v1.query AS "d.name", 
       count(*) AS "cnt"
-FROM zeek.dns_log AS t0
-GROUP BY t0.query
-ORDER BY cnt DESC NULLS FIRST
+FROM zeek.dns_log AS v1
+WHERE (v1."id.orig_h" IS NOT NULL AND v1.query IS NOT NULL)
+GROUP BY v1.query
+ORDER BY count(*) DESC NULLS FIRST
 LIMIT 5
+-- column d.name: Value [("d.name", "d.name")]
+-- column cnt: Value [("cnt", "cnt")]

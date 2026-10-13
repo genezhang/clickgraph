@@ -1,9 +1,14 @@
 SELECT 
-      u.name AS `u.name`, 
-      f.name AS `f.name`, 
+      v0.name AS `u.name`, 
+      v2.name AS `f.name`, 
       count(*) AS `access_count`
-FROM data_security.ds_users AS u
-INNER JOIN data_security.ds_permissions AS t0 ON t0.subject_id = u.user_id AND t0.subject_type = 'User' AND t0.object_type = 'Folder'
-INNER JOIN data_security.ds_fs_objects AS f ON f.fs_id = t0.object_id
-GROUP BY u.name, f.name
-ORDER BY u.name ASC NULLS LAST, f.name ASC NULLS LAST
+FROM data_security.ds_users AS v0
+JOIN data_security.ds_permissions AS v1 ON v1.subject_id = v0.user_id
+JOIN data_security.ds_fs_objects AS v2 ON v1.object_id = v2.fs_id
+WHERE ((((v1.`subject_type` = 'User') AND (v1.`object_type` = 'Folder'))) AND ((v2.`fs_type` = 'Folder')))
+GROUP BY v0.name, v2.name
+ORDER BY v0.name ASC NULLS LAST, v2.name ASC NULLS LAST
+
+-- column u.name: Value [("u.name", "u.name")]
+-- column f.name: Value [("f.name", "f.name")]
+-- column access_count: Value [("access_count", "access_count")]

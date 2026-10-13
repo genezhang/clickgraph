@@ -1,8 +1,11 @@
 SELECT DISTINCT 
-      fof.name AS "fof.name"
-FROM test_integration.users AS a
-INNER JOIN test_integration.follows AS t0 ON t0.follower_id = a.user_id
-INNER JOIN test_integration.follows AS t1 ON t1.follower_id = t0.followed_id
-INNER JOIN test_integration.users AS fof ON fof.user_id = t1.followed_id
-WHERE ((fof.name <> 'Alice' AND a.name = 'Alice') AND (t1.follower_id <> t0.follower_id OR t1.followed_id <> t0.followed_id))
-ORDER BY fof.name ASC
+      v4.name AS "fof.name"
+FROM test_integration.users AS v0
+JOIN test_integration.follows AS v1 ON v1.follower_id = v0.user_id
+JOIN test_integration.users AS v2 ON v1.followed_id = v2.user_id
+JOIN test_integration.follows AS v3 ON v3.follower_id = v2.user_id
+JOIN test_integration.users AS v4 ON v3.followed_id = v4.user_id
+WHERE ((v1.follower_id <> v3.follower_id OR v1.followed_id <> v3.followed_id) AND (v0.name = 'Alice' AND v4.name <> 'Alice'))
+ORDER BY v4.name ASC
+
+-- column fof.name: Value [("fof.name", "fof.name")]

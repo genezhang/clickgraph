@@ -1,5 +1,8 @@
 SELECT 
-      n.name AS `n.name`, 
-      CASE WHEN n.age > 100 THEN 'Very old' ELSE NULL END AS `special_status`
-FROM test_integration.users AS n
-ORDER BY n.name ASC NULLS LAST
+      v0.name AS `n.name`, 
+      CASE WHEN v0.age > 100 THEN 'Very old' ELSE NULL END AS `special_status`
+FROM test_integration.users AS v0
+ORDER BY v0.name ASC NULLS LAST
+
+-- column n.name: Value [("n.name", "n.name")]
+-- column special_status: Value [("special_status", "special_status")]

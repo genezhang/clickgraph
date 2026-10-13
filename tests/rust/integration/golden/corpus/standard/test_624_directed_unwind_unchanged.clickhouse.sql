@@ -1,7 +1,18 @@
+WITH with_w1 AS (
 SELECT 
-      b.full_name AS "b.name", 
-      n AS "n"
-FROM test_integration.users_test AS a
-INNER JOIN test_integration.user_follows_test AS t0 ON t0.follower_id = a.user_id
-INNER JOIN test_integration.users_test AS b ON b.user_id = t0.followed_id
-ARRAY JOIN [1, 2] AS n
+      v0.user_id AS "v0__user_id", 
+      v2.user_id AS "v2__user_id", 
+      v2.full_name AS "p2_v2_name", 
+      __cg_element AS "v3"
+FROM test_integration.users_test AS v0
+JOIN test_integration.user_follows_test AS v1 ON v1.follower_id = v0.user_id
+JOIN test_integration.users_test AS v2 ON v1.followed_id = v2.user_id
+ARRAY JOIN [1, 2] AS __cg_element
+)
+SELECT 
+      w1.p2_v2_name AS "b.name", 
+      w1.v3 AS "n"
+FROM with_w1 AS w1
+
+-- column b.name: Value [("b.name", "b.name")]
+-- column n: Value [("n", "n")]

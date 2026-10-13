@@ -1,12 +1,18 @@
-SELECT `label` AS `label` FROM (
+WITH v0_labels AS (
+SELECT 
+      'TestProduct' AS `__cg_label`, 
+      e.product_id AS `__cg_id_0`
+FROM test_integration.products AS e
+
+UNION ALL
+SELECT 
+      'TestUser' AS `__cg_label`, 
+      e.user_id AS `__cg_id_0`
+FROM test_integration.users AS e
+)
 SELECT DISTINCT 
-      array('TestProduct') AS `label`, 
-      label AS `__order_col_0`
-FROM test_integration.products AS n
-UNION ALL 
-SELECT DISTINCT 
-      array('TestUser') AS `label`, 
-      label AS `__order_col_0`
-FROM test_integration.users AS n
-) AS __union
-ORDER BY __union.`__order_col_0` ASC NULLS LAST
+      array(v0.__cg_label) AS `label`
+FROM v0_labels AS v0
+ORDER BY `label` ASC NULLS LAST
+
+-- column label: Value [("label", "label")]

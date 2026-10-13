@@ -1,5 +1,10 @@
 SELECT 
-      f.origin_city AS "origin.city", 
-      f.dest_city AS "dest.city", 
-      f.carrier AS "f.carrier"
-FROM db_denormalized.flights_denorm AS f
+      v1.origin_city AS "origin.city", 
+      v1.dest_city AS "dest.city", 
+      v1.carrier AS "f.carrier"
+FROM db_denormalized.flights_denorm AS v1
+WHERE (v1.origin_code IS NOT NULL AND v1.dest_code IS NOT NULL)
+
+-- column origin.city: Value [("origin.city", "origin.city")]
+-- column dest.city: Value [("dest.city", "dest.city")]
+-- column f.carrier: Value [("f.carrier", "f.carrier")]

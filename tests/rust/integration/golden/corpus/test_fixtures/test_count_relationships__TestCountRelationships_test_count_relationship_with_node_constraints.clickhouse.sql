@@ -1,14 +1,39 @@
-WITH vlp_multi_type_u_other AS (
-SELECT 'TestUser' AS end_type, n2.user_id AS end_id, u_1.user_id AS start_id, 'TestUser' AS start_type, toString(r1.follower_id) AS r_from_id, toString(r1.followed_id) AS r_to_id, 1 AS hop_count, ['TEST_FOLLOWS'] AS path_relationships, [formatRowNoNewline('JSONEachRow', r1.since)] AS rel_properties, [toString(u_1.user_id), toString(n2.user_id)] AS path_nodes
-FROM test_integration.users u_1
-INNER JOIN test_integration.follows r1 ON u_1.user_id = r1.follower_id
-INNER JOIN test_integration.users n2 ON r1.followed_id = n2.user_id
+WITH v1_rels AS (
+SELECT 
+      'TEST_FOLLOWS' AS "__cg_type", 
+      'TestUser' AS "__cg_from_label", 
+      'TestUser' AS "__cg_to_label", 
+      e.follower_id AS "__cg_rid_0", 
+      e.followed_id AS "__cg_rid_1", 
+      e.follower_id AS "__cg_from_0", 
+      e.followed_id AS "__cg_to_0", 
+      e.follower_id AS "__cg_start_0", 
+      e.followed_id AS "__cg_end_0", 
+      'TestUser' AS "__cg_start_label", 
+      'TestUser' AS "__cg_end_label", 
+      concat('TEST_FOLLOWS:TestUser:TestUser:', toString(tuple(e.follower_id, e.followed_id))) AS "__cg_key"
+FROM test_integration.follows AS e
+
 UNION ALL
-SELECT 'TestUser' AS end_type, n2.user_id AS end_id, u_1.user_id AS start_id, 'TestUser' AS start_type, toString(r1.user_id_1) AS r_from_id, toString(r1.user_id_2) AS r_to_id, 1 AS hop_count, ['TEST_FRIENDS_WITH'] AS path_relationships, [formatRowNoNewline('JSONEachRow', r1.since)] AS rel_properties, [toString(u_1.user_id), toString(n2.user_id)] AS path_nodes
-FROM test_integration.users u_1
-INNER JOIN test_integration.friendships r1 ON u_1.user_id = r1.user_id_1
-INNER JOIN test_integration.users n2 ON r1.user_id_2 = n2.user_id
+SELECT 
+      'TEST_FRIENDS_WITH' AS "__cg_type", 
+      'TestUser' AS "__cg_from_label", 
+      'TestUser' AS "__cg_to_label", 
+      e.user_id_1 AS "__cg_rid_0", 
+      e.user_id_2 AS "__cg_rid_1", 
+      e.user_id_1 AS "__cg_from_0", 
+      e.user_id_2 AS "__cg_to_0", 
+      e.user_id_1 AS "__cg_start_0", 
+      e.user_id_2 AS "__cg_end_0", 
+      'TestUser' AS "__cg_start_label", 
+      'TestUser' AS "__cg_end_label", 
+      concat('TEST_FRIENDS_WITH:TestUser:TestUser:', toString(tuple(e.user_id_1, e.user_id_2))) AS "__cg_key"
+FROM test_integration.friendships AS e
 )
 SELECT 
-      count(t.start_id) AS "total"
-FROM vlp_multi_type_u_other AS t
+      count(v1.__cg_type) AS "total"
+FROM test_integration.users AS v0
+JOIN v1_rels AS v1 ON v1.__cg_start_0 = v0.user_id
+JOIN test_integration.users AS v2 ON v1.__cg_end_0 = v2.user_id
+
+-- column total: Value [("total", "total")]

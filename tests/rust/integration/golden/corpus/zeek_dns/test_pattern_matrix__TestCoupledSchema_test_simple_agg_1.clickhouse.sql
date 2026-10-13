@@ -1,9 +1,17 @@
-SELECT count(`n.domain_name`) AS "count(n)" FROM (
+WITH __cg_nodes_Domain__cg_rows AS (
 SELECT 
-      n.query AS "n.domain_name"
-FROM zeek.dns_log AS n
-UNION DISTINCT 
+      e.query AS "domain_name"
+FROM zeek.dns_log AS e
+), 
+__cg_nodes_Domain AS (
 SELECT 
-      n.query AS "n.domain_name"
-FROM zeek.dns_log AS n
-) AS __union
+      e.domain_name AS "domain_name"
+FROM __cg_nodes_Domain__cg_rows AS e
+WHERE NOT isNull(e.domain_name)
+GROUP BY e.domain_name
+)
+SELECT 
+      count(v0.domain_name) AS "count(n)"
+FROM __cg_nodes_Domain AS v0
+
+-- column count(n): Value [("count(n)", "count(n)")]

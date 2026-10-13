@@ -1,24 +1,37 @@
-WITH with_a_friends_cte_0 AS (SELECT any_value(`a.full_name`) AS `p1_a_name`, count(`b.user_id`) AS `friends` FROM (
+WITH v1_both AS (
 SELECT 
-      a.full_name AS `a.full_name`,
-      a.user_id AS `a.user_id`,
-      b.user_id AS `b.user_id`
-FROM db_standard.users AS a
-INNER JOIN db_standard.friendships AS t0 ON t0.user_id_1 = a.user_id
-INNER JOIN db_standard.users AS b ON b.user_id = t0.user_id_2
-UNION ALL 
+      e.since AS `since`, 
+      e.user_id_1 AS `user_id_1`, 
+      e.user_id_2 AS `user_id_2`, 
+      e.user_id_1 AS `__cg_start_0`, 
+      e.user_id_2 AS `__cg_end_0`
+FROM db_standard.friendships AS e
+
+UNION ALL
 SELECT 
-      a.full_name AS `a.full_name`,
-      a.user_id AS `a.user_id`,
-      b.user_id AS `b.user_id`
-FROM db_standard.users AS b
-INNER JOIN db_standard.friendships AS t0 ON t0.user_id_1 = b.user_id
-INNER JOIN db_standard.users AS a ON a.user_id = t0.user_id_2
-) AS __union
-GROUP BY `a.user_id`
+      e.since AS `since`, 
+      e.user_id_1 AS `user_id_1`, 
+      e.user_id_2 AS `user_id_2`, 
+      e.user_id_2 AS `__cg_start_0`, 
+      e.user_id_1 AS `__cg_end_0`
+FROM db_standard.friendships AS e
+WHERE e.user_id_1 <> e.user_id_2
+), 
+with_w2 AS (
+SELECT 
+      v0.user_id AS `v3__user_id`, 
+      v0.full_name AS `p2_v3_name`, 
+      count(v2.user_id) AS `v4`
+FROM db_standard.users AS v0
+JOIN v1_both AS v1 ON v1.__cg_start_0 = v0.user_id
+JOIN db_standard.users AS v2 ON v1.__cg_end_0 = v2.user_id
+GROUP BY v0.user_id, v0.full_name
 )
 SELECT 
-      a_friends.p1_a_name AS `a.name`, 
-      a_friends.friends AS `friends`
-FROM with_a_friends_cte_0 AS a_friends
-ORDER BY a_friends.friends DESC NULLS FIRST
+      w2.p2_v3_name AS `a.name`, 
+      w2.v4 AS `friends`
+FROM with_w2 AS w2
+ORDER BY w2.v4 DESC NULLS FIRST
+
+-- column a.name: Value [("a.name", "a.name")]
+-- column friends: Value [("friends", "friends")]

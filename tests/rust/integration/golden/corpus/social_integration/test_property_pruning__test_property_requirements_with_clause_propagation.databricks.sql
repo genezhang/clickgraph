@@ -1,12 +1,19 @@
-WITH with_f_user_id_cte_0 AS (SELECT 
-      f.email_address AS `p1_f_email`, 
-      f.full_name AS `p1_f_name`
-FROM test_integration.users_test AS f
-INNER JOIN test_integration.user_follows_test AS t0 ON f.user_id = t0.followed_id
-INNER JOIN test_integration.users_test AS u ON t0.follower_id = u.user_id
-WHERE f.country = 'USA'
+WITH with_w1 AS (
+SELECT 
+      v2.user_id AS `v3__user_id`, 
+      v2.country AS `p2_v3_country`, 
+      v2.email_address AS `p2_v3_email`, 
+      v2.full_name AS `p2_v3_name`, 
+      v0.user_id AS `v4`
+FROM test_integration.users_test AS v0
+JOIN test_integration.user_follows_test AS v1 ON v1.follower_id = v0.user_id
+JOIN test_integration.users_test AS v2 ON v1.followed_id = v2.user_id
+WHERE v2.country = 'USA'
 )
 SELECT 
-      f_user_id.p1_f_name AS `f.name`, 
-      f_user_id.p1_f_email AS `f.email`
-FROM with_f_user_id_cte_0 AS f_user_id
+      w1.p2_v3_name AS `f.name`, 
+      w1.p2_v3_email AS `f.email`
+FROM with_w1 AS w1
+
+-- column f.name: Value [("f.name", "f.name")]
+-- column f.email: Value [("f.email", "f.email")]

@@ -1,6 +1,9 @@
 SELECT 
-      c.comment_id AS `c.comment_id`, 
-      f.forum_id AS `f.forum_id`
-FROM db_composite_fk.comments_composite AS c
-INNER JOIN db_composite_fk.forums_composite AS f ON f.region = c.forum_region AND f.forum_id = c.forum_id
+      v0.comment_id AS `c.comment_id`, 
+      v2.forum_id AS `f.forum_id`
+FROM db_composite_fk.comments_composite AS v0
+JOIN db_composite_fk.comments_composite AS v1 ON v1.comment_id = v0.comment_id
+JOIN db_composite_fk.forums_composite AS v2 ON v1.forum_region = v2.region AND v1.forum_id = v2.forum_id
 LIMIT 5
+-- column c.comment_id: Value [("c.comment_id", "c.comment_id")]
+-- column f.forum_id: Value [("f.forum_id", "f.forum_id")]

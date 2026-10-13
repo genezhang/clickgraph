@@ -1,10 +1,14 @@
 SELECT 
-      hub.name AS "hub.name", 
-      a.name AS "a.name", 
-      c.name AS "c.name"
-FROM test_integration.users AS hub
-INNER JOIN test_integration.follows AS t0 ON t0.follower_id = hub.user_id
-INNER JOIN test_integration.users AS a ON a.user_id = t0.followed_id
-INNER JOIN test_integration.follows AS t1 ON t1.follower_id = hub.user_id
-INNER JOIN test_integration.users AS c ON c.user_id = t1.followed_id
-WHERE (hub.user_id = 1 AND (t1.follower_id <> t0.follower_id OR t1.followed_id <> t0.followed_id))
+      v0.name AS "hub.name", 
+      v2.name AS "a.name", 
+      v4.name AS "c.name"
+FROM test_integration.users AS v0
+JOIN test_integration.follows AS v1 ON v1.follower_id = v0.user_id
+JOIN test_integration.users AS v2 ON v1.followed_id = v2.user_id
+JOIN test_integration.follows AS v3 ON v3.follower_id = v0.user_id
+JOIN test_integration.users AS v4 ON v3.followed_id = v4.user_id
+WHERE ((v1.follower_id <> v3.follower_id OR v1.followed_id <> v3.followed_id) AND v0.user_id = 1)
+
+-- column hub.name: Value [("hub.name", "hub.name")]
+-- column a.name: Value [("a.name", "a.name")]
+-- column c.name: Value [("c.name", "c.name")]

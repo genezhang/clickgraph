@@ -1,10 +1,12 @@
-WITH RECURSIVE with_c_z_cte_0 AS (SELECT 
-      t0.followed_id AS "p1_c_user_id", 
-      z.user_id AS "p1_z_user_id"
-FROM test_integration.users_test AS z
-INNER JOIN test_integration.user_follows_test AS t0 ON t0.follower_id = z.user_id
+WITH RECURSIVE with_w1 AS (
+SELECT 
+      v2.user_id AS "v3__user_id", 
+      v0.user_id AS "v4__user_id"
+FROM test_integration.users_test AS v0
+JOIN test_integration.user_follows_test AS v1 ON v1.follower_id = v0.user_id
+JOIN test_integration.users_test AS v2 ON v1.followed_id = v2.user_id
 ), 
-vlp_c_b AS (
+vlp_v8_path AS (
     SELECT 
         start_node.user_id as start_id,
         end_node.user_id as end_id,
@@ -15,6 +17,12 @@ vlp_c_b AS (
     FROM test_integration.users_test AS start_node
     JOIN test_integration.user_follows_test AS rel ON start_node.user_id = rel.follower_id
     JOIN test_integration.users_test AS end_node ON rel.followed_id = end_node.user_id
+    WHERE (start_node.user_id IN (SELECT DISTINCT 
+      w1.v3__user_id AS "id"
+FROM with_w1 AS w1
+CROSS JOIN test_integration.users_test AS v5
+JOIN test_integration.user_follows_test AS v6 ON v6.follower_id = v5.user_id AND v6.followed_id = w1.v4__user_id
+JOIN test_integration.user_follows_test AS v7 ON v7.follower_id = w1.v4__user_id AND v7.followed_id = w1.v3__user_id))
     UNION ALL
     SELECT
         vp.start_id,
@@ -23,7 +31,7 @@ vlp_c_b AS (
         CAST([] AS Array(String)) as path_relationships,
         arrayConcat(vp.path_nodes, [end_node.user_id]) as path_nodes,
         arrayConcat(vp.path_edges, [rel.follow_id]) as path_edges
-    FROM vlp_c_b vp
+    FROM vlp_v8_path vp
     JOIN test_integration.user_follows_test AS rel ON vp.end_id = rel.follower_id
     JOIN test_integration.users_test AS end_node ON rel.followed_id = end_node.user_id
     WHERE vp.hop_count < 2
@@ -31,9 +39,12 @@ vlp_c_b AS (
 )
 SELECT 
       count(*) AS "k"
-FROM vlp_c_b AS t
-JOIN test_integration.users_test AS a ON 1 = 1
-INNER JOIN test_integration.user_follows_test AS t1 ON t1.follower_id = a.user_id
-INNER JOIN with_c_z_cte_0 AS c_z ON c_z.p1_z_user_id = t1.followed_id AND toString(t.start_id) = toString(c_z.p1_c_user_id)
-INNER JOIN test_integration.user_follows_test AS t2 ON t2.follower_id = c_z.p1_z_user_id AND t2.followed_id = t.start_id
-WHERE ((NOT has(t.path_edges, t2.follow_id) AND NOT has(t.path_edges, t1.follow_id)) AND t2.follow_id <> t1.follow_id)
+FROM vlp_v8_path AS v8
+JOIN with_w1 AS w1 ON v8.start_id = w1.v3__user_id
+JOIN test_integration.user_follows_test AS v6 ON v6.followed_id = w1.v4__user_id
+JOIN test_integration.users_test AS v5 ON v6.follower_id = v5.user_id
+JOIN test_integration.user_follows_test AS v7 ON v7.follower_id = w1.v4__user_id AND v7.followed_id = w1.v3__user_id
+JOIN test_integration.users_test AS v9 ON v8.end_id = v9.user_id
+WHERE (v6.follow_id <> v7.follow_id AND NOT has(v8.path_edges, v6.follow_id) AND NOT has(v8.path_edges, v7.follow_id))
+
+-- column k: Value [("k", "k")]

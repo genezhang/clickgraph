@@ -1,5 +1,8 @@
 SELECT 
-      n.name AS `n.name`, 
-      CASE n.name WHEN 'Alice' THEN 'VIP' ELSE NULL END AS `status`
-FROM test_integration.users AS n
-ORDER BY n.name ASC NULLS LAST
+      v0.name AS `n.name`, 
+      CASE v0.name WHEN 'Alice' THEN 'VIP' ELSE NULL END AS `status`
+FROM test_integration.users AS v0
+ORDER BY v0.name ASC NULLS LAST
+
+-- column n.name: Value [("n.name", "n.name")]
+-- column status: Value [("status", "status")]

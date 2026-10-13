@@ -1,10 +1,16 @@
-WITH with_c_cte_0 AS (SELECT 
-      t0.followed_id AS `p1_c_user_id`
-FROM test_integration.users_test AS x
-INNER JOIN test_integration.user_follows_test AS t1 ON t1.follower_id = x.user_id
-INNER JOIN test_integration.user_follows_test AS t0 ON t0.follower_id = t1.followed_id
-WHERE t0.follow_id <> t1.follow_id
+WITH with_w1 AS (
+SELECT 
+      v4.user_id AS `v5__user_id`, 
+      v4.user_id AS `p2_v5_user_id`
+FROM test_integration.users_test AS v0
+JOIN test_integration.user_follows_test AS v1 ON v1.follower_id = v0.user_id
+JOIN test_integration.users_test AS v2 ON v1.followed_id = v2.user_id
+JOIN test_integration.user_follows_test AS v3 ON v3.follower_id = v2.user_id
+JOIN test_integration.users_test AS v4 ON v3.followed_id = v4.user_id
+WHERE v1.follow_id <> v3.follow_id
 )
 SELECT 
-      c.p1_c_user_id AS `c.user_id`
-FROM with_c_cte_0 AS c
+      w1.p2_v5_user_id AS `c.user_id`
+FROM with_w1 AS w1
+
+-- column c.user_id: Value [("c.user_id", "c.user_id")]

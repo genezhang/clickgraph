@@ -1,12 +1,18 @@
-SELECT `n.resolved_ip` AS `n.resolved_ip` FROM (
+WITH __cg_nodes_ResolvedIP__cg_rows AS (
 SELECT 
-      n.answers AS `n.resolved_ip`
-FROM zeek.dns_log AS n
-WHERE n.answers IS NOT NULL
-UNION DISTINCT 
+      e.answers AS `resolved_ip`
+FROM zeek.dns_log AS e
+), 
+__cg_nodes_ResolvedIP AS (
 SELECT 
-      n.answers AS `n.resolved_ip`
-FROM zeek.dns_log AS n
-WHERE n.answers IS NOT NULL
-) AS __union
+      e.resolved_ip AS `resolved_ip`
+FROM __cg_nodes_ResolvedIP__cg_rows AS e
+WHERE NOT isnull(e.resolved_ip)
+GROUP BY e.resolved_ip
+)
+SELECT 
+      v0.resolved_ip AS `n.resolved_ip`
+FROM __cg_nodes_ResolvedIP AS v0
+WHERE v0.resolved_ip IS NOT NULL
 LIMIT 10
+-- column n.resolved_ip: Value [("n.resolved_ip", "n.resolved_ip")]

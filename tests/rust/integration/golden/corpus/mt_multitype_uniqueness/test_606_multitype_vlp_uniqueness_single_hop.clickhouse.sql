@@ -1,15 +1,41 @@
-WITH vlp_multi_type_a_b AS (
-SELECT 'Member' AS end_type, n2.id AS end_id, a_1.id AS start_id, 'Member' AS start_type, toString(r1.from_id) AS r_from_id, toString(r1.to_id) AS r_to_id, formatRowNoNewline('JSONEachRow', n2.id, n2.name) AS end_properties, formatRowNoNewline('JSONEachRow', a_1.id, a_1.name) AS start_properties, 1 AS hop_count, ['HELPS'] AS path_relationships, ['{}'] AS rel_properties, [toString(a_1.id), toString(n2.id)] AS path_nodes
-FROM mt606.members a_1
-INNER JOIN mt606.helps r1 ON a_1.id = r1.from_id
-INNER JOIN mt606.members n2 ON r1.to_id = n2.id
+WITH v1_rels AS (
+SELECT 
+      'HELPS' AS "__cg_type", 
+      'Member' AS "__cg_from_label", 
+      'Member' AS "__cg_to_label", 
+      e.from_id AS "__cg_rid_0", 
+      e.to_id AS "__cg_rid_1", 
+      e.from_id AS "__cg_from_0", 
+      e.to_id AS "__cg_to_0", 
+      e.from_id AS "__cg_start_0", 
+      e.to_id AS "__cg_end_0", 
+      'Member' AS "__cg_start_label", 
+      'Member' AS "__cg_end_label", 
+      concat('HELPS:Member:Member:', toString(tuple(e.from_id, e.to_id))) AS "__cg_key"
+FROM mt606.helps AS e
+
 UNION ALL
-SELECT 'Member' AS end_type, n2.id AS end_id, a_1.id AS start_id, 'Member' AS start_type, toString(r1.from_id) AS r_from_id, toString(r1.to_id) AS r_to_id, formatRowNoNewline('JSONEachRow', n2.id, n2.name) AS end_properties, formatRowNoNewline('JSONEachRow', a_1.id, a_1.name) AS start_properties, 1 AS hop_count, ['MENTORS'] AS path_relationships, ['{}'] AS rel_properties, [toString(a_1.id), toString(n2.id)] AS path_nodes
-FROM mt606.members a_1
-INNER JOIN mt606.mentors r1 ON a_1.id = r1.from_id
-INNER JOIN mt606.members n2 ON r1.to_id = n2.id
+SELECT 
+      'MENTORS' AS "__cg_type", 
+      'Member' AS "__cg_from_label", 
+      'Member' AS "__cg_to_label", 
+      e.from_id AS "__cg_rid_0", 
+      e.to_id AS "__cg_rid_1", 
+      e.from_id AS "__cg_from_0", 
+      e.to_id AS "__cg_to_0", 
+      e.from_id AS "__cg_start_0", 
+      e.to_id AS "__cg_end_0", 
+      'Member' AS "__cg_start_label", 
+      'Member' AS "__cg_end_label", 
+      concat('MENTORS:Member:Member:', toString(tuple(e.from_id, e.to_id))) AS "__cg_key"
+FROM mt606.mentors AS e
 )
 SELECT 
-      t.start_id AS "a.id", 
-      t.end_id AS "b.id"
-FROM vlp_multi_type_a_b AS t
+      v0.id AS "a.id", 
+      v2.id AS "b.id"
+FROM mt606.members AS v0
+JOIN v1_rels AS v1 ON v1.__cg_start_0 = v0.id
+JOIN mt606.members AS v2 ON v1.__cg_end_0 = v2.id
+
+-- column a.id: Value [("a.id", "a.id")]
+-- column b.id: Value [("b.id", "b.id")]

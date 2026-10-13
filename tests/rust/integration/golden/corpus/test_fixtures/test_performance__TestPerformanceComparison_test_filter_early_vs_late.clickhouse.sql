@@ -1,6 +1,8 @@
 SELECT 
-      b.name AS "b.name"
-FROM test_integration.users AS a
-INNER JOIN test_integration.follows AS t0 ON t0.follower_id = a.user_id
-INNER JOIN test_integration.users AS b ON b.user_id = t0.followed_id
-WHERE a.age > 25
+      v2.name AS "b.name"
+FROM test_integration.users AS v0
+JOIN test_integration.follows AS v1 ON v1.follower_id = v0.user_id
+JOIN test_integration.users AS v2 ON v1.followed_id = v2.user_id
+WHERE v0.age > 25
+
+-- column b.name: Value [("b.name", "b.name")]

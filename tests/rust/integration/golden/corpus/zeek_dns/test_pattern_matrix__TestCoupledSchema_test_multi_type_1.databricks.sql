@@ -1,5 +1,8 @@
 SELECT 
-      'REQUESTED' AS `type(r)`, 
+      NULL AS `type(r)`, 
       count(*) AS `cnt`
-FROM zeek.dns_log AS r
-GROUP BY 'REQUESTED'
+WHERE false
+HAVING count(*) > 0
+
+-- column type(r): Value [("type(r)", "type(r)")]
+-- column cnt: Value [("cnt", "cnt")]

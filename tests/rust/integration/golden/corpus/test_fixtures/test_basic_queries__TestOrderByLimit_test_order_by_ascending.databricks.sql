@@ -1,4 +1,6 @@
 SELECT 
-      u.name AS `u.name`
-FROM test_integration.users AS u
-ORDER BY u.age ASC NULLS LAST
+      v0.name AS `u.name`
+FROM test_integration.users AS v0
+ORDER BY v0.age ASC NULLS LAST
+
+-- column u.name: Value [("u.name", "u.name")]

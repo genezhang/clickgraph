@@ -1,13 +1,18 @@
-WITH with_p_cte_0 AS (SELECT 
-      p.full_name AS `p1_p_name`, 
-      p.user_id AS `p1_p_user_id`
-FROM test_integration.users_test AS p
+WITH with_w1 AS (
+SELECT 
+      v0.user_id AS `v1__user_id`, 
+      v0.full_name AS `p2_v1_name`
+FROM test_integration.users_test AS v0
 )
 SELECT 
-      p.p1_p_name AS `p.name`, 
-      c.full_name AS `c.name`
-FROM with_p_cte_0 AS p
-INNER JOIN test_integration.user_follows_test AS t0 ON t0.follower_id = p.p1_p_user_id
-INNER JOIN test_integration.user_follows_test AS t1 ON t1.follower_id = t0.followed_id
-INNER JOIN test_integration.users_test AS c ON c.user_id = t1.followed_id
-WHERE t1.follow_id <> t0.follow_id
+      w1.p2_v1_name AS `p.name`, 
+      v5.full_name AS `c.name`
+FROM with_w1 AS w1
+JOIN test_integration.user_follows_test AS v2 ON v2.follower_id = w1.v1__user_id
+JOIN test_integration.users_test AS v3 ON v2.followed_id = v3.user_id
+JOIN test_integration.user_follows_test AS v4 ON v4.follower_id = v3.user_id
+JOIN test_integration.users_test AS v5 ON v4.followed_id = v5.user_id
+WHERE v2.follow_id <> v4.follow_id
+
+-- column p.name: Value [("p.name", "p.name")]
+-- column c.name: Value [("c.name", "c.name")]

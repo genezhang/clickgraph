@@ -1,4 +1,6 @@
 SELECT 
-      count(f.fs_id) AS "sensitive_count"
-FROM data_security.ds_fs_objects AS f
-WHERE f.sensitive_data = 1
+      count(v0.fs_id) AS "sensitive_count"
+FROM data_security.ds_fs_objects AS v0
+WHERE (((v0."fs_type" = 'File')) AND v0.sensitive_data = 1)
+
+-- column sensitive_count: Value [("sensitive_count", "sensitive_count")]

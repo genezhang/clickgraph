@@ -1,12 +1,16 @@
-WITH with_cnt_prop_cte_0 AS (SELECT 
-      r.OriginState AS "prop", 
-      count(r.flight_id) AS "cnt"
-FROM default.flights AS r
-GROUP BY r.OriginState
+WITH with_w1 AS (
+SELECT 
+      v1.OriginState AS "v3", 
+      count(v1.flight_id) AS "v4"
+FROM default.flights AS v1
+WHERE (v1.Origin IS NOT NULL AND v1.Dest IS NOT NULL)
+GROUP BY v1.OriginState
 )
 SELECT 
-      cnt_prop.prop AS "prop", 
-      cnt_prop.cnt AS "cnt"
-FROM with_cnt_prop_cte_0 AS cnt_prop
-ORDER BY cnt_prop.cnt DESC NULLS FIRST
+      w1.v3 AS "prop", 
+      w1.v4 AS "cnt"
+FROM with_w1 AS w1
+ORDER BY w1.v4 DESC NULLS FIRST
 LIMIT 10
+-- column prop: Value [("prop", "prop")]
+-- column cnt: Value [("cnt", "cnt")]

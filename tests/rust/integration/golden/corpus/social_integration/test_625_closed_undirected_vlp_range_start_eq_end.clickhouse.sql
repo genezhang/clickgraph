@@ -1,9 +1,25 @@
-WITH RECURSIVE undir_edges_a_a_test_integration_user_follows_test AS (
-    SELECT e.follower_id, e.followed_id, e.follow_date, e.follow_id, e.follower_id AS __cg_orig_from, e.followed_id AS __cg_orig_to FROM test_integration.user_follows_test AS e
-    UNION ALL
-    SELECT e.followed_id AS follower_id, e.follower_id AS followed_id, e.follow_date, e.follow_id, e.follower_id AS __cg_orig_from, e.followed_id AS __cg_orig_to FROM test_integration.user_follows_test AS e
-),
-vlp_a_a AS (
+WITH RECURSIVE v1_both AS (
+SELECT 
+      e.follow_date AS "follow_date", 
+      e.follow_id AS "follow_id", 
+      e.followed_id AS "followed_id", 
+      e.follower_id AS "follower_id", 
+      e.follower_id AS "__cg_start_0", 
+      e.followed_id AS "__cg_end_0"
+FROM test_integration.user_follows_test AS e
+
+UNION ALL
+SELECT 
+      e.follow_date AS "follow_date", 
+      e.follow_id AS "follow_id", 
+      e.followed_id AS "followed_id", 
+      e.follower_id AS "follower_id", 
+      e.followed_id AS "__cg_start_0", 
+      e.follower_id AS "__cg_end_0"
+FROM test_integration.user_follows_test AS e
+WHERE e.follower_id <> e.followed_id
+), 
+vlp_v1_path AS (
     SELECT 
         start_node.user_id as start_id,
         end_node.user_id as end_id,
@@ -12,8 +28,8 @@ vlp_a_a AS (
         [start_node.user_id, end_node.user_id] as path_nodes,
         [rel.follow_id] as path_edges
     FROM test_integration.users_test AS start_node
-    JOIN undir_edges_a_a_test_integration_user_follows_test AS rel ON start_node.user_id = rel.follower_id
-    JOIN test_integration.users_test AS end_node ON rel.followed_id = end_node.user_id
+    JOIN v1_both AS rel ON start_node.user_id = rel.__cg_start_0
+    JOIN test_integration.users_test AS end_node ON rel.__cg_end_0 = end_node.user_id
     UNION ALL
     SELECT
         vp.start_id,
@@ -22,13 +38,15 @@ vlp_a_a AS (
         CAST([] AS Array(String)) as path_relationships,
         arrayConcat(vp.path_nodes, [end_node.user_id]) as path_nodes,
         arrayConcat(vp.path_edges, [rel.follow_id]) as path_edges
-    FROM vlp_a_a vp
-    JOIN undir_edges_a_a_test_integration_user_follows_test AS rel ON vp.end_id = rel.follower_id
-    JOIN test_integration.users_test AS end_node ON rel.followed_id = end_node.user_id
+    FROM vlp_v1_path vp
+    JOIN v1_both AS rel ON vp.end_id = rel.__cg_start_0
+    JOIN test_integration.users_test AS end_node ON rel.__cg_end_0 = end_node.user_id
     WHERE vp.hop_count < 2
       AND NOT has(vp.path_edges, rel.follow_id)
 )
 SELECT 
       count(*) AS "count(*)"
-FROM vlp_a_a AS t
-WHERE t.start_id = t.end_id
+FROM vlp_v1_path AS v1
+JOIN test_integration.users_test AS v0 ON v1.start_id = v0.user_id AND v1.end_id = v0.user_id
+
+-- column count(*): Value [("count(*)", "count(*)")]

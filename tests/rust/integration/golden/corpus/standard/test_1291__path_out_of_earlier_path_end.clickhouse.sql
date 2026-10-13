@@ -1,25 +1,11 @@
-WITH RECURSIVE vlp_c_a AS (
+WITH RECURSIVE vlp_v1_path AS (
     SELECT 
         start_node.user_id as start_id,
         end_node.user_id as end_id,
         1 as hop_count,
         CAST([] AS Array(String)) as path_relationships,
         [start_node.user_id, end_node.user_id] as path_nodes,
-        [rel.follow_id] as path_edges,
-        start_node.age as start_age,
-        start_node.city as start_city,
-        start_node.country as start_country,
-        start_node.email_address as start_email,
-        start_node.is_active as start_is_active,
-        start_node.full_name as start_name,
-        start_node.registration_date as start_registration_date,
-        end_node.age as end_age,
-        end_node.city as end_city,
-        end_node.country as end_country,
-        end_node.email_address as end_email,
-        end_node.is_active as end_is_active,
-        end_node.full_name as end_name,
-        end_node.registration_date as end_registration_date
+        [rel.follow_id] as path_edges
     FROM test_integration.users_test AS start_node
     JOIN test_integration.user_follows_test AS rel ON start_node.user_id = rel.follower_id
     JOIN test_integration.users_test AS end_node ON rel.followed_id = end_node.user_id
@@ -30,56 +16,34 @@ WITH RECURSIVE vlp_c_a AS (
         vp.hop_count + 1 as hop_count,
         CAST([] AS Array(String)) as path_relationships,
         arrayConcat(vp.path_nodes, [end_node.user_id]) as path_nodes,
-        arrayConcat(vp.path_edges, [rel.follow_id]) as path_edges,
-        vp.start_age as start_age,
-        vp.start_city as start_city,
-        vp.start_country as start_country,
-        vp.start_email as start_email,
-        vp.start_is_active as start_is_active,
-        vp.start_name as start_name,
-        vp.start_registration_date as start_registration_date,
-        end_node.age as end_age,
-        end_node.city as end_city,
-        end_node.country as end_country,
-        end_node.email_address as end_email,
-        end_node.is_active as end_is_active,
-        end_node.full_name as end_name,
-        end_node.registration_date as end_registration_date
-    FROM vlp_c_a vp
+        arrayConcat(vp.path_edges, [rel.follow_id]) as path_edges
+    FROM vlp_v1_path vp
     JOIN test_integration.user_follows_test AS rel ON vp.end_id = rel.follower_id
     JOIN test_integration.users_test AS end_node ON rel.followed_id = end_node.user_id
     WHERE vp.hop_count < 2
       AND NOT has(vp.path_edges, rel.follow_id)
 ), 
-with_a_cte_0 AS (SELECT 
-      end_id AS "p1_a_user_id"
-FROM vlp_c_a AS t
+with_w2 AS (
+SELECT 
+      v2.user_id AS "v3__user_id"
+FROM vlp_v1_path AS v1
+JOIN test_integration.users_test AS v0 ON v1.start_id = v0.user_id
+JOIN test_integration.users_test AS v2 ON v1.end_id = v2.user_id
 ), 
-vlp_a_b AS (
+vlp_v4_path AS (
     SELECT 
         start_node.user_id as start_id,
         end_node.user_id as end_id,
         1 as hop_count,
         CAST([] AS Array(String)) as path_relationships,
         [start_node.user_id, end_node.user_id] as path_nodes,
-        [rel.follow_id] as path_edges,
-        start_node.age as start_age,
-        start_node.city as start_city,
-        start_node.country as start_country,
-        start_node.email_address as start_email,
-        start_node.is_active as start_is_active,
-        start_node.full_name as start_name,
-        start_node.registration_date as start_registration_date,
-        end_node.age as end_age,
-        end_node.city as end_city,
-        end_node.country as end_country,
-        end_node.email_address as end_email,
-        end_node.is_active as end_is_active,
-        end_node.full_name as end_name,
-        end_node.registration_date as end_registration_date
+        [rel.follow_id] as path_edges
     FROM test_integration.users_test AS start_node
     JOIN test_integration.user_follows_test AS rel ON start_node.user_id = rel.follower_id
     JOIN test_integration.users_test AS end_node ON rel.followed_id = end_node.user_id
+    WHERE (start_node.user_id IN (SELECT DISTINCT 
+      w2.v3__user_id AS "id"
+FROM with_w2 AS w2))
     UNION ALL
     SELECT
         vp.start_id,
@@ -87,22 +51,8 @@ vlp_a_b AS (
         vp.hop_count + 1 as hop_count,
         CAST([] AS Array(String)) as path_relationships,
         arrayConcat(vp.path_nodes, [end_node.user_id]) as path_nodes,
-        arrayConcat(vp.path_edges, [rel.follow_id]) as path_edges,
-        vp.start_age as start_age,
-        vp.start_city as start_city,
-        vp.start_country as start_country,
-        vp.start_email as start_email,
-        vp.start_is_active as start_is_active,
-        vp.start_name as start_name,
-        vp.start_registration_date as start_registration_date,
-        end_node.age as end_age,
-        end_node.city as end_city,
-        end_node.country as end_country,
-        end_node.email_address as end_email,
-        end_node.is_active as end_is_active,
-        end_node.full_name as end_name,
-        end_node.registration_date as end_registration_date
-    FROM vlp_a_b vp
+        arrayConcat(vp.path_edges, [rel.follow_id]) as path_edges
+    FROM vlp_v4_path vp
     JOIN test_integration.user_follows_test AS rel ON vp.end_id = rel.follower_id
     JOIN test_integration.users_test AS end_node ON rel.followed_id = end_node.user_id
     WHERE vp.hop_count < 2
@@ -110,5 +60,8 @@ vlp_a_b AS (
 )
 SELECT 
       count(*) AS "k"
-FROM vlp_a_b AS t
-INNER JOIN with_a_cte_0 AS a ON toString(t.start_id) = toString(a.p1_a_user_id)
+FROM vlp_v4_path AS v4
+JOIN with_w2 AS w2 ON v4.start_id = w2.v3__user_id
+JOIN test_integration.users_test AS v5 ON v4.end_id = v5.user_id
+
+-- column k: Value [("k", "k")]

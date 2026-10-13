@@ -1,5 +1,10 @@
 SELECT 
       count(*) AS `count(*)`
-FROM testdb.reports AS t0
-INNER JOIN testdb.reports AS t1 ON t0.emp_id = t1.mgr_id
-WHERE (t1.mgr_id <> t0.mgr_id OR t1.emp_id <> t0.emp_id)
+FROM testdb.people AS v0
+JOIN testdb.reports AS v1 ON v1.mgr_id = v0.pid
+JOIN testdb.people AS v2 ON v1.emp_id = v2.pid
+JOIN testdb.reports AS v3 ON v3.mgr_id = v2.pid
+JOIN testdb.people AS v4 ON v3.emp_id = v4.pid
+WHERE (v1.mgr_id <> v3.mgr_id OR v1.emp_id <> v3.emp_id)
+
+-- column count(*): Value [("count(*)", "count(*)")]

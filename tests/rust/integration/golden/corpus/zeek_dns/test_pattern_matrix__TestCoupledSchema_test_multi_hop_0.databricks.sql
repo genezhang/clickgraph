@@ -1,7 +1,7 @@
 SELECT 
-      r1.`id.orig_h` AS `a.ip_address`, 
-      r2.ip_address AS `c.ip_address`
-FROM zeek.dns_log AS r1
-INNER JOIN zeek.dns_log AS r2 ON r2.`id.orig_h` = r1.query
-WHERE r2.uid <> r1.uid
+      NULL AS `a.ip_address`, 
+      NULL AS `c.ip_address`
+WHERE false
 LIMIT 5
+-- column a.ip_address: Value [("a.ip_address", "a.ip_address")]
+-- column c.ip_address: Value [("c.ip_address", "c.ip_address")]

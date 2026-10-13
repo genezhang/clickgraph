@@ -1,8 +1,11 @@
-WITH with_ag_cte_0 AS (SELECT 
-      a.age AS `ag`
-FROM test_integration.users_test AS a
+WITH with_w1 AS (
+SELECT 
+      v0.age AS `v1`
+FROM test_integration.users_test AS v0
 )
 SELECT 
-      ag.ag AS `x`
-FROM with_ag_cte_0 AS ag
-ORDER BY x ASC NULLS LAST
+      w1.v1 AS `x`
+FROM with_w1 AS w1
+ORDER BY w1.v1 ASC NULLS LAST
+
+-- column x: Value [("x", "x")]

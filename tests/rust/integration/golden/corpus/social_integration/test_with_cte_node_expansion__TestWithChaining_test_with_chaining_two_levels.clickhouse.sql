@@ -1,60 +1,57 @@
-WITH with_a_cte_1 AS (SELECT 
-      a.age AS "p1_a_age", 
-      a.city AS "p1_a_city", 
-      a.country AS "p1_a_country", 
-      a.email_address AS "p1_a_email", 
-      a.is_active AS "p1_a_is_active", 
-      a.full_name AS "p1_a_name", 
-      a.registration_date AS "p1_a_registration_date", 
-      a.user_id AS "p1_a_user_id"
-FROM test_integration.users_test AS a
+WITH with_w1 AS (
+SELECT 
+      v0.user_id AS "v1__user_id", 
+      v0.age AS "p2_v1_age", 
+      v0.city AS "p2_v1_city", 
+      v0.country AS "p2_v1_country", 
+      v0.email_address AS "p2_v1_email", 
+      v0.is_active AS "p2_v1_is_active", 
+      v0.full_name AS "p2_v1_name", 
+      v0.registration_date AS "p2_v1_registration_date", 
+      v0.user_id AS "p2_v1_user_id"
+FROM test_integration.users_test AS v0
 ), 
-with_a_b_cte_1 AS (SELECT 
-      a.p1_a_age AS "p1_a_age", 
-      a.p1_a_city AS "p1_a_city", 
-      a.p1_a_country AS "p1_a_country", 
-      a.p1_a_email AS "p1_a_email", 
-      a.p1_a_is_active AS "p1_a_is_active", 
-      a.p1_a_name AS "p1_a_name", 
-      a.p1_a_registration_date AS "p1_a_registration_date", 
-      a.p1_a_user_id AS "p1_a_user_id", 
-      b.age AS "p1_b_age", 
-      b.city AS "p1_b_city", 
-      b.country AS "p1_b_country", 
-      b.email_address AS "p1_b_email", 
-      b.is_active AS "p1_b_is_active", 
-      b.full_name AS "p1_b_name", 
-      b.registration_date AS "p1_b_registration_date", 
-      b.user_id AS "p1_b_user_id"
-FROM with_a_cte_1 AS a
-CROSS JOIN test_integration.users_test AS b
+with_w2 AS (
+SELECT 
+      w1.v1__user_id AS "v3__user_id", 
+      w1.p2_v1_age AS "p2_v3_age", 
+      w1.p2_v1_city AS "p2_v3_city", 
+      w1.p2_v1_country AS "p2_v3_country", 
+      w1.p2_v1_email AS "p2_v3_email", 
+      w1.p2_v1_is_active AS "p2_v3_is_active", 
+      w1.p2_v1_name AS "p2_v3_name", 
+      w1.p2_v1_registration_date AS "p2_v3_registration_date", 
+      w1.p2_v1_user_id AS "p2_v3_user_id", 
+      v2.user_id AS "v4__user_id", 
+      v2.age AS "p2_v4_age", 
+      v2.city AS "p2_v4_city", 
+      v2.country AS "p2_v4_country", 
+      v2.email_address AS "p2_v4_email", 
+      v2.is_active AS "p2_v4_is_active", 
+      v2.full_name AS "p2_v4_name", 
+      v2.registration_date AS "p2_v4_registration_date", 
+      v2.user_id AS "p2_v4_user_id"
+FROM with_w1 AS w1
+CROSS JOIN test_integration.users_test AS v2
 )
 SELECT 
-      a_b.p1_a_age AS "a.age", 
-      a_b.p1_a_city AS "a.city", 
-      a_b.p1_a_country AS "a.country", 
-      a_b.p1_a_email AS "a.email", 
-      a_b.p1_a_is_active AS "a.is_active", 
-      a_b.p1_a_name AS "a.name", 
-      a_b.p1_a_age AS "a.p1_a_age", 
-      a_b.p1_a_city AS "a.p1_a_city", 
-      a_b.p1_a_country AS "a.p1_a_country", 
-      a_b.p1_a_email AS "a.p1_a_email", 
-      a_b.p1_a_is_active AS "a.p1_a_is_active", 
-      a_b.p1_a_name AS "a.p1_a_name", 
-      a_b.p1_a_registration_date AS "a.p1_a_registration_date", 
-      a_b.p1_a_user_id AS "a.p1_a_user_id", 
-      a_b.p1_a_registration_date AS "a.registration_date", 
-      a_b.p1_a_user_id AS "a.user_id", 
-      a_b.p1_b_age AS "b.age", 
-      a_b.p1_b_city AS "b.city", 
-      a_b.p1_b_country AS "b.country", 
-      a_b.p1_b_email AS "b.email", 
-      a_b.p1_b_email AS "b.email_address", 
-      a_b.p1_b_name AS "b.full_name", 
-      a_b.p1_b_is_active AS "b.is_active", 
-      a_b.p1_b_name AS "b.name", 
-      a_b.p1_b_registration_date AS "b.registration_date", 
-      a_b.p1_b_user_id AS "b.user_id"
-FROM with_a_b_cte_1 AS a_b
+      w2.p2_v3_age AS "a.age", 
+      w2.p2_v3_city AS "a.city", 
+      w2.p2_v3_country AS "a.country", 
+      w2.p2_v3_email AS "a.email", 
+      w2.p2_v3_is_active AS "a.is_active", 
+      w2.p2_v3_name AS "a.name", 
+      w2.p2_v3_registration_date AS "a.registration_date", 
+      w2.p2_v3_user_id AS "a.user_id", 
+      w2.p2_v4_age AS "b.age", 
+      w2.p2_v4_city AS "b.city", 
+      w2.p2_v4_country AS "b.country", 
+      w2.p2_v4_email AS "b.email", 
+      w2.p2_v4_is_active AS "b.is_active", 
+      w2.p2_v4_name AS "b.name", 
+      w2.p2_v4_registration_date AS "b.registration_date", 
+      w2.p2_v4_user_id AS "b.user_id"
+FROM with_w2 AS w2
 LIMIT 1
+-- column a: Node { label: "User" } [("age", "a.age"), ("city", "a.city"), ("country", "a.country"), ("email", "a.email"), ("is_active", "a.is_active"), ("name", "a.name"), ("registration_date", "a.registration_date"), ("user_id", "a.user_id")]
+-- column b: Node { label: "User" } [("age", "b.age"), ("city", "b.city"), ("country", "b.country"), ("email", "b.email"), ("is_active", "b.is_active"), ("name", "b.name"), ("registration_date", "b.registration_date"), ("user_id", "b.user_id")]

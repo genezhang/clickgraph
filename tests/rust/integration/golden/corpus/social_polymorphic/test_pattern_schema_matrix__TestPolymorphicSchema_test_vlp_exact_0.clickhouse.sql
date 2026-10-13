@@ -1,408 +1,421 @@
-WITH vlp_multi_type_a_b AS (
-SELECT 'User' AS end_type, u3.user_id AS end_id, a_1.user_id AS start_id, 'User' AS start_type, formatRowNoNewline('JSONEachRow', u3.email_address AS email, u3.full_name AS name, u3.user_id AS user_id) AS end_properties, u3.email_address AS end_email, u3.full_name AS end_name, u3.user_id AS end_user_id, formatRowNoNewline('JSONEachRow', a_1.email_address, a_1.full_name, a_1.user_id) AS start_properties, a_1.email_address AS start_email, a_1.full_name AS start_name, a_1.user_id AS start_user_id, 2 AS hop_count, ['AUTHORED', 'AUTHORED'] AS path_relationships, [formatRowNoNewline('JSONEachRow', r1.timestamp, r1.interaction_weight), formatRowNoNewline('JSONEachRow', r2.timestamp, r2.interaction_weight)] AS rel_properties, [toString(a_1.user_id), toString(p2.post_id), toString(u3.user_id)] AS path_nodes
-FROM brahmand.users_bench a_1
-INNER JOIN brahmand.interactions r1 ON a_1.user_id = r1.from_id
-INNER JOIN brahmand.posts_bench p2 ON r1.to_id = p2.post_id
-INNER JOIN brahmand.interactions r2 ON p2.post_id = r2.from_id
-INNER JOIN brahmand.users_bench u3 ON r2.to_id = u3.user_id
-WHERE r1.interaction_type = 'AUTHORED' AND r1.from_type = 'User' AND r1.to_type = 'Post' AND r2.interaction_type = 'AUTHORED' AND r2.from_type = 'Post' AND r2.to_type = 'User' AND NOT ((r1.from_id = r2.from_id) AND (r1.to_id = r2.to_id))
+WITH RECURSIVE vlp_v1_nodes AS (
+SELECT 
+      'Post' AS "__cg_label", 
+      e.post_id AS "__cg_id_0", 
+      concat('Post', ':', toString(e.post_id)) AS "__cg_key"
+FROM brahmand.posts_bench AS e
+
 UNION ALL
-SELECT 'User' AS end_type, u3.user_id AS end_id, a_1.user_id AS start_id, 'User' AS start_type, formatRowNoNewline('JSONEachRow', u3.email_address AS email, u3.full_name AS name, u3.user_id AS user_id) AS end_properties, u3.email_address AS end_email, u3.full_name AS end_name, u3.user_id AS end_user_id, formatRowNoNewline('JSONEachRow', a_1.email_address, a_1.full_name, a_1.user_id) AS start_properties, a_1.email_address AS start_email, a_1.full_name AS start_name, a_1.user_id AS start_user_id, 2 AS hop_count, ['AUTHORED', 'COMMENTED'] AS path_relationships, [formatRowNoNewline('JSONEachRow', r1.timestamp, r1.interaction_weight), formatRowNoNewline('JSONEachRow', r2.timestamp, r2.interaction_weight)] AS rel_properties, [toString(a_1.user_id), toString(p2.post_id), toString(u3.user_id)] AS path_nodes
-FROM brahmand.users_bench a_1
-INNER JOIN brahmand.interactions r1 ON a_1.user_id = r1.from_id
-INNER JOIN brahmand.posts_bench p2 ON r1.to_id = p2.post_id
-INNER JOIN brahmand.interactions r2 ON p2.post_id = r2.from_id
-INNER JOIN brahmand.users_bench u3 ON r2.to_id = u3.user_id
-WHERE r1.interaction_type = 'AUTHORED' AND r1.from_type = 'User' AND r1.to_type = 'Post' AND r2.interaction_type = 'COMMENTED' AND r2.from_type = 'Post' AND r2.to_type = 'User'
+SELECT 
+      'User' AS "__cg_label", 
+      e.user_id AS "__cg_id_0", 
+      concat('User', ':', toString(e.user_id)) AS "__cg_key"
+FROM brahmand.users_bench AS e
+), 
+v1_rels AS (
+SELECT 
+      'AUTHORED' AS "__cg_type", 
+      'Post' AS "__cg_from_label", 
+      'Post' AS "__cg_to_label", 
+      e.from_id AS "__cg_rid_0", 
+      e.to_id AS "__cg_rid_1", 
+      e.interaction_type AS "__cg_rid_2", 
+      e.timestamp AS "__cg_rid_3", 
+      e.from_id AS "__cg_from_0", 
+      e.to_id AS "__cg_to_0", 
+      e.from_id AS "__cg_start_0", 
+      e.to_id AS "__cg_end_0", 
+      'Post' AS "__cg_start_label", 
+      'Post' AS "__cg_end_label", 
+      concat('AUTHORED:Post:Post:', toString(tuple(e.from_id, e.to_id, e.interaction_type, e.timestamp))) AS "__cg_key"
+FROM brahmand.interactions AS e
+WHERE ((((e."interaction_type" = 'AUTHORED') AND (e."from_type" = 'Post')) AND (e."to_type" = 'Post')))
+
 UNION ALL
-SELECT 'User' AS end_type, u3.user_id AS end_id, a_1.user_id AS start_id, 'User' AS start_type, formatRowNoNewline('JSONEachRow', u3.email_address AS email, u3.full_name AS name, u3.user_id AS user_id) AS end_properties, u3.email_address AS end_email, u3.full_name AS end_name, u3.user_id AS end_user_id, formatRowNoNewline('JSONEachRow', a_1.email_address, a_1.full_name, a_1.user_id) AS start_properties, a_1.email_address AS start_email, a_1.full_name AS start_name, a_1.user_id AS start_user_id, 2 AS hop_count, ['AUTHORED', 'FOLLOWS'] AS path_relationships, [formatRowNoNewline('JSONEachRow', r1.timestamp, r1.interaction_weight), formatRowNoNewline('JSONEachRow', r2.timestamp, r2.interaction_weight)] AS rel_properties, [toString(a_1.user_id), toString(p2.post_id), toString(u3.user_id)] AS path_nodes
-FROM brahmand.users_bench a_1
-INNER JOIN brahmand.interactions r1 ON a_1.user_id = r1.from_id
-INNER JOIN brahmand.posts_bench p2 ON r1.to_id = p2.post_id
-INNER JOIN brahmand.interactions r2 ON p2.post_id = r2.from_id
-INNER JOIN brahmand.users_bench u3 ON r2.to_id = u3.user_id
-WHERE r1.interaction_type = 'AUTHORED' AND r1.from_type = 'User' AND r1.to_type = 'Post' AND r2.interaction_type = 'FOLLOWS' AND r2.from_type = 'Post' AND r2.to_type = 'User'
+SELECT 
+      'AUTHORED' AS "__cg_type", 
+      'Post' AS "__cg_from_label", 
+      'User' AS "__cg_to_label", 
+      e.from_id AS "__cg_rid_0", 
+      e.to_id AS "__cg_rid_1", 
+      e.interaction_type AS "__cg_rid_2", 
+      e.timestamp AS "__cg_rid_3", 
+      e.from_id AS "__cg_from_0", 
+      e.to_id AS "__cg_to_0", 
+      e.from_id AS "__cg_start_0", 
+      e.to_id AS "__cg_end_0", 
+      'Post' AS "__cg_start_label", 
+      'User' AS "__cg_end_label", 
+      concat('AUTHORED:Post:User:', toString(tuple(e.from_id, e.to_id, e.interaction_type, e.timestamp))) AS "__cg_key"
+FROM brahmand.interactions AS e
+WHERE ((((e."interaction_type" = 'AUTHORED') AND (e."from_type" = 'Post')) AND (e."to_type" = 'User')))
+
 UNION ALL
-SELECT 'User' AS end_type, u3.user_id AS end_id, a_1.user_id AS start_id, 'User' AS start_type, formatRowNoNewline('JSONEachRow', u3.email_address AS email, u3.full_name AS name, u3.user_id AS user_id) AS end_properties, u3.email_address AS end_email, u3.full_name AS end_name, u3.user_id AS end_user_id, formatRowNoNewline('JSONEachRow', a_1.email_address, a_1.full_name, a_1.user_id) AS start_properties, a_1.email_address AS start_email, a_1.full_name AS start_name, a_1.user_id AS start_user_id, 2 AS hop_count, ['AUTHORED', 'LIKES'] AS path_relationships, [formatRowNoNewline('JSONEachRow', r1.timestamp, r1.interaction_weight), formatRowNoNewline('JSONEachRow', r2.timestamp, r2.interaction_weight)] AS rel_properties, [toString(a_1.user_id), toString(p2.post_id), toString(u3.user_id)] AS path_nodes
-FROM brahmand.users_bench a_1
-INNER JOIN brahmand.interactions r1 ON a_1.user_id = r1.from_id
-INNER JOIN brahmand.posts_bench p2 ON r1.to_id = p2.post_id
-INNER JOIN brahmand.interactions r2 ON p2.post_id = r2.from_id
-INNER JOIN brahmand.users_bench u3 ON r2.to_id = u3.user_id
-WHERE r1.interaction_type = 'AUTHORED' AND r1.from_type = 'User' AND r1.to_type = 'Post' AND r2.interaction_type = 'LIKES' AND r2.from_type = 'Post' AND r2.to_type = 'User'
+SELECT 
+      'AUTHORED' AS "__cg_type", 
+      'User' AS "__cg_from_label", 
+      'Post' AS "__cg_to_label", 
+      e.from_id AS "__cg_rid_0", 
+      e.to_id AS "__cg_rid_1", 
+      e.interaction_type AS "__cg_rid_2", 
+      e.timestamp AS "__cg_rid_3", 
+      e.from_id AS "__cg_from_0", 
+      e.to_id AS "__cg_to_0", 
+      e.from_id AS "__cg_start_0", 
+      e.to_id AS "__cg_end_0", 
+      'User' AS "__cg_start_label", 
+      'Post' AS "__cg_end_label", 
+      concat('AUTHORED:User:Post:', toString(tuple(e.from_id, e.to_id, e.interaction_type, e.timestamp))) AS "__cg_key"
+FROM brahmand.interactions AS e
+WHERE ((((e."interaction_type" = 'AUTHORED') AND (e."from_type" = 'User')) AND (e."to_type" = 'Post')))
+
 UNION ALL
-SELECT 'User' AS end_type, u3.user_id AS end_id, a_1.user_id AS start_id, 'User' AS start_type, formatRowNoNewline('JSONEachRow', u3.email_address AS email, u3.full_name AS name, u3.user_id AS user_id) AS end_properties, u3.email_address AS end_email, u3.full_name AS end_name, u3.user_id AS end_user_id, formatRowNoNewline('JSONEachRow', a_1.email_address, a_1.full_name, a_1.user_id) AS start_properties, a_1.email_address AS start_email, a_1.full_name AS start_name, a_1.user_id AS start_user_id, 2 AS hop_count, ['AUTHORED', 'SHARED'] AS path_relationships, [formatRowNoNewline('JSONEachRow', r1.timestamp, r1.interaction_weight), formatRowNoNewline('JSONEachRow', r2.timestamp, r2.interaction_weight)] AS rel_properties, [toString(a_1.user_id), toString(p2.post_id), toString(u3.user_id)] AS path_nodes
-FROM brahmand.users_bench a_1
-INNER JOIN brahmand.interactions r1 ON a_1.user_id = r1.from_id
-INNER JOIN brahmand.posts_bench p2 ON r1.to_id = p2.post_id
-INNER JOIN brahmand.interactions r2 ON p2.post_id = r2.from_id
-INNER JOIN brahmand.users_bench u3 ON r2.to_id = u3.user_id
-WHERE r1.interaction_type = 'AUTHORED' AND r1.from_type = 'User' AND r1.to_type = 'Post' AND r2.interaction_type = 'SHARED' AND r2.from_type = 'Post' AND r2.to_type = 'User'
+SELECT 
+      'AUTHORED' AS "__cg_type", 
+      'User' AS "__cg_from_label", 
+      'User' AS "__cg_to_label", 
+      e.from_id AS "__cg_rid_0", 
+      e.to_id AS "__cg_rid_1", 
+      e.interaction_type AS "__cg_rid_2", 
+      e.timestamp AS "__cg_rid_3", 
+      e.from_id AS "__cg_from_0", 
+      e.to_id AS "__cg_to_0", 
+      e.from_id AS "__cg_start_0", 
+      e.to_id AS "__cg_end_0", 
+      'User' AS "__cg_start_label", 
+      'User' AS "__cg_end_label", 
+      concat('AUTHORED:User:User:', toString(tuple(e.from_id, e.to_id, e.interaction_type, e.timestamp))) AS "__cg_key"
+FROM brahmand.interactions AS e
+WHERE ((((e."interaction_type" = 'AUTHORED') AND (e."from_type" = 'User')) AND (e."to_type" = 'User')))
+
 UNION ALL
-SELECT 'User' AS end_type, u3.user_id AS end_id, a_1.user_id AS start_id, 'User' AS start_type, formatRowNoNewline('JSONEachRow', u3.email_address AS email, u3.full_name AS name, u3.user_id AS user_id) AS end_properties, u3.email_address AS end_email, u3.full_name AS end_name, u3.user_id AS end_user_id, formatRowNoNewline('JSONEachRow', a_1.email_address, a_1.full_name, a_1.user_id) AS start_properties, a_1.email_address AS start_email, a_1.full_name AS start_name, a_1.user_id AS start_user_id, 2 AS hop_count, ['AUTHORED', 'AUTHORED'] AS path_relationships, [formatRowNoNewline('JSONEachRow', r1.timestamp, r1.interaction_weight), formatRowNoNewline('JSONEachRow', r2.timestamp, r2.interaction_weight)] AS rel_properties, [toString(a_1.user_id), toString(u2.user_id), toString(u3.user_id)] AS path_nodes
-FROM brahmand.users_bench a_1
-INNER JOIN brahmand.interactions r1 ON a_1.user_id = r1.from_id
-INNER JOIN brahmand.users_bench u2 ON r1.to_id = u2.user_id
-INNER JOIN brahmand.interactions r2 ON u2.user_id = r2.from_id
-INNER JOIN brahmand.users_bench u3 ON r2.to_id = u3.user_id
-WHERE r1.interaction_type = 'AUTHORED' AND r1.from_type = 'User' AND r1.to_type = 'User' AND r2.interaction_type = 'AUTHORED' AND r2.from_type = 'User' AND r2.to_type = 'User' AND NOT ((r1.from_id = r2.from_id) AND (r1.to_id = r2.to_id))
+SELECT 
+      'COMMENTED' AS "__cg_type", 
+      'Post' AS "__cg_from_label", 
+      'Post' AS "__cg_to_label", 
+      e.from_id AS "__cg_rid_0", 
+      e.to_id AS "__cg_rid_1", 
+      e.interaction_type AS "__cg_rid_2", 
+      e.timestamp AS "__cg_rid_3", 
+      e.from_id AS "__cg_from_0", 
+      e.to_id AS "__cg_to_0", 
+      e.from_id AS "__cg_start_0", 
+      e.to_id AS "__cg_end_0", 
+      'Post' AS "__cg_start_label", 
+      'Post' AS "__cg_end_label", 
+      concat('COMMENTED:Post:Post:', toString(tuple(e.from_id, e.to_id, e.interaction_type, e.timestamp))) AS "__cg_key"
+FROM brahmand.interactions AS e
+WHERE ((((e."interaction_type" = 'COMMENTED') AND (e."from_type" = 'Post')) AND (e."to_type" = 'Post')))
+
 UNION ALL
-SELECT 'User' AS end_type, u3.user_id AS end_id, a_1.user_id AS start_id, 'User' AS start_type, formatRowNoNewline('JSONEachRow', u3.email_address AS email, u3.full_name AS name, u3.user_id AS user_id) AS end_properties, u3.email_address AS end_email, u3.full_name AS end_name, u3.user_id AS end_user_id, formatRowNoNewline('JSONEachRow', a_1.email_address, a_1.full_name, a_1.user_id) AS start_properties, a_1.email_address AS start_email, a_1.full_name AS start_name, a_1.user_id AS start_user_id, 2 AS hop_count, ['AUTHORED', 'COMMENTED'] AS path_relationships, [formatRowNoNewline('JSONEachRow', r1.timestamp, r1.interaction_weight), formatRowNoNewline('JSONEachRow', r2.timestamp, r2.interaction_weight)] AS rel_properties, [toString(a_1.user_id), toString(u2.user_id), toString(u3.user_id)] AS path_nodes
-FROM brahmand.users_bench a_1
-INNER JOIN brahmand.interactions r1 ON a_1.user_id = r1.from_id
-INNER JOIN brahmand.users_bench u2 ON r1.to_id = u2.user_id
-INNER JOIN brahmand.interactions r2 ON u2.user_id = r2.from_id
-INNER JOIN brahmand.users_bench u3 ON r2.to_id = u3.user_id
-WHERE r1.interaction_type = 'AUTHORED' AND r1.from_type = 'User' AND r1.to_type = 'User' AND r2.interaction_type = 'COMMENTED' AND r2.from_type = 'User' AND r2.to_type = 'User'
+SELECT 
+      'COMMENTED' AS "__cg_type", 
+      'Post' AS "__cg_from_label", 
+      'User' AS "__cg_to_label", 
+      e.from_id AS "__cg_rid_0", 
+      e.to_id AS "__cg_rid_1", 
+      e.interaction_type AS "__cg_rid_2", 
+      e.timestamp AS "__cg_rid_3", 
+      e.from_id AS "__cg_from_0", 
+      e.to_id AS "__cg_to_0", 
+      e.from_id AS "__cg_start_0", 
+      e.to_id AS "__cg_end_0", 
+      'Post' AS "__cg_start_label", 
+      'User' AS "__cg_end_label", 
+      concat('COMMENTED:Post:User:', toString(tuple(e.from_id, e.to_id, e.interaction_type, e.timestamp))) AS "__cg_key"
+FROM brahmand.interactions AS e
+WHERE ((((e."interaction_type" = 'COMMENTED') AND (e."from_type" = 'Post')) AND (e."to_type" = 'User')))
+
 UNION ALL
-SELECT 'User' AS end_type, u3.user_id AS end_id, a_1.user_id AS start_id, 'User' AS start_type, formatRowNoNewline('JSONEachRow', u3.email_address AS email, u3.full_name AS name, u3.user_id AS user_id) AS end_properties, u3.email_address AS end_email, u3.full_name AS end_name, u3.user_id AS end_user_id, formatRowNoNewline('JSONEachRow', a_1.email_address, a_1.full_name, a_1.user_id) AS start_properties, a_1.email_address AS start_email, a_1.full_name AS start_name, a_1.user_id AS start_user_id, 2 AS hop_count, ['AUTHORED', 'FOLLOWS'] AS path_relationships, [formatRowNoNewline('JSONEachRow', r1.timestamp, r1.interaction_weight), formatRowNoNewline('JSONEachRow', r2.timestamp, r2.interaction_weight)] AS rel_properties, [toString(a_1.user_id), toString(u2.user_id), toString(u3.user_id)] AS path_nodes
-FROM brahmand.users_bench a_1
-INNER JOIN brahmand.interactions r1 ON a_1.user_id = r1.from_id
-INNER JOIN brahmand.users_bench u2 ON r1.to_id = u2.user_id
-INNER JOIN brahmand.interactions r2 ON u2.user_id = r2.from_id
-INNER JOIN brahmand.users_bench u3 ON r2.to_id = u3.user_id
-WHERE r1.interaction_type = 'AUTHORED' AND r1.from_type = 'User' AND r1.to_type = 'User' AND r2.interaction_type = 'FOLLOWS' AND r2.from_type = 'User' AND r2.to_type = 'User'
+SELECT 
+      'COMMENTED' AS "__cg_type", 
+      'User' AS "__cg_from_label", 
+      'Post' AS "__cg_to_label", 
+      e.from_id AS "__cg_rid_0", 
+      e.to_id AS "__cg_rid_1", 
+      e.interaction_type AS "__cg_rid_2", 
+      e.timestamp AS "__cg_rid_3", 
+      e.from_id AS "__cg_from_0", 
+      e.to_id AS "__cg_to_0", 
+      e.from_id AS "__cg_start_0", 
+      e.to_id AS "__cg_end_0", 
+      'User' AS "__cg_start_label", 
+      'Post' AS "__cg_end_label", 
+      concat('COMMENTED:User:Post:', toString(tuple(e.from_id, e.to_id, e.interaction_type, e.timestamp))) AS "__cg_key"
+FROM brahmand.interactions AS e
+WHERE ((((e."interaction_type" = 'COMMENTED') AND (e."from_type" = 'User')) AND (e."to_type" = 'Post')))
+
 UNION ALL
-SELECT 'User' AS end_type, u3.user_id AS end_id, a_1.user_id AS start_id, 'User' AS start_type, formatRowNoNewline('JSONEachRow', u3.email_address AS email, u3.full_name AS name, u3.user_id AS user_id) AS end_properties, u3.email_address AS end_email, u3.full_name AS end_name, u3.user_id AS end_user_id, formatRowNoNewline('JSONEachRow', a_1.email_address, a_1.full_name, a_1.user_id) AS start_properties, a_1.email_address AS start_email, a_1.full_name AS start_name, a_1.user_id AS start_user_id, 2 AS hop_count, ['AUTHORED', 'LIKES'] AS path_relationships, [formatRowNoNewline('JSONEachRow', r1.timestamp, r1.interaction_weight), formatRowNoNewline('JSONEachRow', r2.timestamp, r2.interaction_weight)] AS rel_properties, [toString(a_1.user_id), toString(u2.user_id), toString(u3.user_id)] AS path_nodes
-FROM brahmand.users_bench a_1
-INNER JOIN brahmand.interactions r1 ON a_1.user_id = r1.from_id
-INNER JOIN brahmand.users_bench u2 ON r1.to_id = u2.user_id
-INNER JOIN brahmand.interactions r2 ON u2.user_id = r2.from_id
-INNER JOIN brahmand.users_bench u3 ON r2.to_id = u3.user_id
-WHERE r1.interaction_type = 'AUTHORED' AND r1.from_type = 'User' AND r1.to_type = 'User' AND r2.interaction_type = 'LIKES' AND r2.from_type = 'User' AND r2.to_type = 'User'
+SELECT 
+      'COMMENTED' AS "__cg_type", 
+      'User' AS "__cg_from_label", 
+      'User' AS "__cg_to_label", 
+      e.from_id AS "__cg_rid_0", 
+      e.to_id AS "__cg_rid_1", 
+      e.interaction_type AS "__cg_rid_2", 
+      e.timestamp AS "__cg_rid_3", 
+      e.from_id AS "__cg_from_0", 
+      e.to_id AS "__cg_to_0", 
+      e.from_id AS "__cg_start_0", 
+      e.to_id AS "__cg_end_0", 
+      'User' AS "__cg_start_label", 
+      'User' AS "__cg_end_label", 
+      concat('COMMENTED:User:User:', toString(tuple(e.from_id, e.to_id, e.interaction_type, e.timestamp))) AS "__cg_key"
+FROM brahmand.interactions AS e
+WHERE ((((e."interaction_type" = 'COMMENTED') AND (e."from_type" = 'User')) AND (e."to_type" = 'User')))
+
 UNION ALL
-SELECT 'User' AS end_type, u3.user_id AS end_id, a_1.user_id AS start_id, 'User' AS start_type, formatRowNoNewline('JSONEachRow', u3.email_address AS email, u3.full_name AS name, u3.user_id AS user_id) AS end_properties, u3.email_address AS end_email, u3.full_name AS end_name, u3.user_id AS end_user_id, formatRowNoNewline('JSONEachRow', a_1.email_address, a_1.full_name, a_1.user_id) AS start_properties, a_1.email_address AS start_email, a_1.full_name AS start_name, a_1.user_id AS start_user_id, 2 AS hop_count, ['AUTHORED', 'SHARED'] AS path_relationships, [formatRowNoNewline('JSONEachRow', r1.timestamp, r1.interaction_weight), formatRowNoNewline('JSONEachRow', r2.timestamp, r2.interaction_weight)] AS rel_properties, [toString(a_1.user_id), toString(u2.user_id), toString(u3.user_id)] AS path_nodes
-FROM brahmand.users_bench a_1
-INNER JOIN brahmand.interactions r1 ON a_1.user_id = r1.from_id
-INNER JOIN brahmand.users_bench u2 ON r1.to_id = u2.user_id
-INNER JOIN brahmand.interactions r2 ON u2.user_id = r2.from_id
-INNER JOIN brahmand.users_bench u3 ON r2.to_id = u3.user_id
-WHERE r1.interaction_type = 'AUTHORED' AND r1.from_type = 'User' AND r1.to_type = 'User' AND r2.interaction_type = 'SHARED' AND r2.from_type = 'User' AND r2.to_type = 'User'
+SELECT 
+      'FOLLOWS' AS "__cg_type", 
+      'Post' AS "__cg_from_label", 
+      'Post' AS "__cg_to_label", 
+      e.from_id AS "__cg_rid_0", 
+      e.to_id AS "__cg_rid_1", 
+      e.interaction_type AS "__cg_rid_2", 
+      e.timestamp AS "__cg_rid_3", 
+      e.from_id AS "__cg_from_0", 
+      e.to_id AS "__cg_to_0", 
+      e.from_id AS "__cg_start_0", 
+      e.to_id AS "__cg_end_0", 
+      'Post' AS "__cg_start_label", 
+      'Post' AS "__cg_end_label", 
+      concat('FOLLOWS:Post:Post:', toString(tuple(e.from_id, e.to_id, e.interaction_type, e.timestamp))) AS "__cg_key"
+FROM brahmand.interactions AS e
+WHERE ((((e."interaction_type" = 'FOLLOWS') AND (e."from_type" = 'Post')) AND (e."to_type" = 'Post')))
+
 UNION ALL
-SELECT 'User' AS end_type, u3.user_id AS end_id, a_1.user_id AS start_id, 'User' AS start_type, formatRowNoNewline('JSONEachRow', u3.email_address AS email, u3.full_name AS name, u3.user_id AS user_id) AS end_properties, u3.email_address AS end_email, u3.full_name AS end_name, u3.user_id AS end_user_id, formatRowNoNewline('JSONEachRow', a_1.email_address, a_1.full_name, a_1.user_id) AS start_properties, a_1.email_address AS start_email, a_1.full_name AS start_name, a_1.user_id AS start_user_id, 2 AS hop_count, ['COMMENTED', 'AUTHORED'] AS path_relationships, [formatRowNoNewline('JSONEachRow', r1.timestamp, r1.interaction_weight), formatRowNoNewline('JSONEachRow', r2.timestamp, r2.interaction_weight)] AS rel_properties, [toString(a_1.user_id), toString(p2.post_id), toString(u3.user_id)] AS path_nodes
-FROM brahmand.users_bench a_1
-INNER JOIN brahmand.interactions r1 ON a_1.user_id = r1.from_id
-INNER JOIN brahmand.posts_bench p2 ON r1.to_id = p2.post_id
-INNER JOIN brahmand.interactions r2 ON p2.post_id = r2.from_id
-INNER JOIN brahmand.users_bench u3 ON r2.to_id = u3.user_id
-WHERE r1.interaction_type = 'COMMENTED' AND r1.from_type = 'User' AND r1.to_type = 'Post' AND r2.interaction_type = 'AUTHORED' AND r2.from_type = 'Post' AND r2.to_type = 'User'
+SELECT 
+      'FOLLOWS' AS "__cg_type", 
+      'Post' AS "__cg_from_label", 
+      'User' AS "__cg_to_label", 
+      e.from_id AS "__cg_rid_0", 
+      e.to_id AS "__cg_rid_1", 
+      e.interaction_type AS "__cg_rid_2", 
+      e.timestamp AS "__cg_rid_3", 
+      e.from_id AS "__cg_from_0", 
+      e.to_id AS "__cg_to_0", 
+      e.from_id AS "__cg_start_0", 
+      e.to_id AS "__cg_end_0", 
+      'Post' AS "__cg_start_label", 
+      'User' AS "__cg_end_label", 
+      concat('FOLLOWS:Post:User:', toString(tuple(e.from_id, e.to_id, e.interaction_type, e.timestamp))) AS "__cg_key"
+FROM brahmand.interactions AS e
+WHERE ((((e."interaction_type" = 'FOLLOWS') AND (e."from_type" = 'Post')) AND (e."to_type" = 'User')))
+
 UNION ALL
-SELECT 'User' AS end_type, u3.user_id AS end_id, a_1.user_id AS start_id, 'User' AS start_type, formatRowNoNewline('JSONEachRow', u3.email_address AS email, u3.full_name AS name, u3.user_id AS user_id) AS end_properties, u3.email_address AS end_email, u3.full_name AS end_name, u3.user_id AS end_user_id, formatRowNoNewline('JSONEachRow', a_1.email_address, a_1.full_name, a_1.user_id) AS start_properties, a_1.email_address AS start_email, a_1.full_name AS start_name, a_1.user_id AS start_user_id, 2 AS hop_count, ['COMMENTED', 'COMMENTED'] AS path_relationships, [formatRowNoNewline('JSONEachRow', r1.timestamp, r1.interaction_weight), formatRowNoNewline('JSONEachRow', r2.timestamp, r2.interaction_weight)] AS rel_properties, [toString(a_1.user_id), toString(p2.post_id), toString(u3.user_id)] AS path_nodes
-FROM brahmand.users_bench a_1
-INNER JOIN brahmand.interactions r1 ON a_1.user_id = r1.from_id
-INNER JOIN brahmand.posts_bench p2 ON r1.to_id = p2.post_id
-INNER JOIN brahmand.interactions r2 ON p2.post_id = r2.from_id
-INNER JOIN brahmand.users_bench u3 ON r2.to_id = u3.user_id
-WHERE r1.interaction_type = 'COMMENTED' AND r1.from_type = 'User' AND r1.to_type = 'Post' AND r2.interaction_type = 'COMMENTED' AND r2.from_type = 'Post' AND r2.to_type = 'User' AND NOT ((r1.from_id = r2.from_id) AND (r1.to_id = r2.to_id))
+SELECT 
+      'FOLLOWS' AS "__cg_type", 
+      'User' AS "__cg_from_label", 
+      'Post' AS "__cg_to_label", 
+      e.from_id AS "__cg_rid_0", 
+      e.to_id AS "__cg_rid_1", 
+      e.interaction_type AS "__cg_rid_2", 
+      e.timestamp AS "__cg_rid_3", 
+      e.from_id AS "__cg_from_0", 
+      e.to_id AS "__cg_to_0", 
+      e.from_id AS "__cg_start_0", 
+      e.to_id AS "__cg_end_0", 
+      'User' AS "__cg_start_label", 
+      'Post' AS "__cg_end_label", 
+      concat('FOLLOWS:User:Post:', toString(tuple(e.from_id, e.to_id, e.interaction_type, e.timestamp))) AS "__cg_key"
+FROM brahmand.interactions AS e
+WHERE ((((e."interaction_type" = 'FOLLOWS') AND (e."from_type" = 'User')) AND (e."to_type" = 'Post')))
+
 UNION ALL
-SELECT 'User' AS end_type, u3.user_id AS end_id, a_1.user_id AS start_id, 'User' AS start_type, formatRowNoNewline('JSONEachRow', u3.email_address AS email, u3.full_name AS name, u3.user_id AS user_id) AS end_properties, u3.email_address AS end_email, u3.full_name AS end_name, u3.user_id AS end_user_id, formatRowNoNewline('JSONEachRow', a_1.email_address, a_1.full_name, a_1.user_id) AS start_properties, a_1.email_address AS start_email, a_1.full_name AS start_name, a_1.user_id AS start_user_id, 2 AS hop_count, ['COMMENTED', 'FOLLOWS'] AS path_relationships, [formatRowNoNewline('JSONEachRow', r1.timestamp, r1.interaction_weight), formatRowNoNewline('JSONEachRow', r2.timestamp, r2.interaction_weight)] AS rel_properties, [toString(a_1.user_id), toString(p2.post_id), toString(u3.user_id)] AS path_nodes
-FROM brahmand.users_bench a_1
-INNER JOIN brahmand.interactions r1 ON a_1.user_id = r1.from_id
-INNER JOIN brahmand.posts_bench p2 ON r1.to_id = p2.post_id
-INNER JOIN brahmand.interactions r2 ON p2.post_id = r2.from_id
-INNER JOIN brahmand.users_bench u3 ON r2.to_id = u3.user_id
-WHERE r1.interaction_type = 'COMMENTED' AND r1.from_type = 'User' AND r1.to_type = 'Post' AND r2.interaction_type = 'FOLLOWS' AND r2.from_type = 'Post' AND r2.to_type = 'User'
+SELECT 
+      'FOLLOWS' AS "__cg_type", 
+      'User' AS "__cg_from_label", 
+      'User' AS "__cg_to_label", 
+      e.from_id AS "__cg_rid_0", 
+      e.to_id AS "__cg_rid_1", 
+      e.interaction_type AS "__cg_rid_2", 
+      e.timestamp AS "__cg_rid_3", 
+      e.from_id AS "__cg_from_0", 
+      e.to_id AS "__cg_to_0", 
+      e.from_id AS "__cg_start_0", 
+      e.to_id AS "__cg_end_0", 
+      'User' AS "__cg_start_label", 
+      'User' AS "__cg_end_label", 
+      concat('FOLLOWS:User:User:', toString(tuple(e.from_id, e.to_id, e.interaction_type, e.timestamp))) AS "__cg_key"
+FROM brahmand.interactions AS e
+WHERE ((((e."interaction_type" = 'FOLLOWS') AND (e."from_type" = 'User')) AND (e."to_type" = 'User')))
+
 UNION ALL
-SELECT 'User' AS end_type, u3.user_id AS end_id, a_1.user_id AS start_id, 'User' AS start_type, formatRowNoNewline('JSONEachRow', u3.email_address AS email, u3.full_name AS name, u3.user_id AS user_id) AS end_properties, u3.email_address AS end_email, u3.full_name AS end_name, u3.user_id AS end_user_id, formatRowNoNewline('JSONEachRow', a_1.email_address, a_1.full_name, a_1.user_id) AS start_properties, a_1.email_address AS start_email, a_1.full_name AS start_name, a_1.user_id AS start_user_id, 2 AS hop_count, ['COMMENTED', 'LIKES'] AS path_relationships, [formatRowNoNewline('JSONEachRow', r1.timestamp, r1.interaction_weight), formatRowNoNewline('JSONEachRow', r2.timestamp, r2.interaction_weight)] AS rel_properties, [toString(a_1.user_id), toString(p2.post_id), toString(u3.user_id)] AS path_nodes
-FROM brahmand.users_bench a_1
-INNER JOIN brahmand.interactions r1 ON a_1.user_id = r1.from_id
-INNER JOIN brahmand.posts_bench p2 ON r1.to_id = p2.post_id
-INNER JOIN brahmand.interactions r2 ON p2.post_id = r2.from_id
-INNER JOIN brahmand.users_bench u3 ON r2.to_id = u3.user_id
-WHERE r1.interaction_type = 'COMMENTED' AND r1.from_type = 'User' AND r1.to_type = 'Post' AND r2.interaction_type = 'LIKES' AND r2.from_type = 'Post' AND r2.to_type = 'User'
+SELECT 
+      'LIKES' AS "__cg_type", 
+      'Post' AS "__cg_from_label", 
+      'Post' AS "__cg_to_label", 
+      e.from_id AS "__cg_rid_0", 
+      e.to_id AS "__cg_rid_1", 
+      e.interaction_type AS "__cg_rid_2", 
+      e.timestamp AS "__cg_rid_3", 
+      e.from_id AS "__cg_from_0", 
+      e.to_id AS "__cg_to_0", 
+      e.from_id AS "__cg_start_0", 
+      e.to_id AS "__cg_end_0", 
+      'Post' AS "__cg_start_label", 
+      'Post' AS "__cg_end_label", 
+      concat('LIKES:Post:Post:', toString(tuple(e.from_id, e.to_id, e.interaction_type, e.timestamp))) AS "__cg_key"
+FROM brahmand.interactions AS e
+WHERE ((((e."interaction_type" = 'LIKES') AND (e."from_type" = 'Post')) AND (e."to_type" = 'Post')))
+
 UNION ALL
-SELECT 'User' AS end_type, u3.user_id AS end_id, a_1.user_id AS start_id, 'User' AS start_type, formatRowNoNewline('JSONEachRow', u3.email_address AS email, u3.full_name AS name, u3.user_id AS user_id) AS end_properties, u3.email_address AS end_email, u3.full_name AS end_name, u3.user_id AS end_user_id, formatRowNoNewline('JSONEachRow', a_1.email_address, a_1.full_name, a_1.user_id) AS start_properties, a_1.email_address AS start_email, a_1.full_name AS start_name, a_1.user_id AS start_user_id, 2 AS hop_count, ['COMMENTED', 'SHARED'] AS path_relationships, [formatRowNoNewline('JSONEachRow', r1.timestamp, r1.interaction_weight), formatRowNoNewline('JSONEachRow', r2.timestamp, r2.interaction_weight)] AS rel_properties, [toString(a_1.user_id), toString(p2.post_id), toString(u3.user_id)] AS path_nodes
-FROM brahmand.users_bench a_1
-INNER JOIN brahmand.interactions r1 ON a_1.user_id = r1.from_id
-INNER JOIN brahmand.posts_bench p2 ON r1.to_id = p2.post_id
-INNER JOIN brahmand.interactions r2 ON p2.post_id = r2.from_id
-INNER JOIN brahmand.users_bench u3 ON r2.to_id = u3.user_id
-WHERE r1.interaction_type = 'COMMENTED' AND r1.from_type = 'User' AND r1.to_type = 'Post' AND r2.interaction_type = 'SHARED' AND r2.from_type = 'Post' AND r2.to_type = 'User'
+SELECT 
+      'LIKES' AS "__cg_type", 
+      'Post' AS "__cg_from_label", 
+      'User' AS "__cg_to_label", 
+      e.from_id AS "__cg_rid_0", 
+      e.to_id AS "__cg_rid_1", 
+      e.interaction_type AS "__cg_rid_2", 
+      e.timestamp AS "__cg_rid_3", 
+      e.from_id AS "__cg_from_0", 
+      e.to_id AS "__cg_to_0", 
+      e.from_id AS "__cg_start_0", 
+      e.to_id AS "__cg_end_0", 
+      'Post' AS "__cg_start_label", 
+      'User' AS "__cg_end_label", 
+      concat('LIKES:Post:User:', toString(tuple(e.from_id, e.to_id, e.interaction_type, e.timestamp))) AS "__cg_key"
+FROM brahmand.interactions AS e
+WHERE ((((e."interaction_type" = 'LIKES') AND (e."from_type" = 'Post')) AND (e."to_type" = 'User')))
+
 UNION ALL
-SELECT 'User' AS end_type, u3.user_id AS end_id, a_1.user_id AS start_id, 'User' AS start_type, formatRowNoNewline('JSONEachRow', u3.email_address AS email, u3.full_name AS name, u3.user_id AS user_id) AS end_properties, u3.email_address AS end_email, u3.full_name AS end_name, u3.user_id AS end_user_id, formatRowNoNewline('JSONEachRow', a_1.email_address, a_1.full_name, a_1.user_id) AS start_properties, a_1.email_address AS start_email, a_1.full_name AS start_name, a_1.user_id AS start_user_id, 2 AS hop_count, ['COMMENTED', 'AUTHORED'] AS path_relationships, [formatRowNoNewline('JSONEachRow', r1.timestamp, r1.interaction_weight), formatRowNoNewline('JSONEachRow', r2.timestamp, r2.interaction_weight)] AS rel_properties, [toString(a_1.user_id), toString(u2.user_id), toString(u3.user_id)] AS path_nodes
-FROM brahmand.users_bench a_1
-INNER JOIN brahmand.interactions r1 ON a_1.user_id = r1.from_id
-INNER JOIN brahmand.users_bench u2 ON r1.to_id = u2.user_id
-INNER JOIN brahmand.interactions r2 ON u2.user_id = r2.from_id
-INNER JOIN brahmand.users_bench u3 ON r2.to_id = u3.user_id
-WHERE r1.interaction_type = 'COMMENTED' AND r1.from_type = 'User' AND r1.to_type = 'User' AND r2.interaction_type = 'AUTHORED' AND r2.from_type = 'User' AND r2.to_type = 'User'
+SELECT 
+      'LIKES' AS "__cg_type", 
+      'User' AS "__cg_from_label", 
+      'Post' AS "__cg_to_label", 
+      e.from_id AS "__cg_rid_0", 
+      e.to_id AS "__cg_rid_1", 
+      e.interaction_type AS "__cg_rid_2", 
+      e.timestamp AS "__cg_rid_3", 
+      e.from_id AS "__cg_from_0", 
+      e.to_id AS "__cg_to_0", 
+      e.from_id AS "__cg_start_0", 
+      e.to_id AS "__cg_end_0", 
+      'User' AS "__cg_start_label", 
+      'Post' AS "__cg_end_label", 
+      concat('LIKES:User:Post:', toString(tuple(e.from_id, e.to_id, e.interaction_type, e.timestamp))) AS "__cg_key"
+FROM brahmand.interactions AS e
+WHERE ((((e."interaction_type" = 'LIKES') AND (e."from_type" = 'User')) AND (e."to_type" = 'Post')))
+
 UNION ALL
-SELECT 'User' AS end_type, u3.user_id AS end_id, a_1.user_id AS start_id, 'User' AS start_type, formatRowNoNewline('JSONEachRow', u3.email_address AS email, u3.full_name AS name, u3.user_id AS user_id) AS end_properties, u3.email_address AS end_email, u3.full_name AS end_name, u3.user_id AS end_user_id, formatRowNoNewline('JSONEachRow', a_1.email_address, a_1.full_name, a_1.user_id) AS start_properties, a_1.email_address AS start_email, a_1.full_name AS start_name, a_1.user_id AS start_user_id, 2 AS hop_count, ['COMMENTED', 'COMMENTED'] AS path_relationships, [formatRowNoNewline('JSONEachRow', r1.timestamp, r1.interaction_weight), formatRowNoNewline('JSONEachRow', r2.timestamp, r2.interaction_weight)] AS rel_properties, [toString(a_1.user_id), toString(u2.user_id), toString(u3.user_id)] AS path_nodes
-FROM brahmand.users_bench a_1
-INNER JOIN brahmand.interactions r1 ON a_1.user_id = r1.from_id
-INNER JOIN brahmand.users_bench u2 ON r1.to_id = u2.user_id
-INNER JOIN brahmand.interactions r2 ON u2.user_id = r2.from_id
-INNER JOIN brahmand.users_bench u3 ON r2.to_id = u3.user_id
-WHERE r1.interaction_type = 'COMMENTED' AND r1.from_type = 'User' AND r1.to_type = 'User' AND r2.interaction_type = 'COMMENTED' AND r2.from_type = 'User' AND r2.to_type = 'User' AND NOT ((r1.from_id = r2.from_id) AND (r1.to_id = r2.to_id))
+SELECT 
+      'LIKES' AS "__cg_type", 
+      'User' AS "__cg_from_label", 
+      'User' AS "__cg_to_label", 
+      e.from_id AS "__cg_rid_0", 
+      e.to_id AS "__cg_rid_1", 
+      e.interaction_type AS "__cg_rid_2", 
+      e.timestamp AS "__cg_rid_3", 
+      e.from_id AS "__cg_from_0", 
+      e.to_id AS "__cg_to_0", 
+      e.from_id AS "__cg_start_0", 
+      e.to_id AS "__cg_end_0", 
+      'User' AS "__cg_start_label", 
+      'User' AS "__cg_end_label", 
+      concat('LIKES:User:User:', toString(tuple(e.from_id, e.to_id, e.interaction_type, e.timestamp))) AS "__cg_key"
+FROM brahmand.interactions AS e
+WHERE ((((e."interaction_type" = 'LIKES') AND (e."from_type" = 'User')) AND (e."to_type" = 'User')))
+
 UNION ALL
-SELECT 'User' AS end_type, u3.user_id AS end_id, a_1.user_id AS start_id, 'User' AS start_type, formatRowNoNewline('JSONEachRow', u3.email_address AS email, u3.full_name AS name, u3.user_id AS user_id) AS end_properties, u3.email_address AS end_email, u3.full_name AS end_name, u3.user_id AS end_user_id, formatRowNoNewline('JSONEachRow', a_1.email_address, a_1.full_name, a_1.user_id) AS start_properties, a_1.email_address AS start_email, a_1.full_name AS start_name, a_1.user_id AS start_user_id, 2 AS hop_count, ['COMMENTED', 'FOLLOWS'] AS path_relationships, [formatRowNoNewline('JSONEachRow', r1.timestamp, r1.interaction_weight), formatRowNoNewline('JSONEachRow', r2.timestamp, r2.interaction_weight)] AS rel_properties, [toString(a_1.user_id), toString(u2.user_id), toString(u3.user_id)] AS path_nodes
-FROM brahmand.users_bench a_1
-INNER JOIN brahmand.interactions r1 ON a_1.user_id = r1.from_id
-INNER JOIN brahmand.users_bench u2 ON r1.to_id = u2.user_id
-INNER JOIN brahmand.interactions r2 ON u2.user_id = r2.from_id
-INNER JOIN brahmand.users_bench u3 ON r2.to_id = u3.user_id
-WHERE r1.interaction_type = 'COMMENTED' AND r1.from_type = 'User' AND r1.to_type = 'User' AND r2.interaction_type = 'FOLLOWS' AND r2.from_type = 'User' AND r2.to_type = 'User'
+SELECT 
+      'SHARED' AS "__cg_type", 
+      'Post' AS "__cg_from_label", 
+      'Post' AS "__cg_to_label", 
+      e.from_id AS "__cg_rid_0", 
+      e.to_id AS "__cg_rid_1", 
+      e.interaction_type AS "__cg_rid_2", 
+      e.timestamp AS "__cg_rid_3", 
+      e.from_id AS "__cg_from_0", 
+      e.to_id AS "__cg_to_0", 
+      e.from_id AS "__cg_start_0", 
+      e.to_id AS "__cg_end_0", 
+      'Post' AS "__cg_start_label", 
+      'Post' AS "__cg_end_label", 
+      concat('SHARED:Post:Post:', toString(tuple(e.from_id, e.to_id, e.interaction_type, e.timestamp))) AS "__cg_key"
+FROM brahmand.interactions AS e
+WHERE ((((e."interaction_type" = 'SHARED') AND (e."from_type" = 'Post')) AND (e."to_type" = 'Post')))
+
 UNION ALL
-SELECT 'User' AS end_type, u3.user_id AS end_id, a_1.user_id AS start_id, 'User' AS start_type, formatRowNoNewline('JSONEachRow', u3.email_address AS email, u3.full_name AS name, u3.user_id AS user_id) AS end_properties, u3.email_address AS end_email, u3.full_name AS end_name, u3.user_id AS end_user_id, formatRowNoNewline('JSONEachRow', a_1.email_address, a_1.full_name, a_1.user_id) AS start_properties, a_1.email_address AS start_email, a_1.full_name AS start_name, a_1.user_id AS start_user_id, 2 AS hop_count, ['COMMENTED', 'LIKES'] AS path_relationships, [formatRowNoNewline('JSONEachRow', r1.timestamp, r1.interaction_weight), formatRowNoNewline('JSONEachRow', r2.timestamp, r2.interaction_weight)] AS rel_properties, [toString(a_1.user_id), toString(u2.user_id), toString(u3.user_id)] AS path_nodes
-FROM brahmand.users_bench a_1
-INNER JOIN brahmand.interactions r1 ON a_1.user_id = r1.from_id
-INNER JOIN brahmand.users_bench u2 ON r1.to_id = u2.user_id
-INNER JOIN brahmand.interactions r2 ON u2.user_id = r2.from_id
-INNER JOIN brahmand.users_bench u3 ON r2.to_id = u3.user_id
-WHERE r1.interaction_type = 'COMMENTED' AND r1.from_type = 'User' AND r1.to_type = 'User' AND r2.interaction_type = 'LIKES' AND r2.from_type = 'User' AND r2.to_type = 'User'
+SELECT 
+      'SHARED' AS "__cg_type", 
+      'Post' AS "__cg_from_label", 
+      'User' AS "__cg_to_label", 
+      e.from_id AS "__cg_rid_0", 
+      e.to_id AS "__cg_rid_1", 
+      e.interaction_type AS "__cg_rid_2", 
+      e.timestamp AS "__cg_rid_3", 
+      e.from_id AS "__cg_from_0", 
+      e.to_id AS "__cg_to_0", 
+      e.from_id AS "__cg_start_0", 
+      e.to_id AS "__cg_end_0", 
+      'Post' AS "__cg_start_label", 
+      'User' AS "__cg_end_label", 
+      concat('SHARED:Post:User:', toString(tuple(e.from_id, e.to_id, e.interaction_type, e.timestamp))) AS "__cg_key"
+FROM brahmand.interactions AS e
+WHERE ((((e."interaction_type" = 'SHARED') AND (e."from_type" = 'Post')) AND (e."to_type" = 'User')))
+
 UNION ALL
-SELECT 'User' AS end_type, u3.user_id AS end_id, a_1.user_id AS start_id, 'User' AS start_type, formatRowNoNewline('JSONEachRow', u3.email_address AS email, u3.full_name AS name, u3.user_id AS user_id) AS end_properties, u3.email_address AS end_email, u3.full_name AS end_name, u3.user_id AS end_user_id, formatRowNoNewline('JSONEachRow', a_1.email_address, a_1.full_name, a_1.user_id) AS start_properties, a_1.email_address AS start_email, a_1.full_name AS start_name, a_1.user_id AS start_user_id, 2 AS hop_count, ['COMMENTED', 'SHARED'] AS path_relationships, [formatRowNoNewline('JSONEachRow', r1.timestamp, r1.interaction_weight), formatRowNoNewline('JSONEachRow', r2.timestamp, r2.interaction_weight)] AS rel_properties, [toString(a_1.user_id), toString(u2.user_id), toString(u3.user_id)] AS path_nodes
-FROM brahmand.users_bench a_1
-INNER JOIN brahmand.interactions r1 ON a_1.user_id = r1.from_id
-INNER JOIN brahmand.users_bench u2 ON r1.to_id = u2.user_id
-INNER JOIN brahmand.interactions r2 ON u2.user_id = r2.from_id
-INNER JOIN brahmand.users_bench u3 ON r2.to_id = u3.user_id
-WHERE r1.interaction_type = 'COMMENTED' AND r1.from_type = 'User' AND r1.to_type = 'User' AND r2.interaction_type = 'SHARED' AND r2.from_type = 'User' AND r2.to_type = 'User'
+SELECT 
+      'SHARED' AS "__cg_type", 
+      'User' AS "__cg_from_label", 
+      'Post' AS "__cg_to_label", 
+      e.from_id AS "__cg_rid_0", 
+      e.to_id AS "__cg_rid_1", 
+      e.interaction_type AS "__cg_rid_2", 
+      e.timestamp AS "__cg_rid_3", 
+      e.from_id AS "__cg_from_0", 
+      e.to_id AS "__cg_to_0", 
+      e.from_id AS "__cg_start_0", 
+      e.to_id AS "__cg_end_0", 
+      'User' AS "__cg_start_label", 
+      'Post' AS "__cg_end_label", 
+      concat('SHARED:User:Post:', toString(tuple(e.from_id, e.to_id, e.interaction_type, e.timestamp))) AS "__cg_key"
+FROM brahmand.interactions AS e
+WHERE ((((e."interaction_type" = 'SHARED') AND (e."from_type" = 'User')) AND (e."to_type" = 'Post')))
+
 UNION ALL
-SELECT 'User' AS end_type, u3.user_id AS end_id, a_1.user_id AS start_id, 'User' AS start_type, formatRowNoNewline('JSONEachRow', u3.email_address AS email, u3.full_name AS name, u3.user_id AS user_id) AS end_properties, u3.email_address AS end_email, u3.full_name AS end_name, u3.user_id AS end_user_id, formatRowNoNewline('JSONEachRow', a_1.email_address, a_1.full_name, a_1.user_id) AS start_properties, a_1.email_address AS start_email, a_1.full_name AS start_name, a_1.user_id AS start_user_id, 2 AS hop_count, ['FOLLOWS', 'AUTHORED'] AS path_relationships, [formatRowNoNewline('JSONEachRow', r1.timestamp, r1.interaction_weight), formatRowNoNewline('JSONEachRow', r2.timestamp, r2.interaction_weight)] AS rel_properties, [toString(a_1.user_id), toString(p2.post_id), toString(u3.user_id)] AS path_nodes
-FROM brahmand.users_bench a_1
-INNER JOIN brahmand.interactions r1 ON a_1.user_id = r1.from_id
-INNER JOIN brahmand.posts_bench p2 ON r1.to_id = p2.post_id
-INNER JOIN brahmand.interactions r2 ON p2.post_id = r2.from_id
-INNER JOIN brahmand.users_bench u3 ON r2.to_id = u3.user_id
-WHERE r1.interaction_type = 'FOLLOWS' AND r1.from_type = 'User' AND r1.to_type = 'Post' AND r2.interaction_type = 'AUTHORED' AND r2.from_type = 'Post' AND r2.to_type = 'User'
-UNION ALL
-SELECT 'User' AS end_type, u3.user_id AS end_id, a_1.user_id AS start_id, 'User' AS start_type, formatRowNoNewline('JSONEachRow', u3.email_address AS email, u3.full_name AS name, u3.user_id AS user_id) AS end_properties, u3.email_address AS end_email, u3.full_name AS end_name, u3.user_id AS end_user_id, formatRowNoNewline('JSONEachRow', a_1.email_address, a_1.full_name, a_1.user_id) AS start_properties, a_1.email_address AS start_email, a_1.full_name AS start_name, a_1.user_id AS start_user_id, 2 AS hop_count, ['FOLLOWS', 'COMMENTED'] AS path_relationships, [formatRowNoNewline('JSONEachRow', r1.timestamp, r1.interaction_weight), formatRowNoNewline('JSONEachRow', r2.timestamp, r2.interaction_weight)] AS rel_properties, [toString(a_1.user_id), toString(p2.post_id), toString(u3.user_id)] AS path_nodes
-FROM brahmand.users_bench a_1
-INNER JOIN brahmand.interactions r1 ON a_1.user_id = r1.from_id
-INNER JOIN brahmand.posts_bench p2 ON r1.to_id = p2.post_id
-INNER JOIN brahmand.interactions r2 ON p2.post_id = r2.from_id
-INNER JOIN brahmand.users_bench u3 ON r2.to_id = u3.user_id
-WHERE r1.interaction_type = 'FOLLOWS' AND r1.from_type = 'User' AND r1.to_type = 'Post' AND r2.interaction_type = 'COMMENTED' AND r2.from_type = 'Post' AND r2.to_type = 'User'
-UNION ALL
-SELECT 'User' AS end_type, u3.user_id AS end_id, a_1.user_id AS start_id, 'User' AS start_type, formatRowNoNewline('JSONEachRow', u3.email_address AS email, u3.full_name AS name, u3.user_id AS user_id) AS end_properties, u3.email_address AS end_email, u3.full_name AS end_name, u3.user_id AS end_user_id, formatRowNoNewline('JSONEachRow', a_1.email_address, a_1.full_name, a_1.user_id) AS start_properties, a_1.email_address AS start_email, a_1.full_name AS start_name, a_1.user_id AS start_user_id, 2 AS hop_count, ['FOLLOWS', 'FOLLOWS'] AS path_relationships, [formatRowNoNewline('JSONEachRow', r1.timestamp, r1.interaction_weight), formatRowNoNewline('JSONEachRow', r2.timestamp, r2.interaction_weight)] AS rel_properties, [toString(a_1.user_id), toString(p2.post_id), toString(u3.user_id)] AS path_nodes
-FROM brahmand.users_bench a_1
-INNER JOIN brahmand.interactions r1 ON a_1.user_id = r1.from_id
-INNER JOIN brahmand.posts_bench p2 ON r1.to_id = p2.post_id
-INNER JOIN brahmand.interactions r2 ON p2.post_id = r2.from_id
-INNER JOIN brahmand.users_bench u3 ON r2.to_id = u3.user_id
-WHERE r1.interaction_type = 'FOLLOWS' AND r1.from_type = 'User' AND r1.to_type = 'Post' AND r2.interaction_type = 'FOLLOWS' AND r2.from_type = 'Post' AND r2.to_type = 'User' AND NOT ((r1.from_id = r2.from_id) AND (r1.to_id = r2.to_id))
-UNION ALL
-SELECT 'User' AS end_type, u3.user_id AS end_id, a_1.user_id AS start_id, 'User' AS start_type, formatRowNoNewline('JSONEachRow', u3.email_address AS email, u3.full_name AS name, u3.user_id AS user_id) AS end_properties, u3.email_address AS end_email, u3.full_name AS end_name, u3.user_id AS end_user_id, formatRowNoNewline('JSONEachRow', a_1.email_address, a_1.full_name, a_1.user_id) AS start_properties, a_1.email_address AS start_email, a_1.full_name AS start_name, a_1.user_id AS start_user_id, 2 AS hop_count, ['FOLLOWS', 'LIKES'] AS path_relationships, [formatRowNoNewline('JSONEachRow', r1.timestamp, r1.interaction_weight), formatRowNoNewline('JSONEachRow', r2.timestamp, r2.interaction_weight)] AS rel_properties, [toString(a_1.user_id), toString(p2.post_id), toString(u3.user_id)] AS path_nodes
-FROM brahmand.users_bench a_1
-INNER JOIN brahmand.interactions r1 ON a_1.user_id = r1.from_id
-INNER JOIN brahmand.posts_bench p2 ON r1.to_id = p2.post_id
-INNER JOIN brahmand.interactions r2 ON p2.post_id = r2.from_id
-INNER JOIN brahmand.users_bench u3 ON r2.to_id = u3.user_id
-WHERE r1.interaction_type = 'FOLLOWS' AND r1.from_type = 'User' AND r1.to_type = 'Post' AND r2.interaction_type = 'LIKES' AND r2.from_type = 'Post' AND r2.to_type = 'User'
-UNION ALL
-SELECT 'User' AS end_type, u3.user_id AS end_id, a_1.user_id AS start_id, 'User' AS start_type, formatRowNoNewline('JSONEachRow', u3.email_address AS email, u3.full_name AS name, u3.user_id AS user_id) AS end_properties, u3.email_address AS end_email, u3.full_name AS end_name, u3.user_id AS end_user_id, formatRowNoNewline('JSONEachRow', a_1.email_address, a_1.full_name, a_1.user_id) AS start_properties, a_1.email_address AS start_email, a_1.full_name AS start_name, a_1.user_id AS start_user_id, 2 AS hop_count, ['FOLLOWS', 'SHARED'] AS path_relationships, [formatRowNoNewline('JSONEachRow', r1.timestamp, r1.interaction_weight), formatRowNoNewline('JSONEachRow', r2.timestamp, r2.interaction_weight)] AS rel_properties, [toString(a_1.user_id), toString(p2.post_id), toString(u3.user_id)] AS path_nodes
-FROM brahmand.users_bench a_1
-INNER JOIN brahmand.interactions r1 ON a_1.user_id = r1.from_id
-INNER JOIN brahmand.posts_bench p2 ON r1.to_id = p2.post_id
-INNER JOIN brahmand.interactions r2 ON p2.post_id = r2.from_id
-INNER JOIN brahmand.users_bench u3 ON r2.to_id = u3.user_id
-WHERE r1.interaction_type = 'FOLLOWS' AND r1.from_type = 'User' AND r1.to_type = 'Post' AND r2.interaction_type = 'SHARED' AND r2.from_type = 'Post' AND r2.to_type = 'User'
-UNION ALL
-SELECT 'User' AS end_type, u3.user_id AS end_id, a_1.user_id AS start_id, 'User' AS start_type, formatRowNoNewline('JSONEachRow', u3.email_address AS email, u3.full_name AS name, u3.user_id AS user_id) AS end_properties, u3.email_address AS end_email, u3.full_name AS end_name, u3.user_id AS end_user_id, formatRowNoNewline('JSONEachRow', a_1.email_address, a_1.full_name, a_1.user_id) AS start_properties, a_1.email_address AS start_email, a_1.full_name AS start_name, a_1.user_id AS start_user_id, 2 AS hop_count, ['FOLLOWS', 'AUTHORED'] AS path_relationships, [formatRowNoNewline('JSONEachRow', r1.timestamp, r1.interaction_weight), formatRowNoNewline('JSONEachRow', r2.timestamp, r2.interaction_weight)] AS rel_properties, [toString(a_1.user_id), toString(u2.user_id), toString(u3.user_id)] AS path_nodes
-FROM brahmand.users_bench a_1
-INNER JOIN brahmand.interactions r1 ON a_1.user_id = r1.from_id
-INNER JOIN brahmand.users_bench u2 ON r1.to_id = u2.user_id
-INNER JOIN brahmand.interactions r2 ON u2.user_id = r2.from_id
-INNER JOIN brahmand.users_bench u3 ON r2.to_id = u3.user_id
-WHERE r1.interaction_type = 'FOLLOWS' AND r1.from_type = 'User' AND r1.to_type = 'User' AND r2.interaction_type = 'AUTHORED' AND r2.from_type = 'User' AND r2.to_type = 'User'
-UNION ALL
-SELECT 'User' AS end_type, u3.user_id AS end_id, a_1.user_id AS start_id, 'User' AS start_type, formatRowNoNewline('JSONEachRow', u3.email_address AS email, u3.full_name AS name, u3.user_id AS user_id) AS end_properties, u3.email_address AS end_email, u3.full_name AS end_name, u3.user_id AS end_user_id, formatRowNoNewline('JSONEachRow', a_1.email_address, a_1.full_name, a_1.user_id) AS start_properties, a_1.email_address AS start_email, a_1.full_name AS start_name, a_1.user_id AS start_user_id, 2 AS hop_count, ['FOLLOWS', 'COMMENTED'] AS path_relationships, [formatRowNoNewline('JSONEachRow', r1.timestamp, r1.interaction_weight), formatRowNoNewline('JSONEachRow', r2.timestamp, r2.interaction_weight)] AS rel_properties, [toString(a_1.user_id), toString(u2.user_id), toString(u3.user_id)] AS path_nodes
-FROM brahmand.users_bench a_1
-INNER JOIN brahmand.interactions r1 ON a_1.user_id = r1.from_id
-INNER JOIN brahmand.users_bench u2 ON r1.to_id = u2.user_id
-INNER JOIN brahmand.interactions r2 ON u2.user_id = r2.from_id
-INNER JOIN brahmand.users_bench u3 ON r2.to_id = u3.user_id
-WHERE r1.interaction_type = 'FOLLOWS' AND r1.from_type = 'User' AND r1.to_type = 'User' AND r2.interaction_type = 'COMMENTED' AND r2.from_type = 'User' AND r2.to_type = 'User'
-UNION ALL
-SELECT 'User' AS end_type, u3.user_id AS end_id, a_1.user_id AS start_id, 'User' AS start_type, formatRowNoNewline('JSONEachRow', u3.email_address AS email, u3.full_name AS name, u3.user_id AS user_id) AS end_properties, u3.email_address AS end_email, u3.full_name AS end_name, u3.user_id AS end_user_id, formatRowNoNewline('JSONEachRow', a_1.email_address, a_1.full_name, a_1.user_id) AS start_properties, a_1.email_address AS start_email, a_1.full_name AS start_name, a_1.user_id AS start_user_id, 2 AS hop_count, ['FOLLOWS', 'FOLLOWS'] AS path_relationships, [formatRowNoNewline('JSONEachRow', r1.timestamp, r1.interaction_weight), formatRowNoNewline('JSONEachRow', r2.timestamp, r2.interaction_weight)] AS rel_properties, [toString(a_1.user_id), toString(u2.user_id), toString(u3.user_id)] AS path_nodes
-FROM brahmand.users_bench a_1
-INNER JOIN brahmand.interactions r1 ON a_1.user_id = r1.from_id
-INNER JOIN brahmand.users_bench u2 ON r1.to_id = u2.user_id
-INNER JOIN brahmand.interactions r2 ON u2.user_id = r2.from_id
-INNER JOIN brahmand.users_bench u3 ON r2.to_id = u3.user_id
-WHERE r1.interaction_type = 'FOLLOWS' AND r1.from_type = 'User' AND r1.to_type = 'User' AND r2.interaction_type = 'FOLLOWS' AND r2.from_type = 'User' AND r2.to_type = 'User' AND NOT ((r1.from_id = r2.from_id) AND (r1.to_id = r2.to_id))
-UNION ALL
-SELECT 'User' AS end_type, u3.user_id AS end_id, a_1.user_id AS start_id, 'User' AS start_type, formatRowNoNewline('JSONEachRow', u3.email_address AS email, u3.full_name AS name, u3.user_id AS user_id) AS end_properties, u3.email_address AS end_email, u3.full_name AS end_name, u3.user_id AS end_user_id, formatRowNoNewline('JSONEachRow', a_1.email_address, a_1.full_name, a_1.user_id) AS start_properties, a_1.email_address AS start_email, a_1.full_name AS start_name, a_1.user_id AS start_user_id, 2 AS hop_count, ['FOLLOWS', 'LIKES'] AS path_relationships, [formatRowNoNewline('JSONEachRow', r1.timestamp, r1.interaction_weight), formatRowNoNewline('JSONEachRow', r2.timestamp, r2.interaction_weight)] AS rel_properties, [toString(a_1.user_id), toString(u2.user_id), toString(u3.user_id)] AS path_nodes
-FROM brahmand.users_bench a_1
-INNER JOIN brahmand.interactions r1 ON a_1.user_id = r1.from_id
-INNER JOIN brahmand.users_bench u2 ON r1.to_id = u2.user_id
-INNER JOIN brahmand.interactions r2 ON u2.user_id = r2.from_id
-INNER JOIN brahmand.users_bench u3 ON r2.to_id = u3.user_id
-WHERE r1.interaction_type = 'FOLLOWS' AND r1.from_type = 'User' AND r1.to_type = 'User' AND r2.interaction_type = 'LIKES' AND r2.from_type = 'User' AND r2.to_type = 'User'
-UNION ALL
-SELECT 'User' AS end_type, u3.user_id AS end_id, a_1.user_id AS start_id, 'User' AS start_type, formatRowNoNewline('JSONEachRow', u3.email_address AS email, u3.full_name AS name, u3.user_id AS user_id) AS end_properties, u3.email_address AS end_email, u3.full_name AS end_name, u3.user_id AS end_user_id, formatRowNoNewline('JSONEachRow', a_1.email_address, a_1.full_name, a_1.user_id) AS start_properties, a_1.email_address AS start_email, a_1.full_name AS start_name, a_1.user_id AS start_user_id, 2 AS hop_count, ['FOLLOWS', 'SHARED'] AS path_relationships, [formatRowNoNewline('JSONEachRow', r1.timestamp, r1.interaction_weight), formatRowNoNewline('JSONEachRow', r2.timestamp, r2.interaction_weight)] AS rel_properties, [toString(a_1.user_id), toString(u2.user_id), toString(u3.user_id)] AS path_nodes
-FROM brahmand.users_bench a_1
-INNER JOIN brahmand.interactions r1 ON a_1.user_id = r1.from_id
-INNER JOIN brahmand.users_bench u2 ON r1.to_id = u2.user_id
-INNER JOIN brahmand.interactions r2 ON u2.user_id = r2.from_id
-INNER JOIN brahmand.users_bench u3 ON r2.to_id = u3.user_id
-WHERE r1.interaction_type = 'FOLLOWS' AND r1.from_type = 'User' AND r1.to_type = 'User' AND r2.interaction_type = 'SHARED' AND r2.from_type = 'User' AND r2.to_type = 'User'
-UNION ALL
-SELECT 'User' AS end_type, u3.user_id AS end_id, a_1.user_id AS start_id, 'User' AS start_type, formatRowNoNewline('JSONEachRow', u3.email_address AS email, u3.full_name AS name, u3.user_id AS user_id) AS end_properties, u3.email_address AS end_email, u3.full_name AS end_name, u3.user_id AS end_user_id, formatRowNoNewline('JSONEachRow', a_1.email_address, a_1.full_name, a_1.user_id) AS start_properties, a_1.email_address AS start_email, a_1.full_name AS start_name, a_1.user_id AS start_user_id, 2 AS hop_count, ['LIKES', 'AUTHORED'] AS path_relationships, [formatRowNoNewline('JSONEachRow', r1.timestamp, r1.interaction_weight), formatRowNoNewline('JSONEachRow', r2.timestamp, r2.interaction_weight)] AS rel_properties, [toString(a_1.user_id), toString(p2.post_id), toString(u3.user_id)] AS path_nodes
-FROM brahmand.users_bench a_1
-INNER JOIN brahmand.interactions r1 ON a_1.user_id = r1.from_id
-INNER JOIN brahmand.posts_bench p2 ON r1.to_id = p2.post_id
-INNER JOIN brahmand.interactions r2 ON p2.post_id = r2.from_id
-INNER JOIN brahmand.users_bench u3 ON r2.to_id = u3.user_id
-WHERE r1.interaction_type = 'LIKES' AND r1.from_type = 'User' AND r1.to_type = 'Post' AND r2.interaction_type = 'AUTHORED' AND r2.from_type = 'Post' AND r2.to_type = 'User'
-UNION ALL
-SELECT 'User' AS end_type, u3.user_id AS end_id, a_1.user_id AS start_id, 'User' AS start_type, formatRowNoNewline('JSONEachRow', u3.email_address AS email, u3.full_name AS name, u3.user_id AS user_id) AS end_properties, u3.email_address AS end_email, u3.full_name AS end_name, u3.user_id AS end_user_id, formatRowNoNewline('JSONEachRow', a_1.email_address, a_1.full_name, a_1.user_id) AS start_properties, a_1.email_address AS start_email, a_1.full_name AS start_name, a_1.user_id AS start_user_id, 2 AS hop_count, ['LIKES', 'COMMENTED'] AS path_relationships, [formatRowNoNewline('JSONEachRow', r1.timestamp, r1.interaction_weight), formatRowNoNewline('JSONEachRow', r2.timestamp, r2.interaction_weight)] AS rel_properties, [toString(a_1.user_id), toString(p2.post_id), toString(u3.user_id)] AS path_nodes
-FROM brahmand.users_bench a_1
-INNER JOIN brahmand.interactions r1 ON a_1.user_id = r1.from_id
-INNER JOIN brahmand.posts_bench p2 ON r1.to_id = p2.post_id
-INNER JOIN brahmand.interactions r2 ON p2.post_id = r2.from_id
-INNER JOIN brahmand.users_bench u3 ON r2.to_id = u3.user_id
-WHERE r1.interaction_type = 'LIKES' AND r1.from_type = 'User' AND r1.to_type = 'Post' AND r2.interaction_type = 'COMMENTED' AND r2.from_type = 'Post' AND r2.to_type = 'User'
-UNION ALL
-SELECT 'User' AS end_type, u3.user_id AS end_id, a_1.user_id AS start_id, 'User' AS start_type, formatRowNoNewline('JSONEachRow', u3.email_address AS email, u3.full_name AS name, u3.user_id AS user_id) AS end_properties, u3.email_address AS end_email, u3.full_name AS end_name, u3.user_id AS end_user_id, formatRowNoNewline('JSONEachRow', a_1.email_address, a_1.full_name, a_1.user_id) AS start_properties, a_1.email_address AS start_email, a_1.full_name AS start_name, a_1.user_id AS start_user_id, 2 AS hop_count, ['LIKES', 'FOLLOWS'] AS path_relationships, [formatRowNoNewline('JSONEachRow', r1.timestamp, r1.interaction_weight), formatRowNoNewline('JSONEachRow', r2.timestamp, r2.interaction_weight)] AS rel_properties, [toString(a_1.user_id), toString(p2.post_id), toString(u3.user_id)] AS path_nodes
-FROM brahmand.users_bench a_1
-INNER JOIN brahmand.interactions r1 ON a_1.user_id = r1.from_id
-INNER JOIN brahmand.posts_bench p2 ON r1.to_id = p2.post_id
-INNER JOIN brahmand.interactions r2 ON p2.post_id = r2.from_id
-INNER JOIN brahmand.users_bench u3 ON r2.to_id = u3.user_id
-WHERE r1.interaction_type = 'LIKES' AND r1.from_type = 'User' AND r1.to_type = 'Post' AND r2.interaction_type = 'FOLLOWS' AND r2.from_type = 'Post' AND r2.to_type = 'User'
-UNION ALL
-SELECT 'User' AS end_type, u3.user_id AS end_id, a_1.user_id AS start_id, 'User' AS start_type, formatRowNoNewline('JSONEachRow', u3.email_address AS email, u3.full_name AS name, u3.user_id AS user_id) AS end_properties, u3.email_address AS end_email, u3.full_name AS end_name, u3.user_id AS end_user_id, formatRowNoNewline('JSONEachRow', a_1.email_address, a_1.full_name, a_1.user_id) AS start_properties, a_1.email_address AS start_email, a_1.full_name AS start_name, a_1.user_id AS start_user_id, 2 AS hop_count, ['LIKES', 'LIKES'] AS path_relationships, [formatRowNoNewline('JSONEachRow', r1.timestamp, r1.interaction_weight), formatRowNoNewline('JSONEachRow', r2.timestamp, r2.interaction_weight)] AS rel_properties, [toString(a_1.user_id), toString(p2.post_id), toString(u3.user_id)] AS path_nodes
-FROM brahmand.users_bench a_1
-INNER JOIN brahmand.interactions r1 ON a_1.user_id = r1.from_id
-INNER JOIN brahmand.posts_bench p2 ON r1.to_id = p2.post_id
-INNER JOIN brahmand.interactions r2 ON p2.post_id = r2.from_id
-INNER JOIN brahmand.users_bench u3 ON r2.to_id = u3.user_id
-WHERE r1.interaction_type = 'LIKES' AND r1.from_type = 'User' AND r1.to_type = 'Post' AND r2.interaction_type = 'LIKES' AND r2.from_type = 'Post' AND r2.to_type = 'User' AND NOT ((r1.from_id = r2.from_id) AND (r1.to_id = r2.to_id))
-UNION ALL
-SELECT 'User' AS end_type, u3.user_id AS end_id, a_1.user_id AS start_id, 'User' AS start_type, formatRowNoNewline('JSONEachRow', u3.email_address AS email, u3.full_name AS name, u3.user_id AS user_id) AS end_properties, u3.email_address AS end_email, u3.full_name AS end_name, u3.user_id AS end_user_id, formatRowNoNewline('JSONEachRow', a_1.email_address, a_1.full_name, a_1.user_id) AS start_properties, a_1.email_address AS start_email, a_1.full_name AS start_name, a_1.user_id AS start_user_id, 2 AS hop_count, ['LIKES', 'SHARED'] AS path_relationships, [formatRowNoNewline('JSONEachRow', r1.timestamp, r1.interaction_weight), formatRowNoNewline('JSONEachRow', r2.timestamp, r2.interaction_weight)] AS rel_properties, [toString(a_1.user_id), toString(p2.post_id), toString(u3.user_id)] AS path_nodes
-FROM brahmand.users_bench a_1
-INNER JOIN brahmand.interactions r1 ON a_1.user_id = r1.from_id
-INNER JOIN brahmand.posts_bench p2 ON r1.to_id = p2.post_id
-INNER JOIN brahmand.interactions r2 ON p2.post_id = r2.from_id
-INNER JOIN brahmand.users_bench u3 ON r2.to_id = u3.user_id
-WHERE r1.interaction_type = 'LIKES' AND r1.from_type = 'User' AND r1.to_type = 'Post' AND r2.interaction_type = 'SHARED' AND r2.from_type = 'Post' AND r2.to_type = 'User'
-UNION ALL
-SELECT 'User' AS end_type, u3.user_id AS end_id, a_1.user_id AS start_id, 'User' AS start_type, formatRowNoNewline('JSONEachRow', u3.email_address AS email, u3.full_name AS name, u3.user_id AS user_id) AS end_properties, u3.email_address AS end_email, u3.full_name AS end_name, u3.user_id AS end_user_id, formatRowNoNewline('JSONEachRow', a_1.email_address, a_1.full_name, a_1.user_id) AS start_properties, a_1.email_address AS start_email, a_1.full_name AS start_name, a_1.user_id AS start_user_id, 2 AS hop_count, ['LIKES', 'AUTHORED'] AS path_relationships, [formatRowNoNewline('JSONEachRow', r1.timestamp, r1.interaction_weight), formatRowNoNewline('JSONEachRow', r2.timestamp, r2.interaction_weight)] AS rel_properties, [toString(a_1.user_id), toString(u2.user_id), toString(u3.user_id)] AS path_nodes
-FROM brahmand.users_bench a_1
-INNER JOIN brahmand.interactions r1 ON a_1.user_id = r1.from_id
-INNER JOIN brahmand.users_bench u2 ON r1.to_id = u2.user_id
-INNER JOIN brahmand.interactions r2 ON u2.user_id = r2.from_id
-INNER JOIN brahmand.users_bench u3 ON r2.to_id = u3.user_id
-WHERE r1.interaction_type = 'LIKES' AND r1.from_type = 'User' AND r1.to_type = 'User' AND r2.interaction_type = 'AUTHORED' AND r2.from_type = 'User' AND r2.to_type = 'User'
-UNION ALL
-SELECT 'User' AS end_type, u3.user_id AS end_id, a_1.user_id AS start_id, 'User' AS start_type, formatRowNoNewline('JSONEachRow', u3.email_address AS email, u3.full_name AS name, u3.user_id AS user_id) AS end_properties, u3.email_address AS end_email, u3.full_name AS end_name, u3.user_id AS end_user_id, formatRowNoNewline('JSONEachRow', a_1.email_address, a_1.full_name, a_1.user_id) AS start_properties, a_1.email_address AS start_email, a_1.full_name AS start_name, a_1.user_id AS start_user_id, 2 AS hop_count, ['LIKES', 'COMMENTED'] AS path_relationships, [formatRowNoNewline('JSONEachRow', r1.timestamp, r1.interaction_weight), formatRowNoNewline('JSONEachRow', r2.timestamp, r2.interaction_weight)] AS rel_properties, [toString(a_1.user_id), toString(u2.user_id), toString(u3.user_id)] AS path_nodes
-FROM brahmand.users_bench a_1
-INNER JOIN brahmand.interactions r1 ON a_1.user_id = r1.from_id
-INNER JOIN brahmand.users_bench u2 ON r1.to_id = u2.user_id
-INNER JOIN brahmand.interactions r2 ON u2.user_id = r2.from_id
-INNER JOIN brahmand.users_bench u3 ON r2.to_id = u3.user_id
-WHERE r1.interaction_type = 'LIKES' AND r1.from_type = 'User' AND r1.to_type = 'User' AND r2.interaction_type = 'COMMENTED' AND r2.from_type = 'User' AND r2.to_type = 'User'
-UNION ALL
-SELECT 'User' AS end_type, u3.user_id AS end_id, a_1.user_id AS start_id, 'User' AS start_type, formatRowNoNewline('JSONEachRow', u3.email_address AS email, u3.full_name AS name, u3.user_id AS user_id) AS end_properties, u3.email_address AS end_email, u3.full_name AS end_name, u3.user_id AS end_user_id, formatRowNoNewline('JSONEachRow', a_1.email_address, a_1.full_name, a_1.user_id) AS start_properties, a_1.email_address AS start_email, a_1.full_name AS start_name, a_1.user_id AS start_user_id, 2 AS hop_count, ['LIKES', 'FOLLOWS'] AS path_relationships, [formatRowNoNewline('JSONEachRow', r1.timestamp, r1.interaction_weight), formatRowNoNewline('JSONEachRow', r2.timestamp, r2.interaction_weight)] AS rel_properties, [toString(a_1.user_id), toString(u2.user_id), toString(u3.user_id)] AS path_nodes
-FROM brahmand.users_bench a_1
-INNER JOIN brahmand.interactions r1 ON a_1.user_id = r1.from_id
-INNER JOIN brahmand.users_bench u2 ON r1.to_id = u2.user_id
-INNER JOIN brahmand.interactions r2 ON u2.user_id = r2.from_id
-INNER JOIN brahmand.users_bench u3 ON r2.to_id = u3.user_id
-WHERE r1.interaction_type = 'LIKES' AND r1.from_type = 'User' AND r1.to_type = 'User' AND r2.interaction_type = 'FOLLOWS' AND r2.from_type = 'User' AND r2.to_type = 'User'
-UNION ALL
-SELECT 'User' AS end_type, u3.user_id AS end_id, a_1.user_id AS start_id, 'User' AS start_type, formatRowNoNewline('JSONEachRow', u3.email_address AS email, u3.full_name AS name, u3.user_id AS user_id) AS end_properties, u3.email_address AS end_email, u3.full_name AS end_name, u3.user_id AS end_user_id, formatRowNoNewline('JSONEachRow', a_1.email_address, a_1.full_name, a_1.user_id) AS start_properties, a_1.email_address AS start_email, a_1.full_name AS start_name, a_1.user_id AS start_user_id, 2 AS hop_count, ['LIKES', 'LIKES'] AS path_relationships, [formatRowNoNewline('JSONEachRow', r1.timestamp, r1.interaction_weight), formatRowNoNewline('JSONEachRow', r2.timestamp, r2.interaction_weight)] AS rel_properties, [toString(a_1.user_id), toString(u2.user_id), toString(u3.user_id)] AS path_nodes
-FROM brahmand.users_bench a_1
-INNER JOIN brahmand.interactions r1 ON a_1.user_id = r1.from_id
-INNER JOIN brahmand.users_bench u2 ON r1.to_id = u2.user_id
-INNER JOIN brahmand.interactions r2 ON u2.user_id = r2.from_id
-INNER JOIN brahmand.users_bench u3 ON r2.to_id = u3.user_id
-WHERE r1.interaction_type = 'LIKES' AND r1.from_type = 'User' AND r1.to_type = 'User' AND r2.interaction_type = 'LIKES' AND r2.from_type = 'User' AND r2.to_type = 'User' AND NOT ((r1.from_id = r2.from_id) AND (r1.to_id = r2.to_id))
-UNION ALL
-SELECT 'User' AS end_type, u3.user_id AS end_id, a_1.user_id AS start_id, 'User' AS start_type, formatRowNoNewline('JSONEachRow', u3.email_address AS email, u3.full_name AS name, u3.user_id AS user_id) AS end_properties, u3.email_address AS end_email, u3.full_name AS end_name, u3.user_id AS end_user_id, formatRowNoNewline('JSONEachRow', a_1.email_address, a_1.full_name, a_1.user_id) AS start_properties, a_1.email_address AS start_email, a_1.full_name AS start_name, a_1.user_id AS start_user_id, 2 AS hop_count, ['LIKES', 'SHARED'] AS path_relationships, [formatRowNoNewline('JSONEachRow', r1.timestamp, r1.interaction_weight), formatRowNoNewline('JSONEachRow', r2.timestamp, r2.interaction_weight)] AS rel_properties, [toString(a_1.user_id), toString(u2.user_id), toString(u3.user_id)] AS path_nodes
-FROM brahmand.users_bench a_1
-INNER JOIN brahmand.interactions r1 ON a_1.user_id = r1.from_id
-INNER JOIN brahmand.users_bench u2 ON r1.to_id = u2.user_id
-INNER JOIN brahmand.interactions r2 ON u2.user_id = r2.from_id
-INNER JOIN brahmand.users_bench u3 ON r2.to_id = u3.user_id
-WHERE r1.interaction_type = 'LIKES' AND r1.from_type = 'User' AND r1.to_type = 'User' AND r2.interaction_type = 'SHARED' AND r2.from_type = 'User' AND r2.to_type = 'User'
-UNION ALL
-SELECT 'User' AS end_type, u3.user_id AS end_id, a_1.user_id AS start_id, 'User' AS start_type, formatRowNoNewline('JSONEachRow', u3.email_address AS email, u3.full_name AS name, u3.user_id AS user_id) AS end_properties, u3.email_address AS end_email, u3.full_name AS end_name, u3.user_id AS end_user_id, formatRowNoNewline('JSONEachRow', a_1.email_address, a_1.full_name, a_1.user_id) AS start_properties, a_1.email_address AS start_email, a_1.full_name AS start_name, a_1.user_id AS start_user_id, 2 AS hop_count, ['SHARED', 'AUTHORED'] AS path_relationships, [formatRowNoNewline('JSONEachRow', r1.timestamp, r1.interaction_weight), formatRowNoNewline('JSONEachRow', r2.timestamp, r2.interaction_weight)] AS rel_properties, [toString(a_1.user_id), toString(p2.post_id), toString(u3.user_id)] AS path_nodes
-FROM brahmand.users_bench a_1
-INNER JOIN brahmand.interactions r1 ON a_1.user_id = r1.from_id
-INNER JOIN brahmand.posts_bench p2 ON r1.to_id = p2.post_id
-INNER JOIN brahmand.interactions r2 ON p2.post_id = r2.from_id
-INNER JOIN brahmand.users_bench u3 ON r2.to_id = u3.user_id
-WHERE r1.interaction_type = 'SHARED' AND r1.from_type = 'User' AND r1.to_type = 'Post' AND r2.interaction_type = 'AUTHORED' AND r2.from_type = 'Post' AND r2.to_type = 'User'
-UNION ALL
-SELECT 'User' AS end_type, u3.user_id AS end_id, a_1.user_id AS start_id, 'User' AS start_type, formatRowNoNewline('JSONEachRow', u3.email_address AS email, u3.full_name AS name, u3.user_id AS user_id) AS end_properties, u3.email_address AS end_email, u3.full_name AS end_name, u3.user_id AS end_user_id, formatRowNoNewline('JSONEachRow', a_1.email_address, a_1.full_name, a_1.user_id) AS start_properties, a_1.email_address AS start_email, a_1.full_name AS start_name, a_1.user_id AS start_user_id, 2 AS hop_count, ['SHARED', 'COMMENTED'] AS path_relationships, [formatRowNoNewline('JSONEachRow', r1.timestamp, r1.interaction_weight), formatRowNoNewline('JSONEachRow', r2.timestamp, r2.interaction_weight)] AS rel_properties, [toString(a_1.user_id), toString(p2.post_id), toString(u3.user_id)] AS path_nodes
-FROM brahmand.users_bench a_1
-INNER JOIN brahmand.interactions r1 ON a_1.user_id = r1.from_id
-INNER JOIN brahmand.posts_bench p2 ON r1.to_id = p2.post_id
-INNER JOIN brahmand.interactions r2 ON p2.post_id = r2.from_id
-INNER JOIN brahmand.users_bench u3 ON r2.to_id = u3.user_id
-WHERE r1.interaction_type = 'SHARED' AND r1.from_type = 'User' AND r1.to_type = 'Post' AND r2.interaction_type = 'COMMENTED' AND r2.from_type = 'Post' AND r2.to_type = 'User'
-UNION ALL
-SELECT 'User' AS end_type, u3.user_id AS end_id, a_1.user_id AS start_id, 'User' AS start_type, formatRowNoNewline('JSONEachRow', u3.email_address AS email, u3.full_name AS name, u3.user_id AS user_id) AS end_properties, u3.email_address AS end_email, u3.full_name AS end_name, u3.user_id AS end_user_id, formatRowNoNewline('JSONEachRow', a_1.email_address, a_1.full_name, a_1.user_id) AS start_properties, a_1.email_address AS start_email, a_1.full_name AS start_name, a_1.user_id AS start_user_id, 2 AS hop_count, ['SHARED', 'FOLLOWS'] AS path_relationships, [formatRowNoNewline('JSONEachRow', r1.timestamp, r1.interaction_weight), formatRowNoNewline('JSONEachRow', r2.timestamp, r2.interaction_weight)] AS rel_properties, [toString(a_1.user_id), toString(p2.post_id), toString(u3.user_id)] AS path_nodes
-FROM brahmand.users_bench a_1
-INNER JOIN brahmand.interactions r1 ON a_1.user_id = r1.from_id
-INNER JOIN brahmand.posts_bench p2 ON r1.to_id = p2.post_id
-INNER JOIN brahmand.interactions r2 ON p2.post_id = r2.from_id
-INNER JOIN brahmand.users_bench u3 ON r2.to_id = u3.user_id
-WHERE r1.interaction_type = 'SHARED' AND r1.from_type = 'User' AND r1.to_type = 'Post' AND r2.interaction_type = 'FOLLOWS' AND r2.from_type = 'Post' AND r2.to_type = 'User'
-UNION ALL
-SELECT 'User' AS end_type, u3.user_id AS end_id, a_1.user_id AS start_id, 'User' AS start_type, formatRowNoNewline('JSONEachRow', u3.email_address AS email, u3.full_name AS name, u3.user_id AS user_id) AS end_properties, u3.email_address AS end_email, u3.full_name AS end_name, u3.user_id AS end_user_id, formatRowNoNewline('JSONEachRow', a_1.email_address, a_1.full_name, a_1.user_id) AS start_properties, a_1.email_address AS start_email, a_1.full_name AS start_name, a_1.user_id AS start_user_id, 2 AS hop_count, ['SHARED', 'LIKES'] AS path_relationships, [formatRowNoNewline('JSONEachRow', r1.timestamp, r1.interaction_weight), formatRowNoNewline('JSONEachRow', r2.timestamp, r2.interaction_weight)] AS rel_properties, [toString(a_1.user_id), toString(p2.post_id), toString(u3.user_id)] AS path_nodes
-FROM brahmand.users_bench a_1
-INNER JOIN brahmand.interactions r1 ON a_1.user_id = r1.from_id
-INNER JOIN brahmand.posts_bench p2 ON r1.to_id = p2.post_id
-INNER JOIN brahmand.interactions r2 ON p2.post_id = r2.from_id
-INNER JOIN brahmand.users_bench u3 ON r2.to_id = u3.user_id
-WHERE r1.interaction_type = 'SHARED' AND r1.from_type = 'User' AND r1.to_type = 'Post' AND r2.interaction_type = 'LIKES' AND r2.from_type = 'Post' AND r2.to_type = 'User'
-UNION ALL
-SELECT 'User' AS end_type, u3.user_id AS end_id, a_1.user_id AS start_id, 'User' AS start_type, formatRowNoNewline('JSONEachRow', u3.email_address AS email, u3.full_name AS name, u3.user_id AS user_id) AS end_properties, u3.email_address AS end_email, u3.full_name AS end_name, u3.user_id AS end_user_id, formatRowNoNewline('JSONEachRow', a_1.email_address, a_1.full_name, a_1.user_id) AS start_properties, a_1.email_address AS start_email, a_1.full_name AS start_name, a_1.user_id AS start_user_id, 2 AS hop_count, ['SHARED', 'SHARED'] AS path_relationships, [formatRowNoNewline('JSONEachRow', r1.timestamp, r1.interaction_weight), formatRowNoNewline('JSONEachRow', r2.timestamp, r2.interaction_weight)] AS rel_properties, [toString(a_1.user_id), toString(p2.post_id), toString(u3.user_id)] AS path_nodes
-FROM brahmand.users_bench a_1
-INNER JOIN brahmand.interactions r1 ON a_1.user_id = r1.from_id
-INNER JOIN brahmand.posts_bench p2 ON r1.to_id = p2.post_id
-INNER JOIN brahmand.interactions r2 ON p2.post_id = r2.from_id
-INNER JOIN brahmand.users_bench u3 ON r2.to_id = u3.user_id
-WHERE r1.interaction_type = 'SHARED' AND r1.from_type = 'User' AND r1.to_type = 'Post' AND r2.interaction_type = 'SHARED' AND r2.from_type = 'Post' AND r2.to_type = 'User' AND NOT ((r1.from_id = r2.from_id) AND (r1.to_id = r2.to_id))
-UNION ALL
-SELECT 'User' AS end_type, u3.user_id AS end_id, a_1.user_id AS start_id, 'User' AS start_type, formatRowNoNewline('JSONEachRow', u3.email_address AS email, u3.full_name AS name, u3.user_id AS user_id) AS end_properties, u3.email_address AS end_email, u3.full_name AS end_name, u3.user_id AS end_user_id, formatRowNoNewline('JSONEachRow', a_1.email_address, a_1.full_name, a_1.user_id) AS start_properties, a_1.email_address AS start_email, a_1.full_name AS start_name, a_1.user_id AS start_user_id, 2 AS hop_count, ['SHARED', 'AUTHORED'] AS path_relationships, [formatRowNoNewline('JSONEachRow', r1.timestamp, r1.interaction_weight), formatRowNoNewline('JSONEachRow', r2.timestamp, r2.interaction_weight)] AS rel_properties, [toString(a_1.user_id), toString(u2.user_id), toString(u3.user_id)] AS path_nodes
-FROM brahmand.users_bench a_1
-INNER JOIN brahmand.interactions r1 ON a_1.user_id = r1.from_id
-INNER JOIN brahmand.users_bench u2 ON r1.to_id = u2.user_id
-INNER JOIN brahmand.interactions r2 ON u2.user_id = r2.from_id
-INNER JOIN brahmand.users_bench u3 ON r2.to_id = u3.user_id
-WHERE r1.interaction_type = 'SHARED' AND r1.from_type = 'User' AND r1.to_type = 'User' AND r2.interaction_type = 'AUTHORED' AND r2.from_type = 'User' AND r2.to_type = 'User'
-UNION ALL
-SELECT 'User' AS end_type, u3.user_id AS end_id, a_1.user_id AS start_id, 'User' AS start_type, formatRowNoNewline('JSONEachRow', u3.email_address AS email, u3.full_name AS name, u3.user_id AS user_id) AS end_properties, u3.email_address AS end_email, u3.full_name AS end_name, u3.user_id AS end_user_id, formatRowNoNewline('JSONEachRow', a_1.email_address, a_1.full_name, a_1.user_id) AS start_properties, a_1.email_address AS start_email, a_1.full_name AS start_name, a_1.user_id AS start_user_id, 2 AS hop_count, ['SHARED', 'COMMENTED'] AS path_relationships, [formatRowNoNewline('JSONEachRow', r1.timestamp, r1.interaction_weight), formatRowNoNewline('JSONEachRow', r2.timestamp, r2.interaction_weight)] AS rel_properties, [toString(a_1.user_id), toString(u2.user_id), toString(u3.user_id)] AS path_nodes
-FROM brahmand.users_bench a_1
-INNER JOIN brahmand.interactions r1 ON a_1.user_id = r1.from_id
-INNER JOIN brahmand.users_bench u2 ON r1.to_id = u2.user_id
-INNER JOIN brahmand.interactions r2 ON u2.user_id = r2.from_id
-INNER JOIN brahmand.users_bench u3 ON r2.to_id = u3.user_id
-WHERE r1.interaction_type = 'SHARED' AND r1.from_type = 'User' AND r1.to_type = 'User' AND r2.interaction_type = 'COMMENTED' AND r2.from_type = 'User' AND r2.to_type = 'User'
-UNION ALL
-SELECT 'User' AS end_type, u3.user_id AS end_id, a_1.user_id AS start_id, 'User' AS start_type, formatRowNoNewline('JSONEachRow', u3.email_address AS email, u3.full_name AS name, u3.user_id AS user_id) AS end_properties, u3.email_address AS end_email, u3.full_name AS end_name, u3.user_id AS end_user_id, formatRowNoNewline('JSONEachRow', a_1.email_address, a_1.full_name, a_1.user_id) AS start_properties, a_1.email_address AS start_email, a_1.full_name AS start_name, a_1.user_id AS start_user_id, 2 AS hop_count, ['SHARED', 'FOLLOWS'] AS path_relationships, [formatRowNoNewline('JSONEachRow', r1.timestamp, r1.interaction_weight), formatRowNoNewline('JSONEachRow', r2.timestamp, r2.interaction_weight)] AS rel_properties, [toString(a_1.user_id), toString(u2.user_id), toString(u3.user_id)] AS path_nodes
-FROM brahmand.users_bench a_1
-INNER JOIN brahmand.interactions r1 ON a_1.user_id = r1.from_id
-INNER JOIN brahmand.users_bench u2 ON r1.to_id = u2.user_id
-INNER JOIN brahmand.interactions r2 ON u2.user_id = r2.from_id
-INNER JOIN brahmand.users_bench u3 ON r2.to_id = u3.user_id
-WHERE r1.interaction_type = 'SHARED' AND r1.from_type = 'User' AND r1.to_type = 'User' AND r2.interaction_type = 'FOLLOWS' AND r2.from_type = 'User' AND r2.to_type = 'User'
-UNION ALL
-SELECT 'User' AS end_type, u3.user_id AS end_id, a_1.user_id AS start_id, 'User' AS start_type, formatRowNoNewline('JSONEachRow', u3.email_address AS email, u3.full_name AS name, u3.user_id AS user_id) AS end_properties, u3.email_address AS end_email, u3.full_name AS end_name, u3.user_id AS end_user_id, formatRowNoNewline('JSONEachRow', a_1.email_address, a_1.full_name, a_1.user_id) AS start_properties, a_1.email_address AS start_email, a_1.full_name AS start_name, a_1.user_id AS start_user_id, 2 AS hop_count, ['SHARED', 'LIKES'] AS path_relationships, [formatRowNoNewline('JSONEachRow', r1.timestamp, r1.interaction_weight), formatRowNoNewline('JSONEachRow', r2.timestamp, r2.interaction_weight)] AS rel_properties, [toString(a_1.user_id), toString(u2.user_id), toString(u3.user_id)] AS path_nodes
-FROM brahmand.users_bench a_1
-INNER JOIN brahmand.interactions r1 ON a_1.user_id = r1.from_id
-INNER JOIN brahmand.users_bench u2 ON r1.to_id = u2.user_id
-INNER JOIN brahmand.interactions r2 ON u2.user_id = r2.from_id
-INNER JOIN brahmand.users_bench u3 ON r2.to_id = u3.user_id
-WHERE r1.interaction_type = 'SHARED' AND r1.from_type = 'User' AND r1.to_type = 'User' AND r2.interaction_type = 'LIKES' AND r2.from_type = 'User' AND r2.to_type = 'User'
-UNION ALL
-SELECT 'User' AS end_type, u3.user_id AS end_id, a_1.user_id AS start_id, 'User' AS start_type, formatRowNoNewline('JSONEachRow', u3.email_address AS email, u3.full_name AS name, u3.user_id AS user_id) AS end_properties, u3.email_address AS end_email, u3.full_name AS end_name, u3.user_id AS end_user_id, formatRowNoNewline('JSONEachRow', a_1.email_address, a_1.full_name, a_1.user_id) AS start_properties, a_1.email_address AS start_email, a_1.full_name AS start_name, a_1.user_id AS start_user_id, 2 AS hop_count, ['SHARED', 'SHARED'] AS path_relationships, [formatRowNoNewline('JSONEachRow', r1.timestamp, r1.interaction_weight), formatRowNoNewline('JSONEachRow', r2.timestamp, r2.interaction_weight)] AS rel_properties, [toString(a_1.user_id), toString(u2.user_id), toString(u3.user_id)] AS path_nodes
-FROM brahmand.users_bench a_1
-INNER JOIN brahmand.interactions r1 ON a_1.user_id = r1.from_id
-INNER JOIN brahmand.users_bench u2 ON r1.to_id = u2.user_id
-INNER JOIN brahmand.interactions r2 ON u2.user_id = r2.from_id
-INNER JOIN brahmand.users_bench u3 ON r2.to_id = u3.user_id
-WHERE r1.interaction_type = 'SHARED' AND r1.from_type = 'User' AND r1.to_type = 'User' AND r2.interaction_type = 'SHARED' AND r2.from_type = 'User' AND r2.to_type = 'User' AND NOT ((r1.from_id = r2.from_id) AND (r1.to_id = r2.to_id))
+SELECT 
+      'SHARED' AS "__cg_type", 
+      'User' AS "__cg_from_label", 
+      'User' AS "__cg_to_label", 
+      e.from_id AS "__cg_rid_0", 
+      e.to_id AS "__cg_rid_1", 
+      e.interaction_type AS "__cg_rid_2", 
+      e.timestamp AS "__cg_rid_3", 
+      e.from_id AS "__cg_from_0", 
+      e.to_id AS "__cg_to_0", 
+      e.from_id AS "__cg_start_0", 
+      e.to_id AS "__cg_end_0", 
+      'User' AS "__cg_start_label", 
+      'User' AS "__cg_end_label", 
+      concat('SHARED:User:User:', toString(tuple(e.from_id, e.to_id, e.interaction_type, e.timestamp))) AS "__cg_key"
+FROM brahmand.interactions AS e
+WHERE ((((e."interaction_type" = 'SHARED') AND (e."from_type" = 'User')) AND (e."to_type" = 'User')))
+), 
+vlp_v1_trails AS (
+    SELECT start_node.__cg_label AS start_label, start_node.__cg_id_0 AS start_id, start_node.__cg_label AS end_label, start_node.__cg_id_0 AS end_id, CAST(0 AS UInt32) AS hop_count, CAST([], 'Array(String)') AS path_edges, [start_node.__cg_key] AS path_nodes
+    FROM vlp_v1_nodes AS start_node
+    WHERE (start_node.__cg_label = 'User')
+    UNION ALL
+    SELECT vp.start_label AS start_label, vp.start_id AS start_id, end_node.__cg_label AS end_label, end_node.__cg_id_0 AS end_id, CAST(vp.hop_count + 1 AS UInt32) AS hop_count, arrayConcat(vp.path_edges, [rel.__cg_key]) AS path_edges, arrayConcat(vp.path_nodes, [end_node.__cg_key]) AS path_nodes
+    FROM vlp_v1_trails AS vp
+    JOIN v1_rels AS rel ON rel.__cg_start_label = vp.end_label AND rel.__cg_start_0 = vp.end_id
+    JOIN vlp_v1_nodes AS end_node ON end_node.__cg_label = rel.__cg_end_label AND end_node.__cg_id_0 = rel.__cg_end_0
+    WHERE vp.hop_count < 2
+      AND NOT has(vp.path_edges, rel.__cg_key)
+), 
+vlp_v1_path AS (
+    SELECT start_label, start_id, end_label, end_id, hop_count, path_edges, path_nodes
+    FROM vlp_v1_trails
+    WHERE hop_count >= 2
 )
 SELECT 
-      JSONExtractString(t.start_properties, 'email_address') AS "a.email", 
-      JSONExtractString(t.end_properties, 'email_address') AS "b.email"
-FROM vlp_multi_type_a_b AS t
-INNER JOIN brahmand.interactions AS r1 ON t.start_id = r1.from_id
-WHERE t.start_id <> t.end_id
+      v0.email_address AS "a.email", 
+      v2.email_address AS "b.email"
+FROM vlp_v1_path AS v1
+JOIN brahmand.users_bench AS v0 ON v1.start_id = v0.user_id
+JOIN brahmand.users_bench AS v2 ON v1.end_id = v2.user_id
+WHERE v1.end_label = 'User'
 LIMIT 10
+-- column a.email: Value [("a.email", "a.email")]
+-- column b.email: Value [("b.email", "b.email")]

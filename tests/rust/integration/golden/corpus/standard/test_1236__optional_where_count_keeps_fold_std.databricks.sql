@@ -1,4 +1,15 @@
+WITH optional_o1 AS (
+SELECT 
+      v1.follower_id AS `v0__user_id`, 
+      v2.user_id AS `v2__user_id`, 
+      v2.age AS `p2_v2_age`
+FROM test_integration.user_follows_test AS v1
+JOIN test_integration.users_test AS v2 ON v1.followed_id = v2.user_id
+WHERE v2.age > 30
+)
 SELECT 
       count(*) AS `n`
-FROM test_integration.users_test AS n0
-LEFT JOIN (SELECT t0.follower_id AS __cg_combined_anchor_key, n1.* FROM test_integration.user_follows_test AS t0 JOIN test_integration.users_test AS n1 ON n1.user_id = t0.followed_id WHERE n1.age > 30) AS n1 ON n1.__cg_combined_anchor_key = n0.user_id
+FROM test_integration.users_test AS v0
+LEFT JOIN optional_o1 AS o1 ON v0.user_id = o1.v0__user_id
+
+-- column n: Value [("n", "n")]

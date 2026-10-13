@@ -1,7 +1,28 @@
-SELECT count(*) AS `total` FROM (
-SELECT 1 AS __dummy
-FROM test_integration.user_follows_test AS t0
-UNION ALL 
-SELECT 1 AS __dummy
-FROM test_integration.user_follows_test AS t0
-) AS __union
+WITH v1_both AS (
+SELECT 
+      e.follow_date AS `follow_date`, 
+      e.follow_id AS `follow_id`, 
+      e.followed_id AS `followed_id`, 
+      e.follower_id AS `follower_id`, 
+      e.follower_id AS `__cg_start_0`, 
+      e.followed_id AS `__cg_end_0`
+FROM test_integration.user_follows_test AS e
+
+UNION ALL
+SELECT 
+      e.follow_date AS `follow_date`, 
+      e.follow_id AS `follow_id`, 
+      e.followed_id AS `followed_id`, 
+      e.follower_id AS `follower_id`, 
+      e.followed_id AS `__cg_start_0`, 
+      e.follower_id AS `__cg_end_0`
+FROM test_integration.user_follows_test AS e
+WHERE e.follower_id <> e.followed_id
+)
+SELECT 
+      count(*) AS `total`
+FROM test_integration.users_test AS v0
+JOIN v1_both AS v1 ON v1.__cg_start_0 = v0.user_id
+JOIN test_integration.users_test AS v2 ON v1.__cg_end_0 = v2.user_id
+
+-- column total: Value [("total", "total")]

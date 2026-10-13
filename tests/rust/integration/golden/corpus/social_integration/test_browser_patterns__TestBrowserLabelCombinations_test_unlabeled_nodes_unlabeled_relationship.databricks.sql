@@ -1,16 +1,128 @@
-WITH pattern_union_r AS (
-(SELECT 'User' AS start_type, string(test_integration.users_test.user_id) as start_id, string(test_integration.posts_test.post_id) as end_id, 'Post' AS end_type, array('AUTHORED') as path_relationships, array('{}') as rel_properties, to_json(struct(test_integration.users_test.age AS _s_age, test_integration.users_test.city AS _s_city, test_integration.users_test.country AS _s_country, test_integration.users_test.email_address AS _s_email_address, test_integration.users_test.is_active AS _s_is_active, test_integration.users_test.full_name AS _s_full_name, test_integration.users_test.registration_date AS _s_registration_date, test_integration.users_test.user_id AS _s_user_id)) as start_properties, to_json(struct(test_integration.posts_test.author_id AS _e_author_id, test_integration.posts_test.post_content AS _e_post_content, test_integration.posts_test.post_date AS _e_post_date, test_integration.posts_test.post_id AS _e_post_id, test_integration.posts_test.post_title AS _e_post_title)) as end_properties, NULL AS follow_date, NULL AS like_date FROM test_integration.posts_test INNER JOIN test_integration.users_test ON test_integration.users_test.user_id = test_integration.posts_test.author_id)
+WITH v0_labels AS (
+SELECT 
+      'Post' AS `__cg_label`, 
+      e.post_id AS `__cg_id_0`
+FROM test_integration.posts_test AS e
+
 UNION ALL
-(SELECT 'Post' AS start_type, string(test_integration.posts_test.post_id) as start_id, string(test_integration.users_test.user_id) as end_id, 'User' AS end_type, array('AUTHORED') as path_relationships, array('{}') as rel_properties, to_json(struct(test_integration.posts_test.author_id AS _s_author_id, test_integration.posts_test.post_content AS _s_post_content, test_integration.posts_test.post_date AS _s_post_date, test_integration.posts_test.post_id AS _s_post_id, test_integration.posts_test.post_title AS _s_post_title)) as start_properties, to_json(struct(test_integration.users_test.age AS _e_age, test_integration.users_test.city AS _e_city, test_integration.users_test.country AS _e_country, test_integration.users_test.email_address AS _e_email_address, test_integration.users_test.is_active AS _e_is_active, test_integration.users_test.full_name AS _e_full_name, test_integration.users_test.registration_date AS _e_registration_date, test_integration.users_test.user_id AS _e_user_id)) as end_properties, NULL AS follow_date, NULL AS like_date FROM test_integration.posts_test INNER JOIN test_integration.users_test ON test_integration.users_test.user_id = test_integration.posts_test.author_id)
+SELECT 
+      'User' AS `__cg_label`, 
+      e.user_id AS `__cg_id_0`
+FROM test_integration.users_test AS e
+), 
+v2_labels AS (
+SELECT 
+      'Post' AS `__cg_label`, 
+      e.post_id AS `__cg_id_0`
+FROM test_integration.posts_test AS e
+
 UNION ALL
-(SELECT 'User' AS start_type, string(from_node.user_id) as start_id, string(to_node.user_id) as end_id, 'User' AS end_type, array('FOLLOWS') as path_relationships, array(to_json(struct(test_integration.user_follows_test.follow_date AS follow_date))) as rel_properties, to_json(struct(from_node.age AS _s_age, from_node.city AS _s_city, from_node.country AS _s_country, from_node.email_address AS _s_email_address, from_node.is_active AS _s_is_active, from_node.full_name AS _s_full_name, from_node.registration_date AS _s_registration_date, from_node.user_id AS _s_user_id)) as start_properties, to_json(struct(to_node.age AS _e_age, to_node.city AS _e_city, to_node.country AS _e_country, to_node.email_address AS _e_email_address, to_node.is_active AS _e_is_active, to_node.full_name AS _e_full_name, to_node.registration_date AS _e_registration_date, to_node.user_id AS _e_user_id)) as end_properties, test_integration.user_follows_test.follow_date AS follow_date, NULL AS like_date FROM test_integration.user_follows_test INNER JOIN test_integration.users_test AS from_node ON from_node.user_id = test_integration.user_follows_test.follower_id INNER JOIN test_integration.users_test AS to_node ON to_node.user_id = test_integration.user_follows_test.followed_id)
+SELECT 
+      'User' AS `__cg_label`, 
+      e.user_id AS `__cg_id_0`
+FROM test_integration.users_test AS e
+), 
+v1_rels AS (
+SELECT 
+      'AUTHORED' AS `__cg_type`, 
+      'User' AS `__cg_from_label`, 
+      'Post' AS `__cg_to_label`, 
+      e.author_id AS `__cg_rid_0`, 
+      e.post_id AS `__cg_rid_1`, 
+      e.author_id AS `__cg_from_0`, 
+      e.post_id AS `__cg_to_0`, 
+      e.post_id AS `__cg_start_0`, 
+      e.author_id AS `__cg_end_0`, 
+      'Post' AS `__cg_start_label`, 
+      'User' AS `__cg_end_label`, 
+      concat('AUTHORED:User:Post:', to_json(named_struct('_1', CAST(e.author_id AS STRING), '_2', CAST(e.post_id AS STRING)), map('ignoreNullFields', 'false'))) AS `__cg_key`
+FROM test_integration.posts_test AS e
+
 UNION ALL
-(SELECT 'User' AS start_type, string(to_node.user_id) as start_id, string(from_node.user_id) as end_id, 'User' AS end_type, array('FOLLOWS') as path_relationships, array(to_json(struct(test_integration.user_follows_test.follow_date AS follow_date))) as rel_properties, to_json(struct(to_node.age AS _s_age, to_node.city AS _s_city, to_node.country AS _s_country, to_node.email_address AS _s_email_address, to_node.is_active AS _s_is_active, to_node.full_name AS _s_full_name, to_node.registration_date AS _s_registration_date, to_node.user_id AS _s_user_id)) as start_properties, to_json(struct(from_node.age AS _e_age, from_node.city AS _e_city, from_node.country AS _e_country, from_node.email_address AS _e_email_address, from_node.is_active AS _e_is_active, from_node.full_name AS _e_full_name, from_node.registration_date AS _e_registration_date, from_node.user_id AS _e_user_id)) as end_properties, test_integration.user_follows_test.follow_date AS follow_date, NULL AS like_date FROM test_integration.user_follows_test INNER JOIN test_integration.users_test AS from_node ON from_node.user_id = test_integration.user_follows_test.follower_id INNER JOIN test_integration.users_test AS to_node ON to_node.user_id = test_integration.user_follows_test.followed_id WHERE (test_integration.user_follows_test.follower_id != test_integration.user_follows_test.followed_id))
+SELECT 
+      'AUTHORED' AS `__cg_type`, 
+      'User' AS `__cg_from_label`, 
+      'Post' AS `__cg_to_label`, 
+      e.author_id AS `__cg_rid_0`, 
+      e.post_id AS `__cg_rid_1`, 
+      e.author_id AS `__cg_from_0`, 
+      e.post_id AS `__cg_to_0`, 
+      e.author_id AS `__cg_start_0`, 
+      e.post_id AS `__cg_end_0`, 
+      'User' AS `__cg_start_label`, 
+      'Post' AS `__cg_end_label`, 
+      concat('AUTHORED:User:Post:', to_json(named_struct('_1', CAST(e.author_id AS STRING), '_2', CAST(e.post_id AS STRING)), map('ignoreNullFields', 'false'))) AS `__cg_key`
+FROM test_integration.posts_test AS e
+
 UNION ALL
-(SELECT 'User' AS start_type, string(test_integration.users_test.user_id) as start_id, string(test_integration.posts_test.post_id) as end_id, 'Post' AS end_type, array('LIKED') as path_relationships, array(to_json(struct(test_integration.post_likes_test.like_date AS like_date))) as rel_properties, to_json(struct(test_integration.users_test.age AS _s_age, test_integration.users_test.city AS _s_city, test_integration.users_test.country AS _s_country, test_integration.users_test.email_address AS _s_email_address, test_integration.users_test.is_active AS _s_is_active, test_integration.users_test.full_name AS _s_full_name, test_integration.users_test.registration_date AS _s_registration_date, test_integration.users_test.user_id AS _s_user_id)) as start_properties, to_json(struct(test_integration.posts_test.author_id AS _e_author_id, test_integration.posts_test.post_content AS _e_post_content, test_integration.posts_test.post_date AS _e_post_date, test_integration.posts_test.post_id AS _e_post_id, test_integration.posts_test.post_title AS _e_post_title)) as end_properties, NULL AS follow_date, test_integration.post_likes_test.like_date AS like_date FROM test_integration.post_likes_test INNER JOIN test_integration.users_test ON test_integration.users_test.user_id = test_integration.post_likes_test.user_id INNER JOIN test_integration.posts_test ON test_integration.posts_test.post_id = test_integration.post_likes_test.post_id)
+SELECT 
+      'FOLLOWS' AS `__cg_type`, 
+      'User' AS `__cg_from_label`, 
+      'User' AS `__cg_to_label`, 
+      e.follow_id AS `__cg_rid_0`, 
+      NULL AS `__cg_rid_1`, 
+      e.follower_id AS `__cg_from_0`, 
+      e.followed_id AS `__cg_to_0`, 
+      e.follower_id AS `__cg_start_0`, 
+      e.followed_id AS `__cg_end_0`, 
+      'User' AS `__cg_start_label`, 
+      'User' AS `__cg_end_label`, 
+      concat('FOLLOWS:User:User:', CAST(e.follow_id AS STRING)) AS `__cg_key`
+FROM test_integration.user_follows_test AS e
+
 UNION ALL
-(SELECT 'Post' AS start_type, string(test_integration.posts_test.post_id) as start_id, string(test_integration.users_test.user_id) as end_id, 'User' AS end_type, array('LIKED') as path_relationships, array(to_json(struct(test_integration.post_likes_test.like_date AS like_date))) as rel_properties, to_json(struct(test_integration.posts_test.author_id AS _s_author_id, test_integration.posts_test.post_content AS _s_post_content, test_integration.posts_test.post_date AS _s_post_date, test_integration.posts_test.post_id AS _s_post_id, test_integration.posts_test.post_title AS _s_post_title)) as start_properties, to_json(struct(test_integration.users_test.age AS _e_age, test_integration.users_test.city AS _e_city, test_integration.users_test.country AS _e_country, test_integration.users_test.email_address AS _e_email_address, test_integration.users_test.is_active AS _e_is_active, test_integration.users_test.full_name AS _e_full_name, test_integration.users_test.registration_date AS _e_registration_date, test_integration.users_test.user_id AS _e_user_id)) as end_properties, NULL AS follow_date, test_integration.post_likes_test.like_date AS like_date FROM test_integration.post_likes_test INNER JOIN test_integration.users_test ON test_integration.users_test.user_id = test_integration.post_likes_test.user_id INNER JOIN test_integration.posts_test ON test_integration.posts_test.post_id = test_integration.post_likes_test.post_id)
+SELECT 
+      'FOLLOWS' AS `__cg_type`, 
+      'User' AS `__cg_from_label`, 
+      'User' AS `__cg_to_label`, 
+      e.follow_id AS `__cg_rid_0`, 
+      NULL AS `__cg_rid_1`, 
+      e.follower_id AS `__cg_from_0`, 
+      e.followed_id AS `__cg_to_0`, 
+      e.followed_id AS `__cg_start_0`, 
+      e.follower_id AS `__cg_end_0`, 
+      'User' AS `__cg_start_label`, 
+      'User' AS `__cg_end_label`, 
+      concat('FOLLOWS:User:User:', CAST(e.follow_id AS STRING)) AS `__cg_key`
+FROM test_integration.user_follows_test AS e
+WHERE e.follower_id <> e.followed_id
+
+UNION ALL
+SELECT 
+      'LIKED' AS `__cg_type`, 
+      'User' AS `__cg_from_label`, 
+      'Post' AS `__cg_to_label`, 
+      e.like_id AS `__cg_rid_0`, 
+      NULL AS `__cg_rid_1`, 
+      e.user_id AS `__cg_from_0`, 
+      e.post_id AS `__cg_to_0`, 
+      e.post_id AS `__cg_start_0`, 
+      e.user_id AS `__cg_end_0`, 
+      'Post' AS `__cg_start_label`, 
+      'User' AS `__cg_end_label`, 
+      concat('LIKED:User:Post:', CAST(e.like_id AS STRING)) AS `__cg_key`
+FROM test_integration.post_likes_test AS e
+
+UNION ALL
+SELECT 
+      'LIKED' AS `__cg_type`, 
+      'User' AS `__cg_from_label`, 
+      'Post' AS `__cg_to_label`, 
+      e.like_id AS `__cg_rid_0`, 
+      NULL AS `__cg_rid_1`, 
+      e.user_id AS `__cg_from_0`, 
+      e.post_id AS `__cg_to_0`, 
+      e.user_id AS `__cg_start_0`, 
+      e.post_id AS `__cg_end_0`, 
+      'User' AS `__cg_start_label`, 
+      'Post' AS `__cg_end_label`, 
+      concat('LIKED:User:Post:', CAST(e.like_id AS STRING)) AS `__cg_key`
+FROM test_integration.post_likes_test AS e
 )
 SELECT 
       count(*) AS `count`
-FROM pattern_union_r AS r
+FROM v0_labels AS v0
+JOIN v1_rels AS v1 ON v1.__cg_start_label = v0.__cg_label AND v1.__cg_start_0 = v0.__cg_id_0
+JOIN v2_labels AS v2 ON v1.__cg_end_label = v2.__cg_label AND v1.__cg_end_0 = v2.__cg_id_0
+
+-- column count: Value [("count", "count")]

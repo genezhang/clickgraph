@@ -1,6 +1,10 @@
 SELECT 
-      u.full_name AS `u.name`, 
-      p.content AS `p.content`
-FROM db_polymorphic.users AS u
-INNER JOIN db_polymorphic.interactions AS t0 ON t0.from_id = u.user_id AND t0.interaction_type = 'LIKES' AND t0.from_type = 'User' AND t0.to_type = 'Post'
-INNER JOIN db_polymorphic.posts AS p ON p.post_id = t0.to_id
+      v0.full_name AS `u.name`, 
+      v2.content AS `p.content`
+FROM db_polymorphic.users AS v0
+JOIN db_polymorphic.interactions AS v1 ON v1.from_id = v0.user_id
+JOIN db_polymorphic.posts AS v2 ON v1.to_id = v2.post_id
+WHERE ((((v1.`interaction_type` = 'LIKES') AND (v1.`from_type` = 'User')) AND (v1.`to_type` = 'Post')))
+
+-- column u.name: Value [("u.name", "u.name")]
+-- column p.content: Value [("p.content", "p.content")]

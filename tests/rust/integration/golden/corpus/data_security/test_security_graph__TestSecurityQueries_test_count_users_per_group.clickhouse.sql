@@ -1,8 +1,12 @@
 SELECT 
-      g.name AS "g.name", 
-      count(u.user_id) AS "member_count"
-FROM data_security.ds_users AS u
-INNER JOIN data_security.ds_memberships AS t0 ON t0.member_id = u.user_id AND t0.member_type = 'User'
-INNER JOIN data_security.ds_groups AS g ON g.group_id = t0.group_id
-GROUP BY g.name
-ORDER BY member_count DESC NULLS FIRST
+      v2.name AS "g.name", 
+      count(v0.user_id) AS "member_count"
+FROM data_security.ds_users AS v0
+JOIN data_security.ds_memberships AS v1 ON v1.member_id = v0.user_id
+JOIN data_security.ds_groups AS v2 ON v1.group_id = v2.group_id
+WHERE ((v1."member_type" = 'User'))
+GROUP BY v2.name
+ORDER BY count(v0.user_id) DESC NULLS FIRST
+
+-- column g.name: Value [("g.name", "g.name")]
+-- column member_count: Value [("member_count", "member_count")]

@@ -1,4 +1,6 @@
 SELECT 
       count(*) AS `count(*)`
-FROM test_integration.users_test AS a
-WHERE (a.full_name = 'Alice Johnson' AND a.country = 'USA')
+FROM test_integration.users_test AS v0
+WHERE (v0.full_name = 'Alice Johnson' AND v0.country = 'USA')
+
+-- column count(*): Value [("count(*)", "count(*)")]

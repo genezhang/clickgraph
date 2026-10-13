@@ -1,8 +1,10 @@
-WITH with_prefix_cte_0 AS (SELECT 
-      substringUTF8(u.full_name, (1) + 1, 5) AS "prefix"
-FROM test_integration.users_test AS u
+WITH with_w1 AS (
+SELECT 
+      substringUTF8(v0.full_name, (1) + 1, 5) AS "v1"
+FROM test_integration.users_test AS v0
 )
 SELECT 
-      prefix.prefix AS "prefix"
-FROM with_prefix_cte_0 AS prefix
+      w1.v1 AS "prefix"
+FROM with_w1 AS w1
 LIMIT 1
+-- column prefix: Value [("prefix", "prefix")]
