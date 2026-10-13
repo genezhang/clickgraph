@@ -19998,3 +19998,23 @@ async fn path_node_property_readout_unsupported_forms_guarded() {
         );
     }
 }
+
+/// people-perf: with PREWHERE off (the default), single-table filters render
+/// exactly as before -- no PREWHERE keyword anywhere.
+#[tokio::test]
+async fn prewhere_off_renders_plain_where() {
+    let schema = load_schema(SchemaId::Standard.yaml_path());
+    let cypher = "MATCH (u:User) WHERE u.country = 'US' AND u.is_active = true RETURN u.name";
+
+    for dialect in [SqlDialect::ClickHouse, SqlDialect::Databricks] {
+        let sql = render(&schema, cypher, dialect).await;
+        assert!(
+            !sql.contains("PREWHERE"),
+            "people-perf ({dialect:?}): default-off must not emit PREWHERE:\n{sql}"
+        );
+        assert!(
+            sql.contains("WHERE"),
+            "people-perf ({dialect:?}): filter stays in WHERE:\n{sql}"
+        );
+    }
+}

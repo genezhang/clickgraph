@@ -6636,6 +6636,32 @@ fn plain_body_sql(body: RenderPlan) -> String {
         .join("\nUNION ALL\n")
 }
 
+/// Emit the WHERE clause, splitting eligible conjuncts into PREWHERE when the
+/// dynamic PREWHERE pushdown applies (people-perf: `CLICKGRAPH_PREWHERE=1`,
+/// dialect capability, single bound-plan table scan, catalog-allowed engine).
+/// Falls back to the plain `WHERE` rendering byte-identically otherwise.
+fn emit_filters_with_prewhere(plan: &RenderPlan) -> String {
+    match super::prewhere::filters_with_prewhere(
+        &plan.from,
+        &plan.joins,
+        &plan.array_join,
+        &plan.filters,
+        super::prewhere::prewhere_enabled(),
+    ) {
+        Some((prewhere_sql, where_sql)) => {
+            let mut sql = String::new();
+            if !prewhere_sql.is_empty() {
+                sql.push_str(&format!("PREWHERE {}\n", prewhere_sql));
+            }
+            if !where_sql.is_empty() {
+                sql.push_str(&format!("WHERE {}\n", where_sql));
+            }
+            sql
+        }
+        None => plan.filters.to_sql(),
+    }
+}
+
 /// One SELECT of a lowered plan: its own alias scope (result typing),
 /// duplicate result aliases disambiguated, and no repair pass.
 fn plain_select_sql(mut plan: RenderPlan) -> String {
@@ -6668,7 +6694,7 @@ fn plain_select_sql(mut plan: RenderPlan) -> String {
                 .array_join_clause(&lists),
         );
     }
-    sql.push_str(&plan.filters.to_sql());
+    sql.push_str(&emit_filters_with_prewhere(&plan));
     sql.push_str(&plan.group_by.to_sql());
     if let Some(having) = &plan.having_clause {
         sql.push_str("HAVING ");
@@ -7740,7 +7766,7 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, _max_cte_depth: u32) -> String {
 
     sql.push_str(&plan.joins.to_sql());
     sql.push_str(&plan.array_join.to_sql());
-    sql.push_str(&plan.filters.to_sql());
+    sql.push_str(&emit_filters_with_prewhere(&plan));
 
     sql.push_str(&plan.group_by.to_sql());
 

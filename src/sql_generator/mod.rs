@@ -85,6 +85,14 @@ impl SqlDialect {
     pub fn supports_final_keyword(&self) -> bool {
         matches!(self, SqlDialect::ClickHouse)
     }
+
+    /// Whether this dialect supports `PREWHERE` for single-table scans
+    /// (people-perf). ClickHouse-only: other backends (notably
+    /// Databricks/Spark) have no such clause, so the renderer must not emit
+    /// it there. Renderers ask the dialect instead of branching on it.
+    pub fn supports_prewhere(&self) -> bool {
+        matches!(self, SqlDialect::ClickHouse)
+    }
 }
 
 /// ClickHouse session settings that generated SQL depends on for **result

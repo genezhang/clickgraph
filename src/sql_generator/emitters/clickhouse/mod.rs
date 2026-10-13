@@ -10,6 +10,7 @@ pub mod id_gen;
 pub mod json_builder; // Type-preserving JSON construction utilities
 pub mod multi_type_vlp_joins; // Multi-type VLP JOIN expansion (Part 1D)
 pub mod pagerank;
+pub(crate) mod prewhere;
 pub mod to_sql_query; // Made public for EXISTS subquery generation with WITH clauses
 pub(crate) mod type_inference;
 pub mod variable_length_cte;
