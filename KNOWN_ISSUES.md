@@ -16,7 +16,7 @@ For fixed issues and release history, see [CHANGELOG.md](CHANGELOG.md).
 
 ### 2. Cypher Writes Are Embedded-Only
 **Status**: By design (v0.6.7+)
-**Cause**: ClickHouse server's lightweight UPDATE/DELETE path differs from chdb in maturity and concurrency semantics. ClickGraph's `write_guard` rejects writes against any executor that isn't `EmbeddedChdb` (server / remote / sql_only modes) and against any node/edge backed by a `source:` URI in the schema YAML.
+**Cause**: ClickHouse server's lightweight UPDATE/DELETE path differs from chdb in maturity and concurrency semantics. ClickGraph rejects writes against any executor that isn't embedded chdb (server / remote / sql_only modes; the embedded connection's executor check) and against any node/edge backed by a `source:` URI in the schema YAML (the write planner, `bound_plan::write`).
 **Workaround**: For server / remote workloads, perform writes via the ClickHouse SQL interface directly, then query through ClickGraph as normal.
 
 ### 3. Unsupported Write Combinations

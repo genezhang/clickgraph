@@ -1748,4 +1748,80 @@ mod tests {
             "{q}"
         );
     }
+
+    /// What a write's values print as (pinned when the legacy write tests
+    /// went, S14c2): a parameter stays a placeholder, a string is quoted
+    /// with `'` doubled (a CREATE's and a SET's), a function keeps its
+    /// name over the row's column, REMOVE writes NULL, and no statement
+    /// carries `SETTINGS` / `mutations_sync` (lightweight writes, Decision
+    /// 0.7: the table's settings).
+    #[test]
+    fn write_values() {
+        let ids = "WHERE `user_id` IN (SELECT __cg_id0 FROM (SELECT DISTINCT v0.user_id AS \"__cg_id0\" \
+                   FROM test_integration.users_test AS v0 WHERE v0.user_id = 1 ) AS __cg_write_ids)";
+        for (q, want) in [
+            (
+                "CREATE (u:User {user_id: $id, name: $name})",
+                "INSERT INTO `test_integration`.`users_test` (`user_id`, `full_name`) VALUES ($id, $name)"
+                    .to_string(),
+            ),
+            (
+                "CREATE (u:User {user_id: 7, name: \"O'Brien\"})",
+                "INSERT INTO `test_integration`.`users_test` (`user_id`, `full_name`) VALUES (7, 'O''Brien')"
+                    .to_string(),
+            ),
+            (
+                "MATCH (u:User) WHERE u.user_id = 1 SET u.name = u.name + \" O'Brien\"",
+                format!(
+                    "UPDATE `test_integration`.`users_test` SET `full_name` = \
+                     concat(full_name, ' O''Brien') {ids}"
+                ),
+            ),
+            (
+                "MATCH (u:User) WHERE u.user_id = 1 SET u.name = toString(u.age)",
+                format!(
+                    "UPDATE `test_integration`.`users_test` SET `full_name` = toString(age) {ids}"
+                ),
+            ),
+            (
+                "MATCH (u:User) WHERE u.user_id = 1 REMOVE u.name",
+                format!("UPDATE `test_integration`.`users_test` SET `full_name` = NULL {ids}"),
+            ),
+        ] {
+            let got = sql(q);
+            assert_eq!(got, vec![want], "{q}");
+            assert!(
+                got.iter().all(|s| !s.contains("SETTINGS") && !s.contains("mutations_sync")),
+                "{q}: {got:?}"
+            );
+        }
+    }
+
+    /// A node label read from a source (Parquet, S3, …) is read-only: every
+    /// write to it is refused (pinned when the legacy guard went, S14c2).
+    #[test]
+    fn a_source_backed_label_is_not_writable() {
+        let schema = crate::graph_catalog::config::GraphSchemaConfig::from_yaml_str(
+            &include_str!("../../schemas/test/social_integration.yaml").replacen(
+                "      table: users_test\n",
+                "      table: users_test\n      source: \"table_function:file('users.parquet', 'Parquet')\"\n",
+                1,
+            ),
+        )
+        .unwrap()
+        .to_graph_schema()
+        .unwrap();
+        for q in [
+            "CREATE (u:User {user_id: 1})",
+            "MATCH (u:User) SET u.name = 'x'",
+            "MATCH (u:User) DELETE u",
+            "MATCH (u:User) REMOVE u.name",
+        ] {
+            let err = planned(q, &schema).unwrap_err();
+            assert!(
+                matches!(&err, WritePlanError::Rejected(m) if m.contains("source-backed (read-only)")),
+                "{q}: {err:?}"
+            );
+        }
+    }
 }
