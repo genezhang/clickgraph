@@ -835,6 +835,15 @@ impl BoltHandler {
         }
     }
 
+    /// Negotiated Bolt version for FAILURE shaping (#1368): `None` before
+    /// the handshake completes (or if the context is poisoned — legacy
+    /// shape is the safe default).
+    /// MUST NOT be called while the context guard is held (it locks) — sites
+    /// inside a guard scope pass `context.version` directly instead.
+    fn negotiated_version(&self) -> Option<u32> {
+        self.context.lock().ok().and_then(|c| c.version)
+    }
+
     /// Handle a Bolt message and return response messages
     pub async fn handle_message(&mut self, message: BoltMessage) -> BoltResult<Vec<BoltMessage>> {
         log::debug!("Handling Bolt message: {}", message.type_name());
@@ -857,6 +866,7 @@ impl BoltHandler {
                 Ok(vec![BoltMessage::failure(
                     "Neo.ClientError.Request.Invalid".to_string(),
                     format!("Unhandled message type: {}", message.type_name()),
+                    self.negotiated_version(),
                 )])
             }
         }
@@ -878,6 +888,7 @@ impl BoltHandler {
             return Ok(vec![BoltMessage::failure(
                 "Neo.ClientError.Request.Invalid".to_string(),
                 "HELLO message received in invalid state".to_string(),
+                self.negotiated_version(),
             )]);
         }
 
@@ -1024,6 +1035,7 @@ impl BoltHandler {
                     Ok(vec![BoltMessage::failure(
                         auth_error.error_code().to_string(),
                         auth_error.to_string(),
+                        self.negotiated_version(),
                     )])
                 }
             }
@@ -1046,6 +1058,7 @@ impl BoltHandler {
                     "LOGON message received in invalid state: {:?}",
                     current_state
                 ),
+                self.negotiated_version(),
             )]);
         }
 
@@ -1148,6 +1161,7 @@ impl BoltHandler {
                 Ok(vec![BoltMessage::failure(
                     auth_error.error_code().to_string(),
                     auth_error.to_string(),
+                    self.negotiated_version(),
                 )])
             }
         }
@@ -1168,6 +1182,7 @@ impl BoltHandler {
                     "LOGOFF message received in invalid state: {:?}",
                     current_state
                 ),
+                self.negotiated_version(),
             )]);
         }
 
@@ -1254,6 +1269,7 @@ impl BoltHandler {
                 "Neo.ClientError.Statement.SyntaxError".to_string(),
                 "Usage: CALL sys.set('key', 'value') or CALL dbms.setConfigValue('key', 'value')"
                     .to_string(),
+                self.negotiated_version(),
             )]));
         }
 
@@ -1265,6 +1281,7 @@ impl BoltHandler {
             return Ok(Some(vec![BoltMessage::failure(
                 "Neo.ClientError.Statement.SyntaxError".to_string(),
                 "Usage: CALL dbms.setConfigValue('key', 'value')".to_string(),
+                self.negotiated_version(),
             )]));
         };
 
@@ -1273,6 +1290,7 @@ impl BoltHandler {
             return Ok(Some(vec![BoltMessage::failure(
                 "Neo.ClientError.Statement.SyntaxError".to_string(),
                 "Usage: CALL dbms.setConfigValue('key', 'value')".to_string(),
+                self.negotiated_version(),
             )]));
         }
 
@@ -1321,6 +1339,7 @@ impl BoltHandler {
                 return Ok(vec![BoltMessage::failure(
                     "Neo.ClientError.Request.Invalid".to_string(),
                     "RUN message received in invalid state".to_string(),
+                    context.version,
                 )]);
             }
         }
@@ -1740,6 +1759,7 @@ impl BoltHandler {
                     return Ok(vec![BoltMessage::failure(
                         "Neo.ClientError.Statement.ExecutionFailed".to_string(),
                         format!("count(n)/count(r) execution failed: {}", e),
+                        self.negotiated_version(),
                     )]);
                 }
             }
@@ -1879,6 +1899,7 @@ impl BoltHandler {
                     return Ok(vec![BoltMessage::failure(
                         "Neo.ClientError.Procedure.ProcedureCallFailed".to_string(),
                         e,
+                        self.negotiated_version(),
                     )]);
                 }
             }
@@ -1932,7 +1953,11 @@ impl BoltHandler {
                 // Setting to Failed would close the connection
 
                 (
-                    vec![BoltMessage::failure(error_code, error_message)],
+                    vec![BoltMessage::failure(
+                        error_code,
+                        error_message,
+                        self.negotiated_version(),
+                    )],
                     Outcome::Err(ErrorClass::Exec),
                 )
             }
@@ -2010,6 +2035,7 @@ impl BoltHandler {
                 return Ok(vec![BoltMessage::failure(
                     "Neo.ClientError.Request.Invalid".to_string(),
                     "DISCARD message received in invalid state".to_string(),
+                    context.version,
                 )]);
             }
         }
@@ -2037,6 +2063,7 @@ impl BoltHandler {
                 return Ok(vec![BoltMessage::failure(
                     "Neo.ClientError.Request.Invalid".to_string(),
                     "BEGIN message received in invalid state".to_string(),
+                    context.version,
                 )]);
             }
         }
@@ -2096,6 +2123,7 @@ impl BoltHandler {
                 return Ok(vec![BoltMessage::failure(
                     "Neo.ClientError.Transaction.TransactionNotFound".to_string(),
                     "No active transaction to commit".to_string(),
+                    context.version,
                 )]);
             }
         };
@@ -2116,6 +2144,7 @@ impl BoltHandler {
                 return Ok(vec![BoltMessage::failure(
                     "Neo.ClientError.Transaction.TransactionNotFound".to_string(),
                     "No active transaction to rollback".to_string(),
+                    context.version,
                 )]);
             }
         };
@@ -2164,6 +2193,7 @@ impl BoltHandler {
             return Ok(vec![BoltMessage::failure(
                 "Neo.ClientError.Database.DatabaseNotFound".to_string(),
                 format!("Database '{}' not found", db_name),
+                self.negotiated_version(),
             )]);
         }
 
@@ -3596,6 +3626,52 @@ mod tests {
             let context = handler.context.lock().unwrap();
             assert_eq!(context.state, ConnectionState::Failed);
         }
+    }
+
+    #[tokio::test]
+    async fn test_1368_run_failure_carries_gql_status() {
+        // #1368: whatever fails a RUN (parse/schema/plan), the FAILURE on the
+        // wire must carry neo4j_code + the GQL-status object.
+        let mut handler = create_test_handler();
+        {
+            let mut context = handler.context.lock().unwrap();
+            context.set_state(ConnectionState::Ready);
+            context.version = Some(super::super::BOLT_VERSION_5_8);
+        }
+
+        let run = BoltMessage::run("THIS IS NOT CYPHER".to_string(), HashMap::new(), None);
+        let responses = handler.handle_message(run).await.unwrap();
+        assert_eq!(responses.len(), 1);
+        assert_eq!(responses[0].signature, signatures::FAILURE);
+
+        let meta = match &responses[0].fields[0] {
+            BoltValue::Json(Value::Object(map)) => map,
+            other => panic!("FAILURE metadata must be a map, got {:?}", other),
+        };
+        let neo4j_code = meta
+            .get("neo4j_code")
+            .and_then(Value::as_str)
+            .expect("neo4j_code present");
+        assert!(
+            neo4j_code.starts_with("Neo."),
+            "neo4j_code is a Neo.* code: {neo4j_code}"
+        );
+        assert!(
+            !meta.contains_key("code"),
+            "5.7+ FAILURE has no legacy code key"
+        );
+        assert_eq!(
+            meta.get("gql_status").and_then(Value::as_str).map(str::len),
+            Some(5)
+        );
+        assert!(
+            meta.get("diagnostic_record")
+                .and_then(Value::as_object)
+                .and_then(|d| d.get("_classification"))
+                .and_then(Value::as_str)
+                .is_some(),
+            "diagnostic_record._classification present"
+        );
     }
 
     #[tokio::test]

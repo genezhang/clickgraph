@@ -6,6 +6,9 @@
 use serde_json::Value;
 use std::collections::HashMap;
 
+use super::errors::BoltError;
+use super::BOLT_VERSION_5_7;
+
 /// Bolt message signatures (message types)
 pub mod signatures {
     // Connection management (Bolt 3+)
@@ -197,11 +200,50 @@ impl BoltMessage {
         }
     }
 
-    /// Create a FAILURE response message
-    pub fn failure(code: String, message: String) -> Self {
+    /// Create a FAILURE response message, shaped by the negotiated Bolt
+    /// version (#1368). On 5.7 and above it sends message, neo4j_code,
+    /// gql_status, description and diagnostic_record, with no legacy code
+    /// key (matching Neo4j 5.26). Below 5.7, or when the version is
+    /// unknown, it sends the legacy code and message only, so older
+    /// clients never receive keys Neo4j would not send them.
+    /// Metadata carries code/message-derived strings only.
+    pub fn failure(code: String, message: String, version: Option<u32>) -> Self {
+        if version.is_none_or(|v| v < BOLT_VERSION_5_7) {
+            let metadata = HashMap::from([
+                ("code".to_string(), Value::String(code)),
+                ("message".to_string(), Value::String(message)),
+            ]);
+            return BoltMessage::new(
+                signatures::FAILURE,
+                vec![BoltValue::Json(Value::Object(serde_json::Map::from_iter(
+                    metadata,
+                )))],
+            );
+        }
+        let diagnostic_record = serde_json::Map::from_iter([
+            (
+                "_classification".to_string(),
+                Value::String(BoltError::classification_for(&code).to_string()),
+            ),
+            ("OPERATION".to_string(), Value::String(String::new())),
+            ("OPERATION_CODE".to_string(), Value::String("0".to_string())),
+            ("CURRENT_SCHEMA".to_string(), Value::String("/".to_string())),
+        ]);
         let metadata = HashMap::from([
-            ("code".to_string(), Value::String(code)),
-            ("message".to_string(), Value::String(message)),
+            ("message".to_string(), Value::String(message.clone())),
+            ("neo4j_code".to_string(), Value::String(code)),
+            (
+                "gql_status".to_string(),
+                Value::String(BoltError::GQLSTATUS_DEFAULT.to_string()),
+            ),
+            (
+                "description".to_string(),
+                Value::String(BoltError::status_description_for(&message)),
+            ),
+            (
+                "diagnostic_record".to_string(),
+                Value::Object(diagnostic_record),
+            ),
         ]);
 
         BoltMessage::new(
@@ -211,7 +253,6 @@ impl BoltMessage {
             )))],
         )
     }
-
     /// Create an IGNORED response message
     pub fn ignored() -> Self {
         BoltMessage::new(signatures::IGNORED, vec![])
@@ -541,10 +582,85 @@ mod tests {
         let failure = BoltMessage::failure(
             "Neo.ClientError.Statement.SyntaxError".to_string(),
             "Invalid syntax".to_string(),
+            None,
         );
 
         assert_eq!(failure.signature, signatures::FAILURE);
         assert_eq!(failure.type_name(), "FAILURE");
+    }
+
+    #[test]
+    fn test_1368_failure_carries_gql_status_fields() {
+        // #1368: on Bolt 5.7+, FAILURE carries the GQL-status object and NO
+        // legacy `code` key (matching Neo4j 5.26 wire captures).
+        let failure = BoltMessage::failure(
+            "Neo.ClientError.Statement.SyntaxError".to_string(),
+            "Invalid syntax".to_string(),
+            Some(super::super::BOLT_VERSION_5_8),
+        );
+        let meta = match &failure.fields[0] {
+            BoltValue::Json(Value::Object(map)) => map,
+            other => panic!("FAILURE metadata must be a map, got {:?}", other),
+        };
+        assert!(
+            !meta.contains_key("code"),
+            "5.7+ FAILURE has no legacy code key"
+        );
+        assert_eq!(
+            meta.get("message").and_then(Value::as_str),
+            Some("Invalid syntax")
+        );
+        assert_eq!(
+            meta.get("neo4j_code").and_then(Value::as_str),
+            Some("Neo.ClientError.Statement.SyntaxError")
+        );
+        let gql_status = meta
+            .get("gql_status")
+            .and_then(Value::as_str)
+            .expect("gql_status present");
+        assert_eq!(gql_status.len(), 5, "GQLSTATUS is 5 chars: {gql_status}");
+        assert_eq!(
+            meta.get("description").and_then(Value::as_str),
+            Some("error: general processing exception - unexpected error. Invalid syntax")
+        );
+        let diag = meta
+            .get("diagnostic_record")
+            .and_then(Value::as_object)
+            .expect("diagnostic_record present");
+        assert_eq!(
+            diag.get("_classification").and_then(Value::as_str),
+            Some("CLIENT_ERROR")
+        );
+    }
+
+    #[test]
+    fn test_1368_failure_legacy_shape_below_57() {
+        // Below 5.7 (and unknown): legacy {code, message} only.
+        for version in [
+            None,
+            Some(super::super::BOLT_VERSION_5_6),
+            Some(super::super::BOLT_VERSION_4_4),
+        ] {
+            let failure = BoltMessage::failure(
+                "Neo.ClientError.Statement.SyntaxError".to_string(),
+                "Invalid syntax".to_string(),
+                version,
+            );
+            let meta = match &failure.fields[0] {
+                BoltValue::Json(Value::Object(map)) => map,
+                other => panic!("FAILURE metadata must be a map, got {:?}", other),
+            };
+            assert_eq!(
+                meta.get("code").and_then(Value::as_str),
+                Some("Neo.ClientError.Statement.SyntaxError")
+            );
+            assert_eq!(
+                meta.get("message").and_then(Value::as_str),
+                Some("Invalid syntax")
+            );
+            assert!(!meta.contains_key("neo4j_code"), "no GQL keys below 5.7");
+            assert!(!meta.contains_key("gql_status"), "no GQL keys below 5.7");
+        }
     }
 
     #[test]

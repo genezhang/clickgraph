@@ -80,6 +80,12 @@ pub enum BoltError {
 pub type BoltResult<T> = Result<T, BoltError>;
 
 impl BoltError {
+    /// Documented GQLSTATUS polyfill default for exceptions without a
+    /// specific mapping (#1368). Drivers use this exact value when an old
+    /// server omits the GQL object, so emitting it keeps us consistent with
+    /// what drivers already tolerate.
+    pub const GQLSTATUS_DEFAULT: &'static str = "50N42";
+
     /// Create a new invalid message error
     pub fn invalid_message<S: Into<String>>(message: S) -> Self {
         BoltError::InvalidMessage {
@@ -134,6 +140,33 @@ impl BoltError {
             BoltError::MutexPoisoned { .. } => "Neo.TransientError.General.DatabaseUnavailable",
             BoltError::NotImplemented { .. } => "Neo.ClientError.Statement.FeatureNotSupported",
         }
+    }
+
+    /// GQL error classification for the Bolt 5.7+ diagnostic record
+    /// (#1368). Derived from the `Neo.*` prefix, matching the documented
+    /// CLIENT_ERROR / TRANSIENT_ERROR / DATABASE_ERROR categories.
+    /// (Free function: `failure()` only receives code + message strings.)
+    pub fn classification_for(code: &str) -> &'static str {
+        if code.starts_with("Neo.TransientError") {
+            "TRANSIENT_ERROR"
+        } else if code.starts_with("Neo.DatabaseError") {
+            "DATABASE_ERROR"
+        } else {
+            "CLIENT_ERROR"
+        }
+    }
+
+    /// Human-readable status description for a raw message string:
+    /// `error: general processing exception - unexpected error. <message>`,
+    /// matching Neo4j and the drivers' own fallback wording for `50N42`.
+    /// Note: `message` may echo substituted query text from ClickHouse
+    /// errors (pre-existing behavior, also visible pre-5.7) — never log or
+    /// store it beyond the FAILURE itself.
+    pub fn status_description_for(message: &str) -> String {
+        format!(
+            "error: general processing exception - unexpected error. {}",
+            message
+        )
     }
 
     /// Check if the error is recoverable
@@ -209,5 +242,32 @@ mod tests {
 
         let error: BoltError = "Test error".to_string().into();
         assert!(matches!(error, BoltError::Internal { .. }));
+    }
+
+    #[test]
+    fn test_1368_gql_classification() {
+        // Classification derives from the Neo.* prefix (GQL diagnostics).
+        // Free functions: failure() only sees code + message strings.
+        assert_eq!(
+            BoltError::classification_for("Neo.ClientError.Statement.SyntaxError"),
+            "CLIENT_ERROR"
+        );
+        assert_eq!(
+            BoltError::classification_for("Neo.TransientError.General.DatabaseUnavailable"),
+            "TRANSIENT_ERROR"
+        );
+        assert_eq!(
+            BoltError::classification_for("Neo.DatabaseError.General.UnknownError"),
+            "DATABASE_ERROR"
+        );
+        // GQLSTATUS default is the documented polyfill value; neo4j_code stays
+        // authoritative.
+        assert_eq!(BoltError::GQLSTATUS_DEFAULT, "50N42");
+        assert_eq!(BoltError::GQLSTATUS_DEFAULT.len(), 5);
+        // Description matches Neo4j/drivers fallback wording for 50N42.
+        assert_eq!(
+            BoltError::status_description_for("boom"),
+            "error: general processing exception - unexpected error. boom"
+        );
     }
 }
