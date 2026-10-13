@@ -55,6 +55,14 @@ pub use executor::{
 };
 pub use return_evaluator::apply_return_clause;
 
+/// A procedure answered by its own SQL, built from the call's arguments
+/// (vector / fulltext search, export), not by the registry.
+pub fn is_sql_procedure(name: &str) -> bool {
+    apoc_export::is_export_procedure(name)
+        || vector_search::is_vector_search_procedure(name)
+        || fulltext_search::is_fulltext_search_procedure(name)
+}
+
 use crate::graph_catalog::graph_schema::GraphSchema;
 use std::collections::HashMap;
 use std::sync::Arc;

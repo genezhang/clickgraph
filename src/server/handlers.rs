@@ -605,9 +605,25 @@ pub async fn query_handler(
         let registry = crate::procedures::ProcedureRegistry::new();
         let schema_name = schema_name_param.unwrap_or_else(|| "default".to_string());
 
-        // Now execute (no lifetimes involved)
-        let results =
-            crate::procedures::execute_procedure_union(proc_names, &schema_name, &registry).await;
+        // Now execute (no lifetimes involved), each branch with its tail
+        let results = async {
+            let mut all = Vec::new();
+            for (branch, proc_name) in proc_names.iter().enumerate() {
+                let rows = crate::procedures::executor::execute_procedure_by_name(
+                    proc_name,
+                    &schema_name,
+                    &registry,
+                )
+                .await?;
+                all.extend(crate::procedures::executor::apply_statement_tail(
+                    rows,
+                    &clean_query,
+                    branch,
+                )?);
+            }
+            Ok::<_, String>(all)
+        }
+        .await;
 
         match results {
             Ok(r) => {
@@ -625,6 +641,13 @@ pub async fn query_handler(
 
     if let Some(proc_name) = proc_name_opt {
         log::info!("Executing procedure: {}", proc_name);
+
+        if crate::procedures::is_sql_procedure(&proc_name) {
+            if let Ok((_, stmt)) = open_cypher_parser::parse_cypher_statement(&clean_query) {
+                crate::procedures::executor::sql_procedure_tail_refused(&stmt)
+                    .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+            }
+        }
 
         // ── Export procedures: apoc.export.{csv|json|parquet}.query() ──
         // These need SQL execution (not just schema introspection), so they
@@ -1006,6 +1029,14 @@ pub async fn query_handler(
 
         match results {
             Ok(r) => {
+                // What follows the CALL (YIELD, WHERE, RETURN; #1411)
+                let r = crate::procedures::executor::apply_statement_tail(r, &clean_query, 0)
+                    .map_err(|e| {
+                        (
+                            StatusCode::BAD_REQUEST,
+                            format!("Procedure query failed: {}", e),
+                        )
+                    })?;
                 let response_json = crate::procedures::executor::format_as_json(r);
                 return Ok(Json(response_json).into_response());
             }
