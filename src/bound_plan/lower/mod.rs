@@ -4181,7 +4181,7 @@ impl<'s> Lowerer<'s> {
         }
         // Between composite ids (S8d2) the search and the trails key a node
         // by the text of its id's tuple (`path::composite_key`; the
-        // generator's, under `composite_by_columns`, S8d2c).
+        // generator's too, S8d2c).
         let composite = match &walk {
             path::Walk::One(call) => {
                 let cols = call.node.id_physical_columns();

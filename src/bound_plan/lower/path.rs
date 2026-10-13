@@ -17,13 +17,10 @@
 //!   [`PathCte::edges`]);
 //! * `path_nodes`: the identities of its nodes.
 //!
-//! The generator's side channels are not used: the FROM alias it reports (the
-//! query-wide `vlp_from_alias()`) is replaced by the caller's alias for the
-//! relation; `outer_where_filters` (set by the denormalized strategy only) is
-//! refused. A composite identity (S8d) is in `start_id` / `end_id` as a text,
-//! which two ids can share; the walk carries its columns too
-//! (`start_<col>` / `end_<col>`), which each step joins by
-//! (`CteGenerationContext::composite_by_columns`) and the caller ties to.
+//! A composite identity (S8d) is in `start_id` / `end_id` as the text of
+//! the tuple of its columns; the walk carries its columns too
+//! (`start_<col>` / `end_<col>`), which each step joins by and the caller
+//! ties to.
 //!
 //! The walk is a trail: no relationship twice (the generator's
 //! `NOT has(path_edges, …)`), as Cypher's relationship uniqueness requires.
@@ -1656,7 +1653,7 @@ impl Walk<'_> {
                 let id = c.node.id_physical_columns();
                 // The columns a recovered path reads (its nodes as the search
                 // keys them: the generator's composite text is the same,
-                // `composite_by_columns`, S8d2c).
+                // S8d2c).
                 let mut carried = vec!["path_nodes"];
                 for (wanted, column) in [
                     (c.node_values, VALUE_COLUMNS[0]),

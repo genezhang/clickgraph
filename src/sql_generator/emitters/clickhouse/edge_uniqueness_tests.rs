@@ -10,6 +10,66 @@ fn create_test_schema() -> GraphSchema {
 }
 
 #[test]
+fn test_default_edge_id_tuple() {
+    // #598 (part 2): directed range VLP now enforces RELATIONSHIP-uniqueness
+    // (Cypher default) via path_edges. path_nodes is retained for nodes(p).
+    let schema = create_test_schema();
+    let spec = VariableLengthSpec::range(1, 2);
+    let generator = VariableLengthCteGenerator::for_test(
+        &schema,
+        spec,
+        "users",
+        "user_id",
+        "follows",
+        "follower_id",
+        "followed_id",
+        "users",
+        "user_id",
+        "u1",
+        "u2",
+        None,
+    );
+
+    let cte = generator.generate_cte();
+    let sql = match &cte.content {
+        crate::render_plan::CteContent::RawSql(s) => s,
+        other => panic!(
+            "Expected RawSql content in test_default_tuple_edge_id, got: {:?}",
+            other
+        ),
+    };
+
+    // path_nodes is still maintained for UNWIND nodes(p) support
+    assert!(
+        sql.contains("path_nodes"),
+        "SQL should still contain path_nodes for nodes(p). SQL:\n{}",
+        sql
+    );
+
+    // path_edges tracks the traversed edges for relationship-uniqueness
+    assert!(
+        sql.contains("path_edges"),
+        "SQL should contain path_edges for relationship-uniqueness. SQL:\n{}",
+        sql
+    );
+
+    // Cycle detection uses edge-uniqueness via path_edges (Cypher default),
+    // not node-uniqueness. Default edge identity is the (from, to) tuple.
+    assert!(
+        sql.contains("NOT has(vp.path_edges, tuple(rel.follower_id, rel.followed_id))"),
+        "SQL should check edge uniqueness via path_edges. SQL:\n{}",
+        sql
+    );
+    assert!(
+        !sql.contains("NOT has(vp.path_nodes,"),
+        "Directed range VLP should NOT use node-uniqueness cycle check. SQL:\n{}",
+        sql
+    );
+
+    println!("\n✅ Default Edge ID Test SQL:\n{}", sql);
+}
+
+#[test]
 fn test_composite_edge_id() {
     // Composite edge ID — cycle detection now uses edge-uniqueness (path_edges)
     // with the composite key rendered as a tuple.

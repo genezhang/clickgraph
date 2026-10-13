@@ -5256,10 +5256,9 @@ slice that will handle it.
       - The corpus goldens byte-identical at every step, census 1477, the
         ratchet's 17 decreases recorded; the removed tests covered only
         removed arms (the live-shaped ones run through a test constructor).
-      - Kept, as found: a walk between a composite node id and an edge
-        whose `from_id` has another arity joins by the pipe-joined text,
-        unlike the tuple-text `end_id` (the shortest-path search refuses
-        that arity mismatch; the walk does not).
+      - Kept: the recursive arm's pipe-joined join for an edge `from_id`
+        of another arity than the node's id, which the lowering refuses
+        first (`standard_edge`), unreachable.
 
 ## Appendix A — post-assembly repair passes (48, plus CTE flattening, at `e1241a9c`)
 

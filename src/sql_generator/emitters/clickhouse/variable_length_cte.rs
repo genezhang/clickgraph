@@ -59,9 +59,8 @@ fn emit_edge_cycle_check(edge_expr: &str) -> String {
 
 /// Spell `tuple(e1, e2, …)` from pre-qualified `<alias>.<col>` parts. The
 /// single spelling for "an edge identity that is a tuple" — shared by the
-/// edge_id `Composite`/`None` arms of [`spell_edge_identity`] and the FK-edge
-/// node pair ([`VariableLengthCteGenerator::build_fk_edge_tuple`]) so the
-/// wrapper is spelled in exactly one place. `parts` are already-qualified
+/// edge_id `Composite`/`None` arms of [`spell_edge_identity`] so the wrapper is
+/// spelled in exactly one place. `parts` are already-qualified
 /// column references; each caller decides its own quoting/column mapping.
 fn spell_tuple_parts(tuple_ctor: &str, parts: Vec<String>) -> String {
     format!("{}({})", tuple_ctor, parts.join(", "))
@@ -127,8 +126,8 @@ pub fn spell_edge_identity(
 /// Databricks variant stays identically typed. `identity_expr` must be spelled
 /// against the `__seed_edge` alias and carry exactly the recursive arm's
 /// element shape (via `EdgeIdentity::spell` — the same spelling both arms
-/// already share). `edge_source_sql` is the edge table or doubled-edge CTE the
-/// identity columns live on (`rel_source()`).
+/// already share). `edge_source_sql` is the edge relation the identity columns
+/// live on (`rel_source()`).
 ///
 /// On an EMPTY edge source the `LIMIT 1` subquery yields NULL rather than an
 /// empty typed array — harmless by construction: with no edges there are no
@@ -180,8 +179,8 @@ impl EdgeIdentity {
 /// EDGE-uniqueness (`NOT has(vp.path_edges, <identity>)`) lets a walk revisit a
 /// node and return to its start, so real cycles / parallel edges are counted;
 /// NODE-uniqueness (`NOT has(vp.path_nodes, <id>)`) structurally forbids
-/// returning to a visited node (correct only for shortestPath / weighted / the
-/// OPEN zero-hop base, where a walk must not cycle).
+/// returning to a visited node (kept only for a `*0..0` walk, which has no
+/// recursive arm).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UniquenessKind {
     Edge,
@@ -236,11 +235,9 @@ impl EdgeUniquenessPolicy {
         matches!(self.kind, UniquenessKind::Edge)
     }
 
-    /// The recursive-CTE cycle-check predicate for a SINGLE-alias arm
-    /// (standard / mixed / denorm): the edge-identity spelled off `rel_alias`
-    /// under EDGE-uniqueness, else the node-id fallback `node_id_expr`. The
-    /// FK-edge arms spell across two aliases and keep their own
-    /// [`Self::uses_edge_uniqueness`] + `build_fk_edge_tuple` call.
+    /// The recursive-CTE cycle-check predicate: the edge-identity spelled off
+    /// `rel_alias` under EDGE-uniqueness, else the node-id fallback
+    /// `node_id_expr`.
     pub fn recursive_cycle_predicate(&self, rel_alias: &str, node_id_expr: &str) -> String {
         match self.kind {
             UniquenessKind::Edge => emit_edge_cycle_check(
@@ -620,40 +617,11 @@ impl<'a> VariableLengthCteGenerator<'a> {
         emit_id_expr(&self.end_node_alias, &end_id_identifier)
     }
 
-    /// Whether the standard directed recursive VLP should enforce EDGE-uniqueness
-    /// (relationship-uniqueness — Cypher's default: a path MAY revisit a node but
-    /// must not reuse the same edge) via a `path_edges` array, instead of the
-    /// stronger node-uniqueness via `path_nodes`.
-    ///
-    /// Scoped (issue #598, part 2) to the standard single-type directed recursive
-    /// path. This helper is only consulted from the STANDARD arms of
-    /// `generate_base_case` and `generate_recursive_case_with_cte_name`, which are
-    /// reached only after those functions' early dispatch returns for the weighted
-    /// / denormalized / mixed / FK-edge / heterogeneous-polymorphic strategies — so
-    /// the pattern is already known to be standard here (no need to re-branch on raw
-    /// schema flags). Those other strategies keep node-uniqueness in their own
-    /// recursive generators (tracked as separate follow-ups).
-    ///
-    /// It stays `false` — keeping node-uniqueness — for:
-    /// - shortestPath (revisiting a node can never shorten a path);
-    /// - zero-hop base cases (`*0..N`, `effective_min_hops() == 0`), whose base row
-    ///   has no edges and so cannot seed the 1-hop `path_edges` literal;
-    /// - heterogeneous-polymorphic paths: these never reach the standard
-    ///   base/recursive arms at all — `generate_recursive_sql` returns early via
-    ///   `generate_heterogeneous_polymorphic_sql()` (a separate two-CTE builder)
-    ///   whenever `is_heterogeneous_polymorphic_path()` is true. That builder does
-    ///   NOT project `path_edges`, so this predicate stays `false` for them to keep
-    ///   the standard arms (used by other patterns) node-unique and avoid seeding a
-    ///   `path_edges` column the hetero path would never carry (cf. #469).
-    ///
-    /// When `true`, `path_edges` is threaded consistently through the base and
-    /// recursive arms (and carried by `SELECT *` in the min-hops `_inner` wrapper),
-    /// and the recursive cycle predicate switches to [`emit_edge_cycle_check`].
-    ///
-    /// #887 Phase 1–2: the decision now lives in [`EdgeUniquenessPolicy`]
-    /// ([`Self::edge_uniqueness_policy`]) — the single authority shared with the
-    /// denormalized strategy. This delegates so the many base-case `path_edges`
-    /// seed sites that also consult it stay byte-identical.
+    /// Whether the walk enforces EDGE-uniqueness (relationship-uniqueness —
+    /// Cypher's default: a path MAY revisit a node but must not reuse the same
+    /// edge) via a `path_edges` array, instead of node-uniqueness via
+    /// `path_nodes`: every walk with a recursive arm (#598, #1230). The decision
+    /// lives in [`EdgeUniquenessPolicy`] ([`Self::edge_uniqueness_policy`]).
     fn uses_edge_uniqueness(&self) -> bool {
         self.edge_uniqueness_policy().uses_edge_uniqueness()
     }
@@ -689,14 +657,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
     }
 
     /// The edge identity for THIS walk as a policy value (the #887
-    /// [`EdgeIdentity`]). The #617 doubled-edge orientation decision
-    /// ([`Self::uses_doubled_edges`]) is made HERE — once, at the policy
-    /// boundary — instead of per column: an undirected doubled walk wraps the
-    /// shape in [`EdgeIdentity::OrigOrientation`] so every identity column
-    /// reads its original-orientation name (from/to → `__cg_orig_from/to`,
-    /// any other column passes through unchanged); every other walk spells the
-    /// shape verbatim. Same evaluation time as the pre-policy per-column gate
-    /// (spell time, all fields final), so output is byte-identical.
+    /// [`EdgeIdentity`]).
     fn edge_identity(&self) -> EdgeIdentity {
         EdgeIdentity::EdgeIdColumns {
             edge_id: self.edge_id.clone(),
@@ -712,37 +673,10 @@ impl<'a> VariableLengthCteGenerator<'a> {
     /// Returns SQL like `tuple(r.from_id, r.to_id)` or `tuple(r.date, r.num, …)`.
     /// The shape is the walk's policy value ([`Self::edge_identity`],
     /// [`EdgeIdentity`]): schema `edge_id` (Single → bare `rel.col`;
-    /// Composite → `tuple(...)`), else the `(from, to)` node pair — and, on
-    /// the #617 doubled-edge walk, every column reads its original-orientation
-    /// name, so the same physical edge traversed the other way does not look
-    /// like a different relationship and trail-uniqueness holds. The
-    /// denormalized strategy spells via the same policy value (#710).
+    /// Composite → `tuple(...)`), else the `(from, to)` node pair (#710).
     fn build_edge_tuple_recursive(&self, rel_alias: &str) -> String {
         self.edge_identity()
             .spell(current_function_mapper().tuple_constructor(), rel_alias)
-    }
-
-    /// Get the ClickHouse array type for path_edges
-    /// Returns type like: `Array(Tuple(UInt32, UInt32))` or `Array(Tuple(String, String, ...))`
-    #[allow(dead_code)]
-    fn get_path_edges_array_type(&self) -> String {
-        match &self.edge_id {
-            Some(Identifier::Single(_)) => {
-                // For single column, we don't know the type - assume UInt64 for now
-                // TODO: Get actual column type from schema
-                "Array(Int64)".to_string()
-            }
-            Some(Identifier::Composite(cols)) => {
-                // For composite keys, build tuple type
-                // TODO: Get actual column types from schema - assuming String for now
-                let type_elements = vec!["String"; cols.len()].join(", ");
-                format!("Array(Tuple({}))", type_elements)
-            }
-            None => {
-                // Default (from_id, to_id) - assume both are UInt64
-                "Array(Tuple(Int64, Int64))".to_string()
-            }
-        }
     }
 
     /// Generate the recursive CTE for variable-length traversal
@@ -868,8 +802,8 @@ impl<'a> VariableLengthCteGenerator<'a> {
         // must be an empty slice of a real edge-identity tuple, pulled from the
         // edge source itself. The recursive arm's `NOT has(path_edges, …)`
         // then dedupes edges from hop 1 onward. Gated identically to the base /
-        // recursive arms via `uses_edge_uniqueness()`, so a pattern that stays
-        // node-unique (open `*0..N`, shortestPath) is byte-unchanged.
+        // recursive arms via `uses_edge_uniqueness()` (a `*0..0` walk, with no
+        // recursive arm, stays node-unique).
         if self.uses_edge_uniqueness() {
             let seed_identity = self
                 .edge_identity()
@@ -1006,8 +940,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
         // recursive step can enforce relationship-uniqueness (Cypher default).
         // A non-empty 1-element array literal lets ClickHouse infer
         // Array(Tuple(...)) directly — no CAST needed. path_nodes is retained
-        // above for nodes(p); path_edges drives the cycle check. Kept for
-        // shortestPath/non-standard strategies via uses_edge_uniqueness().
+        // above for nodes(p); path_edges drives the cycle check.
         if self.uses_edge_uniqueness() {
             select_items.push(format!(
                 "{} as path_edges",
@@ -1122,15 +1055,6 @@ impl<'a> VariableLengthCteGenerator<'a> {
         query
     }
 
-    /// Generate recursive case that extends existing paths
-    /// Reserved for backward compatibility when default CTE name is used
-    #[allow(dead_code)]
-    fn generate_recursive_case(&self, max_hops: u32) -> String {
-        // Delegate to the version that accepts CTE name
-        // This maintains backward compatibility
-        self.generate_recursive_case_with_cte_name(max_hops, &self.cte_name)
-    }
-
     fn generate_recursive_case_with_cte_name(&self, max_hops: u32, cte_name: &str) -> String {
         // Standard case: both nodes have their own tables
         // Parse comma-separated column string to Identifier
@@ -1237,9 +1161,6 @@ impl<'a> VariableLengthCteGenerator<'a> {
         // (`NOT has(path_edges, <this hop's edge>)`). Node-uniqueness wrongly dropped
         // valid paths that revisit a node via a different edge (e.g. mutual follows 1↔2).
         //
-        // Node-uniqueness (`NOT has(path_nodes, end_id)`) is retained for shortestPath
-        // (revisiting a node can never yield a shorter path) and for the non-standard
-        // strategies, gated via uses_edge_uniqueness().
         // #887 Phase 1–2: the edge-vs-node decision + identity spelling is the
         // shared EdgeUniquenessPolicy (byte-identical to the old inline gate,
         // proven by the spike in commit 1).
@@ -1313,7 +1234,8 @@ impl<'a> VariableLengthCteGenerator<'a> {
                 )
             }
             (None, Identifier::Composite(cols)) => {
-                // Composite: convert relationship columns to pipe-joined string
+                // Composite of another arity than the node's id: the lowering
+                // refuses it first (`standard_edge`); the pipe-joined text kept.
                 let concat_parts: Vec<String> = cols
                     .iter()
                     .map(|c| {
@@ -1356,21 +1278,6 @@ impl<'a> VariableLengthCteGenerator<'a> {
             where_clause = where_clause
         )
     }
-
-    // ======================================================================
-    // FK-EDGE PATTERN GENERATION
-    // ======================================================================
-    // For FK-edge patterns, the edge is a foreign key column on the node table.
-    // Both nodes come from the same table, and the relationship is:
-    // start_node.fk_col = end_node.id_col (e.g., child.parent_id = parent.object_id)
-    // No separate relationship table exists.
-
-    // ======================================================================
-    // MIXED PATTERN GENERATION
-    // ======================================================================
-    // For mixed patterns where one node is denormalized and the other is standard.
-    // - Denorm → Standard: Start from rel table (no start table), end with standard table JOIN
-    // - Standard → Denorm: Start from standard table, but end is denormalized (no end table JOIN)
 }
 
 #[cfg(test)]
