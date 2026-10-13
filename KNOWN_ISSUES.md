@@ -60,12 +60,10 @@ For fixed issues and release history, see [CHANGELOG.md](CHANGELOG.md).
 - Empty plans now use `FROM system.one WHERE false` for valid SQL
 - RETURN-only queries (e.g., `RETURN 1`) properly handled
 - Column references in Empty plans replaced with typed defaults
-**Location**: `src/render_plan/plan_builder.rs` lines 2301-2400
 
 ### labels(n) on Untyped Nodes ✅ (Feb 17)
 **Fix**: PR #104 - Branch-specific label extraction
 - Extract single label from each UNION branch's GraphNode
-- Temporarily override plan_ctx during projection tagging
 - Tightened VLP detection with `is_cte_reference()` check
 **Tests**: `tests/integration/test_labels_untyped_nodes.py` with 7 test cases
 

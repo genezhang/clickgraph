@@ -97,14 +97,13 @@ Client                          BoltHandler                    ClickHouse
 | `result_transformer.rs` | 2146 | **Largest file.** `ReturnItemMetadata` (from `ReadTranslation::return_metadata()`, the bound plan's result shape) classifies return items as Node/Relationship/Path/Scalar/IdFunction/Graph. `transform_row()` converts flat ClickHouse rows into packstream-encoded graph objects. Handles fixed-hop paths, VLP paths, multi-label scans, UNION path JSON format, polymorphic edges. |
 | `graph_objects.rs` | 717 | `Node`, `Relationship`, `Path` structs with `to_packstream()` methods. Custom packstream encoding helpers (`encode_integer`, `encode_string`, `encode_properties_map`, `encode_json_value`). |
 | `connection.rs` | 605 | `BoltConnection<S>` — wire-level I/O. Handshake (magic preamble + version negotiation), chunked message reading/writing, packstream message parsing/serialization. Generic over `AsyncRead + AsyncWrite`. |
-| `id_mapper.rs` | 571 | Deterministic 53-bit ID mapping. Label-encoded IDs (6 bits label code + 47 bits id value). Session cache with cross-session chaining via `ACTIVE_SESSION_CACHES` global registry. |
+| `id_mapper.rs` | 757 | Deterministic 53-bit ID mapping; `resolve_node_id` (an integer `id()` value → label and key, for the bound plan). Label-encoded IDs (6 bits label code + 47 bits id value). Session cache with cross-session chaining via `ACTIVE_SESSION_CACHES` global registry. |
 | `messages.rs` | 563 | `BoltMessage` and `BoltValue` types. Message constructors (hello, run, pull, success, failure, record). Field extractors for auth tokens, database, query, parameters, tenant_id, role, view_parameters. |
-| `id_rewriter.rs` | 412 | Regex-based Cypher query rewriter for `id(alias) = N`, `id(alias) IN [...]`, `NOT id(alias) IN [...]`, `ORDER BY id(alias)`. Translates encoded integer IDs back to `__node_id__` property filters. |
 | `auth.rs` | 402 | `AuthScheme`, `AuthToken`, `AuthenticatedUser`, `Authenticator`. SHA-256 password hashing, static user database. Auth disabled by default for development. |
 | `errors.rs` | 214 | `BoltError` enum with Neo4j-compatible error codes (`Neo.ClientError.*`, `Neo.TransientError.*`). `is_recoverable()` method. |
 | `websocket.rs` | 157 | `WebSocketBoltAdapter` — wraps `WebSocketStream<TcpStream>` to implement `AsyncRead + AsyncWrite`, enabling Bolt-over-WebSocket (for browser-based clients). |
 
-**Total: ~7,997 lines**
+**Total: ~7,600 lines**
 
 ## 4. Bolt Protocol State Machine
 
@@ -264,20 +263,14 @@ MATCH (a) WHERE id(a) = 140737488355370 RETURN a
 MATCH (a)--(o) WHERE id(a) = 140737488355370 AND NOT id(o) IN [140737488355371, 140737488355372] RETURN o
 ```
 
-### Rewrite Pipeline (`id_rewriter.rs`)
+### How the ids are read
 
-1. **`rewrite_id_predicates()`** — entry point, applies all rewrite patterns:
-   - `id(alias) = N` → `(alias:Label AND alias.__node_id__ = value)`
-   - `id(alias) IN [N1, N2]` → `((alias:Label AND alias.__node_id__ = v1) OR (alias:Label AND alias.__node_id__ = v2))`
-   - `NOT id(alias) IN [...]` → `NOT ((alias:Label AND ...) OR ...)`
-   - `ORDER BY id(alias)` → `ORDER BY alias.id`
-2. ID lookup via `IdMapper::get_element_id()` (session cache + cross-session)
-3. Element ID parsed via `parse_node_element_id()` → `(label, id_values)`
-4. `__node_id__` is a **marker property** that `FilterTagging` (in query planner) recognizes and transforms to the actual schema ID column
-
-### Missing ID Handling
-
-If an encoded integer ID is not found in any session cache, the predicate is replaced with `1 = 0` (impossible condition), producing an empty result set.
+The bound plan reads `id(alias) = N`, `id(alias) IN [...]` and `ORDER BY id(alias)`
+itself (P-4c S11e): the lowering's `IdLookup` (`translate.rs`) resolves each integer
+through `id_mapper::resolve_node_id` — the session cache (`IdMapper::get_element_id`,
+cross-session included), else the bit pattern (`IdMapper::decode_for_query`) for a
+label with an integer key — and compares the node's label and key columns. An id
+that names no node matches nothing.
 
 ## 8. Critical Invariants
 
@@ -377,7 +370,7 @@ server.handle_connection(tcp_stream, peer_addr).await?;
 |---|---|---|
 | `ReadTranslation::return_metadata()` | `translate.rs` | Classify RETURN items as Node/Rel/Path/Scalar (the bound plan's shape) |
 | `transform_row()` | `result_transformer.rs` | Convert ClickHouse row → packstream graph objects |
-| `rewrite_id_predicates()` | `id_rewriter.rs` | Rewrite `id(n) = N` to property filters |
+| `resolve_node_id()` | `id_mapper.rs` | An integer `id()` value → (label, key) |
 | `IdMapper::compute_deterministic_id()` | `id_mapper.rs` | Static: element_id → 53-bit integer |
 | `IdMapper::decode_for_query()` | `id_mapper.rs` | Static: encoded integer → (label, raw_value) |
 | `utils::negotiate_version()` | `mod.rs` | Select best protocol version from client proposals |
@@ -396,7 +389,6 @@ Key test areas:
 - **`messages.rs`**: Message construction, field extraction, type identification
 - **`auth.rs`**: Scheme parsing, token creation, authenticator (enabled/disabled), password hashing
 - **`id_mapper.rs`**: Numeric/string/composite IDs, label collision prevention, session cache chaining, cross-session lookup
-- **`id_rewriter.rs`**: id() equals/IN/NOT IN rewriting, ORDER BY rewriting, complex query with multiple patterns
 - **`graph_objects.rs`**: Packstream encoding for integers, strings, lists, maps, Node/Relationship structures, composite element IDs
 - **`handler.rs`**: HELLO/RESET/GOODBYE/transaction lifecycle (async tests)
 - **`result_transformer.rs`**: value_to_string, field name extraction
@@ -425,7 +417,6 @@ Tests in `tests/integration/bolt/` cover end-to-end scenarios.
 | `result_transformer.rs` | Graph object creation with various schemas, edge cases |
 | `graph_objects.rs` | Packstream byte-level verification |
 | `id_mapper.rs` | ID uniqueness, cross-label collision, session chaining |
-| `id_rewriter.rs` | Regex patterns, edge cases in complex queries |
 | `messages.rs` | Field extraction for all message types |
 
 ## 12. Dangerous Files / High-Risk Areas

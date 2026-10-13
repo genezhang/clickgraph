@@ -499,6 +499,46 @@ impl Default for IdMapper {
     }
 }
 
+/// The node an integer `id()` value names, as the server reads it: its
+/// label and key (a composite key's parts joined by `|`). The id `id_mapper`
+/// gave it (this session's, or another of the same scope), else its bit
+/// pattern decoded (`IdMapper::decode_for_query`: a label code and a small
+/// numeric key), for a label whose key is an integer. `None`: it names no
+/// node. The bound plan's `id()` lookup (P-4c S11e).
+pub fn resolve_node_id(
+    id_mapper: &IdMapper,
+    schema: Option<&crate::graph_catalog::GraphSchema>,
+    id_value: i64,
+) -> Option<(String, String)> {
+    if let Some(element_id) = id_mapper.get_element_id(id_value) {
+        if let Ok((label, id_parts)) =
+            crate::graph_catalog::element_id::parse_node_element_id(&element_id)
+        {
+            return Some((label, id_parts.join("|")));
+        }
+    }
+    // LIMITATION: only simple numeric keys (< 2^31) decode from the bit
+    // pattern; not string ids, UUIDs, composite keys or hashed values.
+    let (label, id_str) = IdMapper::decode_for_query(id_value)?;
+    if let Some(schema) = schema {
+        use crate::graph_catalog::schema_types::SchemaType;
+        let Ok(node_schema) = schema.node_schema(&label) else {
+            log::warn!("id() decode: label '{}' not found in schema", label);
+            return None;
+        };
+        if !matches!(node_schema.node_id.dtype, SchemaType::Integer) {
+            log::warn!(
+                "id() decode: skipping {}:{} - ID type '{:?}' is not Integer",
+                label,
+                id_str,
+                node_schema.node_id.dtype
+            );
+            return None;
+        }
+    }
+    Some((label, id_str))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

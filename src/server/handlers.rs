@@ -1359,24 +1359,13 @@ async fn query_handler_inner(
                 }
             };
 
-        // Phase 1.5: Transform id() functions (same as Bolt protocol does)
-        // This converts id(alias) = N to proper property comparisons
-        // NOTE: HTTP is stateless, so we create a temporary IdMapper per request
-        use crate::query_planner::ast_transform;
+        // The bound plan reads `id()` values through this mapper. HTTP is
+        // stateless: a temporary IdMapper per request.
         use crate::server::bolt_protocol::id_mapper::IdMapper;
 
         let mut id_mapper = IdMapper::new();
         id_mapper.set_scope(Some(schema_name.clone()), None); // HTTP has no tenant_id
-        let ast_arena = ast_transform::StringArena::new();
-        let cypher_statement = parsed_stmt.map(|parsed_stmt| {
-            ast_transform::transform_id_functions(
-                &ast_arena,
-                parsed_stmt,
-                &id_mapper,
-                Some(&graph_schema),
-            )
-            .0
-        });
+        let cypher_statement = parsed_stmt;
 
         metrics.parse_time = parse_start.elapsed().as_secs_f64();
 

@@ -14,6 +14,8 @@
 
 ### 🧹 Infrastructure
 
+- **The legacy `id()` rewrites are deleted** (P-4c S14c7): the AST rewrite (`transform_id_functions`, whose output only classified the statement) and the regex `id_rewriter.rs`; the bound plan reads `id()` values itself. The developer docs describe the bound plan.
+
 - **`LogicalPlan` is deleted** (P-4c S14c6, ~4.8k lines): the legacy plan tree and the shared fields that still named it (`ViewTableRef.source`, PageRank's CALL, the `LogicalExpr` subquery variants). The path generator's hop spec moves to `render_plan/variable_length.rs`. The corpus SQL goldens are byte-identical.
 
 - **The shared printer and IR lose the legacy pipeline's leftovers** (P-4c S14c5, ~5k lines): the name-keyed column resolution and the plain-render flag, 24 query-context registries nothing wrote any more, the `RenderPlan` / `Cte` / `Join` fields and `RenderExpr` variants only the legacy renderer used. The corpus SQL goldens are byte-identical.

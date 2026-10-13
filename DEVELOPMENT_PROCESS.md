@@ -174,10 +174,10 @@ git branch --show-current
 
 ```mermaid
 graph LR
-    A[Parser<br/>mod.rs] --> B[AST<br/>ast.rs]
-    B --> C[Logical Plan<br/>logical_plan/]
-    C --> D[Optimizer<br/>optimizer/]
-    D --> E[SQL Generator<br/>clickhouse_query_generator/]
+    A[Parser<br/>clause_list.rs] --> B[AST<br/>ast.rs]
+    B --> C[Binder<br/>bound_plan/binder.rs]
+    C --> D[Lowering<br/>bound_plan/lower/]
+    D --> E[SQL printer<br/>sql_generator/emitters/clickhouse/]
     style A fill:#e3f2fd
     style B fill:#fff3e0
     style C fill:#e8f5e9
@@ -188,10 +188,9 @@ graph LR
 **Component Checklist**:
 - [ ] **Parser** (`open_cypher_parser/`): Does syntax need parsing support?
 - [ ] **AST** (`ast.rs`): Do we need new AST nodes?
-- [ ] **Logical Plan** (`query_planner/logical_plan/`): New plan nodes needed?
-- [ ] **Analyzer** (`query_planner/analyzer/`): Validation or inference needed?
-- [ ] **Optimizer** (`query_planner/optimizer/`): Optimization passes?
-- [ ] **SQL Generator** (`clickhouse_query_generator/`): SQL translation logic?
+- [ ] **Binder** (`bound_plan/binder.rs`, `expr.rs`, `labels.rs`): new names, scopes or label inference?
+- [ ] **Lowering** (`bound_plan/lower/`): how the clause becomes CTEs / joins / SELECT (dialect spellings via `FunctionMapper`)?
+- [ ] **SQL printer** (`sql_generator/emitters/clickhouse/`): new IR to print?
 - [ ] **Server** (`server/`): API or handler changes?
 
 #### 1.3 Design the Implementation
@@ -267,40 +266,34 @@ fn test_parse_optional_match() {
 }
 ```
 
-#### 2.2 Update Logical Plan
-**Location**: `src/query_planner/logical_plan/`
+#### 2.2 Bind
+**Location**: `src/bound_plan/` (`docs/design/EXPLICIT_SCOPE.md`)
 
 **Typical Changes**:
-- Add new plan node types if needed
-- Update `PlanContext` for tracking state
-- Modify plan builders to construct new nodes
+- Resolve the clause's names to bindings once (`binder.rs`, `expr.rs`)
+- Infer labels (`labels.rs`); refuse what is not supported with `BindError::Unsupported`
 
-**Key Infrastructure**:
-- Use `TypedVariable` system for variable registration (`query_planner/typed_variable.rs`)
-- Use `define_*` methods in `PlanCtx` to register variables with full metadata
-- Use `lookup_variable()` for unified variable lookups
-
-#### 2.3 Implement SQL Generation
-**Location**: `src/clickhouse_query_generator/` or `src/render_plan/`
+#### 2.3 Lower and Print
+**Location**: `src/bound_plan/lower/` (the SQL IR in `src/render_plan/`), printed by `src/sql_generator/emitters/clickhouse/to_sql_query.rs`
 
 **Common Patterns**:
 - **Simple transformations**: Add cases to existing match statements
 - **Complex features**: Create dedicated module (e.g., `variable_length_cte.rs`)
-- **CTEs**: Use `CteManager` for schema-aware generation (`render_plan/cte_manager/`)
-- **JOINs**: Use `PatternSchemaContext` for strategy selection (`graph_catalog/pattern_schema.rs`)
+- **Walks**: variable-length paths go through `bound_plan/lower/path.rs` (the generator in `variable_length_cte.rs`)
+- **Schema layouts**: Use `PatternSchemaContext` / schema-catalog APIs, not raw flags (`graph_catalog/pattern_schema.rs`)
 
 **⚠️ Per-Query State Must Use Task-Local**:
 - ClickGraph runs on Axum (async server) where multiple concurrent queries share OS threads
 - If you need per-query state (schema context, CTE mappings, temp caches), **use `tokio::task_local!` NOT `thread_local!`**
 - Each async task gets isolated storage automatically - no interference between concurrent queries
-- Example: `QUERY_SCHEMA_NAME` in `render_plan/render_expr.rs` uses `tokio::task_local!` so concurrent queries don't see each other's schema context
+- Example: `QUERY_CONTEXT` in `server/query_context.rs` uses `tokio::task_local!` so concurrent queries don't see each other's schema context
 - See Core Infrastructure #5 in copilot-instructions.md for detailed pattern
 
 #### 2.4 Wire Everything Together
 **Common Integration Points**:
-- Parser calls in `open_cypher_parser/mod.rs`
-- Query planner calls in `query_planner/mod.rs`
-- SQL generator calls in `render_plan/plan_builder.rs`
+- Parser calls in `open_cypher_parser/clause_list.rs`
+- The read seam in `translate.rs` (every entry point calls it)
+- Writes in `bound_plan/write.rs`
 
 **Build Frequently**:
 ```bash
@@ -911,141 +904,6 @@ print(response.json())
 
 ---
 
-## 🏗️ Architecture Pattern: Metadata Preservation
-
-### The Problem
-
-When adding metadata fields to LogicalPlan nodes (e.g., `tuple_properties` on Unwind), the metadata must be preserved through **all** pipeline transformations. Without a systematic approach, this requires updating 15-20 files, which is error-prone and creates bugs.
-
-### The Solution: Builder Pattern with Helper Methods
-
-**Pattern**: Add helper methods to struct that clone metadata automatically
-
-```rust
-impl Unwind {
-    /// Preserve all metadata while changing input
-    pub fn with_new_input(&self, new_input: Arc<LogicalPlan>) -> Self {
-        Unwind {
-            input: new_input,
-            expression: self.expression.clone(),
-            alias: self.alias.clone(),
-            label: self.label.clone(),
-            tuple_properties: self.tuple_properties.clone(), // ← Automatic
-            // Future metadata fields get added here once
-        }
-    }
-
-    /// Standard rebuild pattern used in pipeline transformations
-    pub fn rebuild_or_clone(
-        &self,
-        input_tf: Transformed<Arc<LogicalPlan>>,
-        old_plan: Arc<LogicalPlan>,
-    ) -> Transformed<Arc<LogicalPlan>> {
-        match input_tf {
-            Transformed::Yes(new_input) => {
-                Transformed::Yes(Arc::new(LogicalPlan::Unwind(
-                    self.with_new_input(new_input)
-                )))
-            }
-            Transformed::No(_) => Transformed::No(old_plan.clone()),
-        }
-    }
-}
-```
-
-### Usage in Pipeline Code
-
-**Before** (error-prone):
-```rust
-LogicalPlan::Unwind(u) => {
-    let child_tf = self.analyze(u.input.clone(), _plan_ctx)?;
-    match child_tf {
-        Transformed::Yes(new_input) => Transformed::Yes(Arc::new(LogicalPlan::Unwind(
-            Unwind {
-                input: new_input,
-                expression: u.expression.clone(),
-                alias: u.alias.clone(),
-                label: u.label.clone(),
-                tuple_properties: u.tuple_properties.clone(), // EASY TO FORGET!
-            },
-        ))),
-        Transformed::No(_) => Transformed::No(logical_plan.clone()),
-    }
-}
-```
-
-**After** (automatic):
-```rust
-LogicalPlan::Unwind(u) => {
-    let child_tf = self.analyze(u.input.clone(), _plan_ctx)?;
-    u.rebuild_or_clone(child_tf, logical_plan.clone())
-}
-```
-
-### Guidelines for Adding Metadata Fields
-
-#### When Adding a New Metadata Field
-
-1. **Add field to struct** in `query_planner/logical_plan/mod.rs`
-   ```rust
-   pub struct Unwind {
-       // ... existing fields ...
-       pub new_metadata: Option<SomeType>,
-   }
-   ```
-
-2. **Update helper methods** (ONE place):
-   ```rust
-   impl Unwind {
-       pub fn with_new_input(&self, new_input: Arc<LogicalPlan>) -> Self {
-           Unwind {
-               input: new_input,
-               // ... existing clones ...
-               new_metadata: self.new_metadata.clone(), // ← Add here
-           }
-       }
-   }
-   ```
-
-3. **Set metadata where created** (analyzer, enricher):
-   ```rust
-   LogicalPlan::Unwind(Unwind {
-       input,
-       expression,
-       alias,
-       label: Some("User".to_string()),
-       new_metadata: Some(computed_value), // ← Initialize
-   })
-   ```
-
-4. **Test metadata flows through**:
-   - Add test to verify metadata preserved after optimization
-   - Check in query_planner tests
-   - Verify in integration tests
-
-#### When NOT to Use This Pattern
-
-- **Immutable leaf nodes** (Empty, ViewScan) - no transformations
-- **Simple wrapper nodes** - use spread operator `..node.clone()`
-- **One-off transformations** - manual clone acceptable
-
-### Benefits
-
-✅ **Single Point of Update**: New metadata = update 1 method, not 19 files  
-✅ **Compiler Enforced**: Forget to update method → compilation error  
-✅ **Self-Documenting**: Helper names explain intent  
-✅ **Testing**: Easy to verify metadata preservation  
-
-### See Also
-
-- **Design Document**: `notes/metadata_preservation.md`
-- **Case Study**: `tuple_properties` field (Dec 20, 2025)
-- **Example Implementation**: `src/query_planner/logical_plan/mod.rs` - Unwind impl block
-
----
-
----
-
 ## Phase 6: PULL REQUEST & MERGE 🔀
 
 **⚠️ REQUIRED FINAL STEP: All code must be reviewed before merging to main!**
@@ -1394,10 +1252,10 @@ git push origin fix/descriptive-bug-name
 ```
 
 ### Common Bug Patterns
-- **Alias propagation**: Check `plan_sanitization.rs` and `graph_traversal_planning.rs`
+- **Alias propagation**: Check the binder's scopes (`bound_plan/binder.rs`)
 - **Property mapping**: Verify schema lookups in `graph_catalog/`
-- **SQL generation**: Debug in `clickhouse_query_generator/`
-- **Type resolution**: Check analyzer passes in `query_planner/analyzer/`
+- **SQL generation**: Debug the lowering (`bound_plan/lower/`) with `sql_only`
+- **Type resolution**: Check the binder's types (`bound_plan/types.rs`) and `type_inference.rs`
 - **NULL handling**: Review LEFT JOIN logic for OPTIONAL MATCH
 
 ---

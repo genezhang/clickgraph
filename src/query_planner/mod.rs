@@ -6,7 +6,6 @@ use crate::{
     open_cypher_parser::ast::{CypherStatement, OpenCypherQueryAst},
 };
 
-pub mod ast_transform;
 mod errors;
 pub mod join_context;
 pub mod logical_expr;
