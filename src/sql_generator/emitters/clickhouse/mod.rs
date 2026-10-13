@@ -5,8 +5,6 @@ mod errors;
 mod function_registry;
 mod function_translator;
 pub mod id_gen;
-pub mod json_builder; // Type-preserving JSON construction utilities
-pub mod multi_type_vlp_joins; // Multi-type VLP JOIN expansion (Part 1D)
 pub mod pagerank;
 pub mod to_sql_query; // Made public for EXISTS subquery generation with WITH clauses
 pub(crate) mod type_inference;
@@ -28,11 +26,6 @@ pub use function_translator::{
     get_supported_functions, is_ch_aggregate_function, is_function_supported, CH_AGG_PREFIX,
     CH_PASSTHROUGH_PREFIX,
 };
-pub use json_builder::{
-    generate_json_properties_from_schema, generate_json_properties_sql,
-    generate_multi_type_union_sql,
-};
-pub use multi_type_vlp_joins::MultiTypeVlpJoinGenerator; // Export for cte_extraction.rs
 pub use variable_length_cte::{NodeProperty, VariableLengthCteGenerator, WeightCteConfig};
 
 /// Convert a Cypher query string directly to ClickHouse SQL.

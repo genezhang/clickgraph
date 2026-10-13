@@ -91,29 +91,30 @@ cg schema discover --clickhouse http://localhost:8123 \
 ## Architecture — Query Pipeline
 
 ```
-Cypher Query → Parse → Plan → Optimize → Render → Generate SQL → Execute
+Cypher Query → Parse → Bind → Lower → Print SQL → Execute
 ```
 
 | Stage | Module | Purpose |
 |-------|--------|---------|
-| Parse | `src/open_cypher_parser/` | Cypher → AST using `nom` combinators |
-| Plan | `src/query_planner/` | AST → LogicalPlan (analysis, type inference, traversal planning) |
-| Optimize | `src/query_planner/optimizer/` | Optimization passes (projection push-down, filter push-down) |
-| Render | `src/render_plan/` | LogicalPlan → RenderPlan (CTEs, SELECT, FROM, JOINs) |
-| Generate | `src/clickhouse_query_generator/` | RenderPlan → ClickHouse SQL string |
+| Parse | `src/open_cypher_parser/` | Cypher → AST using `nom`; the clause-list parser (`clause_list`) is what the bound plan reads (the statement parse classifies read / CALL / write) |
+| Bind | `src/bound_plan/{binder,expr,labels}.rs` | Names → bindings, scopes, label inference (`docs/design/EXPLICIT_SCOPE.md`) |
+| Lower | `src/bound_plan/lower/` | Bound statement → `RenderPlan` (CTEs, SELECT, JOINs), dialect spellings via `FunctionMapper` |
+| Print | `src/sql_generator/emitters/clickhouse/` | `RenderPlan` → SQL (`render_plan_to_sql_plain`; `variable_length_cte.rs` for walks) |
+| Writes | `src/bound_plan/write.rs` | Embedded Cypher writes → `WriteRenderPlan` → `write_to_sql.rs` |
+| Seam | `src/translate.rs` | The one read translation every entry point calls |
 | Execute | `src/server/` | HTTP (axum) + Bolt v5.8 protocol servers, ClickHouse client |
 | Schema | `src/graph_catalog/` | YAML graph schema management and validation |
 
+The legacy planner/renderer (`query_planner` analyzer/optimizer, `render_plan` composition) was deleted in P-4c S14c; `query_planner` keeps the expression IR (`logical_expr`) and the `LogicalPlan` types still referenced by shared structs (S14c6 removes them).
+
 ### Key Submodules
 
-- **`query_planner/analyzer/`** — Type inference (4-phase), view resolution, graph traversal planning
-- **`query_planner/plan_ctx/`** — Query context, variable scoping
-- **`render_plan/plan_builder_utils.rs`** — The largest file (~12K lines); WITH→CTE transformation, expression rewriting. Most regressions originate here. Always run full test suite after changes.
-- **`render_plan/variable_scope.rs`** — Scope-aware variable resolution across WITH barriers
-- **`render_plan/cte_manager/`** — CTE generation and management
-- **`clickhouse_query_generator/to_sql_query.rs`** — Final SQL rendering, CTE flattening
+- **`bound_plan/lower/mod.rs`** — The largest file; clause-by-clause lowering (MATCH, OPTIONAL MATCH, WITH, UNWIND, RETURN). Most regressions originate here. Always run the full test suite after changes.
+- **`bound_plan/lower/{path,subquery,expr,value,elements}.rs`** — Walks and shortest paths, subquery expressions, expressions, graph values, list elements
+- **`sql_generator/function_mapper/`** — Per-dialect spellings (ClickHouse, Databricks)
+- **`sql_generator/emitters/clickhouse/to_sql_query.rs`** — SQL printing, CTE flattening
 - **`server/bolt_protocol/`** — Neo4j Bolt v5.8 wire protocol implementation
-- **`server/query_context.rs`** — Task-local schema and variable registry
+- **`server/query_context.rs`** — Task-local schema and dialect
 
 ## Ecosystem Architecture
 
@@ -199,26 +200,10 @@ After WITH:   p.name → CTE1.p6_person_name     (CTE column via property_mappin
 ### 3. Task-Local Schema Access
 Query-processing code MUST access schema via task-local `QueryContext` (`get_current_schema()`), never directly from `GLOBAL_SCHEMAS`. GLOBAL_SCHEMAS is only for server init and admin endpoints.
 
-### 4. Anchor-Aware Join Generation
-JOIN ordering uses topological sort based on `anchor_connection`. When the anchor node is the right connection in OPTIONAL MATCH, FROM and JOIN order must be reversed.
-
-### 5. WITH Clause Traversal: `walk()` Is Exhaustive; Barriers Are Explicit
-WITH-processing traversal is built on the exhaustive `LogicalPlan::children()`
-/ `walk()` API (no catch-all — a new variant is a compile error until handled),
-so the historical "five hand-rolled walkers must agree" invariant is now
-structural (see `render_plan/AGENTS.md` §6). `has_with_clause_in_tree()` is the
-single canonical existence predicate; `plan_contains_with_clause()` delegates to
-it. `find_all_with_clauses_grouped()` / `needs_processing()` /
-`replace_with_clause_with_cte_reference_v2()` recurse via `children()` and carry
-only bespoke barrier/decision logic. When adding a `LogicalPlan` variant, the
-compiler forces you to extend `children()`/`map_children_arc()`; the walkers
-then recurse automatically — you only touch a walker if it has a real barrier
-(`Descend::Skip`) or alias/key decision to make.
-
-### 6. CTE Column Naming
+### 4. CTE Column Naming
 WITH CTE columns use unambiguous `p{N}_{alias}_{property}` format where N = character length of alias. Generated by `cte_column_name()` in `src/utils/cte_column_naming.rs`.
 
-### 7. Axis-Dispatch Rule: Schema Patterns and Dialects
+### 5. Axis-Dispatch Rule: Schema Patterns and Dialects
 Changes that behave differently across schema patterns (standard, FK-edge, denormalized, polymorphic, composite-id) must consume `PatternSchemaContext` / schema-catalog APIs (`src/graph_catalog/pattern_schema.rs`, `graph_schema.rs`) rather than branching on raw flags (`is_denormalized`, `is_fk_edge`, `type_column`, table-name comparisons). Changes emitting dialect-specific SQL must route through `Dialect`/`FunctionMapper` (`src/sql_generator/`), not inline branching. The ratchet test (`cargo test --test ratchet`, `tests/rust/ratchet/`) enforces this by tracking predicate occurrences per module; if it fails, route through dispatch APIs instead of bumping the baseline. Justify any baseline bump explicitly in the PR. See `docs/design/REFACTORING_SAFETY_PLAN.md` §2.1 for detail.
 
 ## Schema Discipline

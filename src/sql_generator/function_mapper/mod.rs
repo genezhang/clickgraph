@@ -30,12 +30,6 @@ pub(crate) mod databricks;
 /// or a structural rewrite (e.g. `arrayJoin` → `LATERAL VIEW explode`),
 /// that becomes a dedicated method then — not a global redesign.
 pub(crate) trait FunctionMapper: Send + Sync {
-    /// Collect into a list aggregate. CH: `groupArray`. Spark: `collect_list`.
-    fn collect_list(&self) -> &'static str;
-
-    /// 1-based array indexing. CH: `arrayElement`. Spark: `element_at`.
-    fn array_element(&self) -> &'static str;
-
     /// 1-based array indexing that yields NULL when the index is out of
     /// bounds (either end) — the openCypher contract for `list[i]`
     /// (Neo4j returns `null`, not a type default). CH `arrayElement`/`arr[i]`
@@ -115,36 +109,14 @@ pub(crate) trait FunctionMapper: Send + Sync {
     /// callers paste the result directly into surrounding SQL.
     fn min_if(&self, val: &str, cond: &str) -> String;
 
-    /// NULL-on-empty minimum. CH: `minOrNull` (CH's bare `min` returns 0
-    /// for an empty input set, not NULL). Spark/ANSI `min` already returns
-    /// NULL for empty input, so this maps to plain `min`. Used by the
-    /// `CASE path IS NULL THEN -1 ELSE length(path) END` VLP rewrite,
-    /// where the "no path" branch must reliably surface as NULL.
-    fn min_or_null(&self) -> &'static str;
-
-    /// Count of array elements matching a predicate.
-    /// CH: `arrayCount`. Spark needs structural rewriting to
-    /// `size(filter(...))` — the planned Databricks emitter handles this
-    /// at the call site once dialect is plumbed through (Phase 1).
-    fn array_count(&self) -> &'static str;
-
     /// Do two arrays share any element? CH: `hasAny(a, b)`. Databricks/Spark:
     /// `arrays_overlap(a, b)`. Both return a boolean-ish value usable directly
     /// under `NOT`. Used for VLP cross-segment relationship-uniqueness (#544).
     fn arrays_overlap(&self) -> &'static str;
 
-    /// Extract JSON field as a string. CH: `JSONExtractString`.
-    /// Spark: `get_json_object`.
-    fn json_extract_string(&self) -> &'static str;
-
     /// Cast to 64-bit signed integer. CH: `toInt64`. Spark: `bigint`
     /// (works as a function-call cast alias).
     fn cast_int64(&self) -> &'static str;
-
-    /// Cast to 8-bit unsigned integer. CH: `toUInt8`. Spark has no
-    /// unsigned integer — the planned Databricks emitter will widen to
-    /// `tinyint` (signed) since the values used here fit.
-    fn cast_uint8(&self) -> &'static str;
 
     /// Cast to 16-bit unsigned integer. CH: `toUInt16`. Spark has no
     /// unsigned integer — Databricks widens to `int` (signed 32-bit),
@@ -318,13 +290,6 @@ pub(crate) trait FunctionMapper: Send + Sync {
     /// them bare.
     fn quote_alias(&self, name: &str) -> String;
 
-    /// Build a CAST expression. The two dialects diverge on both syntax and the
-    /// type-name spelling: ClickHouse uses the function-call form with a quoted
-    /// type string, `CAST(expr, 'Int64')`; Spark/ANSI uses `CAST(expr AS BIGINT)`.
-    /// `type_name` must already be the dialect-appropriate spelling (see
-    /// `SchemaType::sql_type_name`).
-    fn cast_as(&self, expr: &str, type_name: &str) -> String;
-
     /// Array slice from a 1-based `offset`. CH `arraySlice(arr, offset[, length])`
     /// accepts a 2-arg "rest from offset" form; Spark `slice(arr, start, length)`
     /// REQUIRES a length, so the `None` case computes `size(arr) - offset + 1`.
@@ -350,40 +315,6 @@ pub(crate) trait FunctionMapper: Send + Sync {
     /// result of interval arithmetic matches the stored column type. CH:
     /// `toUnixTimestamp64Milli(expr)`. Spark: `unix_millis(expr)`.
     fn timestamp_to_epoch_millis(&self, expr: &str) -> String;
-
-    /// Build a type-preserving JSON object from a comma-separated column list
-    /// (each item optionally `col AS key`), used for entity `_properties`.
-    /// CH: `formatRowNoNewline('JSONEachRow', <cols>)`. Spark:
-    /// `to_json(struct(<cols>))` — `struct` field names become JSON keys (a bare
-    /// `t.col` yields key `col`, matching CH's column-name keys), and both
-    /// preserve native value types. `columns` is the pre-joined fragment.
-    fn json_row_object(&self, columns: &str) -> String;
-
-    /// Best-effort integer parse of a STRING expression, yielding a wide
-    /// (128-bit / 38-digit) integer when `expr` is a pure integer literal and
-    /// NULL otherwise — never an error. CH: `toInt128OrNull({expr})`. Spark:
-    /// `try_cast({expr} AS DECIMAL(38,0))`. Wide enough to round-trip the
-    /// full `UInt64`/`Int64` ranges exactly (no float truncation). Used by
-    /// the #546 typed `ORDER BY id()` union key so numeric ids order
-    /// numerically even after the union branches' string normalization.
-    fn try_parse_int128(&self, expr: &str) -> String;
-
-    /// Explicit `NULLS ...` suffix (including its leading space) for the
-    /// #546 typed `ORDER BY id()` union salvage key
-    /// (`typed_id_order_key_expr`). That key is a
-    /// `tuple(try_parse_int128(toString(id)), toString(id))`: branches whose
-    /// id column is non-numeric always produce a NULL first tuple element,
-    /// so the dialects' NULL-ordering DEFAULTS decide where those rows land
-    /// relative to numeric-id branches. CH sorts NULL last for BOTH `ASC`
-    /// and `DESC` (verified live); Spark/Databricks defaults to ANSI
-    /// (`NULLS FIRST` for `ASC`, `NULLS LAST` for `DESC`) — so an
-    /// unqualified `ASC` would put non-numeric-id rows at OPPOSITE ends
-    /// under the two dialects. Making the suffix explicit and identical
-    /// (`NULLS LAST`) regardless of direction pins both dialects to CH's
-    /// behavior (a no-op for CH, since that's already its default).
-    /// Narrow to this one salvage-key shape, not a general NULLS FIRST/LAST
-    /// normalization pass — see #556.
-    fn id_order_key_nulls_clause(&self) -> &'static str;
 
     /// Explicit `NULLS …` suffix (including its leading space) to append to a
     /// user-facing `ORDER BY <expr> ASC|DESC` term so the row ordering matches

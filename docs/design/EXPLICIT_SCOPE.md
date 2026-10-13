@@ -5148,14 +5148,32 @@ slice that will handle it.
       the planner goes (S14c4: every analyzer match has their arm).
       Corpus goldens byte-identical, census 1477, the ratchet's decreases
       recorded; chdb `writes_e2e` 18/20 (#1436's 2, as on main).
-    - [ ] **S14c3: render composition and the emitter's repairs**
-      (`plan_builder*`, `with_to_cte`, the builders, `cte_extraction` but
-      the two functions the path generator reads, `render_plan_to_sql`
-      and its helpers, `multi_type_vlp_joins`, `json_builder`).
-    - [ ] **S14c4: the planner** (`analyzer`, `optimizer`, `plan_ctx`, the
-      `logical_plan` builders, `expression_rewriter`, `variable_scope`);
-      decide `CLICKGRAPH_STATS_ENABLED` (its only reader is the analyzer's
-      join ordering; the lowering's join order is S11o10's).
+    - [x] **S14c3: render composition and the planner, together** (the
+      planned S14c3 and S14c4: the two are one cycle, render composition
+      reading the analyzer's `PlanCtx` and the analyzer `render_plan`
+      helpers, and both unreachable since S14c1, so one deletion leaves no
+      half-state). ~146k lines: `query_planner/{analyzer, optimizer,
+      plan_ctx}`, the `logical_plan` clause builders and planning entry
+      points, `logical_expr/{expression_rewriter, visitors, combinators}`;
+      the `render_plan` composition (`plan_builder*`, `with_to_cte`, the
+      select / from / join / filter / group-by builders, `variable_scope`,
+      `cte_extraction`, `utils`, the legacy tests), `to_sql_query`'s
+      `render_plan_to_sql` and the private helpers only it used (removed
+      until rustc reported none unused), the `ToSql` of `RenderPlan` /
+      `Cte` / `CteItems` / `UnionItems` (the plain printer renders those
+      itself), `RowSource::Subquery` (only the legacy write planner built
+      it), `multi_type_vlp_joins`, `json_builder`, ten `FunctionMapper`
+      methods only the legacy renderer called, the `TryFrom<Logical*>`
+      conversions. Kept: what the bound plan and the path generator read,
+      the two `cte_extraction` functions now `render_plan/filter_sql.rs`,
+      the CTE-merge helpers `flatten_all_ctes` needs. `LogicalPlan`'s types
+      and `typed_variable` stay for the shared structs (S14c5–S14c6).
+      - The corpus goldens byte-identical, census 1477, the ratchet 143
+        decreases (one comment reworded off a dialect token), TCK
+        569/2/20 as on main, chdb `writes_e2e` 18/20 (#1436).
+      - `CLICKGRAPH_STATS_ENABLED` is now read by nothing: its fetch stays
+        until decided (kept for the lowering's join ordering, S11o10, or
+        removed).
     - [ ] **S14c5: the printer and context cleanup** (the name-keyed
       registries of `query_context`, the legacy fields of `RenderPlan` /
       `Cte` / `Join`, the non-plain `ToSql` branches; coverage-guided).

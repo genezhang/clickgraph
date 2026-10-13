@@ -4942,39 +4942,6 @@ graph_schema:
     }
 
     #[test]
-    fn unmapped_properties_of_discovered_elements_are_null() {
-        use crate::query_planner::analyzer::view_resolver::ViewResolver;
-        let schema = config()
-            .to_graph_schema_with_columns(&discovered())
-            .unwrap();
-        assert!(schema.node_schema("User").unwrap().closed_properties);
-        assert!(!schema.node_schema("Post").unwrap().closed_properties);
-        let resolver = ViewResolver::new(&schema);
-        let null = PropertyValue::Expression("NULL".to_string());
-        let column = |c: &str| PropertyValue::Column(c.to_string());
-        let user = |p: &str| resolver.resolve_node_property("User", p).unwrap();
-        // An excluded column and an unknown name are not properties
-        assert_eq!(user("_version"), null);
-        assert_eq!(user("nickname"), null);
-        // Discovered and declared properties, and mapped columns, still resolve
-        assert_eq!(user("homeCity"), column("home_city"));
-        assert_eq!(user("name"), column("full_name"));
-        assert_eq!(user("full_name"), column("full_name"));
-        // A node whose columns were not discovered keeps the identity fallback
-        assert_eq!(
-            resolver.resolve_node_property("Post", "title").unwrap(),
-            column("title")
-        );
-        let follows = |p: &str| {
-            resolver
-                .resolve_relationship_property("FOLLOWS", p, Some("User"), Some("User"))
-                .unwrap()
-        };
-        assert_eq!(follows("follow_date"), column("follow_date"));
-        assert_eq!(follows("weight"), null);
-    }
-
-    #[test]
     fn a_table_without_columns_is_an_error() {
         let mut discovered = discovered();
         discovered.insert("db", "follows", Vec::new());

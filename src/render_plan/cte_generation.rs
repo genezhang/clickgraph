@@ -45,7 +45,7 @@ pub struct CteGenerationContext {
     /// Map: `(from_alias, to_alias) → Vec<TypeCombination>`
     /// When set, CTE generation creates UNION of all pattern combinations
     pub pattern_combinations:
-        Option<HashMap<(String, String), Vec<crate::query_planner::plan_ctx::TypeCombination>>>,
+        Option<HashMap<(String, String), Vec<crate::query_planner::logical_plan::TypeCombination>>>,
 
     /// Weighted shortest path: pre-computed edge weight CTE configuration
     pub weight_cte: Option<WeightCteConfig>,
@@ -98,18 +98,6 @@ impl CteGenerationContext {
         self
     }
 
-    /// Set path variable name
-    pub(crate) fn with_path_variable(mut self, path_var: Option<String>) -> Self {
-        self.path_variable = path_var;
-        self
-    }
-
-    /// Set shortest path mode
-    pub(crate) fn with_shortest_path_mode(mut self, mode: Option<ShortestPathMode>) -> Self {
-        self.shortest_path_mode = mode;
-        self
-    }
-
     /// Set relationship types (for polymorphic edges)
     pub(crate) fn with_relationship_types(mut self, types: Option<Vec<String>>) -> Self {
         self.relationship_types = types;
@@ -139,18 +127,6 @@ impl CteGenerationContext {
         self
     }
 
-    /// Set whether this VLP is optional
-    pub(crate) fn with_is_optional(mut self, is_optional: bool) -> Self {
-        self.is_optional = is_optional;
-        self
-    }
-
-    /// Set weight CTE configuration for weighted shortest path
-    pub(crate) fn with_weight_cte(mut self, config: Option<WeightCteConfig>) -> Self {
-        self.weight_cte = config;
-        self
-    }
-
     /// Set the graph schema (builder pattern)
     pub(crate) fn with_schema_owned(mut self, schema: GraphSchema) -> Self {
         self.schema = Some(schema);
@@ -169,30 +145,6 @@ impl CteGenerationContext {
         self.filter_expr.as_ref()
     }
 
-    pub(crate) fn with_filter(mut self, filter: RenderExpr) -> Self {
-        self.filter_expr = Some(filter);
-        self
-    }
-
-    /// Store fixed-length path inline JOINs for later retrieval
-    pub(crate) fn set_fixed_length_joins(
-        &mut self,
-        start_alias: &str,
-        end_alias: &str,
-        from_table: String,
-        from_alias: String,
-        joins: Vec<super::Join>,
-    ) {
-        let key = format!("{}-{}", start_alias, end_alias);
-        log::info!(
-            "Storing fixed-length JOINs for {}: {} joins",
-            key,
-            joins.len()
-        );
-        self.fixed_length_joins
-            .insert(key, (from_table, from_alias, joins));
-    }
-
     /// Retrieve fixed-length path inline JOINs if available. Currently unused:
     /// `set_fixed_length_joins` (live, called from `cte_extraction`) populates
     /// `fixed_length_joins`, but no consumer reads it back yet. Kept as the
@@ -206,108 +158,6 @@ impl CteGenerationContext {
         let key = format!("{}-{}", start_alias, end_alias);
         self.fixed_length_joins.get(&key)
     }
-}
-
-/// Extract properties referenced in a RenderExpr (e.g., from filters)
-/// Returns a vector of properties that need to be included in the CTE
-pub(crate) fn extract_properties_from_filter(
-    expr: &RenderExpr,
-    node_alias: &str,
-    node_label: &str,
-) -> Vec<NodeProperty> {
-    let mut properties = Vec::new();
-    extract_properties_from_expr_recursive(expr, node_alias, node_label, &mut properties);
-    properties
-}
-
-fn extract_properties_from_expr_recursive(
-    expr: &RenderExpr,
-    node_alias: &str,
-    node_label: &str,
-    properties: &mut Vec<NodeProperty>,
-) {
-    match expr {
-        RenderExpr::PropertyAccessExp(prop) => {
-            // Check if this property belongs to the target node
-            if prop.table_alias.0 == node_alias {
-                let property_name = prop.column.raw();
-                // Map Cypher property to ClickHouse column
-                let column_name = map_property_to_column_with_schema(property_name, node_label)
-                    .unwrap_or_else(|_| property_name.to_string());
-
-                // Add if not already in the list
-                if !properties.iter().any(|p| p.alias == property_name) {
-                    properties.push(NodeProperty {
-                        cypher_alias: node_alias.to_string(),
-                        column_name,
-                        alias: property_name.to_string(),
-                    });
-                }
-            }
-        }
-        RenderExpr::OperatorApplicationExp(op) => {
-            // Recurse into all operands
-            for operand in &op.operands {
-                extract_properties_from_expr_recursive(operand, node_alias, node_label, properties);
-            }
-        }
-        RenderExpr::ScalarFnCall(fn_call) => {
-            // Recurse into function arguments
-            for arg in &fn_call.args {
-                extract_properties_from_expr_recursive(arg, node_alias, node_label, properties);
-            }
-        }
-        RenderExpr::List(exprs) => {
-            // Recurse into list elements
-            for e in exprs {
-                extract_properties_from_expr_recursive(e, node_alias, node_label, properties);
-            }
-        }
-        RenderExpr::Case(case_expr) => {
-            // Recurse into case expression
-            if let Some(expr) = &case_expr.expr {
-                extract_properties_from_expr_recursive(expr, node_alias, node_label, properties);
-            }
-            for (when_expr, then_expr) in &case_expr.when_then {
-                extract_properties_from_expr_recursive(
-                    when_expr, node_alias, node_label, properties,
-                );
-                extract_properties_from_expr_recursive(
-                    then_expr, node_alias, node_label, properties,
-                );
-            }
-            if let Some(else_expr) = &case_expr.else_expr {
-                extract_properties_from_expr_recursive(
-                    else_expr, node_alias, node_label, properties,
-                );
-            }
-        }
-        RenderExpr::InSubquery(subquery) => {
-            extract_properties_from_expr_recursive(
-                &subquery.expr,
-                node_alias,
-                node_label,
-                properties,
-            );
-        }
-        // Base cases: literals, columns, etc. don't contain property accesses
-        _ => {}
-    }
-}
-
-/// Schema-aware property mapping using GraphSchema
-/// Map a property to column with schema awareness
-/// Returns an error if the schema is not available or the property mapping is not found
-///
-/// # Denormalized Property Access
-/// If `relationship_type` is provided, this function checks if the property is denormalized
-/// (available directly in the edge table) before falling back to node table lookup.
-/// This enables 10-100x faster queries by eliminating JOINs.
-pub(crate) fn map_property_to_column_with_schema(
-    property: &str,
-    node_label: &str,
-) -> Result<String, String> {
-    map_property_to_column_with_relationship_context(property, node_label, None, None, None)
 }
 
 /// Schema-aware property mapping with relationship context

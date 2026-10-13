@@ -39,16 +39,14 @@ Scope 1 (MATCH):  p → Person table, p.name → Person.full_name  (DB column)
 Scope 2 (RETURN): p → CTE1, p.name → CTE1.p6_person_name       (CTE column)
 ```
 
-**Downstream expressions should be built with CTE column names from the start.**
-The `property_mapping` in `cte_schemas` provides the forward mapping:
-`(cypher_alias, cypher_property)` → `cte_column_name`.
+**Downstream expressions are built with CTE column names from the start.**
+The bound plan lowers each WITH to a CTE whose exports (`Exports` in
+`bound_plan/lower/mod.rs`) map each variable and property the WITH carries to
+its column; later clauses read those (`docs/design/EXPLICIT_SCOPE.md`).
 
 **Do NOT**:
 - Resolve to DB columns first, then reverse-map to CTE columns
 - Bake variable names into opaque SQL strings before scope processing
-- Use `reverse_mapping: HashMap<(alias, db_col), cte_col>` (architectural debt)
-
-See `render_plan/AGENTS.md` §10 for the full architecture description.
 
 ## File Overview
 

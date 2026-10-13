@@ -130,25 +130,3 @@ impl ViewTableRef {
         }
     }
 }
-
-use super::FromTable;
-
-impl ViewTableRef {
-    /// Convert to a FromTable instance
-    pub fn into_from_table(self) -> FromTable {
-        FromTable {
-            table: Some(self),
-            joins: Vec::new(),
-        }
-    }
-}
-
-/// Convert an Option<ViewTableRef> to Option<FromTable>
-pub fn view_ref_to_from_table(view_ref: Option<ViewTableRef>) -> Option<FromTable> {
-    view_ref.map(|v| v.into_from_table())
-}
-
-/// Convert an Option<FromTable> to Option<ViewTableRef>
-pub fn from_table_to_view_ref(from_table: Option<FromTable>) -> Option<ViewTableRef> {
-    from_table.and_then(|f| f.table)
-}
