@@ -5196,14 +5196,31 @@ slice that will handle it.
       what no code references (pub items included) until none remained.
       - The corpus goldens byte-identical, census 1477, the ratchet's
         decreases recorded, chdb `writes_e2e` 18/20 (#1436).
-    - [ ] **S14c6: the types** (`ViewTableRef.source`, the `LogicalExpr`
-      subquery variants, `LogicalPlan` itself; PageRank's CALL to a
-      config), then the survivors moved (`LogicalExpr` to `bound_plan`, the
-      IR types to an IR module).
+    - [x] **S14c6: the types** (~4.8k lines). `LogicalPlan` goes with its
+      node types, `transformed.rs`, `serde_arc_vec`, the dead
+      `with_clause_key` and `FromTable`: `ViewTableRef.source` (always
+      `Empty` from the lowering; the FROM alias fallback printed the same
+      constant either way), `CteGenerationContext.root_plan`, PageRank's
+      CALL (`evaluate_call_query` returns its arguments, `PageRank`; the
+      `include_plan` text of a CALL prints them), and `LogicalExpr`'s
+      `ExistsSubquery` / `InSubquery` / `CteEntityRef` (the binder takes
+      every `EXISTS { … }` and relationship pattern out of an expression
+      before converting it, so their conversion was unreachable; it is now
+      an internal error). `VariableLengthSpec` / `ShortestPathMode` move to
+      `render_plan/variable_length.rs`, the name counters (`generate_id`,
+      `generate_cte_id`, `reset_all_counters`) to `query_context`. Fields
+      no code read go (`Union.is_cypher_union`, `both_endpoint_sql`,
+      `CteGenerationContext.is_optional` / `pattern_combinations`), and the
+      `graph_catalog` / AST helpers only the legacy planner called.
+      `LogicalExpr` stays in `query_planner` (a move is a rename only).
+      - The corpus goldens byte-identical, census 1477, the ratchet's 8
+        decreases recorded; the removed tests are `LogicalPlan`'s own.
     - [ ] **S14c7: the entry points** (`transform_id_functions`, the dead
       `id_rewriter.rs` and `src/testing/`, `include_plan`, the generator's
-      branches the bound plan never reaches) and the docs (`CLAUDE.md`,
-      the AGENTS.md files), then #1392 closed.
+      branches the bound plan never reaches, e.g. `pattern_schema`'s
+      coupled-edge context and the strategies' fields no code reads) and
+      the docs (`.github/copilot-instructions.md`, `DEVELOPMENT_PROCESS.md`,
+      `KNOWN_ISSUES.md`), then #1392 closed.
 
 ## Appendix A — post-assembly repair passes (48, plus CTE flattening, at `e1241a9c`)
 

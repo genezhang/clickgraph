@@ -198,24 +198,6 @@ impl EdgeAccessStrategy {
         }
     }
 
-    /// Get the from_id column
-    pub fn from_id_column(&self) -> &str {
-        match self {
-            EdgeAccessStrategy::SeparateTable { from_id, .. }
-            | EdgeAccessStrategy::Polymorphic { from_id, .. } => from_id,
-            EdgeAccessStrategy::FkEdge { fk_column, .. } => fk_column,
-        }
-    }
-
-    /// Get the to_id column
-    pub fn to_id_column(&self) -> &str {
-        match self {
-            EdgeAccessStrategy::SeparateTable { to_id, .. }
-            | EdgeAccessStrategy::Polymorphic { to_id, .. } => to_id,
-            EdgeAccessStrategy::FkEdge { .. } => "id", // FK edges point to node's own ID
-        }
-    }
-
     /// Returns true if this is a polymorphic edge
     pub fn is_polymorphic(&self) -> bool {
         matches!(self, EdgeAccessStrategy::Polymorphic { .. })
@@ -1125,29 +1107,6 @@ impl PatternSchemaContext {
     // ========================================================================
     // Convenience Methods
     // ========================================================================
-
-    /// Get a summary string for debugging
-    pub fn debug_summary(&self) -> String {
-        format!(
-            "PatternSchema {{ left: {}, right: {}, edge: {}, strategy: {} }}",
-            match &self.left_node {
-                NodeAccessStrategy::OwnTable { .. } => "OwnTable",
-                NodeAccessStrategy::EmbeddedInEdge { .. } => "Embedded",
-                NodeAccessStrategy::Virtual { .. } => "Virtual",
-            },
-            match &self.right_node {
-                NodeAccessStrategy::OwnTable { .. } => "OwnTable",
-                NodeAccessStrategy::EmbeddedInEdge { .. } => "Embedded",
-                NodeAccessStrategy::Virtual { .. } => "Virtual",
-            },
-            match &self.edge {
-                EdgeAccessStrategy::SeparateTable { .. } => "SeparateTable",
-                EdgeAccessStrategy::Polymorphic { .. } => "Polymorphic",
-                EdgeAccessStrategy::FkEdge { .. } => "FkEdge",
-            },
-            self.join_strategy.description(),
-        )
-    }
 
     // ========================================================================
     // Property Resolution Helper Methods (Phase 1A)

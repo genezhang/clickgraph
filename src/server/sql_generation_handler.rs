@@ -306,7 +306,7 @@ async fn sql_generation_handler_inner(
                 "CALL queries need the legacy parser".to_string(),
             ));
         };
-        let logical_plan =
+        let pagerank =
             match query_planner::evaluate_call_query((**first_query).clone(), &graph_schema) {
                 Ok(plan) => plan,
                 Err(e) => {
@@ -325,56 +325,41 @@ async fn sql_generation_handler_inner(
         let planning_time = planning_start.elapsed().as_secs_f64() * 1000.0;
 
         let sql_gen_start = Instant::now();
-        let ch_sql = match &logical_plan {
-            crate::query_planner::logical_plan::LogicalPlan::PageRank(pagerank) => {
-                use crate::clickhouse_query_generator::pagerank::{
-                    PageRankConfig, PageRankGenerator,
-                };
+        let ch_sql = {
+            use crate::clickhouse_query_generator::pagerank::{PageRankConfig, PageRankGenerator};
 
-                let config = PageRankConfig {
-                    iterations: pagerank.iterations,
-                    damping_factor: pagerank.damping_factor,
-                    convergence_threshold: None,
-                };
+            let config = PageRankConfig {
+                iterations: pagerank.iterations,
+                damping_factor: pagerank.damping_factor,
+                convergence_threshold: None,
+            };
 
-                let generator = PageRankGenerator::new(
-                    &graph_schema,
-                    config,
-                    pagerank.graph_name.clone(),
-                    pagerank.node_labels.clone(),
-                    pagerank.relationship_types.clone(),
-                );
-                match generator.generate_pagerank_sql() {
-                    Ok(sql) => sql,
-                    Err(e) => {
-                        return Err((
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            Json(SqlGenerationError {
-                                cypher_query: payload.query.clone(),
-                                error: format!("{}", e),
-                                error_type: "SqlGenerationError".to_string(),
-                                error_details: None,
-                            }),
-                        ));
-                    }
+            let generator = PageRankGenerator::new(
+                &graph_schema,
+                config,
+                pagerank.graph_name.clone(),
+                pagerank.node_labels.clone(),
+                pagerank.relationship_types.clone(),
+            );
+            match generator.generate_pagerank_sql() {
+                Ok(sql) => sql,
+                Err(e) => {
+                    return Err((
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(SqlGenerationError {
+                            cypher_query: payload.query.clone(),
+                            error: format!("{}", e),
+                            error_type: "SqlGenerationError".to_string(),
+                            error_details: None,
+                        }),
+                    ));
                 }
-            }
-            _ => {
-                return Err((
-                    StatusCode::NOT_IMPLEMENTED,
-                    Json(SqlGenerationError {
-                        cypher_query: payload.query.clone(),
-                        error: "Unsupported CALL query type".to_string(),
-                        error_type: "NotImplementedError".to_string(),
-                        error_details: None,
-                    }),
-                ));
             }
         };
         let sql_gen_time = sql_gen_start.elapsed().as_secs_f64() * 1000.0;
 
         let plan_str = if payload.include_plan.unwrap_or(false) {
-            Some(format!("{:#?}", logical_plan))
+            Some(format!("{:#?}", pagerank))
         } else {
             None
         };

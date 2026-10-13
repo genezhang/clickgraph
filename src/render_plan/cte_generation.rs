@@ -1,14 +1,11 @@
 //! CTE generation utilities for variable-length path queries
 
-use std::collections::HashMap;
-
 use crate::clickhouse_query_generator::variable_length_cte::WeightCteConfig;
 use crate::clickhouse_query_generator::NodeProperty;
 use crate::graph_catalog::config::Identifier;
 use crate::graph_catalog::graph_schema::GraphSchema;
-use crate::query_planner::logical_plan::LogicalPlan;
-use crate::query_planner::logical_plan::ShortestPathMode;
-use crate::query_planner::logical_plan::VariableLengthSpec;
+use crate::render_plan::variable_length::ShortestPathMode;
+use crate::render_plan::variable_length::VariableLengthSpec;
 
 /// Context for CTE generation - holds property requirements and other metadata
 #[derive(Debug, Clone, Default)]
@@ -31,14 +28,6 @@ pub struct CteGenerationContext {
     pub start_node_label: Option<String>,
     /// End node label (for polymorphic heterogeneous paths)
     pub end_node_label: Option<String>,
-    /// Whether this VLP is optional (affects start node filter handling)
-    pub is_optional: bool,
-
-    /// **NEW (Feb 2026)**: Multi-type pattern combinations for UNION generation
-    /// Map: `(from_alias, to_alias) → Vec<TypeCombination>`
-    /// When set, CTE generation creates UNION of all pattern combinations
-    pub pattern_combinations:
-        Option<HashMap<(String, String), Vec<crate::query_planner::logical_plan::TypeCombination>>>,
 
     /// Weighted shortest path: pre-computed edge weight CTE configuration
     pub weight_cte: Option<WeightCteConfig>,
@@ -75,10 +64,6 @@ pub struct CteGenerationContext {
     /// ids can share (`('B|1', '2')`, `('B', '1|2')`). `false` for the legacy
     /// pipeline.
     pub composite_by_columns: bool,
-    /// Root plan reference for checking path variable usage across the entire query.
-    /// Set at the top-level to_render_plan call so VLP extraction can check if path
-    /// variables are used bare (preventing BFS optimization).
-    pub root_plan: Option<std::sync::Arc<LogicalPlan>>,
 }
 
 impl CteGenerationContext {

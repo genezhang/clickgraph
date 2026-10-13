@@ -265,14 +265,6 @@ impl<'a> NodePattern<'a> {
     pub fn first_label(&self) -> Option<&'a str> {
         self.labels.as_ref().and_then(|l| l.first()).copied()
     }
-
-    /// Check if node has a specific label
-    pub fn has_label(&self, label: &str) -> bool {
-        self.labels
-            .as_ref()
-            .map(|labels| labels.contains(&label))
-            .unwrap_or(false)
-    }
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -342,14 +334,6 @@ impl VariableLengthSpec {
         }
     }
 
-    /// Create a lower-bounded spec: *2.. becomes min=2, max=None (unbounded)
-    pub fn min_only(min: u32) -> Self {
-        Self {
-            min_hops: Some(min),
-            max_hops: None,
-        }
-    }
-
     /// Create an unbounded spec: * becomes min=1, max=None (unlimited)
     pub fn unbounded() -> Self {
         Self {
@@ -369,11 +353,6 @@ impl VariableLengthSpec {
     /// Get effective minimum hops (defaults to 1)
     pub fn effective_min_hops(&self) -> u32 {
         self.min_hops.unwrap_or(1)
-    }
-
-    /// Check if there's an upper bound
-    pub fn has_max_bound(&self) -> bool {
-        self.max_hops.is_some()
     }
 
     /// Validate the variable-length specification

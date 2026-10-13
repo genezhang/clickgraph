@@ -270,7 +270,6 @@ fn lower_arms(
             union: UnionItems(Some(Union {
                 input: selects,
                 union_type: UnionType::All,
-                is_cypher_union: true,
             })),
             ..empty_plan()
         })),

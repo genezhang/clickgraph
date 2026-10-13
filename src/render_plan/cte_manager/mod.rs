@@ -12,10 +12,10 @@ use crate::graph_catalog::{
     config::Identifier, graph_schema::GraphSchema, EdgeAccessStrategy, JoinStrategy,
     NodeAccessStrategy, PatternSchemaContext,
 };
-use crate::query_planner::logical_plan::VariableLengthSpec;
 use crate::render_plan::cte_generation::CteGenerationContext;
 use crate::render_plan::errors::RenderBuildError;
 use crate::render_plan::filter_pipeline::CategorizedFilters;
+use crate::render_plan::variable_length::VariableLengthSpec;
 
 /// Dialect-correct array literal. CH: `[a, b]`. Spark: `array(a, b)`.
 /// Thin shorthand over `FunctionMapper::array_literal` — CTE generation
@@ -2225,7 +2225,6 @@ mod tests {
             start_sql: None,
             end_sql: None,
             relationship_sql: None,
-            both_endpoint_sql: None,
         }
     }
 
@@ -2541,7 +2540,6 @@ mod tests {
             start_sql: None,
             end_sql: None,
             relationship_sql: None,
-            both_endpoint_sql: None,
         };
 
         // Generate SQL

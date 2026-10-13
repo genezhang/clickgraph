@@ -105,7 +105,7 @@ Cypher Query → Parse → Bind → Lower → Print SQL → Execute
 | Execute | `src/server/` | HTTP (axum) + Bolt v5.8 protocol servers, ClickHouse client |
 | Schema | `src/graph_catalog/` | YAML graph schema management and validation |
 
-The legacy planner/renderer (`query_planner` analyzer/optimizer, `render_plan` composition) was deleted in P-4c S14c; `query_planner` keeps the expression IR (`logical_expr`) and the `LogicalPlan` types still referenced by shared structs (S14c6 removes them).
+The legacy planner/renderer (`query_planner` analyzer/optimizer and `LogicalPlan`, `render_plan` composition) was deleted in P-4c S14c; `query_planner` keeps the expression IR (`logical_expr`), statement classification and the CALL arguments.
 
 ### Key Submodules
 

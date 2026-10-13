@@ -1,5 +1,4 @@
 use crate::{
-    query_planner::logical_plan::LogicalPlan,
     render_plan::{
         render_expr::{
             self, AggregateFnCall, Column, ColumnAlias, Literal, Operator, OperatorApplication,
@@ -1604,18 +1603,10 @@ impl ToSql for FromTableItem {
             // not as a subquery in FROM clause
             sql.push_str(&view_ref.name);
 
-            // Extract the alias - prefer the explicit alias from ViewTableRef,
-            // otherwise try to get it from the source logical plan
-            let alias = if let Some(explicit_alias) = &view_ref.alias {
-                explicit_alias.clone()
-            } else {
-                match view_ref.source.as_ref() {
-                    LogicalPlan::ViewScan(_) => {
-                        // ViewScan fallback - should not reach here if alias is properly set
-                        crate::query_planner::join_context::VLP_CTE_FROM_ALIAS.to_string()
-                    }
-                    _ => crate::query_planner::join_context::VLP_CTE_FROM_ALIAS.to_string(), // Default fallback
-                }
+            // The explicit alias, else the VLP CTE's FROM alias.
+            let alias = match &view_ref.alias {
+                Some(explicit_alias) => explicit_alias.clone(),
+                None => crate::query_planner::join_context::VLP_CTE_FROM_ALIAS.to_string(),
             };
 
             sql.push_str(" AS ");
@@ -3531,7 +3522,6 @@ mod tests {
 
         fn from_with_final() -> FromTableItem {
             FromTableItem(Some(ViewTableRef {
-                source: std::sync::Arc::new(crate::query_planner::logical_plan::LogicalPlan::Empty),
                 name: "users".to_string(),
                 alias: Some("u".to_string()),
                 use_final: true,
@@ -3580,11 +3570,9 @@ mod tests {
             JoinItems, LimitItem, OrderByItems, SelectItem, SelectItems, SkipItem, Union,
             UnionItems, UnionType, ViewTableRef,
         };
-        use std::sync::Arc;
 
         fn cte_ref(name: &str) -> ViewTableRef {
             ViewTableRef {
-                source: Arc::new(LogicalPlan::Empty),
                 name: name.to_string(),
                 alias: Some("t".to_string()),
                 use_final: false,
@@ -3635,7 +3623,6 @@ mod tests {
         base_plan.union = UnionItems(Some(Union {
             input: vec![branch_1],
             union_type: UnionType::All,
-            is_cypher_union: false,
         }));
 
         flatten_all_ctes(&mut base_plan);

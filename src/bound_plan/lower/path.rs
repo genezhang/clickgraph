@@ -48,10 +48,10 @@ use crate::graph_catalog::graph_schema::{GraphSchema, NodeSchema, RelationshipSc
 use crate::graph_catalog::pattern_schema::{
     EdgeAccessStrategy, JoinStrategy, NodeAccessStrategy, PatternSchemaContext,
 };
-use crate::query_planner::logical_plan::VariableLengthSpec;
 use crate::render_plan::cte_generation::CteGenerationContext;
 use crate::render_plan::cte_manager::CteManager;
 use crate::render_plan::render_expr::RenderExpr;
+use crate::render_plan::variable_length::VariableLengthSpec;
 use crate::render_plan::{CategorizedFilters, Cte, CteContent};
 use crate::sql_generator::emitters::clickhouse::to_sql_query::render_expr_to_sql_plain;
 use crate::sql_generator::emitters::clickhouse::variable_length_cte::{
@@ -298,7 +298,6 @@ pub(super) fn path_cte(schema: &GraphSchema, call: PathCall<'_>) -> Result<PathC
         start_sql: conjunction(&call.start),
         end_sql: None,
         relationship_sql: conjunction(&call.rel),
-        both_endpoint_sql: None,
     };
     let carried = constraint_carried(&call)?;
     let result = CteManager::with_context(Arc::new(schema.clone()), context)

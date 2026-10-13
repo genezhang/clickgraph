@@ -181,7 +181,7 @@ fn translate_in_context(
     options: ReadOptions,
 ) -> Result<ReadTranslation, TranslateError> {
     // Deterministic generated aliases: restart THIS query's counters.
-    crate::query_planner::logical_plan::reset_all_counters();
+    crate::server::query_context::reset_all_counters();
     let start = Instant::now();
     // `id()` comparisons: the bound plan reads them from `cypher` with the
     // server's id mapper (S11e).
@@ -267,7 +267,7 @@ pub fn translate_text_read(
             translate_text_read(cypher, schema, options)
         });
     }
-    crate::query_planner::logical_plan::reset_all_counters();
+    crate::server::query_context::reset_all_counters();
     let start = Instant::now();
     match bound_plan_or_reason(cypher, schema, &options) {
         Ok(bound) => Ok(Some(bound.into_read_translation(start))),
@@ -691,7 +691,7 @@ mod tests {
         assert_eq!(clause_list_use_name("MATCH (a) RETRUN a"), None);
     }
 
-    use crate::query_planner::logical_plan::{generate_cte_id, generate_id, reset_all_counters};
+    use crate::server::query_context::{generate_cte_id, generate_id, reset_all_counters};
     use crate::server::query_context::{with_query_context, QueryContext};
 
     /// A translation without a caller-provided context still runs on its own

@@ -1419,7 +1419,7 @@ async fn query_handler_inner(
                     ));
                 }
             };
-            let logical_plan =
+            let pagerank =
                 match query_planner::evaluate_call_query((**query_ast).clone(), &graph_schema) {
                     Ok(plan) => plan,
                     Err(e) => {
@@ -1431,44 +1431,33 @@ async fn query_handler_inner(
                     }
                 };
 
-            // For CALL queries, we need to generate SQL directly from the logical plan
-            // Since PageRank generates complete SQL, we'll use a special approach
-            let ch_sql = match &logical_plan {
-                crate::query_planner::logical_plan::LogicalPlan::PageRank(pagerank) => {
-                    // Generate PageRank SQL directly
-                    use crate::clickhouse_query_generator::pagerank::PageRankConfig;
-                    use crate::clickhouse_query_generator::pagerank::PageRankGenerator;
+            // PageRank generates complete SQL.
+            let ch_sql = {
+                use crate::clickhouse_query_generator::pagerank::PageRankConfig;
+                use crate::clickhouse_query_generator::pagerank::PageRankGenerator;
 
-                    let config = PageRankConfig {
-                        iterations: pagerank.iterations,
-                        damping_factor: pagerank.damping_factor,
-                        convergence_threshold: None,
-                    };
+                let config = PageRankConfig {
+                    iterations: pagerank.iterations,
+                    damping_factor: pagerank.damping_factor,
+                    convergence_threshold: None,
+                };
 
-                    let generator = PageRankGenerator::new(
-                        &graph_schema,
-                        config,
-                        pagerank.graph_name.clone(),
-                        pagerank.node_labels.clone(),
-                        pagerank.relationship_types.clone(),
-                    );
-                    match generator.generate_pagerank_sql() {
-                        Ok(sql) => sql,
-                        Err(e) => {
-                            // Return 500 for PageRank SQL generation errors
-                            return Err((
-                                StatusCode::INTERNAL_SERVER_ERROR,
-                                format!("PageRank SQL generation error: {}", e),
-                            ));
-                        }
+                let generator = PageRankGenerator::new(
+                    &graph_schema,
+                    config,
+                    pagerank.graph_name.clone(),
+                    pagerank.node_labels.clone(),
+                    pagerank.relationship_types.clone(),
+                );
+                match generator.generate_pagerank_sql() {
+                    Ok(sql) => sql,
+                    Err(e) => {
+                        // Return 500 for PageRank SQL generation errors
+                        return Err((
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            format!("PageRank SQL generation error: {}", e),
+                        ));
                     }
-                }
-                _ => {
-                    // For other CALL queries (not implemented yet)
-                    return Err((
-                        StatusCode::BAD_REQUEST,
-                        "Unsupported CALL query type".to_string(),
-                    ));
                 }
             };
 

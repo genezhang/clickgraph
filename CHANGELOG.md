@@ -14,6 +14,8 @@
 
 ### 🧹 Infrastructure
 
+- **`LogicalPlan` is deleted** (P-4c S14c6, ~4.8k lines): the legacy plan tree and the shared fields that still named it (`ViewTableRef.source`, PageRank's CALL, the `LogicalExpr` subquery variants). The path generator's hop spec moves to `render_plan/variable_length.rs`. The corpus SQL goldens are byte-identical.
+
 - **The shared printer and IR lose the legacy pipeline's leftovers** (P-4c S14c5, ~5k lines): the name-keyed column resolution and the plain-render flag, 24 query-context registries nothing wrote any more, the `RenderPlan` / `Cte` / `Join` fields and `RenderExpr` variants only the legacy renderer used. The corpus SQL goldens are byte-identical.
 
 - **The legacy planner and renderer are gone** (P-4c S14c3, ~146k lines): the analyzer, optimizer and plan context, the clause builders, the RenderPlan composition (plan builders, WITH→CTE, the repair passes) and the legacy SQL renderer. Every query has been translated by the bound plan since the cutovers; the corpus SQL goldens are byte-identical. `CLICKGRAPH_STATS_ENABLED` is now read by nothing (only the legacy planner's join ordering read the stats).
