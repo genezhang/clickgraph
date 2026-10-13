@@ -1,9 +1,6 @@
-// Unit test for WHERE clause SQL generation in shortest path queries
-// This verifies that our WHERE clause implementation generates correct SQL
+// Unit test for the structure of a walk's CTE without filters.
 
-use crate::clickhouse_query_generator::variable_length_cte::{
-    ShortestPathMode, VariableLengthCteGenerator,
-};
+use crate::clickhouse_query_generator::variable_length_cte::VariableLengthCteGenerator;
 use crate::graph_catalog::graph_schema::GraphSchema;
 use crate::render_plan::variable_length::VariableLengthSpec;
 use std::collections::HashMap;
@@ -14,165 +11,14 @@ fn create_test_schema() -> GraphSchema {
 }
 
 #[test]
-fn test_start_node_filter_in_base_case() {
-    let schema = create_test_schema();
-    let spec = VariableLengthSpec::unbounded();
-    let start_filter = Some("start_node.full_name = 'Alice'".to_string());
-
-    let generator = VariableLengthCteGenerator::new(
-        &schema, // Add schema parameter
-        spec,
-        "users",
-        "user_id",
-        "follows",
-        "follower_id",
-        "followed_id",
-        "users",
-        "user_id",
-        "a",
-        "b",
-        vec![],
-        Some(ShortestPathMode::Shortest),
-        start_filter,
-        None,
-        None, // no path variable
-        None, // no relationship types
-        None, // no edge_id (use default from_id, to_id)
-    );
-
-    let cte = generator.generate_cte();
-    let sql = match &cte.content {
-        crate::render_plan::CteContent::RawSql(s) => s,
-        other => panic!(
-            "Expected RawSql content in test_start_node_filter_in_base_case, got: {:?}",
-            other
-        ),
-    };
-
-    // Verify start filter is in base case
-    assert!(
-        sql.contains("WHERE start_node.full_name = 'Alice'"),
-        "Start filter should be in base case WHERE clause"
-    );
-
-    println!("\n✓ Generated SQL with start filter:\n{}\n", sql);
-}
-
-#[test]
-fn test_end_node_filter_in_outer_cte() {
-    let schema = create_test_schema();
-    let spec = VariableLengthSpec::unbounded();
-    let end_filter = Some("end_full_name = 'Bob'".to_string());
-
-    let generator = VariableLengthCteGenerator::new(
-        &schema, // Add schema parameter
-        spec,
-        "users",
-        "user_id",
-        "follows",
-        "follower_id",
-        "followed_id",
-        "users",
-        "user_id",
-        "a",
-        "b",
-        vec![],
-        Some(ShortestPathMode::Shortest),
-        None,
-        end_filter,
-        None, // no path variable
-        None, // no relationship types
-        None, // no edge_id (use default from_id, to_id)
-    );
-
-    let cte = generator.generate_cte();
-    let sql = match &cte.content {
-        crate::render_plan::CteContent::RawSql(s) => s,
-        other => panic!(
-            "Expected RawSql content in test_end_node_filter_in_tiered_case, got: {:?}",
-            other
-        ),
-    };
-
-    // Verify 3-tier structure
-    assert!(sql.contains("_inner AS"), "Should have _inner CTE");
-    assert!(sql.contains("_to_target AS"), "Should have _to_target CTE");
-    assert!(
-        sql.contains("WHERE end_full_name = 'Bob'"),
-        "End filter should be in _to_target CTE"
-    );
-
-    println!(
-        "\n✓ Generated SQL with end filter (3-tier structure):\n{}\n",
-        sql
-    );
-}
-
-#[test]
-fn test_both_start_and_end_filters() {
-    let schema = create_test_schema();
-    let spec = VariableLengthSpec::range(1, 5);
-    let start_filter = Some("start_node.full_name = 'Alice'".to_string());
-    let end_filter = Some("end_full_name = 'Bob'".to_string());
-
-    let generator = VariableLengthCteGenerator::new(
-        &schema, // Add schema parameter
-        spec,
-        "users",
-        "user_id",
-        "follows",
-        "follower_id",
-        "followed_id",
-        "users",
-        "user_id",
-        "a",
-        "b",
-        vec![],
-        Some(ShortestPathMode::Shortest),
-        start_filter,
-        end_filter,
-        None, // no path variable
-        None, // no relationship types
-        None, // no edge_id (use default from_id, to_id)
-    );
-
-    let cte = generator.generate_cte();
-    let sql = match &cte.content {
-        crate::render_plan::CteContent::RawSql(s) => s,
-        other => panic!(
-            "Expected RawSql content in test_multiple_filters, got: {:?}",
-            other
-        ),
-    };
-
-    println!("\n=== Generated SQL with both filters ===\n{}\n", sql);
-
-    // Verify both filters present
-    assert!(
-        sql.contains("WHERE start_node.full_name = 'Alice'") || sql.contains("full_name = 'Alice'"),
-        "Start filter should be in base case. SQL:\n{}",
-        sql
-    );
-    assert!(
-        sql.contains("WHERE end_full_name = 'Bob'") || sql.contains("end_full_name = 'Bob'"),
-        "End filter should be in outer CTE. SQL:\n{}",
-        sql
-    );
-    assert!(sql.contains("_inner AS"), "Should have _inner CTE");
-    assert!(sql.contains("_to_target AS"), "Should have _to_target CTE");
-
-    println!("\n✓ Generated SQL with both filters:\n{}\n", sql);
-}
-
-#[test]
 fn test_no_filters_simple_structure() {
     // Use a range pattern starting at 1 to avoid min_hops filtering
     // (Fixed patterns like *2 would use inline JOINs in practice, not CTEs)
     let schema = create_test_schema();
     let spec = VariableLengthSpec::range(1, 3); // *1..3
 
-    let generator = VariableLengthCteGenerator::new(
-        &schema, // Add schema parameter
+    let generator = VariableLengthCteGenerator::for_test(
+        &schema,
         spec,
         "users",
         "user_id",
@@ -183,13 +29,7 @@ fn test_no_filters_simple_structure() {
         "user_id",
         "a",
         "b",
-        vec![],
-        None, // No shortest path mode
-        None, // No start filter
-        None, // No end filter
-        None, // No path variable
-        None, // no relationship types
-        None, // no edge_id (use default from_id, to_id)
+        None,
     );
 
     let cte = generator.generate_cte();

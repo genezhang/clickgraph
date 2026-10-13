@@ -1,81 +1,17 @@
-//! Unified Pattern Schema Context
+//! Pattern Schema Context
 //!
-//! This module provides a single abstraction (`PatternSchemaContext`) that captures
-//! all schema-related decisions for a graph pattern ONCE, enabling exhaustive
-//! pattern matching instead of scattered conditional checks.
-//!
-//! # Problem Solved
-//!
-//! Previously, schema detection was scattered across 4800+ lines in `graph_join_inference.rs`:
-//! - `is_node_denormalized_on_edge()` - called multiple times
-//! - `edge_has_node_properties()` - called at various points
-//! - `classify_edge_table_pattern()` - computed repeatedly
-//! - `are_edges_coupled()` - checked in nested conditions
-//!
-//! This led to:
-//! - Complex nested conditionals
-//! - Ping-pong bugs when fixing one schema type
-//! - Difficulty reasoning about code behavior
-//!
-//! # Solution
-//!
-//! Compute `PatternSchemaContext` ONCE at pattern analysis time, then use
-//! exhaustive `match` statements throughout the codebase.
-//!
-//! # Example
-//!
-//! ```ignore
-//! let ctx = PatternSchemaContext::analyze(&left_node, &right_node, &edge, &graph_schema);
-//!
-//! match ctx.join_strategy {
-//!     JoinStrategy::SingleTableScan { .. } => { /* denormalized path */ }
-//!     JoinStrategy::Traditional { .. } => { /* standard JOINs */ }
-//!     JoinStrategy::EdgeToEdge { .. } => { /* multi-hop denormalized */ }
-//!     JoinStrategy::CoupledSameRow { .. } => { /* coupled optimization */ }
-//! }
-//! ```
+//! The layout of one relationship pattern's schema (`PatternSchemaContext`),
+//! computed once: how each node and the edge are stored and how they join.
+//! `bound_plan::lower::path` walks the standard layout (each in its own
+//! table) and refuses the others by this classification, not by raw schema
+//! flags (CLAUDE.md rule 7).
 
 use super::config::Identifier;
 use super::graph_schema::{
-    classify_edge_table_pattern, EdgeTablePattern, GraphSchema, NodeSchema, RelationshipSchema,
+    classify_edge_table_pattern, EdgeTablePattern, NodeSchema, RelationshipSchema,
 };
-use std::collections::HashMap;
 
-// ============================================================================
-// Core Types
-// ============================================================================
-
-/// Property mappings: Cypher property name → SQL column expression
-pub type PropertyMappings = HashMap<String, String>;
-
-/// Position of a node in a relationship pattern
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NodePosition {
-    /// Left/source/from node
-    Left,
-    /// Right/target/to node
-    Right,
-}
-
-impl std::fmt::Display for NodePosition {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            NodePosition::Left => write!(f, "left"),
-            NodePosition::Right => write!(f, "right"),
-        }
-    }
-}
-
-// ============================================================================
-// Node Access Strategy
-// ============================================================================
-
-/// How to access data for a node in a graph pattern.
-///
-/// This determines:
-/// - Where to get node properties from
-/// - Whether a JOIN is needed
-/// - What alias to use for property resolution
+/// How to access a node's data in a graph pattern.
 #[derive(Debug, Clone, PartialEq)]
 pub enum NodeAccessStrategy {
     /// Node has its own dedicated table, JOIN required to access properties.
@@ -86,59 +22,15 @@ pub enum NodeAccessStrategy {
         table: String,
         /// Primary ID column(s) for JOIN condition — single or composite
         id_column: Identifier,
-        /// Property name → column mappings
-        properties: PropertyMappings,
     },
 
     /// Node properties are embedded in the edge table, no JOIN needed.
     ///
     /// Example: OnTime flights where Airport code/city/state are columns in flights table.
-    EmbeddedInEdge {
-        /// The edge alias this node's data comes from
-        edge_alias: String,
-        /// Property name → column mappings (from edge's from_node_properties or to_node_properties)
-        properties: PropertyMappings,
-        /// True if this is the from_node, false if to_node
-        is_from_node: bool,
-    },
-
-    /// Virtual node in polymorphic $any patterns.
-    ///
-    /// The actual node type is determined at runtime via from_label_column/to_label_column.
-    Virtual {
-        /// The label used in the query (may be filtered dynamically)
-        label: String,
-    },
+    EmbeddedInEdge,
 }
 
-impl NodeAccessStrategy {
-    /// Returns true if this node requires a JOIN
-    pub fn requires_join(&self) -> bool {
-        matches!(self, NodeAccessStrategy::OwnTable { .. })
-    }
-
-    /// Get property mapping for a given property name
-    pub fn get_property_column(&self, prop_name: &str) -> Option<&str> {
-        match self {
-            NodeAccessStrategy::OwnTable { properties, .. }
-            | NodeAccessStrategy::EmbeddedInEdge { properties, .. } => {
-                properties.get(prop_name).map(|s| s.as_str())
-            }
-            NodeAccessStrategy::Virtual { .. } => None,
-        }
-    }
-}
-
-// ============================================================================
-// Edge Access Strategy
-// ============================================================================
-
-/// How to access edge/relationship data in a graph pattern.
-///
-/// This determines:
-/// - Which table contains edge data
-/// - How to filter for specific edge types
-/// - FK vs separate table patterns
+/// How to access an edge's data.
 #[derive(Debug, Clone, PartialEq)]
 pub enum EdgeAccessStrategy {
     /// Standard separate edge table (most common).
@@ -151,212 +43,15 @@ pub enum EdgeAccessStrategy {
         from_id: String,
         /// Column for target node ID
         to_id: String,
-        /// Edge property mappings
-        properties: PropertyMappings,
     },
 
-    /// Polymorphic edge table with type discriminator column.
+    /// Polymorphic edge table with type or label discriminator columns.
     ///
     /// Example: `interactions` table with `interaction_type` column.
-    Polymorphic {
-        /// Fully qualified table name
-        table: String,
-        /// Column for source node ID
-        from_id: String,
-        /// Column for target node ID
-        to_id: String,
-        /// Column containing edge type (e.g., "interaction_type") - optional for label-only polymorphism
-        type_column: Option<String>,
-        /// Valid type values for this relationship
-        type_values: Vec<String>,
-        /// Optional: column for source node label (for $any nodes)
-        from_label_column: Option<String>,
-        /// Optional: column for target node label (for $any nodes)
-        to_label_column: Option<String>,
-        /// Edge property mappings
-        properties: PropertyMappings,
-    },
-
-    /// FK-edge pattern: edge is a foreign key column on node table.
-    ///
-    /// Example: `fs_objects` table with `parent_id` FK for hierarchical relationships.
-    FkEdge {
-        /// The node table that contains the FK column
-        node_table: String,
-        /// The FK column name
-        fk_column: String,
-    },
+    Polymorphic,
 }
 
-impl EdgeAccessStrategy {
-    /// Get the table name for this edge
-    pub fn table_name(&self) -> &str {
-        match self {
-            EdgeAccessStrategy::SeparateTable { table, .. }
-            | EdgeAccessStrategy::Polymorphic { table, .. } => table,
-            EdgeAccessStrategy::FkEdge { node_table, .. } => node_table,
-        }
-    }
-
-    /// Returns true if this is a polymorphic edge
-    pub fn is_polymorphic(&self) -> bool {
-        matches!(self, EdgeAccessStrategy::Polymorphic { .. })
-    }
-
-    /// Get type filter expression for polymorphic edges
-    pub fn get_type_filter(&self, alias: &str) -> Option<String> {
-        match self {
-            EdgeAccessStrategy::Polymorphic {
-                type_column,
-                type_values,
-                ..
-            } => {
-                // Only generate type filter if type_column exists
-                let type_col = type_column.as_ref()?;
-
-                if type_values.len() == 1 {
-                    Some(format!("{}.{} = '{}'", alias, type_col, type_values[0]))
-                } else if !type_values.is_empty() {
-                    let types_str = type_values
-                        .iter()
-                        .map(|t| format!("'{}'", t))
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    Some(format!("{}.{} IN ({})", alias, type_col, types_str))
-                } else {
-                    None
-                }
-            }
-            _ => None,
-        }
-    }
-
-    /// Get label filter for polymorphic edges that filter by node type.
-    ///
-    /// For polymorphic edges with from_label_column/to_label_column, we need
-    /// to filter by the actual node type when the query specifies concrete labels.
-    ///
-    /// # Arguments
-    /// * `alias` - The edge table alias
-    /// * `left_label` - The left node label from the query (e.g., "User")
-    /// * `right_label` - The right node label from the query (e.g., "Group")
-    ///
-    /// # Returns
-    /// A SQL filter string like "r.member_type = 'User'" or combined filters
-    pub fn get_label_filter(
-        &self,
-        alias: &str,
-        left_label: &str,
-        right_label: &str,
-    ) -> Option<String> {
-        match self {
-            EdgeAccessStrategy::Polymorphic {
-                from_label_column,
-                to_label_column,
-                ..
-            } => {
-                let mut parts = Vec::new();
-
-                // Add from_label filter if column exists and left_label is specified
-                if let Some(ref col) = from_label_column {
-                    if !left_label.is_empty() {
-                        parts.push(format!("{}.{} = '{}'", alias, col, left_label));
-                    }
-                }
-
-                // Add to_label filter if column exists and right_label is specified
-                if let Some(ref col) = to_label_column {
-                    if !right_label.is_empty() {
-                        parts.push(format!("{}.{} = '{}'", alias, col, right_label));
-                    }
-                }
-
-                if parts.is_empty() {
-                    None
-                } else {
-                    Some(parts.join(" AND "))
-                }
-            }
-            _ => None,
-        }
-    }
-
-    /// Get property column name for an edge property
-    ///
-    /// # Arguments
-    /// * `prop_name` - The Cypher property name to look up
-    ///
-    /// # Returns
-    /// - `Some(&str)` if the property exists in the edge schema
-    /// - `None` if not found
-    pub fn get_property_column(&self, prop_name: &str) -> Option<&str> {
-        match self {
-            EdgeAccessStrategy::SeparateTable { properties, .. }
-            | EdgeAccessStrategy::Polymorphic { properties, .. } => {
-                properties.get(prop_name).map(|s| s.as_str())
-            }
-            EdgeAccessStrategy::FkEdge { .. } => {
-                // For FK edges, properties are on the node table
-                // These are resolved through the node's property mappings
-                None
-            }
-        }
-    }
-
-    /// Get edge_id column if available (for VLP and path queries)
-    pub fn edge_id(&self) -> Option<&str> {
-        // Note: edge_id is not currently stored in EdgeAccessStrategy
-        // It would need to be added to support this properly
-        // For now, return None - caller should handle this
-        None
-    }
-
-    /// Get type discriminator column for polymorphic edges
-    pub fn type_column(&self) -> Option<String> {
-        match self {
-            EdgeAccessStrategy::Polymorphic { type_column, .. } => type_column.clone(),
-            _ => None,
-        }
-    }
-
-    /// Get from_node label column for polymorphic edges with $any nodes
-    pub fn from_label_column(&self) -> Option<String> {
-        match self {
-            EdgeAccessStrategy::Polymorphic {
-                from_label_column, ..
-            } => from_label_column.clone(),
-            _ => None,
-        }
-    }
-
-    /// Get to_node label column for polymorphic edges with $any nodes
-    pub fn to_label_column(&self) -> Option<String> {
-        match self {
-            EdgeAccessStrategy::Polymorphic {
-                to_label_column, ..
-            } => to_label_column.clone(),
-            _ => None,
-        }
-    }
-}
-// ============================================================================
-
-/// One shared-node join condition between the current edge table and a
-/// previous edge table that embeds the same node alias:
-/// `curr.curr_edge_col = prev.prev_edge_col`.
-#[derive(Debug, Clone, PartialEq)]
-pub struct EdgeToEdgeLink {
-    /// Alias of the previous edge table (e.g., "f1")
-    pub prev_edge_alias: String,
-    /// Column on the previous edge holding the shared node's id (e.g., "Dest")
-    pub prev_edge_col: String,
-    /// Column on the current edge holding the shared node's id (e.g., "Origin")
-    pub curr_edge_col: String,
-}
-
-/// How to generate SQL JOINs for a graph pattern.
-///
-/// This is the key decision point - different strategies produce very different SQL.
+/// How a pattern's node and edge tables join.
 #[derive(Debug, Clone, PartialEq)]
 pub enum JoinStrategy {
     /// Traditional pattern: separate node and edge tables requiring JOINs.
@@ -366,178 +61,30 @@ pub enum JoinStrategy {
     /// JOIN follows r ON r.follower_id = u.user_id
     /// JOIN users u2 ON u2.user_id = r.followed_id
     /// ```
-    Traditional {
-        /// Column(s) on edge for left node join — single or composite Identifier
-        left_join_col: Identifier,
-        /// Column(s) on edge for right node join — single or composite Identifier
-        right_join_col: Identifier,
-    },
+    Traditional,
 
     /// Fully denormalized: single table scan, no JOINs needed.
     ///
     /// ```sql
     /// SELECT Origin, Dest, ... FROM flights
     /// ```
-    SingleTableScan {
-        /// The table containing all data
-        table: String,
-    },
+    SingleTableScan,
 
-    /// Mixed pattern: one node requires JOIN, the other is embedded.
-    ///
-    /// ```sql
-    /// SELECT ... FROM flights f
-    /// JOIN users u ON u.user_id = f.pilot_id  -- only left node joined
-    /// ```
-    MixedAccess {
-        /// Which node requires a JOIN
-        joined_node: NodePosition,
-        /// Column on edge for the joined node
-        join_col: String,
-        /// Own-table id of the EMBEDDED endpoint. Its value on this edge is the
-        /// edge column, but an earlier hop may have bound the same node through
-        /// its own table (`b` is the own-table end of hop 1 and the embedded
-        /// start of hop 2), and then this id is what ties the two together.
-        /// `None` when it cannot be resolved (the old, unbound layout is kept).
-        embedded_id: Option<Identifier>,
-        /// Previous edge that already embeds the LEFT connection node, if any
-        /// (`curr_edge_col` is this edge's from-column).
-        left_prev: Option<EdgeToEdgeLink>,
-        /// Previous edge that already embeds the RIGHT connection node, if any
-        /// (`curr_edge_col` is this edge's to-column).
-        right_prev: Option<EdgeToEdgeLink>,
-    },
+    /// One node embedded in the edge table, the other on its own table.
+    MixedAccess,
 
-    /// Denormalized edge correlated with previous edge(s) via shared node(s):
-    /// edge-to-edge JOIN. Covers consecutive multi-hop hops on the same table
-    /// (`(a)-[f1]->(b)-[f2]->(c)` over flights) AND cross-table shared-node
-    /// correlation (`MATCH (src)-[:REQUESTED]->(d) MATCH (src)-[:ACCESSED]->(x)`
-    /// over dns_log/conn_log — issue #482). One link per shared connection.
-    ///
-    /// ```sql
-    /// SELECT ... FROM flights f1
-    /// JOIN flights f2 ON f2.Origin = f1.Dest
-    /// ```
-    EdgeToEdge {
-        /// Join condition(s) tying this edge to previous edge(s) — one per
-        /// shared node. Never empty.
-        links: Vec<EdgeToEdgeLink>,
-    },
-
-    /// Coupled edges: same physical row, alias unification.
-    ///
-    /// No additional JOIN needed - both edges read from same row.
-    CoupledSameRow {
-        /// The unified alias for both edges
-        unified_alias: String,
-    },
-
-    /// FK-edge pattern: edge is a foreign key column in the node table.
-    ///
-    /// Self-referencing example (parent_id on same table):
-    /// ```sql
-    /// SELECT child.*, parent.*
-    /// FROM objects child
-    /// JOIN objects parent ON parent.object_id = child.parent_id
-    /// ```
-    ///
-    /// Non-self-referencing example (orders.user_id → users.id):
-    /// Edge table IS the to_node table (orders), so we JOIN the from_node (users).
-    /// ```sql
-    /// SELECT u.*, o.*
-    /// FROM users u
-    /// JOIN orders o ON o.user_id = u.id
-    /// ```
-    FkEdgeJoin {
-        /// The FK column in the edge table that references the from_node's ID
-        from_id: String,
-        /// The column in the edge table that identifies the to_node
-        to_id: String,
-        /// Which node table needs to be JOINed (the one that ISN'T the edge table)
-        /// Left = edge_table == to_node_table, need to JOIN from_node (left)
-        /// Right = edge_table == from_node_table, need to JOIN to_node (right)
-        join_side: NodePosition,
-        /// True if self-referencing (same table for both nodes)
-        is_self_referencing: bool,
-    },
+    /// FK-edge: the edge table IS a node table, its FK column naming the
+    /// other node.
+    FkEdgeJoin,
 }
-
-impl JoinStrategy {
-    /// Returns true if this strategy requires no JOINs
-    pub fn is_joinless(&self) -> bool {
-        matches!(
-            self,
-            JoinStrategy::SingleTableScan { .. } | JoinStrategy::CoupledSameRow { .. }
-        )
-    }
-
-    /// Returns a human-readable description
-    pub fn description(&self) -> &'static str {
-        match self {
-            JoinStrategy::Traditional { .. } => "Traditional (node-edge-node JOINs)",
-            JoinStrategy::SingleTableScan { .. } => "Single table scan (denormalized)",
-            JoinStrategy::MixedAccess { .. } => "Mixed (partial JOIN)",
-            JoinStrategy::EdgeToEdge { .. } => "Edge-to-edge (multi-hop denormalized)",
-            JoinStrategy::CoupledSameRow { .. } => "Coupled (same row, no JOIN)",
-            JoinStrategy::FkEdgeJoin {
-                is_self_referencing,
-                ..
-            } => {
-                if *is_self_referencing {
-                    "FK-edge self-join (same table)"
-                } else {
-                    "FK-edge (cross-table FK)"
-                }
-            }
-        }
-    }
-}
-
-// ============================================================================
-// Coupled Edge Context
-// ============================================================================
-
-/// Context for coupled edge optimization.
-///
-/// Coupled edges share the same physical table and connect through a common
-/// "coupling node", allowing alias unification and self-join elimination.
-#[derive(Debug, Clone)]
-pub struct CoupledEdgeContext {
-    /// The previous edge alias this is coupled with
-    pub prev_edge_alias: String,
-    /// The coupling node alias
-    pub coupling_node_alias: String,
-    /// The shared table
-    pub shared_table: String,
-}
-
-// ============================================================================
-// Pattern Schema Context - The Main Abstraction
-// ============================================================================
 
 /// Complete schema context for a single graph pattern (edge + two nodes).
-///
-/// This is computed ONCE when analyzing a `GraphRel` and then used throughout
-/// query planning and SQL generation via exhaustive pattern matching.
-///
-/// # Example
-///
-/// ```ignore
-/// // For pattern: (a:Airport)-[r1:FLIGHT]->(b:Airport)
-/// let ctx = PatternSchemaContext::analyze(&airport_schema, &airport_schema, &flight_schema, &graph_schema);
-///
-/// assert!(matches!(ctx.left_node, NodeAccessStrategy::EmbeddedInEdge { .. }));
-/// assert!(matches!(ctx.right_node, NodeAccessStrategy::EmbeddedInEdge { .. }));
-/// assert!(matches!(ctx.join_strategy, JoinStrategy::SingleTableScan { .. }));
-/// ```
 #[derive(Debug, Clone)]
 pub struct PatternSchemaContext {
     /// Query alias for the left (source/from) node (e.g., "a", "user1")
     pub left_node_alias: String,
     /// Query alias for the right (target/to) node (e.g., "b", "user2")
     pub right_node_alias: String,
-    /// Query alias for the relationship/edge (e.g., "r", "follows")
-    pub rel_alias: String,
     /// Access strategy for the left (source/from) node
     pub left_node: NodeAccessStrategy,
     /// Access strategy for the right (target/to) node
@@ -546,22 +93,10 @@ pub struct PatternSchemaContext {
     pub edge: EdgeAccessStrategy,
     /// How to generate JOINs for this pattern
     pub join_strategy: JoinStrategy,
-    /// Coupled edge context (if this edge is coupled with a previous one)
-    pub coupled_context: Option<CoupledEdgeContext>,
-    /// The relationship type(s) for this pattern
-    pub rel_types: Vec<String>,
-    /// True if left node is polymorphic $any
-    pub left_is_polymorphic: bool,
-    /// True if right node is polymorphic $any
-    pub right_is_polymorphic: bool,
-    /// Edge constraints from schema (e.g. "from.age > to.age")
-    pub constraints: Option<String>,
 }
 
 impl PatternSchemaContext {
-    /// Analyze a graph pattern and produce unified schema context.
-    ///
-    /// This is the main entry point - call this once per GraphRel during analysis.
+    /// Analyze a graph pattern and produce its schema context.
     ///
     /// # Arguments
     ///
@@ -570,110 +105,26 @@ impl PatternSchemaContext {
     /// * `left_node_schema` - Schema for the left/from node
     /// * `right_node_schema` - Schema for the right/to node
     /// * `rel_schema` - Schema for the relationship/edge
-    /// * `graph_schema` - Full graph schema for coupled edge detection
-    /// * `rel_alias` - The alias assigned to this relationship in the query
-    /// * `rel_types` - The relationship type(s) being matched
-    /// * `prev_left_edge` - Previous edge embedding the LEFT (from-side) connection
-    ///   node, for multi-hop coupling / shared-node correlation detection
-    /// * `prev_right_edge` - Previous edge embedding the RIGHT (to-side) connection
-    ///   node (shared-node correlation, issue #482)
-    #[allow(clippy::too_many_arguments)] // pattern analysis needs both node aliases+schemas, the rel schema+alias+types, the graph schema, and prev-hop coupling info; each is a distinct schema input
     pub fn analyze(
         left_node_alias: &str,
         right_node_alias: &str,
         left_node_schema: &NodeSchema,
         right_node_schema: &NodeSchema,
         rel_schema: &RelationshipSchema,
-        graph_schema: &GraphSchema,
-        rel_alias: &str,
-        rel_types: Vec<String>,
-        prev_left_edge: Option<(&str, &str, bool)>, // (prev_rel_alias, prev_rel_type, node_was_from_side)
-        prev_right_edge: Option<(&str, &str, bool)>, // ditto, for the right connection node
     ) -> Result<Self, String> {
-        // 1. Detect polymorphic $any patterns
-        let left_is_polymorphic = rel_schema.from_node == "$any";
-        let right_is_polymorphic = rel_schema.to_node == "$any";
-
-        // 2. Classify edge table pattern using existing function
         let edge_pattern =
             classify_edge_table_pattern(left_node_schema, rel_schema, right_node_schema);
-
-        // 3. Build edge access strategy
-        let edge = Self::build_edge_strategy(rel_schema, &rel_types);
-
-        // 4. Build node access strategies based on pattern
-        let (left_node, right_node) = Self::build_node_strategies(
-            left_node_schema,
-            right_node_schema,
-            rel_schema,
-            rel_alias,
-            left_is_polymorphic,
-            right_is_polymorphic,
-            &edge_pattern,
-        )?;
-
-        // 5. Determine join strategy and coupled context
-        let (join_strategy, coupled_context) = Self::determine_join_strategy(
-            &edge_pattern,
-            rel_schema,
-            left_node_schema,
-            right_node_schema,
-            graph_schema,
-            rel_alias,
-            &rel_types,
-            prev_left_edge,
-            prev_right_edge,
-        );
-
-        // 6. FIX: For CoupledSameRow, update node strategies to use unified_alias
-        // When edges are coupled, both edges exist in the same row, so nodes should
-        // reference the first edge's alias (unified_alias) instead of their own rel_alias
-        let (left_node, right_node) = if let JoinStrategy::CoupledSameRow { ref unified_alias } =
-            join_strategy
-        {
-            log::info!(
-                    "🔧 CoupledSameRow detected: rel_alias='{}', unified_alias='{}', left_node_alias='{}', right_node_alias='{}'",
-                    rel_alias, unified_alias, left_node_alias, right_node_alias
-                );
-            let update_edge_alias = |strategy: NodeAccessStrategy| -> NodeAccessStrategy {
-                match strategy {
-                    NodeAccessStrategy::EmbeddedInEdge {
-                        properties,
-                        is_from_node,
-                        ..
-                    } => {
-                        log::info!(
-                            "  → Updating EmbeddedInEdge edge_alias from '{}' to '{}'",
-                            rel_alias,
-                            unified_alias
-                        );
-                        NodeAccessStrategy::EmbeddedInEdge {
-                            edge_alias: unified_alias.clone(),
-                            properties,
-                            is_from_node,
-                        }
-                    }
-                    other => other,
-                }
-            };
-            (update_edge_alias(left_node), update_edge_alias(right_node))
-        } else {
-            (left_node, right_node)
-        };
-
+        let edge = Self::build_edge_strategy(rel_schema);
+        let (left_node, right_node) =
+            Self::build_node_strategies(left_node_schema, right_node_schema, &edge_pattern)?;
+        let join_strategy = Self::determine_join_strategy(&edge_pattern, rel_schema);
         Ok(PatternSchemaContext {
             left_node_alias: left_node_alias.to_string(),
             right_node_alias: right_node_alias.to_string(),
-            rel_alias: rel_alias.to_string(),
             left_node,
             right_node,
             edge,
             join_strategy,
-            coupled_context,
-            rel_types,
-            left_is_polymorphic,
-            right_is_polymorphic,
-            constraints: rel_schema.constraints.clone(),
         })
     }
 
@@ -748,590 +199,77 @@ impl PatternSchemaContext {
     }
 
     /// Build edge access strategy from relationship schema
-    fn build_edge_strategy(
-        rel_schema: &RelationshipSchema,
-        rel_types: &[String],
-    ) -> EdgeAccessStrategy {
-        // Check if polymorphic: either has type_column, from_label_column, or to_label_column
+    fn build_edge_strategy(rel_schema: &RelationshipSchema) -> EdgeAccessStrategy {
+        // Polymorphic: has a type_column, from_label_column or to_label_column
         let has_type_column = rel_schema.type_column.is_some();
         let has_label_columns =
             rel_schema.from_label_column.is_some() || rel_schema.to_label_column.is_some();
 
         if has_type_column || has_label_columns {
-            EdgeAccessStrategy::Polymorphic {
-                table: rel_schema.full_table_name(),
-                from_id: rel_schema.from_id.to_string(),
-                to_id: rel_schema.to_id.to_string(),
-                type_column: rel_schema.type_column.clone(),
-                type_values: rel_types.to_vec(),
-                from_label_column: rel_schema.from_label_column.clone(),
-                to_label_column: rel_schema.to_label_column.clone(),
-                properties: rel_schema
-                    .property_mappings
-                    .iter()
-                    .map(|(k, v)| (k.clone(), v.raw_column_name()))
-                    .collect(),
-            }
+            EdgeAccessStrategy::Polymorphic
         } else {
-            // Standard separate table
             EdgeAccessStrategy::SeparateTable {
                 table: rel_schema.full_table_name(),
                 from_id: rel_schema.from_id.to_string(),
                 to_id: rel_schema.to_id.to_string(),
-                properties: rel_schema
-                    .property_mappings
-                    .iter()
-                    .map(|(k, v)| (k.clone(), v.raw_column_name()))
-                    .collect(),
             }
         }
     }
 
-    /// Build node access strategies based on edge table pattern
+    /// Build node access strategies based on edge table pattern (from the
+    /// actual node schemas, not the edge's polymorphic `$any` endpoints).
     fn build_node_strategies(
         left_node_schema: &NodeSchema,
         right_node_schema: &NodeSchema,
-        rel_schema: &RelationshipSchema,
-        rel_alias: &str,
-        _left_is_polymorphic: bool,
-        _right_is_polymorphic: bool,
         edge_pattern: &EdgeTablePattern,
     ) -> Result<(NodeAccessStrategy, NodeAccessStrategy), String> {
-        // IMPORTANT: Even when the relationship schema defines polymorphic endpoints ($any),
-        // the actual query provides concrete node labels. The caller resolves these labels
-        // to actual NodeSchema objects (left_node_schema, right_node_schema).
-        //
-        // Therefore, we should NOT create Virtual nodes when we have concrete schemas.
-        // Virtual nodes were previously created based on rel_schema.from_node == "$any",
-        // but this ignores the fact that the query specifies concrete types like User, Group.
-        //
-        // The fix: classify by `edge_pattern` and build OwnTable/EmbeddedInEdge
-        // strategies from the actual node schema, not the edge's polymorphic endpoint.
-        //
-        // Note: _left_is_polymorphic and _right_is_polymorphic are kept for API compatibility
-        // and may be used for edge filtering (type_column filters), but not for node strategies.
-
-        // Non-polymorphic: use edge pattern classification
-        let node_strategies = match edge_pattern {
-            EdgeTablePattern::FullyDenormalized => {
-                let left = NodeAccessStrategy::EmbeddedInEdge {
-                    edge_alias: rel_alias.to_string(),
-                    properties: Self::extract_denorm_props(rel_schema, true),
-                    is_from_node: true,
-                };
-                let right = NodeAccessStrategy::EmbeddedInEdge {
-                    edge_alias: rel_alias.to_string(),
-                    properties: Self::extract_denorm_props(rel_schema, false),
-                    is_from_node: false,
-                };
-                (left, right)
-            }
-            EdgeTablePattern::Traditional => {
-                let left = NodeAccessStrategy::OwnTable {
-                    table: left_node_schema.full_table_name(),
-                    id_column: Self::resolve_id_column(left_node_schema, true)?,
-                    properties: left_node_schema
-                        .property_mappings
-                        .iter()
-                        .map(|(k, v)| (k.clone(), v.raw_column_name()))
-                        .collect(),
-                };
-                let right = NodeAccessStrategy::OwnTable {
-                    table: right_node_schema.full_table_name(),
-                    id_column: Self::resolve_id_column(right_node_schema, false)?,
-                    properties: right_node_schema
-                        .property_mappings
-                        .iter()
-                        .map(|(k, v)| (k.clone(), v.raw_column_name()))
-                        .collect(),
-                };
-                (left, right)
-            }
+        let own_table = |node_schema: &NodeSchema, is_from_node: bool| {
+            Ok::<_, String>(NodeAccessStrategy::OwnTable {
+                table: node_schema.full_table_name(),
+                id_column: Self::resolve_id_column(node_schema, is_from_node)?,
+            })
+        };
+        Ok(match edge_pattern {
+            EdgeTablePattern::FullyDenormalized => (
+                NodeAccessStrategy::EmbeddedInEdge,
+                NodeAccessStrategy::EmbeddedInEdge,
+            ),
+            EdgeTablePattern::Traditional => (
+                own_table(left_node_schema, true)?,
+                own_table(right_node_schema, false)?,
+            ),
             EdgeTablePattern::Mixed {
                 from_denormalized,
                 to_denormalized,
             } => {
                 let left = if *from_denormalized {
-                    NodeAccessStrategy::EmbeddedInEdge {
-                        edge_alias: rel_alias.to_string(),
-                        properties: Self::extract_denorm_props(rel_schema, true),
-                        is_from_node: true,
-                    }
+                    NodeAccessStrategy::EmbeddedInEdge
                 } else {
-                    NodeAccessStrategy::OwnTable {
-                        table: left_node_schema.full_table_name(),
-                        id_column: Self::resolve_id_column(left_node_schema, true)?,
-                        properties: left_node_schema
-                            .property_mappings
-                            .iter()
-                            .map(|(k, v)| (k.clone(), v.raw_column_name()))
-                            .collect(),
-                    }
+                    own_table(left_node_schema, true)?
                 };
                 let right = if *to_denormalized {
-                    NodeAccessStrategy::EmbeddedInEdge {
-                        edge_alias: rel_alias.to_string(),
-                        properties: Self::extract_denorm_props(rel_schema, false),
-                        is_from_node: false,
-                    }
+                    NodeAccessStrategy::EmbeddedInEdge
                 } else {
-                    NodeAccessStrategy::OwnTable {
-                        table: right_node_schema.full_table_name(),
-                        id_column: Self::resolve_id_column(right_node_schema, false)?,
-                        properties: right_node_schema
-                            .property_mappings
-                            .iter()
-                            .map(|(k, v)| (k.clone(), v.raw_column_name()))
-                            .collect(),
-                    }
+                    own_table(right_node_schema, false)?
                 };
                 (left, right)
             }
-        };
-        Ok(node_strategies)
+        })
     }
 
-    /// Extract denormalized properties from relationship schema
-    /// Note: from_node_properties and to_node_properties are already String values (column names)
-    fn extract_denorm_props(
-        rel_schema: &RelationshipSchema,
-        is_from_node: bool,
-    ) -> PropertyMappings {
-        let props = if is_from_node {
-            &rel_schema.from_node_properties
-        } else {
-            &rel_schema.to_node_properties
-        };
-
-        props
-            .as_ref()
-            .map(|p| p.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
-            .unwrap_or_default()
-    }
-
-    /// Determine join strategy based on edge pattern and coupling
-    #[allow(clippy::too_many_arguments)] // mirrors `analyze` inputs needed for join-strategy decisions; private helper, factoring would only relocate the wide signature
+    /// Determine join strategy based on edge pattern
     fn determine_join_strategy(
         edge_pattern: &EdgeTablePattern,
         rel_schema: &RelationshipSchema,
-        left_node_schema: &NodeSchema,
-        right_node_schema: &NodeSchema,
-        graph_schema: &GraphSchema,
-        _rel_alias: &str,
-        rel_types: &[String],
-        prev_left_edge: Option<(&str, &str, bool)>,
-        prev_right_edge: Option<(&str, &str, bool)>,
-    ) -> (JoinStrategy, Option<CoupledEdgeContext>) {
-        // Check for coupled edges (same table, previous hop sharing the left node)
-        if let Some((prev_alias, prev_type, _is_from_node)) = prev_left_edge {
-            if let Ok(prev_rel_schema) = graph_schema.get_rel_schema(prev_type) {
-                if prev_rel_schema.full_table_name() == rel_schema.full_table_name() {
-                    // Check if coupled via graph_schema
-                    // Use first rel_type from the pattern, or default to "unknown"
-                    let rel_type = rel_types.first().map(|s| s.as_str()).unwrap_or("unknown");
-                    if graph_schema.are_edges_coupled(prev_type, rel_type) {
-                        let coupled_ctx = CoupledEdgeContext {
-                            prev_edge_alias: prev_alias.to_string(),
-                            coupling_node_alias: prev_alias.to_string(), // simplified
-                            shared_table: rel_schema.full_table_name(),
-                        };
-                        return (
-                            JoinStrategy::CoupledSameRow {
-                                unified_alias: prev_alias.to_string(),
-                            },
-                            Some(coupled_ctx),
-                        );
-                    }
-                }
-            }
-        }
-
-        // Shared-node correlation with previous denormalized edge(s): a
-        // connection node that already appeared embedded in an earlier edge
-        // table must correlate this edge's rows with that table's rows via an
-        // edge-to-edge JOIN condition — otherwise the two patterns silently
-        // degenerate to a cartesian product (issue #482). Covers both the
-        // same-table multi-hop chain (`(a)-[f1]->(b)-[f2]->(c)` over flights)
-        // and the cross-table shared-node family
-        // (`MATCH (src)-[:REQUESTED]->(d) MATCH (src)-[:ACCESSED]->(x)` over
-        // dns_log/conn_log). One link per shared connection node.
-        //
-        // Scope: the current edge must embed BOTH endpoints (fully
-        // denormalized) for the cross-table case, because EdgeToEdge emits
-        // only the edge-table join and would skip a needed node-table JOIN
-        // otherwise. The legacy same-table left-shared hop keeps its historic
-        // unconditional acceptance.
-        let fully_denormalized = matches!(edge_pattern, EdgeTablePattern::FullyDenormalized);
-        let is_mixed = matches!(edge_pattern, EdgeTablePattern::Mixed { .. });
-        let mut links: Vec<EdgeToEdgeLink> = Vec::new();
-        for (prev_edge, curr_edge_col, is_left_side) in [
-            (prev_left_edge, &rel_schema.from_id, true),
-            (prev_right_edge, &rel_schema.to_id, false),
-        ] {
-            let Some((prev_alias, prev_type, node_was_from_side)) = prev_edge else {
-                continue;
-            };
-            let Ok(prev_rel_schema) = graph_schema.get_rel_schema(prev_type) else {
-                continue;
-            };
-            let same_table = prev_rel_schema.full_table_name() == rel_schema.full_table_name();
-            // A MIXED edge (one endpoint embedded, the other on its own table)
-            // is NOT edge-to-edge: `EdgeToEdge` emits only the edge JOIN, so the
-            // own-table endpoint would never be joined (Code 47 on its columns).
-            // It keeps `MixedAccess`, which carries the same previous-edge links
-            // and still joins its own-table node (#1158).
-            let allowed = !is_mixed && (fully_denormalized || (same_table && is_left_side));
-            if !allowed {
-                continue;
-            }
-            let prev_col = if node_was_from_side {
-                prev_rel_schema.from_id.to_string()
-            } else {
-                prev_rel_schema.to_id.to_string()
-            };
-            links.push(EdgeToEdgeLink {
-                prev_edge_alias: prev_alias.to_string(),
-                prev_edge_col: prev_col,
-                curr_edge_col: curr_edge_col.to_string(),
-            });
-        }
-        if !links.is_empty() {
-            return (JoinStrategy::EdgeToEdge { links }, None);
-        }
-
-        // Check for FK-edge pattern first (edge table IS a node table with FK column)
+    ) -> JoinStrategy {
+        // FK-edge pattern first (edge table IS a node table with FK column)
         if rel_schema.is_fk_edge {
-            let is_self_referencing = rel_schema.from_node == rel_schema.to_node;
-
-            // Determine which node needs to be JOINed (the one that ISN'T the edge table)
-            // - If edge_table == to_node_table: edge IS right node, need to JOIN left (from_node)
-            // - If edge_table == from_node_table: edge IS left node, need to JOIN right (to_node)
-            let edge_table = rel_schema.full_table_name();
-            let left_table = left_node_schema.full_table_name();
-            let right_table = right_node_schema.full_table_name();
-
-            let join_side = if edge_table == right_table {
-                // Edge IS the to_node table, need to JOIN the from_node (left)
-                NodePosition::Left
-            } else if edge_table == left_table {
-                // Edge IS the from_node table, need to JOIN the to_node (right)
-                NodePosition::Right
-            } else {
-                // Shouldn't happen if is_fk_edge is set correctly
-                NodePosition::Right // Default fallback
-            };
-
-            return (
-                JoinStrategy::FkEdgeJoin {
-                    from_id: rel_schema.from_id.to_string(),
-                    to_id: rel_schema.to_id.to_string(),
-                    join_side,
-                    is_self_referencing,
-                },
-                None,
-            );
+            return JoinStrategy::FkEdgeJoin;
         }
-
-        // No coupling - determine by edge pattern
         match edge_pattern {
-            EdgeTablePattern::FullyDenormalized => (
-                JoinStrategy::SingleTableScan {
-                    table: rel_schema.full_table_name(),
-                },
-                None,
-            ),
-            EdgeTablePattern::Traditional => (
-                JoinStrategy::Traditional {
-                    left_join_col: rel_schema.from_id.clone(),
-                    right_join_col: rel_schema.to_id.clone(),
-                },
-                None,
-            ),
-            EdgeTablePattern::Mixed {
-                from_denormalized,
-                to_denormalized: _,
-            } => {
-                // #1158: the connection nodes an earlier hop already bound. A
-                // single-column pair only — the composite case keeps the old
-                // (unlinked) layout rather than binding a partial key.
-                let prev_link = |prev: Option<(&str, &str, bool)>,
-                                 curr_col: &Identifier|
-                 -> Option<EdgeToEdgeLink> {
-                    let (prev_alias, prev_type, node_was_from_side) = prev?;
-                    let prev_rel = graph_schema.get_rel_schema(prev_type).ok()?;
-                    let prev_col = if node_was_from_side {
-                        &prev_rel.from_id
-                    } else {
-                        &prev_rel.to_id
-                    };
-                    match (prev_col, curr_col) {
-                        (Identifier::Single(p), Identifier::Single(c)) => Some(EdgeToEdgeLink {
-                            prev_edge_alias: prev_alias.to_string(),
-                            prev_edge_col: p.clone(),
-                            curr_edge_col: c.clone(),
-                        }),
-                        _ => None,
-                    }
-                };
-                let left_prev = prev_link(prev_left_edge, &rel_schema.from_id);
-                let right_prev = prev_link(prev_right_edge, &rel_schema.to_id);
-                let (joined_node, join_col, embedded_id) = if *from_denormalized {
-                    (
-                        NodePosition::Right,
-                        rel_schema.to_id.to_string(),
-                        // Role `false` on the from-embedded node skips its
-                        // from-role map, resolving the standalone table id.
-                        Self::resolve_id_column(left_node_schema, false).ok(),
-                    )
-                } else {
-                    (
-                        NodePosition::Left,
-                        rel_schema.from_id.to_string(),
-                        Self::resolve_id_column(right_node_schema, true).ok(),
-                    )
-                };
-                (
-                    JoinStrategy::MixedAccess {
-                        joined_node,
-                        join_col,
-                        embedded_id,
-                        left_prev,
-                        right_prev,
-                    },
-                    None,
-                )
-            }
+            EdgeTablePattern::FullyDenormalized => JoinStrategy::SingleTableScan,
+            EdgeTablePattern::Traditional => JoinStrategy::Traditional,
+            EdgeTablePattern::Mixed { .. } => JoinStrategy::MixedAccess,
         }
-    }
-
-    // ========================================================================
-    // Convenience Methods
-    // ========================================================================
-
-    // ========================================================================
-    // Property Resolution Helper Methods (Phase 1A)
-    // ========================================================================
-}
-
-// ============================================================================
-// Tests
-// ============================================================================
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::graph_catalog::config::Identifier;
-
-    #[test]
-    fn test_node_access_strategy_requires_join() {
-        let own_table = NodeAccessStrategy::OwnTable {
-            table: "users".to_string(),
-            id_column: Identifier::from("id"),
-            properties: HashMap::new(),
-        };
-        assert!(own_table.requires_join());
-
-        let embedded = NodeAccessStrategy::EmbeddedInEdge {
-            edge_alias: "r".to_string(),
-            properties: HashMap::new(),
-            is_from_node: true,
-        };
-        assert!(!embedded.requires_join());
-
-        let virtual_node = NodeAccessStrategy::Virtual {
-            label: "User".to_string(),
-        };
-        assert!(!virtual_node.requires_join());
-    }
-
-    #[test]
-    fn test_edge_access_strategy_type_filter() {
-        let single_type = EdgeAccessStrategy::Polymorphic {
-            table: "interactions".to_string(),
-            from_id: "from_id".to_string(),
-            to_id: "to_id".to_string(),
-            type_column: Some("interaction_type".to_string()),
-            type_values: vec!["FOLLOWS".to_string()],
-            from_label_column: None,
-            to_label_column: None,
-            properties: HashMap::new(),
-        };
-        assert_eq!(
-            single_type.get_type_filter("r"),
-            Some("r.interaction_type = 'FOLLOWS'".to_string())
-        );
-
-        let multi_type = EdgeAccessStrategy::Polymorphic {
-            table: "interactions".to_string(),
-            from_id: "from_id".to_string(),
-            to_id: "to_id".to_string(),
-            type_column: Some("interaction_type".to_string()),
-            type_values: vec!["FOLLOWS".to_string(), "LIKES".to_string()],
-            from_label_column: None,
-            to_label_column: None,
-            properties: HashMap::new(),
-        };
-        assert_eq!(
-            multi_type.get_type_filter("r"),
-            Some("r.interaction_type IN ('FOLLOWS', 'LIKES')".to_string())
-        );
-
-        let separate = EdgeAccessStrategy::SeparateTable {
-            table: "follows".to_string(),
-            from_id: "follower_id".to_string(),
-            to_id: "followed_id".to_string(),
-            properties: HashMap::new(),
-        };
-        assert_eq!(separate.get_type_filter("r"), None);
-    }
-
-    #[test]
-    fn test_edge_access_strategy_label_filter() {
-        // Test from_label_column only (MEMBER_OF with User|Group on left)
-        let from_only = EdgeAccessStrategy::Polymorphic {
-            table: "memberships".to_string(),
-            from_id: "member_id".to_string(),
-            to_id: "group_id".to_string(),
-            type_column: None, // No type discriminator
-            type_values: vec![],
-            from_label_column: Some("member_type".to_string()),
-            to_label_column: None,
-            properties: HashMap::new(),
-        };
-        // User on left side
-        assert_eq!(
-            from_only.get_label_filter("r", "User", "Group"),
-            Some("r.member_type = 'User'".to_string())
-        );
-        // Group on left side
-        assert_eq!(
-            from_only.get_label_filter("r", "Group", "Group"),
-            Some("r.member_type = 'Group'".to_string())
-        );
-
-        // Test to_label_column only (CONTAINS with Folder|File on right)
-        let to_only = EdgeAccessStrategy::Polymorphic {
-            table: "fs_contents".to_string(),
-            from_id: "parent_id".to_string(),
-            to_id: "child_id".to_string(),
-            type_column: None,
-            type_values: vec![],
-            from_label_column: None,
-            to_label_column: Some("child_type".to_string()),
-            properties: HashMap::new(),
-        };
-        // Folder on right
-        assert_eq!(
-            to_only.get_label_filter("r", "Folder", "Folder"),
-            Some("r.child_type = 'Folder'".to_string())
-        );
-        // File on right
-        assert_eq!(
-            to_only.get_label_filter("r", "Folder", "File"),
-            Some("r.child_type = 'File'".to_string())
-        );
-
-        // Test both label columns (HAS_ACCESS: User|Group -> Folder|File)
-        let both = EdgeAccessStrategy::Polymorphic {
-            table: "permissions".to_string(),
-            from_id: "subject_id".to_string(),
-            to_id: "object_id".to_string(),
-            type_column: None,
-            type_values: vec![],
-            from_label_column: Some("subject_type".to_string()),
-            to_label_column: Some("object_type".to_string()),
-            properties: HashMap::new(),
-        };
-        // User -> Folder
-        assert_eq!(
-            both.get_label_filter("r", "User", "Folder"),
-            Some("r.subject_type = 'User' AND r.object_type = 'Folder'".to_string())
-        );
-        // Group -> File
-        assert_eq!(
-            both.get_label_filter("r", "Group", "File"),
-            Some("r.subject_type = 'Group' AND r.object_type = 'File'".to_string())
-        );
-
-        // Test with type_column + label columns (full polymorphic)
-        let full = EdgeAccessStrategy::Polymorphic {
-            table: "interactions".to_string(),
-            from_id: "from_id".to_string(),
-            to_id: "to_id".to_string(),
-            type_column: Some("interaction_type".to_string()),
-            type_values: vec!["FOLLOWS".to_string()],
-            from_label_column: Some("from_type".to_string()),
-            to_label_column: Some("to_type".to_string()),
-            properties: HashMap::new(),
-        };
-        // Label filter should still work (type filter is separate)
-        assert_eq!(
-            full.get_label_filter("r", "User", "User"),
-            Some("r.from_type = 'User' AND r.to_type = 'User'".to_string())
-        );
-        // And type filter should also work
-        assert_eq!(
-            full.get_type_filter("r"),
-            Some("r.interaction_type = 'FOLLOWS'".to_string())
-        );
-
-        // Test no label columns (separate table - no label filtering needed)
-        let separate = EdgeAccessStrategy::SeparateTable {
-            table: "follows".to_string(),
-            from_id: "follower_id".to_string(),
-            to_id: "followed_id".to_string(),
-            properties: HashMap::new(),
-        };
-        assert_eq!(separate.get_label_filter("r", "User", "User"), None);
-
-        // Test Polymorphic with no label columns (only type_column)
-        let type_only = EdgeAccessStrategy::Polymorphic {
-            table: "interactions".to_string(),
-            from_id: "from_id".to_string(),
-            to_id: "to_id".to_string(),
-            type_column: Some("interaction_type".to_string()),
-            type_values: vec!["FOLLOWS".to_string()],
-            from_label_column: None,
-            to_label_column: None,
-            properties: HashMap::new(),
-        };
-        assert_eq!(type_only.get_label_filter("r", "User", "User"), None);
-    }
-
-    #[test]
-    fn test_edge_access_strategy_type_filter_with_none_type_column() {
-        // Regression test: Polymorphic with type_column = None should return None for type filter
-        // This is the case for edges like MEMBER_OF that only have from_label_column
-        let label_only = EdgeAccessStrategy::Polymorphic {
-            table: "memberships".to_string(),
-            from_id: "member_id".to_string(),
-            to_id: "group_id".to_string(),
-            type_column: None, // <-- This was the bug: type_column can be None
-            type_values: vec![],
-            from_label_column: Some("member_type".to_string()),
-            to_label_column: None,
-            properties: HashMap::new(),
-        };
-        // Should NOT panic, should return None
-        assert_eq!(label_only.get_type_filter("r"), None);
-    }
-
-    #[test]
-    fn test_join_strategy_is_joinless() {
-        let single_table = JoinStrategy::SingleTableScan {
-            table: "flights".to_string(),
-        };
-        assert!(single_table.is_joinless());
-
-        let coupled = JoinStrategy::CoupledSameRow {
-            unified_alias: "r1".to_string(),
-        };
-        assert!(coupled.is_joinless());
-
-        let traditional = JoinStrategy::Traditional {
-            left_join_col: Identifier::from("from_id"),
-            right_join_col: Identifier::from("to_id"),
-        };
-        assert!(!traditional.is_joinless());
     }
 }

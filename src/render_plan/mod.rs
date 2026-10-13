@@ -1,8 +1,6 @@
 pub mod cte_generation;
 pub mod cte_manager;
-pub(crate) mod expression_utils;
 mod filter_pipeline;
-pub(crate) mod filter_sql;
 pub mod variable_length;
 mod view_table_ref;
 
@@ -16,7 +14,6 @@ pub use view_table_ref::ViewTableRef;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
-pub mod errors;
 pub mod render_expr;
 pub mod write_render;
 

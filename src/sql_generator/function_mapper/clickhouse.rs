@@ -31,20 +31,12 @@ impl FunctionMapper for ClickhouseFunctionMapper {
         format!("anyIfOrNull({value}, NOT isNull({value}))")
     }
 
-    fn min_if(&self, val: &str, cond: &str) -> String {
-        format!("minIf({val}, {cond})")
-    }
-
     fn arrays_overlap(&self) -> &'static str {
         "hasAny"
     }
 
     fn cast_int64(&self) -> &'static str {
         "toInt64"
-    }
-
-    fn cast_uint16(&self) -> &'static str {
-        "toUInt16"
     }
 
     fn cast_float64(&self) -> &'static str {
@@ -115,14 +107,6 @@ impl FunctionMapper for ClickhouseFunctionMapper {
 
     fn empty_string_array_cast(&self) -> &'static str {
         "CAST([] AS Array(String))"
-    }
-
-    fn empty_int64_array_cast(&self) -> &'static str {
-        "CAST([] AS Array(Int64))"
-    }
-
-    fn int64_array_cast(&self, expr: &str) -> String {
-        format!("CAST({expr} AS Array(Int64))")
     }
 
     fn array_literal(&self, elems: &str) -> String {
@@ -508,28 +492,6 @@ mod tests {
     }
 
     #[test]
-    fn in_list_predicate_renders_paren_value_list() {
-        // Value-list `x IN (a, b)` — never `x IN [array]` (a heterogeneous CH
-        // array literal fails NO_COMMON_TYPE; SQL IN coerces per-element). Empty
-        // list collapses to the constant predicate.
-        let m = ClickhouseFunctionMapper;
-        assert_eq!(
-            m.in_list_predicate("x", &["1".into(), "2".into()], false),
-            "x IN (1, 2)"
-        );
-        assert_eq!(
-            m.in_list_predicate("x", &["1".into(), "2".into()], true),
-            "x NOT IN (1, 2)"
-        );
-        assert_eq!(
-            m.in_list_predicate("u.country", &["u.city".into(), "'USA'".into()], false),
-            "u.country IN (u.city, 'USA')"
-        );
-        assert_eq!(m.in_list_predicate("x", &[], false), "FALSE");
-        assert_eq!(m.in_list_predicate("x", &[], true), "TRUE");
-    }
-
-    #[test]
     fn power_uses_ansi_power_call_form() {
         // ClickHouse has no infix `^` (Code 62 SYNTAX_ERROR); the exponentiation
         // operator must render as the ANSI `POWER(base, exp)` call.
@@ -548,15 +510,6 @@ mod tests {
         assert_eq!(
             m.timestamp_to_epoch_millis("x"),
             "toUnixTimestamp64Milli(x)"
-        );
-    }
-
-    #[test]
-    fn min_if_emits_native_clickhouse_form() {
-        let m = ClickhouseFunctionMapper;
-        assert_eq!(
-            m.min_if("toUInt16(hop)", "node_id = 14"),
-            "minIf(toUInt16(hop), node_id = 14)"
         );
     }
 

@@ -17,13 +17,10 @@
 //!   [`PathCte::edges`]);
 //! * `path_nodes`: the identities of its nodes.
 //!
-//! The generator's side channels are not used: the FROM alias it reports (the
-//! query-wide `vlp_from_alias()`) is replaced by the caller's alias for the
-//! relation; `outer_where_filters` (set by the denormalized strategy only) is
-//! refused. A composite identity (S8d) is in `start_id` / `end_id` as a text,
-//! which two ids can share; the walk carries its columns too
-//! (`start_<col>` / `end_<col>`), which each step joins by
-//! (`CteGenerationContext::composite_by_columns`) and the caller ties to.
+//! A composite identity (S8d) is in `start_id` / `end_id` as the text of
+//! the tuple of its columns; the walk carries its columns too
+//! (`start_<col>` / `end_<col>`), which each step joins by and the caller
+//! ties to.
 //!
 //! The walk is a trail: no relationship twice (the generator's
 //! `NOT has(path_edges, …)`), as Cypher's relationship uniqueness requires.
@@ -40,8 +37,6 @@
 //! and the labels of its ends. A shortest-path search reads either walk's
 //! relations through [`Search`] (S7b3b: a union's nodes identified by their
 //! identities as texts, its pairs' ends then recovered, [`union_ends_cte`]).
-
-use std::sync::Arc;
 
 use crate::graph_catalog::config::Identifier;
 use crate::graph_catalog::graph_schema::{GraphSchema, NodeSchema, RelationshipSchema};
@@ -173,36 +168,16 @@ pub(super) struct PathCte {
 /// from the node a row leaves to the node it enters): the standard layout
 /// (the nodes and the edge each in their own table; a composite identity
 /// walked by its columns, S8d), or `Unsupported`.
-fn standard_layout(
-    schema: &GraphSchema,
-    call: &PathCall<'_>,
-) -> Result<PatternSchemaContext, LowerError> {
-    let mut ctx = PatternSchemaContext::analyze(
-        call.var,
-        "path",
-        call.node,
-        call.node,
-        call.edge,
-        schema,
-        call.var,
-        vec![call.rel_type.to_string()],
-        None,
-        None,
-    )
-    .map_err(|e| LowerError::Unsupported(format!("variable-length relationship: {e}")))?;
+fn standard_layout(call: &PathCall<'_>) -> Result<PatternSchemaContext, LowerError> {
+    let mut ctx = PatternSchemaContext::analyze(call.var, "path", call.node, call.node, call.edge)
+        .map_err(|e| LowerError::Unsupported(format!("variable-length relationship: {e}")))?;
     // An FK edge's table (a node table, S8a) holds one relationship per row,
     // as an edge table does (`RelationshipSchema::is_edge_row_table`): it is
     // walked as one, joining each relationship's row to the nodes it names.
-    // (The generator's own FK-edge walk, `FkEdgeJoin`, reads the referenced
-    // node's row in place of the relationship's, and keeps node uniqueness
-    // at a zero lower bound, #902.)
-    if matches!(ctx.join_strategy, JoinStrategy::FkEdgeJoin { .. })
+    if matches!(ctx.join_strategy, JoinStrategy::FkEdgeJoin)
         && matches!(ctx.edge, EdgeAccessStrategy::SeparateTable { .. })
     {
-        ctx.join_strategy = JoinStrategy::Traditional {
-            left_join_col: call.edge.from_id.clone(),
-            right_join_col: call.edge.to_id.clone(),
-        };
+        ctx.join_strategy = JoinStrategy::Traditional;
     }
     // The walk joins `rel.from_id` to the node it is at and moves to
     // `rel.to_id`.
@@ -220,7 +195,7 @@ fn standard_layout(
     if !own_table(&ctx.left_node)
         || !own_table(&ctx.right_node)
         || !matches!(ctx.edge, EdgeAccessStrategy::SeparateTable { .. })
-        || !matches!(ctx.join_strategy, JoinStrategy::Traditional { .. })
+        || !matches!(ctx.join_strategy, JoinStrategy::Traditional)
     {
         return unsupported("a variable-length relationship outside the standard layout (S8)");
     }
@@ -250,22 +225,16 @@ pub(super) fn path_cte(schema: &GraphSchema, call: PathCall<'_>) -> Result<PathC
     }
     let start_alias = call.var.to_string();
     let end_alias = "path".to_string();
-    let ctx = standard_layout(schema, &call)?;
+    let ctx = standard_layout(&call)?;
     let mut context = CteGenerationContext::new()
         .with_spec(VariableLengthSpec {
-            min_hops: Some(call.min),
-            max_hops: Some(call.max.unwrap_or(UNBOUNDED)),
+            min_hops: call.min,
+            max_hops: call.max.unwrap_or(UNBOUNDED),
         })
         .with_schema_owned(schema.clone())
         .with_relationship_types(Some(vec![call.rel_type.to_string()]))
-        .with_edge_id(Some(edge_identity(call.edge)))
-        .with_relationship_cypher_alias(Some(call.var.to_string()))
-        .with_node_labels(Some(call.label.to_string()), Some(call.label.to_string()));
-    context.needs_path_relationships = false;
+        .with_edge_id(Some(edge_identity(call.edge)));
     context.walk_relation = call.both.map(str::to_string);
-    // A composite identity: each step joins the path's last node by its
-    // columns, not by the ids' texts (S8d).
-    context.composite_by_columns = true;
     let (node_tuple, rel_tuple) = call.tuples()?;
     context.path_values.node_tuple = node_tuple.map(|t| (t.one, t.other.unwrap_or_default()));
     context.path_values.rel_tuple = rel_tuple.map(|t| (t.one, t.empty));
@@ -290,24 +259,15 @@ pub(super) fn path_cte(schema: &GraphSchema, call: PathCall<'_>) -> Result<PathC
         };
     }
     let filters = CategorizedFilters {
-        start_node_filters: None,
-        end_node_filters: None,
-        relationship_filters: None,
-        path_function_filters: None,
-        both_endpoint_filters: None,
         start_sql: conjunction(&call.start),
-        end_sql: None,
         relationship_sql: conjunction(&call.rel),
     };
     let carried = constraint_carried(&call)?;
-    let result = CteManager::with_context(Arc::new(schema.clone()), context)
+    let result = CteManager::with_context(context)
         .generate_vlp_cte(&ctx, &carried, &filters)
         .map_err(|e| LowerError::Unsupported(format!("variable-length relationship: {e}")))?;
     let name = format!("vlp_{start_alias}_{end_alias}");
-    if result.outer_where_filters.is_some()
-        || result.cte_name != name
-        || !result.sql.starts_with(&name)
-    {
+    if result.cte_name != name || !result.sql.starts_with(&name) {
         return unsupported("internal: the path generator's output is not one relation");
     }
     Ok(PathCte {
@@ -494,7 +454,7 @@ impl PathCall<'_> {
     /// The search of these paths, with `end` the conjuncts over the last
     /// node.
     pub(super) fn search(&self, schema: &GraphSchema) -> Result<Search, LowerError> {
-        let ctx = standard_layout(schema, self)?;
+        let ctx = standard_layout(self)?;
         let (
             NodeAccessStrategy::OwnTable {
                 table: node_table,
@@ -1693,7 +1653,7 @@ impl Walk<'_> {
                 let id = c.node.id_physical_columns();
                 // The columns a recovered path reads (its nodes as the search
                 // keys them: the generator's composite text is the same,
-                // `composite_by_columns`, S8d2c).
+                // S8d2c).
                 let mut carried = vec!["path_nodes"];
                 for (wanted, column) in [
                     (c.node_values, VALUE_COLUMNS[0]),

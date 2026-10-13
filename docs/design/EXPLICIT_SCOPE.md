@@ -5233,13 +5233,32 @@ slice that will handle it.
       (`.github/copilot-instructions.md`, `DEVELOPMENT_PROCESS.md`,
       `KNOWN_ISSUES.md`, `STATUS.md`, the AGENTS.md files) describe the
       bound plan.
-    - [ ] **S14c8: the walk generator's unreached inputs.** The bound plan
-      calls `variable_length_cte.rs` / `cte_manager` with constant inputs
-      (the standard layout, no path variable, no shortest-path mode, no
-      weight, no BFS, not undirected, the `RenderExpr` filters `None`,
-      `composite_by_columns`): the branches for the others, the
-      denormalized strategy, `pattern_schema`'s coupled-edge context and
-      the fields no code reads go; then #1392 closed.
+    - [x] **S14c8: the walk generator's unreached inputs.** The bound plan
+      calls `variable_length_cte.rs` / `cte_manager` from one place
+      (`bound_plan::lower::path::path_cte`) with constant inputs: the
+      standard layout (each node and the edge in its own table, one node
+      table), no path variable, shortest-path mode, weight, BFS, undirected
+      walk, end-node or both-endpoint filter, carried properties only the
+      end node's (`v{N}` never `path`), ids spelled as tuple texts. So the
+      generator keeps one dispatcher (zero-hop or 1-hop base, the recursive
+      arm, the `hop_count >= min` wrapper) and loses the denormalized,
+      mixed, FK-edge, weighted, BFS, polymorphic and heterogeneous arms,
+      the doubled-edge machinery and `ChainedJoinGenerator`;
+      `CteGenerationContext` / `CategorizedFilters` keep only what the
+      lowering sets, `VariableLengthSpec` its two bounds (`u32`), and
+      `pattern_schema` only the classification the walk gates on (the
+      coupled-edge and edge-to-edge strategies were never produced: no
+      caller passed a previous edge). `filter_sql.rs`,
+      `expression_utils.rs`, `render_plan/errors.rs`, `node_classification`
+      and the coupled-edge API go with them; `CLICKGRAPH_VLP_MAX_HOPS`
+      (undocumented) was already inert (the lowering always passes a
+      maximum). ~9k lines.
+      - The corpus goldens byte-identical at every step, census 1477, the
+        ratchet's 17 decreases recorded; the removed tests covered only
+        removed arms (the live-shaped ones run through a test constructor).
+      - Kept: the recursive arm's pipe-joined join for an edge `from_id`
+        of another arity than the node's id, which the lowering refuses
+        first (`standard_edge`), unreachable.
 
 ## Appendix A — post-assembly repair passes (48, plus CTE flattening, at `e1241a9c`)
 

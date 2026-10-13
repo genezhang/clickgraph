@@ -41,27 +41,6 @@ pub(crate) trait FunctionMapper: Send + Sync {
     /// pre-rendered SQL fragments (the caller applies the 1-based offset).
     fn array_element_or_null(&self, arr: &str, idx: &str) -> String;
 
-    /// Render an `x IN <list-literal>` / `x NOT IN <list-literal>` predicate.
-    /// The list items are pre-rendered in `item_sqls`; `negate` selects `NOT IN`.
-    ///
-    /// Always emits a paren VALUE-LIST `x IN (a, b)` — never `x IN [array]` /
-    /// `x IN array(a, b)`. Both of those are wrong: on ClickHouse a heterogeneous
-    /// array literal (e.g. an id column `toString`-wrapped alongside another type)
-    /// fails `NO_COMMON_TYPE` (Code 386), whereas SQL `IN (...)` coerces
-    /// per-element; on Spark `x IN array(...)` compares a scalar to one array
-    /// value. The value-list is valid and correct on both dialects for constant
-    /// and non-constant (column-bearing) items alike. An empty list becomes the
-    /// constant predicate (`FALSE` for IN, `TRUE` for NOT IN) — always correct
-    /// (openCypher `x IN []` is false) and required on Spark, whose `IN ()` is a
-    /// syntax error. Keeping this in the dialect layer satisfies Rule #7.
-    fn in_list_predicate(&self, lhs_sql: &str, item_sqls: &[String], negate: bool) -> String {
-        if item_sqls.is_empty() {
-            return if negate { "TRUE" } else { "FALSE" }.to_string();
-        }
-        let kw = if negate { "NOT IN" } else { "IN" };
-        format!("{} {} ({})", lhs_sql, kw, item_sqls.join(", "))
-    }
-
     /// Conditional count. CH: `countIf`. Spark: `count_if` (DBR 13.1+).
     fn count_if(&self) -> &'static str;
 
@@ -101,14 +80,6 @@ pub(crate) trait FunctionMapper: Send + Sync {
         format!("ARRAY JOIN {}\n", items.join(", "))
     }
 
-    /// Conditional minimum: minimum of `val` over rows where `cond` is true.
-    /// CH: `minIf(val, cond)`. Spark has no `minIf`, so we rewrite to
-    /// `min(CASE WHEN cond THEN val END)` — `min` ignores NULLs, so rows
-    /// where `cond` is false drop out exactly like `minIf` does. Takes
-    /// pre-rendered SQL fragments because the structural form differs;
-    /// callers paste the result directly into surrounding SQL.
-    fn min_if(&self, val: &str, cond: &str) -> String;
-
     /// Do two arrays share any element? CH: `hasAny(a, b)`. Databricks/Spark:
     /// `arrays_overlap(a, b)`. Both return a boolean-ish value usable directly
     /// under `NOT`. Used for VLP cross-segment relationship-uniqueness (#544).
@@ -117,15 +88,6 @@ pub(crate) trait FunctionMapper: Send + Sync {
     /// Cast to 64-bit signed integer. CH: `toInt64`. Spark: `bigint`
     /// (works as a function-call cast alias).
     fn cast_int64(&self) -> &'static str;
-
-    /// Cast to 16-bit unsigned integer. CH: `toUInt16`. Spark has no
-    /// unsigned integer — Databricks widens to `int` (signed 32-bit),
-    /// not `smallint`, because `max_hops` is a `u32` overridable via
-    /// `CLICKGRAPH_VLP_MAX_HOPS` with no upper bound. The conceptually
-    /// closest type would be `smallint`, but its 32K signed range
-    /// could wrap; `int` matches the actual source-side capacity and
-    /// removes the overflow tripwire.
-    fn cast_uint16(&self) -> &'static str;
 
     /// Cast to 64-bit float. CH: `toFloat64`. Spark: `double`
     /// (function-call cast alias).
@@ -227,18 +189,6 @@ pub(crate) trait FunctionMapper: Send + Sync {
     /// Returned as a full snippet (not a function name) because the array
     /// literal syntax and the element-type spelling both diverge.
     fn empty_string_array_cast(&self) -> &'static str;
-
-    /// Empty `Array(Int64)` literal with explicit cast. CH:
-    /// `CAST([] AS Array(Int64))`. Spark: `CAST(array() AS ARRAY<BIGINT>)`.
-    fn empty_int64_array_cast(&self) -> &'static str;
-
-    /// Wrap an arbitrary expression in an `Array(Int64)` cast. CH:
-    /// `CAST({expr} AS Array(Int64))`. Spark: `CAST({expr} AS ARRAY<BIGINT>)`.
-    /// Used by the BFS shortestPath reconstruction path where
-    /// `path_nodes` accumulators need an explicit array element type.
-    /// Distinct from [`empty_int64_array_cast`] because the inner
-    /// expression isn't always an empty literal.
-    fn int64_array_cast(&self, expr: &str) -> String;
 
     /// Array literal with the given comma-separated elements. CH:
     /// `[a, b, c]`. Spark: `array(a, b, c)`. Empty input (`""`) yields

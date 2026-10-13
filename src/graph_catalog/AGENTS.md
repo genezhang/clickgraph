@@ -27,13 +27,12 @@ graph_schema.rs           ← Runtime data structures: GraphSchema, NodeSchema, 
     │                        O(1) lookups via rel_type_index, edge pattern classification
     │
     ├─ composite_key_utils.rs ← TYPE::FROM::TO composite key parsing & matching
-    ├─ node_classification.rs ← Denormalized node detection utilities
     ├─ element_id.rs          ← Neo4j-compatible elementId generation/parsing
     │
     ▼
-pattern_schema.rs         ← PatternSchemaContext: unified pattern analysis abstraction
-                             Computes NodeAccessStrategy + EdgeAccessStrategy + JoinStrategy
-                             for a (left_node, edge, right_node) triple ONCE
+pattern_schema.rs         ← PatternSchemaContext: a pattern's layout classification
+                             NodeAccessStrategy + EdgeAccessStrategy + JoinStrategy
+                             for a (left_node, edge, right_node) triple
 ```
 
 ## Key Files & Line Counts
@@ -42,7 +41,7 @@ pattern_schema.rs         ← PatternSchemaContext: unified pattern analysis abs
 |------|------:|------|
 | config.rs | 2,899 | YAML loading, parsing, GraphSchema construction |
 | graph_schema.rs | 2,572 | Core runtime types (NodeSchema, RelationshipSchema, GraphSchema) + ~900 lines tests |
-| pattern_schema.rs | 1,651 | Unified pattern analysis (access strategies, join strategies) |
+| pattern_schema.rs | 275 | A pattern's layout (access strategies, join strategy); the variable-length walk's gate |
 | expression_parser.rs | 768 | nom parser for ClickHouse scalar expressions in property mappings |
 | filter_parser.rs | 681 | nom parser for SQL WHERE clause filters in schema definitions |
 | element_id.rs | 564 | Neo4j elementId generation and parsing |
@@ -50,7 +49,6 @@ pattern_schema.rs         ← PatternSchemaContext: unified pattern analysis abs
 | engine_detection.rs | 481 | MergeTree engine family detection, FINAL keyword support |
 | composite_key_utils.rs | 318 | `TYPE::FROM::TO` composite key building, parsing, matching |
 | constraint_compiler.rs | 289 | Edge constraint expressions → SQL compilation |
-| node_classification.rs | 222 | Consolidated denormalized node property detection |
 | schema_validator.rs | 145 | Validate graph views against ClickHouse table schemas |
 | errors.rs | 121 | Error types with context helpers (thiserror) |
 | column_info.rs | 108 | ClickHouse `system.columns` metadata querying |
@@ -111,8 +109,7 @@ mirror copy built during `config.rs` construction for downstream convenience.
 It returns `NodeAccessStrategy`, `EdgeAccessStrategy`, and `JoinStrategy` — these should be
 queried from the context, NEVER re-derived by downstream code.
 
-Previously, schema detection logic was scattered across ~4800 lines in `graph_join_inference.rs`.
-`PatternSchemaContext` consolidates this into a single analysis point.
+`bound_plan::lower::path` reads it to walk the standard layout and to refuse the others.
 
 ### 5. Schema Type Discovery (Feb 2026)
 `NodeIdSchema` and `RelationshipSchema` now use **strongly-typed `SchemaType` enum** instead of raw strings.
@@ -173,7 +170,7 @@ Auto-discovery populates `column_names` on schemas and detects MergeTree engine 
 - **bound_plan/** — the binder (labels, union labels), lowering (`lower/`), writes
 - **query_planner/** — `logical_expr/`
 - **sql_generator/emitters/clickhouse/** — `variable_length_cte.rs`, `pagerank.rs`, `to_sql_query.rs`
-- **render_plan/** — `cte_generation.rs`, `cte_manager/`
+- **render_plan/** — `cte_generation.rs`, `cte_manager/` (the walk's standard layout)
 
 ### Key External Crates
 - `serde` / `serde_yaml` — YAML configuration deserialization
@@ -192,7 +189,6 @@ cargo test                           # Full suite (995+ tests)
 # Specific test groups:
 cargo test composite_key             # Composite key parsing/matching
 cargo test test_detect               # Edge table pattern classification
-cargo test test_coupled              # Coupled edge detection (Zeek DNS pattern)
 cargo test schema_validator          # Schema validation against ClickHouse
 cargo test expression_parser         # Expression parsing
 cargo test filter_parser             # Filter parsing
@@ -239,21 +235,17 @@ When modifying any schema structure, verify all 5 patterns still work:
 
 ```
 NodeAccessStrategy:
-  OwnTable           — Node has dedicated table (standard)
-  EmbeddedInEdge      — Node properties stored in edge table (denormalized)
-  Virtual             — Node has no physical storage
+  OwnTable { table, id_column } — Node has dedicated table (standard)
+  EmbeddedInEdge                — Node properties stored in edge table (denormalized)
 
 EdgeAccessStrategy:
-  SeparateTable       — Standard edge table
-  Polymorphic         — Type-discriminated edge table
-  FkEdge              — Foreign key on node table
+  SeparateTable { table, from_id, to_id } — Standard edge table
+  Polymorphic                             — Type-discriminated edge table
 
 JoinStrategy:
   Traditional         — Standard 3-way JOIN (node-edge-node)
   SingleTableScan     — All data in one table (fully denormalized)
   MixedAccess         — One node denormalized, other traditional
-  EdgeToEdge          — No node tables, edge-only pattern
-  CoupledSameRow      — Two edges from same table row (Zeek DNS pattern)
   FkEdgeJoin          — FK-based join (no separate edge table)
 ```
 
@@ -270,7 +262,6 @@ JoinStrategy:
 | Engine detection / FINAL                    |    ✅    |   ✅    |      ✅      |     ✅      |      ✅      |
 | Schema-level filters                        |    ✅    |   ✅    |      ✅      |     ✅      |      ✅      |
 | Expression-based properties                 |    ✅    |   ✅    |      ✅      |     ✅      |      ✅      |
-| Coupled edge detection                      |    ✅    |   N/A   |      ✅      |     ⚠️      |      ✅      |
 
 ✅ = fully supported and tested. ⚠️ = works but edge cases need care. N/A = not applicable.
 
@@ -293,14 +284,11 @@ JoinStrategy:
 - `get_rel_schema_with_nodes(type, from, to)` → builds composite key and looks up
 - `rel_schemas_for_type(type_name)` → `Vec<(&String, &RelationshipSchema)>` via `rel_type_index`
 - `expand_generic_relationship_type(from, to)` → finds all matching rel types for node pair
-- `are_edges_coupled(type1, type2)` → `bool` (same table + shared node)
-- `get_coupled_edge_info(type1, type2)` → `Option<CoupledEdgeInfo>`
 
 ### Pattern Analysis (from pattern_schema.rs)
-- `PatternSchemaContext::analyze(left_node, edge, right_node, schema)` → computes strategies
-- `.left_node_strategy()`, `.right_node_strategy()`, `.edge_strategy()`, `.join_strategy()`
-- `.get_node_property(alias, prop, schema)` → resolves property to SQL column
-- `.get_edge_property(prop, schema)` → resolves edge property to SQL column
+- `PatternSchemaContext::analyze(left_alias, right_alias, left_node, right_node, edge)` → the
+  layout: `.left_node`, `.right_node`, `.edge`, `.join_strategy` (read by
+  `bound_plan::lower::path`, which walks only the standard layout)
 
 ### Expression & Filter (from expression_parser.rs, filter_parser.rs)
 - `PropertyValue::Column(col)` | `PropertyValue::Expression(expr)` — property mapping value

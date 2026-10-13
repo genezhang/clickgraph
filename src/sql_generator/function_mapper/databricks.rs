@@ -106,14 +106,6 @@ impl FunctionMapper for DatabricksFunctionMapper {
         "any_value"
     }
 
-    fn min_if(&self, val: &str, cond: &str) -> String {
-        // Spark has no `minIf`. `min` ignores NULLs in ANSI SQL, so a
-        // `CASE WHEN cond THEN val END` (no ELSE → NULL) reproduces
-        // `minIf(val, cond)` exactly: matching rows contribute `val`,
-        // non-matching rows contribute NULL and get dropped by `min`.
-        format!("min(CASE WHEN {cond} THEN {val} END)")
-    }
-
     fn arrays_overlap(&self) -> &'static str {
         "arrays_overlap"
     }
@@ -121,18 +113,6 @@ impl FunctionMapper for DatabricksFunctionMapper {
     fn cast_int64(&self) -> &'static str {
         // Spark function-call cast alias for BIGINT.
         "bigint"
-    }
-
-    fn cast_uint16(&self) -> &'static str {
-        // Spark has no unsigned 16-bit type. Widening to signed
-        // smallint (16-bit, max 32767) is conceptually closest but
-        // unsafe in this codebase: `max_hops` is a `u32` overridable
-        // via `CLICKGRAPH_VLP_MAX_HOPS` with no upper bound, so a
-        // signed 16-bit cast could wrap. Widen to signed `int`
-        // (32-bit) instead — it matches the actual u32 source range
-        // (modulo the high bit, which no realistic hop count reaches)
-        // and removes the overflow tripwire entirely.
-        "int"
     }
 
     fn cast_float64(&self) -> &'static str {
@@ -202,14 +182,6 @@ impl FunctionMapper for DatabricksFunctionMapper {
 
     fn empty_string_array_cast(&self) -> &'static str {
         "CAST(array() AS ARRAY<STRING>)"
-    }
-
-    fn empty_int64_array_cast(&self) -> &'static str {
-        "CAST(array() AS ARRAY<BIGINT>)"
-    }
-
-    fn int64_array_cast(&self, expr: &str) -> String {
-        format!("CAST({expr} AS ARRAY<BIGINT>)")
     }
 
     fn array_literal(&self, elems: &str) -> String {
@@ -598,12 +570,7 @@ mod tests {
             "try_element_at(array(10, 20, 30), 11)"
         );
         assert_eq!(m.count_if(), "count_if");
-        assert_eq!(
-            m.min_if("int(hop)", "node_id = 14"),
-            "min(CASE WHEN node_id = 14 THEN int(hop) END)"
-        );
         assert_eq!(m.cast_int64(), "bigint");
-        assert_eq!(m.cast_uint16(), "int");
         assert_eq!(m.cast_float64(), "double");
         assert_eq!(m.cast_string(), "string");
         assert_eq!(m.cast_bool("x > 2"), "CAST(x > 2 AS BOOLEAN)");
@@ -623,8 +590,6 @@ mod tests {
             m.empty_string_array_cast(),
             "CAST(array() AS ARRAY<STRING>)"
         );
-        assert_eq!(m.empty_int64_array_cast(), "CAST(array() AS ARRAY<BIGINT>)");
-        assert_eq!(m.int64_array_cast("x"), "CAST(x AS ARRAY<BIGINT>)");
         assert_eq!(m.array_literal(""), "array()");
         assert_eq!(m.array_literal("a, b"), "array(a, b)");
         assert_eq!(m.tuple_constructor(), "struct");
@@ -654,28 +619,6 @@ mod tests {
             m.percentile_aggregate("t.x", "0.9", false),
             "try_element_at(array_sort(collect_list(t.x)), greatest(1, cast(ceil(0.9 * count(t.x)) as int)))"
         );
-    }
-
-    #[test]
-    fn in_list_predicate_renders_paren_value_list() {
-        // Same value-list form as ClickHouse (shared trait default): `x IN (a,b)`,
-        // never `x IN array(...)` (which compares a scalar to one array value).
-        // Column-bearing items are fine in a Spark value-list; empty -> constant.
-        let m = for_dialect(SqlDialect::Databricks);
-        assert_eq!(
-            m.in_list_predicate("x", &["1".into(), "2".into()], false),
-            "x IN (1, 2)"
-        );
-        assert_eq!(
-            m.in_list_predicate("x", &["1".into(), "2".into()], true),
-            "x NOT IN (1, 2)"
-        );
-        assert_eq!(
-            m.in_list_predicate("x", &["a.c".into(), "b.d".into()], false),
-            "x IN (a.c, b.d)"
-        );
-        assert_eq!(m.in_list_predicate("x", &[], false), "FALSE");
-        assert_eq!(m.in_list_predicate("x", &[], true), "TRUE");
     }
 
     /// Outside a task-local scope `current_function_mapper()` defaults to
