@@ -9,7 +9,7 @@
 //! 3. Returns transformed results: [{result: {name: "labels", data: ["User", "Post", ...]}}]
 
 use crate::open_cypher_parser::ast::{
-    Expression, Literal, Operator, OperatorApplication, ReturnClause,
+    Expression, Literal, Operator, OperatorApplication, OrderByClause, OrerByOrder, ReturnClause,
 };
 use serde_json::Value as JsonValue;
 use std::cmp::Ordering;
@@ -64,11 +64,7 @@ pub fn apply_return_clause(
     results: Vec<HashMap<String, JsonValue>>,
     return_clause: &ReturnClause,
 ) -> Result<Vec<HashMap<String, JsonValue>>, String> {
-    // Check if any return item uses aggregation
-    let has_aggregation = return_clause
-        .return_items
-        .iter()
-        .any(|item| has_aggregation_in_expr(&item.expression));
+    let has_aggregation = return_aggregates(return_clause);
 
     if has_aggregation {
         // One record for all the rows: a value read outside an aggregate would
@@ -373,6 +369,72 @@ pub fn apply_where(
         }
     }
     Ok(kept)
+}
+
+/// Whether a RETURN aggregates (one record for all the rows).
+pub fn return_aggregates(return_clause: &ReturnClause) -> bool {
+    return_clause
+        .return_items
+        .iter()
+        .any(|item| has_aggregation_in_expr(&item.expression))
+}
+
+/// Sort the RETURN's records by ORDER BY, whose expressions read the
+/// returned columns and, when `inputs` holds the record each one was
+/// returned from (a RETURN that does not aggregate), its variables. By
+/// Cypher's orderability: strings, booleans, numbers, then NULL ascending.
+pub fn apply_order_by(
+    results: Vec<HashMap<String, JsonValue>>,
+    inputs: Option<Vec<HashMap<String, JsonValue>>>,
+    order_by: &OrderByClause,
+) -> Result<Vec<HashMap<String, JsonValue>>, String> {
+    let mut inputs = inputs.map(|i| i.into_iter());
+    let mut keyed = Vec::new();
+    for record in results {
+        let mut variables = inputs.as_mut().and_then(|i| i.next()).unwrap_or_default();
+        variables.extend(record.clone());
+        let context = EvalContext::with_variables(variables);
+        let keys = order_by
+            .order_by_items
+            .iter()
+            .map(|item| evaluate_expr(&item.expression, &context))
+            .collect::<Result<Vec<_>, _>>()?;
+        if keys.iter().any(|k| k.is_array() || k.is_object()) {
+            return Err(
+                "Not supported: ordering by a list or a map after a procedure call".to_string(),
+            );
+        }
+        keyed.push((keys, record));
+    }
+    keyed.sort_by(|(a, _), (b, _)| {
+        for (item, (a, b)) in order_by.order_by_items.iter().zip(a.iter().zip(b)) {
+            let o = orderability(a, b);
+            let o = match item.order {
+                OrerByOrder::Asc => o,
+                OrerByOrder::Desc => o.reverse(),
+            };
+            if o.is_ne() {
+                return o;
+            }
+        }
+        Ordering::Equal
+    });
+    Ok(keyed.into_iter().map(|(_, record)| record).collect())
+}
+
+/// Cypher's ascending orderability of two scalar values (strings before
+/// booleans before numbers, NULL last).
+fn orderability(a: &JsonValue, b: &JsonValue) -> Ordering {
+    let rank = |v: &JsonValue| match v {
+        JsonValue::String(_) => 0,
+        JsonValue::Bool(_) => 1,
+        JsonValue::Number(_) => 2,
+        _ => 3,
+    };
+    match compare(a, b) {
+        Ok(Some(o)) => o,
+        _ => rank(a).cmp(&rank(b)),
+    }
 }
 
 /// A boolean, comparison or string-predicate operator, by Cypher's rules:

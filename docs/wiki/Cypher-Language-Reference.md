@@ -2127,13 +2127,27 @@ See [Multi-Tenancy & RBAC](Multi-Tenancy-RBAC.md) for complete documentation.
 
 ## System Procedures
 
-System procedures provide metadata about the graph schema and enable graph algorithms. Procedures are called using the `CALL` statement and can be used standalone or within queries.
+System procedures provide metadata about the graph schema and enable graph algorithms. Procedures are called using the `CALL` statement, standalone or followed by the clauses below.
 
 ### Schema Metadata Procedures
 
 These procedures introspect the currently selected graph schema and return metadata. Useful for schema exploration, autocomplete features, and tool integration.
 
 > **Performance**: All metadata procedures execute against in-memory schema data (< 5ms). They do not query ClickHouse.
+
+**What can follow the CALL.** A metadata procedure's rows can be filtered and shaped in the same statement:
+
+```cypher
+CALL db.labels() YIELD label WHERE label STARTS WITH 'P' RETURN label ORDER BY label LIMIT 5
+```
+
+- `YIELD` picks the procedure's columns; a name that is not one of them is an error.
+- `WHERE` takes comparisons, `AND` / `OR` / `NOT`, `IN`, `IS [NOT] NULL` and `STARTS WITH` / `ENDS WITH` / `CONTAINS`, with Cypher's NULL rules.
+- `RETURN` takes the yielded columns, map and list literals, slices, and `collect()` / `count()` over all the rows.
+- `ORDER BY`, `SKIP` and `LIMIT` follow the RETURN.
+- `UNION ALL` joins such statements.
+
+What it does not evaluate is an error ("Not supported: …"), never ignored: `WITH`, `UNWIND`, `RETURN DISTINCT`, `UNION` without `ALL`, a returned column beside an aggregate (a grouping key), other aggregates and functions. A procedure call inside a query that reads the graph (`MATCH … CALL …`) is not supported either. The search and export procedures (`db.index.vector.queryNodes`, `db.index.fulltext.queryNodes`, `apoc.export.*`) return their rows as the CALL yields them; nothing may follow their `YIELD`.
 
 #### db.labels()
 

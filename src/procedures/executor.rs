@@ -325,8 +325,9 @@ pub fn apply_statement_tail(
 }
 
 /// Apply what follows `CALL … YIELD` in a procedure-only query to the
-/// procedure's rows: the YIELD's columns, the WHERE, then the RETURN. A clause
-/// this does not evaluate is refused, never dropped (#1411).
+/// procedure's rows: the YIELD's columns, the WHERE, the RETURN, ORDER BY,
+/// SKIP and LIMIT. A clause this does not evaluate is refused, never dropped
+/// (#1411).
 pub fn apply_query_tail(
     rows: Vec<HashMap<String, serde_json::Value>>,
     query: &crate::open_cypher_parser::ast::OpenCypherQueryAst<'_>,
@@ -334,9 +335,6 @@ pub fn apply_query_tail(
     let unevaluated = [
         (query.with_clause.is_some(), "WITH"),
         (!query.unwind_clauses.is_empty(), "UNWIND"),
-        (query.order_by_clause.is_some(), "ORDER BY"),
-        (query.skip_clause.is_some(), "SKIP"),
-        (query.limit_clause.is_some(), "LIMIT"),
         (
             query.return_clause.as_ref().is_some_and(|r| r.distinct),
             "RETURN DISTINCT",
@@ -376,12 +374,28 @@ pub fn apply_query_tail(
     if let Some(where_clause) = &query.where_clause {
         rows = crate::procedures::return_evaluator::apply_where(rows, &where_clause.conditions)?;
     }
-    match &query.return_clause {
-        Some(return_clause) => {
-            crate::procedures::return_evaluator::apply_return_clause(rows, return_clause)
+    // The records a RETURN returned each row from, for ORDER BY
+    let mut inputs = None;
+    if let Some(return_clause) = &query.return_clause {
+        if !crate::procedures::return_evaluator::return_aggregates(return_clause) {
+            inputs = Some(rows.clone());
         }
-        None => Ok(rows),
+        rows = crate::procedures::return_evaluator::apply_return_clause(rows, return_clause)?;
     }
+    if let Some(order_by) = &query.order_by_clause {
+        rows = crate::procedures::return_evaluator::apply_order_by(rows, inputs, order_by)?;
+    }
+    let count = |n: i64, clause: &str| {
+        usize::try_from(n).map_err(|_| format!("{clause} must be a non-negative integer, got {n}"))
+    };
+    if let Some(skip) = &query.skip_clause {
+        let skip = count(skip.skip_item, "SKIP")?;
+        rows = rows.into_iter().skip(skip).collect();
+    }
+    if let Some(limit) = &query.limit_clause {
+        rows.truncate(count(limit.limit_item, "LIMIT")?);
+    }
+    Ok(rows)
 }
 
 /// Execute a UNION of procedure-only queries with RETURN clause evaluation
@@ -742,9 +756,6 @@ mod tests {
     #[test]
     fn clauses_not_evaluated_are_refused() {
         for (q, clause) in [
-            ("CALL db.labels() YIELD label RETURN label ORDER BY label", "ORDER BY"),
-            ("CALL db.labels() YIELD label RETURN label LIMIT 1", "LIMIT"),
-            ("CALL db.labels() YIELD label RETURN label SKIP 1", "SKIP"),
             ("CALL db.labels() YIELD label WITH label RETURN label", "WITH"),
             ("CALL db.labels() YIELD label RETURN DISTINCT label", "RETURN DISTINCT"),
             ("CALL db.labels() YIELD label RETURN label, count(*)", "grouping key"),
@@ -753,6 +764,44 @@ mod tests {
             let err = tail(labels(), q).unwrap_err();
             assert!(err.starts_with("Not supported") && err.contains(clause), "{q}: {err}");
         }
+    }
+
+    #[test]
+    fn order_by_skip_and_limit_apply_in_turn() {
+        let input = rows(
+            "x",
+            &[
+                serde_json::json!(2),
+                serde_json::Value::Null,
+                serde_json::json!("b"),
+                serde_json::json!(1.5),
+                serde_json::json!(true),
+            ],
+        );
+        let sorted = |q: &str| column(tail(input.clone(), q), "x");
+        assert_eq!(
+            sorted("CALL p() YIELD x RETURN x ORDER BY x"),
+            [
+                serde_json::json!("b"),
+                serde_json::json!(true),
+                serde_json::json!(1.5),
+                serde_json::json!(2),
+                serde_json::Value::Null
+            ]
+        );
+        assert_eq!(
+            sorted("CALL p() YIELD x RETURN x ORDER BY x DESC SKIP 1 LIMIT 2"),
+            [serde_json::json!(2), serde_json::json!(1.5)]
+        );
+        // A variable from before a RETURN that does not aggregate
+        let q = "CALL db.labels() YIELD label RETURN label AS l ORDER BY label DESC";
+        assert_eq!(
+            column(tail(labels(), q), "l"),
+            [serde_json::json!("User"), serde_json::json!("Post")]
+        );
+        let q = "CALL db.labels() YIELD label RETURN count(*) AS n ORDER BY label";
+        let err = tail(labels(), q).unwrap_err();
+        assert!(err.contains("Variable not found"), "{err}");
     }
 
     #[test]

@@ -2883,7 +2883,7 @@ impl BoltHandler {
                     // What follows the CALL (YIELD, WHERE, RETURN; #1411)
                     crate::procedures::executor::apply_statement_tail(raw_results, query, 0)
                         .map_err(|e| {
-                            BoltError::query_error(format!("RETURN evaluation failed: {}", e))
+                            BoltError::query_error(format!("Procedure query failed: {}", e))
                         })?
                 }
                 ExecutionPlan::Union { branches } => {
@@ -2912,7 +2912,7 @@ impl BoltHandler {
                                 idx,
                             )
                             .map_err(|e| {
-                                BoltError::query_error(format!("RETURN evaluation failed: {}", e))
+                                BoltError::query_error(format!("Procedure query failed: {}", e))
                             })?;
 
                         all_results.extend(transformed_results);
