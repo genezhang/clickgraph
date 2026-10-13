@@ -6780,6 +6780,20 @@ fn a_simple_case_never_matches_null() {
             r#"NULL AS "c""#,
         ],
     );
+    // So in `collect()` of a CASE of lists; a node is compared by identity,
+    // and of NULL is not compared (review).
+    has(
+        "UNWIND [1, null] AS x RETURN collect(CASE x WHEN null THEN [0] WHEN 1 THEN [1] END) AS c",
+        &["CASE WHEN w1.v0 = 1 THEN [1] ELSE [0] END), CASE WHEN w1.v0 = 1 THEN true ELSE false END"],
+    );
+    has(
+        "MATCH (n:User), (m:User) RETURN sum(CASE n WHEN null THEN 1 ELSE 0 END) AS a, \
+         sum(CASE n WHEN m THEN 1 ELSE 0 END) AS b",
+        &[
+            "coalesce(sum(0), 0) AS \"a\"",
+            "sum(CASE WHEN v0.user_id = v1.user_id THEN 1 ELSE 0 END), 0) AS \"b\"",
+        ],
+    );
 }
 
 /// #1470: a property the schema declares boolean or numeric is compared
