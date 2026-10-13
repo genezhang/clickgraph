@@ -17,3 +17,4 @@ SELECT
 FROM v0_labels AS v0
 WHERE v0.p2_v0_user_id = 1
 LIMIT 5
+-- column uid: Value [("uid", "uid")]

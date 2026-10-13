@@ -13,3 +13,6 @@ SELECT
       w1.p2_v3_name AS `u.name`, 
       w1.v4 AS `posts`
 FROM with_w1 AS w1
+
+-- column u.name: Value [("u.name", "u.name")]
+-- column posts: Value [("posts", "posts")]

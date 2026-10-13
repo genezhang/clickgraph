@@ -349,3 +349,7 @@ SELECT
 FROM with_w20 AS w20
 ORDER BY CASE w20.v33 WHEN 0 THEN 0 ELSE w20.v32 / double(w20.v33) END DESC NULLS FIRST, (w20.v31)._8 ASC NULLS LAST
 LIMIT 100
+-- column zombie.id: Value [("zombie.id", "zombie.id")]
+-- column zombieLikeCount: Value [("zombieLikeCount", "zombieLikeCount")]
+-- column totalLikeCount: Value [("totalLikeCount", "totalLikeCount")]
+-- column zombieScore: Value [("zombieScore", "zombieScore")]

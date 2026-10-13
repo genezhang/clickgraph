@@ -22,3 +22,5 @@ SELECT
       w1.p2_v1_registration_date AS "a.registration_date", 
       w1.p2_v1_user_id AS "a.user_id"
 FROM with_w1 AS w1
+
+-- column a: Node { label: "User" } [("age", "a.age"), ("city", "a.city"), ("country", "a.country"), ("email", "a.email"), ("is_active", "a.is_active"), ("name", "a.name"), ("registration_date", "a.registration_date"), ("user_id", "a.user_id")]

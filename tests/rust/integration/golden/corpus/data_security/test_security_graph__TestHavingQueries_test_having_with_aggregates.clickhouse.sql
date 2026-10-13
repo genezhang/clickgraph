@@ -14,3 +14,6 @@ SELECT
       w1.v4 AS "file_access_count"
 FROM with_w1 AS w1
 ORDER BY w1.v4 DESC NULLS FIRST
+
+-- column user_name: Value [("user_name", "user_name")]
+-- column file_access_count: Value [("file_access_count", "file_access_count")]

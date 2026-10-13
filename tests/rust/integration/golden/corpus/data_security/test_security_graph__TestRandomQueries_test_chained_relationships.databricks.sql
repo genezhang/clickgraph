@@ -9,3 +9,7 @@ JOIN data_security.ds_memberships AS v3 ON v3.member_id = v2.group_id
 JOIN data_security.ds_groups AS v4 ON v3.group_id = v4.group_id
 WHERE (((v1.`member_type` = 'User')) AND ((v3.`member_type` = 'Group')))
 ORDER BY v0.name ASC NULLS LAST
+
+-- column u.name: Value [("u.name", "u.name")]
+-- column direct: Value [("direct", "direct")]
+-- column parent: Value [("parent", "parent")]

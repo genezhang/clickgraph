@@ -68,3 +68,5 @@ FROM test_integration.users_test AS v0
 JOIN v1_rels AS v1 ON v1.__cg_start_0 = v0.user_id
 JOIN v2_labels AS v2 ON v1.__cg_end_label = v2.__cg_label AND v1.__cg_end_0 = v2.__cg_id_0
 WHERE (v0.created_date > '2024-01-01' AND CASE WHEN regexp_replace(regexp_replace(typeof(v2.p2_v2_status__cg0), '^(tinyint|smallint|int|bigint)$', 'int'), '^((var)?char\\(\\d+\\)|string( collate .*)?)$', 'string') = regexp_replace(regexp_replace(typeof(v2.p2_v2_status__cg1), '^(tinyint|smallint|int|bigint)$', 'int'), '^((var)?char\\(\\d+\\)|string( collate .*)?)$', 'string') THEN coalesce(v2.p2_v2_status__cg0, v2.p2_v2_status__cg1) ELSE raise_error('ClickGraph: a property has different types on different labels or types') END = 'active')
+
+-- column total: Value [("total", "total")]

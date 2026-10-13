@@ -10,3 +10,5 @@ SELECT
 FROM with_w1 AS w1
 ORDER BY w1.v4 DESC NULLS FIRST
 LIMIT 10
+-- column prop: Value [("prop", "prop")]
+-- column cnt: Value [("cnt", "cnt")]

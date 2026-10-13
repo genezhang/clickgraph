@@ -5,3 +5,7 @@ SELECT
 FROM test_zeek.conn_log AS v1
 WHERE (v1.orig_h IS NOT NULL AND v1.resp_h IS NOT NULL AND v1.orig_h = '192.168.4.76')
 ORDER BY v1.ts ASC NULLS LAST
+
+-- column src.ip: Value [("src.ip", "src.ip")]
+-- column dst.ip: Value [("dst.ip", "dst.ip")]
+-- column r.service: Value [("r.service", "r.service")]

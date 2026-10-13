@@ -16,3 +16,4 @@ FROM __cg_nodes_Domain AS v0
 WHERE v0.domain_name IS NOT NULL
 ORDER BY v0.domain_name DESC NULLS FIRST
 LIMIT 5, 10
+-- column n.domain_name: Value [("n.domain_name", "n.domain_name")]

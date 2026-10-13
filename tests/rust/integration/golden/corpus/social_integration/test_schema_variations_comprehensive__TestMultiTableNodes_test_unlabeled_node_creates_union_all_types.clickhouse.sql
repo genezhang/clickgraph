@@ -13,3 +13,5 @@ FROM test_integration.users_test AS e
 SELECT 
       count(v0.__cg_label) AS "total"
 FROM v0_labels AS v0
+
+-- column total: Value [("total", "total")]

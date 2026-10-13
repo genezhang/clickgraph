@@ -88,3 +88,9 @@ JOIN ldbc.Forum AS v4 ON v3.ForumId = v4.id
 JOIN ldbc.Forum_hasModerator_Person AS v5 ON v5.ForumId = v4.id
 JOIN ldbc.Person AS v6 ON v5.PersonId = v6.id
 WHERE (v1.end_label = 'Post' AND CASE WHEN regexp_replace(regexp_replace(typeof(v0.p2_v0_id__cg0), '^(tinyint|smallint|int|bigint)$', 'int'), '^((var)?char\\(\\d+\\)|string( collate .*)?)$', 'string') = regexp_replace(regexp_replace(typeof(v0.p2_v0_id__cg1), '^(tinyint|smallint|int|bigint)$', 'int'), '^((var)?char\\(\\d+\\)|string( collate .*)?)$', 'string') THEN coalesce(v0.p2_v0_id__cg0, v0.p2_v0_id__cg1) ELSE raise_error('ClickGraph: a property has different types on different labels or types') END = 3)
+
+-- column forumId: Value [("forumId", "forumId")]
+-- column forumTitle: Value [("forumTitle", "forumTitle")]
+-- column moderatorId: Value [("moderatorId", "moderatorId")]
+-- column moderatorFirstName: Value [("moderatorFirstName", "moderatorFirstName")]
+-- column moderatorLastName: Value [("moderatorLastName", "moderatorLastName")]

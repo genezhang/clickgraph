@@ -59,3 +59,6 @@ JOIN __cg_nodes_Airport AS v0 ON v1.start_id = v0.code
 JOIN __cg_nodes_Airport AS v2 ON v1.end_id = v2.code
 WHERE v0.city = 'Los Angeles'
 GROUP BY v2.city
+
+-- column dest.city: Value [("dest.city", "dest.city")]
+-- column path_count: Value [("path_count", "path_count")]

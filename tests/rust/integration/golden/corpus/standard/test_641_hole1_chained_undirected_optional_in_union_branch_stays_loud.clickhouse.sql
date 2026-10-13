@@ -83,3 +83,5 @@ SELECT
       any(w7.__cg_c0) AS "id"
 FROM with_w7 AS w7
 GROUP BY tuple(multiIf(dynamicType(CAST(w7.__cg_c0, 'Dynamic')) = 'None', '', dynamicType(CAST(w7.__cg_c0, 'Dynamic')) = 'Bool', 'b', match(dynamicType(CAST(w7.__cg_c0, 'Dynamic')), '^(U?Int|Float|BFloat|Decimal)'), 'n', match(dynamicType(CAST(w7.__cg_c0, 'Dynamic')), '^(Array|Map|Tuple)'), 'c', 's'), multiIf(match(dynamicType(CAST(w7.__cg_c0, 'Dynamic')), '^(U?Int|Float|BFloat|Decimal)') AND toString(w7.__cg_c0) = '-0', '0', startsWith(dynamicType(CAST(w7.__cg_c0, 'Dynamic')), 'FixedString'), rightPad(toString(w7.__cg_c0), toUInt64OrZero(extract(dynamicType(CAST(w7.__cg_c0, 'Dynamic')), '[0-9]+')), '\0'), toString(w7.__cg_c0)))
+
+-- column id: Value [("id", "id")]

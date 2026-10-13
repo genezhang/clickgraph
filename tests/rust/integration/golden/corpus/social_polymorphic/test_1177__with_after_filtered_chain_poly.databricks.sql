@@ -124,3 +124,5 @@ WHERE (((((v1.`interaction_type` = 'FOLLOWS') AND (v1.`from_type` = 'User')) AND
 SELECT 
       w5.v5 AS `k`
 FROM with_w5 AS w5
+
+-- column k: Value [("k", "k")]

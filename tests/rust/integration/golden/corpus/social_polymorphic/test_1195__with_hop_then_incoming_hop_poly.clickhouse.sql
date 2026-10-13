@@ -17,3 +17,7 @@ JOIN brahmand.users_bench AS v5 ON v4.to_id = v5.user_id
 JOIN brahmand.interactions AS v6 ON v6.to_id = v5.user_id
 JOIN brahmand.users_bench AS v7 ON v6.from_id = v7.user_id
 WHERE (((((v4."interaction_type" = 'FOLLOWS') AND (v4."from_type" = 'User')) AND (v4."to_type" = 'User'))) AND ((((v6."interaction_type" = 'FOLLOWS') AND (v6."from_type" = 'User')) AND (v6."to_type" = 'User'))) AND (v4.from_id <> v6.from_id OR v4.to_id <> v6.to_id OR v4.interaction_type <> v6.interaction_type OR v4.timestamp <> v6.timestamp))
+
+-- column c.user_id: Value [("c.user_id", "c.user_id")]
+-- column n1.user_id: Value [("n1.user_id", "n1.user_id")]
+-- column n2.user_id: Value [("n2.user_id", "n2.user_id")]

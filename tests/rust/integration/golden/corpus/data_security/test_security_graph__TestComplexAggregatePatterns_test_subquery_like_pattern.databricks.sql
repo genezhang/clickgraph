@@ -19,3 +19,6 @@ SELECT
       w2.p2_v4_name AS `g.name`, 
       w2.v5 AS `member_count`
 FROM with_w2 AS w2
+
+-- column g.name: Value [("g.name", "g.name")]
+-- column member_count: Value [("member_count", "member_count")]

@@ -54,3 +54,6 @@ SELECT
 FROM with_w1 AS w1
 LEFT JOIN optional_o3 AS o3 ON w1.v0__user_id = o3.v0__user_id
 ORDER BY w1.p2_v0_name ASC, o3.v2__user_id ASC
+
+-- column a.name: Value [("a.name", "a.name")]
+-- column b_id: NodeId { label: "TestUser" } [("b_id", "b_id")]

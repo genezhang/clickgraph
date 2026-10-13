@@ -96,3 +96,8 @@ WHERE (((v2.creationDate >= 1262305305684 AND v2.creationDate <= 1354157106851) 
 GROUP BY v0.id, v0.firstName, v0.lastName
 ORDER BY count(DISTINCT CASE WHEN v4.__cg_label IS NULL THEN NULL ELSE tuple(v4.__cg_label, v4.__cg_id_0) END) DESC NULLS FIRST, v0.id ASC
 LIMIT 100
+-- column person.id: Value [("person.id", "person.id")]
+-- column person.firstName: Value [("person.firstName", "person.firstName")]
+-- column person.lastName: Value [("person.lastName", "person.lastName")]
+-- column threadCount: Value [("threadCount", "threadCount")]
+-- column messageCount: Value [("messageCount", "messageCount")]

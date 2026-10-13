@@ -19,3 +19,6 @@ SELECT
       w1.p2_v4_name AS "b.name"
 FROM with_w1 AS w1
 LEFT JOIN optional_o2 AS o2 ON w1.v4__pid = o2.v4__pid AND w1.v3__pid = o2.v3__pid
+
+-- column e.name: Value [("e.name", "e.name")]
+-- column b.name: Value [("b.name", "b.name")]

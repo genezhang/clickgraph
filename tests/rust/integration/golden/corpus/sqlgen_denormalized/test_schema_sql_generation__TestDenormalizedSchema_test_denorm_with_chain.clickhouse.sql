@@ -11,3 +11,6 @@ SELECT
       w1.v4 AS "flights"
 FROM with_w1 AS w1
 ORDER BY w1.v4 DESC NULLS FIRST
+
+-- column origin: Value [("origin", "origin")]
+-- column flights: Value [("flights", "flights")]

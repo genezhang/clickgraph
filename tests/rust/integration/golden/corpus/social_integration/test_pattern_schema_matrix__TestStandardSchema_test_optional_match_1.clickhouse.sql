@@ -14,3 +14,6 @@ SELECT
 FROM test_integration.users_test AS v0
 LEFT JOIN optional_o1 AS o1 ON v0.user_id = o1.v0__user_id
 GROUP BY v0.user_id
+
+-- column a.user_id: Value [("a.user_id", "a.user_id")]
+-- column rel_count: Value [("rel_count", "rel_count")]

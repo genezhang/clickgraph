@@ -63,3 +63,5 @@ JOIN test_integration.posts_test AS v5 ON v4.post_id = v5.post_id
 GROUP BY w3.p2_v3_user_id
 ORDER BY count(DISTINCT v5.post_id) DESC NULLS FIRST
 LIMIT 5
+-- column userId: Value [("userId", "userId")]
+-- column postCount: Value [("postCount", "postCount")]

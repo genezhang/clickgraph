@@ -15,3 +15,7 @@ JOIN testdb.reports AS v3 ON v3.mgr_id = v2.pid
 JOIN testdb.people AS v4 ON v3.emp_id = v4.pid
 LEFT JOIN optional_o1 AS o1 ON v0.pid = o1.v0__pid AND v4.pid = o1.v4__pid
 WHERE (v1.mgr_id <> v3.mgr_id OR v1.emp_id <> v3.emp_id)
+
+-- column a.name: Value [("a.name", "a.name")]
+-- column b.name: Value [("b.name", "b.name")]
+-- column c.name: Value [("c.name", "c.name")]

@@ -41,3 +41,5 @@ FROM vlp_v5_path AS v5
 JOIN with_w1 AS w1 ON v5.start_id = w1.v3__user_id
 JOIN test_integration.users_test AS v6 ON v5.end_id = v6.user_id
 WHERE w1.p2_v4_user_id = v6.user_id
+
+-- column k: Value [("k", "k")]

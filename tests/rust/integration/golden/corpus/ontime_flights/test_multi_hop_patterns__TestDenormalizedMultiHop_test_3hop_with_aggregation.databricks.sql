@@ -14,3 +14,5 @@ SELECT
 FROM with_w1 AS w1
 ORDER BY w1.v8 DESC NULLS FIRST
 LIMIT 5
+-- column hub: Value [("hub", "hub")]
+-- column connections: Value [("connections", "connections")]

@@ -40,3 +40,5 @@ JOIN db_composite_id.accounts AS v0 ON v1.start_bank_id = v0.bank_id AND v1.star
 JOIN db_composite_id.accounts AS v2 ON v1.end_bank_id = v2.bank_id AND v1.end_account_number = v2.account_number
 WHERE (v0.bank_id = 'B001' AND v0.account_number = 'ACC001')
 LIMIT 20
+-- column dest.bank_id: Value [("dest.bank_id", "dest.bank_id")]
+-- column dest.account_number: Value [("dest.account_number", "dest.account_number")]

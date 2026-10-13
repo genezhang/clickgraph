@@ -58,3 +58,6 @@ SELECT
       w3.p2_v3_user_id AS `a.user_id`, 
       w3.v4 AS `c`
 FROM with_w3 AS w3
+
+-- column a.user_id: Value [("a.user_id", "a.user_id")]
+-- column c: Value [("c", "c")]

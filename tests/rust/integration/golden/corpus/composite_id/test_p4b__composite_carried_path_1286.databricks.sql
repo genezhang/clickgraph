@@ -50,3 +50,6 @@ SELECT
 FROM vlp_v4_path AS v4
 JOIN with_w1 AS w1 ON v4.start_bank_id = w1.v3__bank_id AND v4.start_account_number = w1.v3__account_number
 JOIN db_composite_id.accounts AS v5 ON v4.end_bank_id = v5.bank_id AND v4.end_account_number = v5.account_number
+
+-- column x: Value [("x", "x")]
+-- column y: Value [("y", "y")]

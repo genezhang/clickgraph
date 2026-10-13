@@ -8,3 +8,5 @@ WHERE ((v1.`member_type` = 'User'))
 GROUP BY v0.name
 ORDER BY count(v2.user_id) DESC NULLS FIRST
 LIMIT 3
+-- column g.name: Value [("g.name", "g.name")]
+-- column cnt: Value [("cnt", "cnt")]

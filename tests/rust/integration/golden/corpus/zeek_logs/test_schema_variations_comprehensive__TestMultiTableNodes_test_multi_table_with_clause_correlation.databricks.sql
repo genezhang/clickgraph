@@ -7,3 +7,5 @@ SELECT
       count(*) AS `total`
 FROM with_w1 AS w1
 WHERE false
+
+-- column total: Value [("total", "total")]

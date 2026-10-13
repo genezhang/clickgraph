@@ -4,3 +4,6 @@ SELECT
 FROM test_integration.users AS v0
 GROUP BY CASE WHEN v0.age < 30 THEN 'Young' ELSE 'Mature' END
 ORDER BY CASE WHEN v0.age < 30 THEN 'Young' ELSE 'Mature' END ASC
+
+-- column age_group: Value [("age_group", "age_group")]
+-- column count: Value [("count", "count")]

@@ -41,3 +41,6 @@ SELECT
       w1.p2_v3_user_id AS "c.user_id"
 FROM vlp_v5_path AS v5
 JOIN with_w1 AS w1 ON v5.start_id = w1.v4__user_id AND v5.end_id = w1.v3__user_id
+
+-- column z.user_id: Value [("z.user_id", "z.user_id")]
+-- column c.user_id: Value [("c.user_id", "c.user_id")]

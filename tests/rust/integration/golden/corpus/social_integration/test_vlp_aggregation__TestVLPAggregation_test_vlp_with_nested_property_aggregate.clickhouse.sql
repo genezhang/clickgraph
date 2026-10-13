@@ -57,3 +57,5 @@ WHERE v0.user_id = 1
 GROUP BY v2.user_id
 ORDER BY coalesce(sum(1), 0) DESC NULLS FIRST
 LIMIT 5
+-- column userId: Value [("userId", "userId")]
+-- column totalPosts: Value [("totalPosts", "totalPosts")]

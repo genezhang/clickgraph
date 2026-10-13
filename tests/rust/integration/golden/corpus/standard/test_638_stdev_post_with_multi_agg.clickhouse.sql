@@ -13,3 +13,8 @@ SELECT
       coalesce(sum(w1.v4), 0) AS "sum(fc)", 
       stddevSamp(w1.v4) AS "stDev(fc)"
 FROM with_w1 AS w1
+
+-- column min(fc): Value [("min(fc)", "min(fc)")]
+-- column max(fc): Value [("max(fc)", "max(fc)")]
+-- column sum(fc): Value [("sum(fc)", "sum(fc)")]
+-- column stDev(fc): Value [("stDev(fc)", "stDev(fc)")]

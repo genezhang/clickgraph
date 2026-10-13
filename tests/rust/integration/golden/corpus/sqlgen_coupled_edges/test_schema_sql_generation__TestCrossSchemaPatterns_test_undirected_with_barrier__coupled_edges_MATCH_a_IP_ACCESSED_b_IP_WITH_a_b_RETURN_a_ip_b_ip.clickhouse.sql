@@ -62,3 +62,6 @@ SELECT
       w4.p2_v3_ip AS "a.ip", 
       w4.p2_v4_ip AS "b.ip"
 FROM with_w4 AS w4
+
+-- column a.ip: Value [("a.ip", "a.ip")]
+-- column b.ip: Value [("b.ip", "b.ip")]

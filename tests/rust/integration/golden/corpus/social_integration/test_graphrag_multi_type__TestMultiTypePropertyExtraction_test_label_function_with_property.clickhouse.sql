@@ -33,3 +33,6 @@ JOIN test_integration.users_test AS v0 ON v1.start_id = v0.user_id
 JOIN test_integration.users_test AS v2 ON v1.end_id = v2.user_id
 WHERE v0.user_id = 1
 LIMIT 3
+-- column label(x): Value [("label(x)", "label(x)")]
+-- column x.name: Value [("x.name", "x.name")]
+-- column x.city: Value [("x.city", "x.city")]

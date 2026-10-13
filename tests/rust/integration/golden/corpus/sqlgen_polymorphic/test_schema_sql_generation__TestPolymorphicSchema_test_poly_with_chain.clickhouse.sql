@@ -14,3 +14,6 @@ SELECT
       w1.v4 AS "posts"
 FROM with_w1 AS w1
 ORDER BY w1.v4 DESC NULLS FIRST
+
+-- column u.name: Value [("u.name", "u.name")]
+-- column posts: Value [("posts", "posts")]

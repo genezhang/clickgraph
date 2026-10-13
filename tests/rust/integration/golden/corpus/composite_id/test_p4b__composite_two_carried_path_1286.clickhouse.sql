@@ -52,3 +52,6 @@ SELECT
       w1.p2_v3_account_number AS "y"
 FROM vlp_v5_path AS v5
 JOIN with_w1 AS w1 ON v5.start_bank_id = w1.v4__bank_id AND v5.start_account_number = w1.v4__account_number AND v5.end_bank_id = w1.v3__bank_id AND v5.end_account_number = w1.v3__account_number
+
+-- column x: Value [("x", "x")]
+-- column y: Value [("y", "y")]

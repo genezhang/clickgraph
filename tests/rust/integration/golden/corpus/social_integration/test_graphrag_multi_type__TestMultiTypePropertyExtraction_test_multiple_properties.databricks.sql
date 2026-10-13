@@ -22,3 +22,8 @@ JOIN test_integration.users_test AS v0 ON v1.start_id = v0.user_id
 JOIN test_integration.users_test AS v2 ON v1.end_id = v2.user_id
 WHERE v0.user_id = 1
 LIMIT 5
+-- column x.user_id: Value [("x.user_id", "x.user_id")]
+-- column x.name: Value [("x.name", "x.name")]
+-- column x.email: Value [("x.email", "x.email")]
+-- column x.city: Value [("x.city", "x.city")]
+-- column x.country: Value [("x.country", "x.country")]

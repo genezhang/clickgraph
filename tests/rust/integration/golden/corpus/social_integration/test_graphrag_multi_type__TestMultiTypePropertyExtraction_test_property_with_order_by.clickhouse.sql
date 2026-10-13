@@ -33,3 +33,5 @@ JOIN test_integration.users_test AS v2 ON v1.end_id = v2.user_id
 WHERE v0.user_id = 1
 ORDER BY v2.full_name ASC
 LIMIT 5
+-- column x.name: Value [("x.name", "x.name")]
+-- column x.email: Value [("x.email", "x.email")]

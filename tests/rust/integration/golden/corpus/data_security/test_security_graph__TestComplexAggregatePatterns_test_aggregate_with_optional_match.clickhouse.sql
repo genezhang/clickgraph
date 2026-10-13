@@ -13,3 +13,6 @@ FROM data_security.ds_groups AS v0
 LEFT JOIN optional_o1 AS o1 ON v0.group_id = o1.v0__group_id
 GROUP BY v0.name
 ORDER BY v0.name ASC
+
+-- column g.name: Value [("g.name", "g.name")]
+-- column member_count: Value [("member_count", "member_count")]

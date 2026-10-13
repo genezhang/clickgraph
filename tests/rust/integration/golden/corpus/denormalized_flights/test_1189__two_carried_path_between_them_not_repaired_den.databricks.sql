@@ -67,3 +67,6 @@ SELECT
       w1.p2_v3_code AS `c.code`
 FROM vlp_v5_path AS v5
 JOIN with_w1 AS w1 ON v5.start_id = w1.v4__code AND v5.end_id = w1.v3__code
+
+-- column z.code: Value [("z.code", "z.code")]
+-- column c.code: Value [("c.code", "c.code")]

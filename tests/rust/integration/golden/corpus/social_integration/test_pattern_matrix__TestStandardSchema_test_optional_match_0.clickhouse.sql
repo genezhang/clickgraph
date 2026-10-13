@@ -14,3 +14,6 @@ SELECT
 FROM test_integration.users_test AS v0
 LEFT JOIN optional_o1 AS o1 ON v0.user_id = o1.v0__user_id
 GROUP BY v0.city
+
+-- column a.city: Value [("a.city", "a.city")]
+-- column rel_count: Value [("rel_count", "rel_count")]

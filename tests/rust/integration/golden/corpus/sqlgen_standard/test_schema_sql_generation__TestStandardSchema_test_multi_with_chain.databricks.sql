@@ -16,3 +16,7 @@ FROM with_w1 AS w1
 JOIN db_standard.user_follows AS v5 ON v5.follower_id = w1.v3__user_id
 JOIN db_standard.users AS v6 ON v5.followed_id = v6.user_id
 GROUP BY w1.p2_v3_name, w1.v4
+
+-- column u.name: Value [("u.name", "u.name")]
+-- column posts: Value [("posts", "posts")]
+-- column following: Value [("following", "following")]

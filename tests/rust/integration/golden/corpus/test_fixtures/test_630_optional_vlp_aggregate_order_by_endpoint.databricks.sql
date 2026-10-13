@@ -55,3 +55,6 @@ FROM with_w1 AS w1
 LEFT JOIN optional_o3 AS o3 ON w1.v0__user_id = o3.v0__user_id
 GROUP BY o3.p2_v2_name
 ORDER BY o3.p2_v2_name ASC NULLS LAST
+
+-- column b.name: Value [("b.name", "b.name")]
+-- column c: Value [("c", "c")]

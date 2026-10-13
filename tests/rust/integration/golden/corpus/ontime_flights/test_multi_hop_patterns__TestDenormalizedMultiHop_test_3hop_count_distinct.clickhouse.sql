@@ -16,3 +16,6 @@ SELECT
 FROM with_w1 AS w1
 ORDER BY w1.v8 DESC NULLS FIRST
 LIMIT 5
+-- column hub: Value [("hub", "hub")]
+-- column origins: Value [("origins", "origins")]
+-- column destinations: Value [("destinations", "destinations")]

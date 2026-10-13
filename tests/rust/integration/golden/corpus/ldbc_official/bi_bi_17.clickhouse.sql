@@ -380,3 +380,5 @@ WHERE (v4.end_label = 'Post' AND v19.end_label = 'Post' AND v0.name = 'Hamid_Kar
 GROUP BY v1.id
 ORDER BY count(DISTINCT CASE WHEN v17.__cg_label IS NULL THEN NULL ELSE tuple(v17.__cg_label, v17.__cg_id_0) END) DESC NULLS FIRST, v1.id ASC
 LIMIT 10
+-- column person1.id: Value [("person1.id", "person1.id")]
+-- column messageCount: Value [("messageCount", "messageCount")]

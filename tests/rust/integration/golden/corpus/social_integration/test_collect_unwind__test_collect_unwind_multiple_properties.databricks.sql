@@ -29,3 +29,6 @@ SELECT
 FROM with_w3 AS w3
 ORDER BY w3.__o0 ASC NULLS LAST, w3.__o1 ASC NULLS LAST
 LIMIT 3
+-- column user.name: Value [("user.name", "user.name")]
+-- column user.email: Value [("user.email", "user.email")]
+-- column user.city: Value [("user.city", "user.city")]

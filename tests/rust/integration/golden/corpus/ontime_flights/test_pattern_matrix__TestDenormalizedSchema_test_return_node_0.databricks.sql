@@ -31,3 +31,4 @@ SELECT
       v0.state AS `n.state`
 FROM __cg_nodes_Airport AS v0
 LIMIT 5
+-- column n: Node { label: "Airport" } [("city", "n.city"), ("code", "n.code"), ("state", "n.state")]

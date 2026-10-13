@@ -43,3 +43,6 @@ FROM brahmand.users_bench AS v0
 JOIN v1_rels AS v1 ON v1.__cg_start_0 = v0.user_id
 JOIN brahmand.users_bench AS v2 ON v1.__cg_end_0 = v2.user_id
 GROUP BY v1.__cg_type
+
+-- column type(r): Value [("type(r)", "type(r)")]
+-- column cnt: Value [("cnt", "cnt")]

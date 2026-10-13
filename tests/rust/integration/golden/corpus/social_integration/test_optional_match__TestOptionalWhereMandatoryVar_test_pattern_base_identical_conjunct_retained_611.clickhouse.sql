@@ -18,3 +18,7 @@ JOIN test_integration.posts_test AS v2 ON v1.post_id = v2.post_id
 LEFT JOIN optional_o1 AS o1 ON v0.user_id = o1.v0__user_id
 WHERE v0.is_active = true
 ORDER BY v0.user_id ASC, v2.post_id ASC, o1.p2_v4_user_id ASC
+
+-- column a.user_id: Value [("a.user_id", "a.user_id")]
+-- column z.post_id: Value [("z.post_id", "z.post_id")]
+-- column b.user_id: Value [("b.user_id", "b.user_id")]

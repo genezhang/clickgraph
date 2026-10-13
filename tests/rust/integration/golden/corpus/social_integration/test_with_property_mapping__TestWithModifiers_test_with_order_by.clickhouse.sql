@@ -9,3 +9,4 @@ SELECT
 FROM with_w1 AS w1
 ORDER BY w1.__o0 ASC
 LIMIT 5
+-- column userName: Value [("userName", "userName")]

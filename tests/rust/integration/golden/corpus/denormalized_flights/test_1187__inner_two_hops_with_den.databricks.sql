@@ -9,3 +9,5 @@ WHERE (v1.Origin IS NOT NULL AND v1.Dest IS NOT NULL AND v3.Dest IS NOT NULL AND
 SELECT 
       w1.p2_v5_code AS `c.code`
 FROM with_w1 AS w1
+
+-- column c.code: Value [("c.code", "c.code")]

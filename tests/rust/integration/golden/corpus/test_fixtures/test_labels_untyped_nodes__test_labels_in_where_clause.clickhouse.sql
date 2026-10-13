@@ -14,3 +14,5 @@ SELECT
       count(v0.__cg_label) AS "user_count"
 FROM v0_labels AS v0
 WHERE [v0.__cg_label] = ['TestUser']
+
+-- column user_count: Value [("user_count", "user_count")]

@@ -78,3 +78,6 @@ SELECT
 FROM with_w3 AS w3
 LEFT JOIN optional_o5 AS o5 ON w3.v0__code = o5.v0__code
 GROUP BY w3.p2_v0_code
+
+-- column a.code: Value [("a.code", "a.code")]
+-- column count(*): Value [("count(*)", "count(*)")]

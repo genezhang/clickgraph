@@ -173,3 +173,5 @@ FROM with_w6 AS w6
 SELECT 
       w7.__cg_c0 AS `o`
 FROM with_w7 AS w7
+
+-- column o: Graph(Node) [("o", "o")]

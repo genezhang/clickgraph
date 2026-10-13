@@ -22,3 +22,4 @@ SELECT
       w1.p2_v1_user_id AS `person.user_id`
 FROM with_w1 AS w1
 LIMIT 1
+-- column person: Node { label: "User" } [("age", "person.age"), ("city", "person.city"), ("country", "person.country"), ("email", "person.email"), ("is_active", "person.is_active"), ("name", "person.name"), ("registration_date", "person.registration_date"), ("user_id", "person.user_id")]

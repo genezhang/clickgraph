@@ -54,3 +54,6 @@ FROM vlp_v1_path AS v1
 JOIN test_integration.users_test AS v0 ON v1.start_id = v0.user_id
 JOIN test_integration.users_test AS v2 ON v1.end_id = v2.user_id
 ORDER BY v0.full_name ASC, v2.full_name ASC
+
+-- column a.name: Value [("a.name", "a.name")]
+-- column b.name: Value [("b.name", "b.name")]

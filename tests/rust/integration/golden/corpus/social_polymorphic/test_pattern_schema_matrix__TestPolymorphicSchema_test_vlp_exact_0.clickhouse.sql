@@ -417,3 +417,5 @@ JOIN brahmand.users_bench AS v0 ON v1.start_id = v0.user_id
 JOIN brahmand.users_bench AS v2 ON v1.end_id = v2.user_id
 WHERE v1.end_label = 'User'
 LIMIT 10
+-- column a.email: Value [("a.email", "a.email")]
+-- column b.email: Value [("b.email", "b.email")]

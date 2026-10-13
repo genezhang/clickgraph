@@ -20,3 +20,4 @@ SELECT
 FROM __cg_nodes_IP AS v0
 WHERE v0.ip_address IS NOT NULL
 LIMIT 10
+-- column n.ip_address: Value [("n.ip_address", "n.ip_address")]

@@ -23,3 +23,5 @@ FROM with_w2 AS w2
 SELECT 
       w3.__cg_c0 AS "name"
 FROM with_w3 AS w3
+
+-- column name: Value [("name", "name")]

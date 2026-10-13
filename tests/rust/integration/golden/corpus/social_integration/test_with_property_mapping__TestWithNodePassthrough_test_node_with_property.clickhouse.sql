@@ -8,3 +8,4 @@ SELECT
       w1.v2 AS "userName"
 FROM with_w1 AS w1
 LIMIT 1
+-- column userName: Value [("userName", "userName")]

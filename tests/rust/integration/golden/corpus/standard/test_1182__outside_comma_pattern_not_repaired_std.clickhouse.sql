@@ -48,3 +48,6 @@ CROSS JOIN test_integration.users_test AS v8
 JOIN test_integration.user_follows_test AS v9 ON v9.follower_id = v8.user_id
 JOIN test_integration.users_test AS v10 ON v9.followed_id = v10.user_id
 WHERE (NOT has(v6.path_edges, v4.follow_id) AND v4.follow_id <> v9.follow_id AND NOT has(v6.path_edges, v9.follow_id))
+
+-- column c.user_id: Value [("c.user_id", "c.user_id")]
+-- column y.user_id: Value [("y.user_id", "y.user_id")]

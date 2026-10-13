@@ -39,3 +39,6 @@ SELECT
       w2.p2_v4_name AS "u1.name", 
       w2.v5 AS "reach_count"
 FROM with_w2 AS w2
+
+-- column u1.name: Value [("u1.name", "u1.name")]
+-- column reach_count: Value [("reach_count", "reach_count")]

@@ -79,3 +79,5 @@ FROM with_w4 AS w4
 SELECT 
       w5.__cg_c0 AS `id`
 FROM with_w5 AS w5
+
+-- column id: Value [("id", "id")]

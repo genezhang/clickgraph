@@ -24,3 +24,5 @@ SELECT DISTINCT
       v0.ip AS `ip.ip`
 FROM __cg_nodes_IP AS v0
 ORDER BY `ip.ip` ASC NULLS LAST
+
+-- column ip.ip: Value [("ip.ip", "ip.ip")]

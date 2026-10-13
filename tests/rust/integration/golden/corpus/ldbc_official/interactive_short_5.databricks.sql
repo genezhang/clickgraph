@@ -54,3 +54,7 @@ FROM v0_labels AS v0
 JOIN v1_rels AS v1 ON v1.__cg_start_label = v0.__cg_label AND v1.__cg_start_0 = v0.__cg_id_0
 JOIN ldbc.Person AS v2 ON v1.__cg_end_0 = v2.id
 WHERE CASE WHEN regexp_replace(regexp_replace(typeof(v0.p2_v0_id__cg0), '^(tinyint|smallint|int|bigint)$', 'int'), '^((var)?char\\(\\d+\\)|string( collate .*)?)$', 'string') = regexp_replace(regexp_replace(typeof(v0.p2_v0_id__cg1), '^(tinyint|smallint|int|bigint)$', 'int'), '^((var)?char\\(\\d+\\)|string( collate .*)?)$', 'string') THEN coalesce(v0.p2_v0_id__cg0, v0.p2_v0_id__cg1) ELSE raise_error('ClickGraph: a property has different types on different labels or types') END = 3
+
+-- column personId: Value [("personId", "personId")]
+-- column firstName: Value [("firstName", "firstName")]
+-- column lastName: Value [("lastName", "lastName")]

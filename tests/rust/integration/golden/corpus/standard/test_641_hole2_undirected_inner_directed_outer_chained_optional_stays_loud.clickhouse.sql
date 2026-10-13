@@ -44,3 +44,7 @@ SELECT
 FROM test_integration.users_test AS v0
 LEFT JOIN optional_o1 AS o1 ON v0.user_id = o1.v0__user_id
 LEFT JOIN optional_o3 AS o3 ON o1.v2__user_id = o3.v2__user_id
+
+-- column a.user_id: Value [("a.user_id", "a.user_id")]
+-- column b.user_id: Value [("b.user_id", "b.user_id")]
+-- column c.user_id: Value [("c.user_id", "c.user_id")]

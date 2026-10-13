@@ -94,3 +94,5 @@ SELECT
 FROM vlp_v1_path AS v1
 JOIN test_integration.users_test AS v0 ON v1.start_id = v0.user_id
 JOIN v2_labels AS v2 ON v1.end_label = v2.__cg_label AND v1.end_id = v2.__cg_id_0
+
+-- column total: Value [("total", "total")]

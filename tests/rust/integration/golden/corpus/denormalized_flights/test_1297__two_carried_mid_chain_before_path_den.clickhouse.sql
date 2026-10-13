@@ -71,3 +71,5 @@ JOIN test_integration.flights AS v6 ON v6.Dest = w1.v4__code
 JOIN test_integration.flights AS v7 ON v7.Origin = w1.v4__code AND v7.Dest = w1.v3__code
 JOIN __cg_nodes_Airport AS v9 ON v8.end_id = v9.code
 WHERE (v6.Origin IS NOT NULL AND (v6.flight_id <> v7.flight_id OR v6.flight_number <> v7.flight_number) AND NOT has(v8.path_edges, tuple(v6.flight_id, v6.flight_number)) AND NOT has(v8.path_edges, tuple(v7.flight_id, v7.flight_number)))
+
+-- column k: Value [("k", "k")]

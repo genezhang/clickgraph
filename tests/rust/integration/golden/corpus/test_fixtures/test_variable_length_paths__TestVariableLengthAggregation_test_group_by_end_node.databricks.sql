@@ -33,3 +33,6 @@ JOIN test_integration.users AS v2 ON v1.end_id = v2.user_id
 WHERE v0.name = 'Alice'
 GROUP BY v2.name
 ORDER BY count(*) DESC NULLS FIRST, v2.name ASC NULLS LAST
+
+-- column b.name: Value [("b.name", "b.name")]
+-- column path_count: Value [("path_count", "path_count")]

@@ -64,3 +64,6 @@ JOIN test_integration.flights AS v1 ON v1.Dest = v2.code
 JOIN __cg_nodes_Airport AS v4 ON v3.end_id = v4.code
 WHERE (v1.Origin IS NOT NULL AND NOT array_contains(v3.path_edges, struct(v1.flight_id, v1.flight_number)))
 GROUP BY v3.hop_count + 1
+
+-- column l: Value [("l", "l")]
+-- column n: Value [("n", "n")]

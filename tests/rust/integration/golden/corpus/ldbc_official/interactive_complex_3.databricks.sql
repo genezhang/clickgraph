@@ -218,3 +218,9 @@ SELECT
 FROM with_w10 AS w10
 ORDER BY w10.v28 + w10.v29 DESC NULLS FIRST, w10.p3_v27_id ASC NULLS LAST
 LIMIT 20
+-- column friendId: Value [("friendId", "friendId")]
+-- column friendFirstName: Value [("friendFirstName", "friendFirstName")]
+-- column friendLastName: Value [("friendLastName", "friendLastName")]
+-- column xCount: Value [("xCount", "xCount")]
+-- column yCount: Value [("yCount", "yCount")]
+-- column xyCount: Value [("xyCount", "xyCount")]

@@ -16,3 +16,5 @@ SELECT
       v0.p2_v0_post_id AS `pid`
 FROM v0_labels AS v0
 WHERE v0.p2_v0_post_id = 1
+
+-- column pid: Value [("pid", "pid")]

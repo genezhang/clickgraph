@@ -11,3 +11,6 @@ SELECT
 FROM with_w1 AS w1
 CROSS JOIN data_security.ds_users AS v1
 WHERE v1.name = w1.v0
+
+-- column u.name: Value [("u.name", "u.name")]
+-- column u.email: Value [("u.email", "u.email")]

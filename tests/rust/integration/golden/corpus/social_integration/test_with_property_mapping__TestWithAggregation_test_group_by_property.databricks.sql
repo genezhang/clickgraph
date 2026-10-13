@@ -10,3 +10,5 @@ SELECT
       w1.v2 AS `cnt`
 FROM with_w1 AS w1
 LIMIT 5
+-- column country: Value [("country", "country")]
+-- column cnt: Value [("cnt", "cnt")]

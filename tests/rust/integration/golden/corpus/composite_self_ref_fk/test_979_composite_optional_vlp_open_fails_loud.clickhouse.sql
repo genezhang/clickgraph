@@ -64,3 +64,6 @@ SELECT
 FROM with_w1 AS w1
 LEFT JOIN optional_o3 AS o3 ON w1.v0__region = o3.v0__region AND w1.v0__object_id = o3.v0__object_id
 GROUP BY w1.p2_v0_name
+
+-- column a.name: Value [("a.name", "a.name")]
+-- column count(*): Value [("count(*)", "count(*)")]

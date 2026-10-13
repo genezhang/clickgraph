@@ -72,3 +72,5 @@ JOIN test_integration.users_test AS v6 ON v5.end_id = v6.user_id
 JOIN test_integration.user_follows_test AS v7 ON v7.follower_id = v6.user_id
 JOIN test_integration.users_test AS v8 ON v7.followed_id = v8.user_id
 WHERE (NOT array_contains(v3.path_edges, v1.follow_id) AND NOT array_contains(v5.path_edges, v1.follow_id) AND v1.follow_id <> v7.follow_id AND NOT arrays_overlap(v3.path_edges, v5.path_edges) AND NOT array_contains(v3.path_edges, v7.follow_id) AND NOT array_contains(v5.path_edges, v7.follow_id))
+
+-- column count(*): Value [("count(*)", "count(*)")]

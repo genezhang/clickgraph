@@ -89,3 +89,5 @@ JOIN test_integration.users_test AS v0 ON v1.start_id = v0.user_id
 JOIN v2_labels AS v2 ON v1.end_label = v2.__cg_label AND v1.end_id = v2.__cg_id_0
 WHERE v0.user_id = 1
 LIMIT 3
+-- column x.name: Value [("x.name", "x.name")]
+-- column x.content: Value [("x.content", "x.content")]

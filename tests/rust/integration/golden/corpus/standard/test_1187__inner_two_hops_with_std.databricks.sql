@@ -12,3 +12,5 @@ WHERE v1.follow_id <> v3.follow_id
 SELECT 
       w1.p2_v5_user_id AS `c.user_id`
 FROM with_w1 AS w1
+
+-- column c.user_id: Value [("c.user_id", "c.user_id")]

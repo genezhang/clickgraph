@@ -58,3 +58,5 @@ FROM vlp_v2_path AS v2
 JOIN ldbc.Person AS v0 ON v2.start_id = v0.id
 JOIN ldbc.Person AS v1 ON v2.end_id = v1.id
 WHERE (v0.id = 14 AND v1.id = 16)
+
+-- column shortestPathLength: Value [("shortestPathLength", "shortestPathLength")]

@@ -9,3 +9,4 @@ SELECT
       w1.v3 AS `followedName`
 FROM with_w1 AS w1
 LIMIT 3
+-- column followedName: Value [("followedName", "followedName")]

@@ -29,3 +29,4 @@ SELECT
       v0.state AS "n.state"
 FROM __cg_nodes_Airport AS v0
 LIMIT 10
+-- column n.state: Value [("n.state", "n.state")]

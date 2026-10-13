@@ -15,3 +15,6 @@ SELECT
       w2.v3 AS `c`
 FROM with_w2 AS w2
 ORDER BY w2.v2 ASC NULLS LAST
+
+-- column ag: Value [("ag", "ag")]
+-- column c: Value [("c", "c")]

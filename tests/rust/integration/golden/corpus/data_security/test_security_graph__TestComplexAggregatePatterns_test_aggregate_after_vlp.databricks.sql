@@ -72,3 +72,6 @@ JOIN data_security.ds_groups AS v2 ON v1.end_id = v2.group_id
 WHERE v1.end_label = 'Group'
 GROUP BY v0.name
 ORDER BY count(DISTINCT v2.group_id) DESC NULLS FIRST
+
+-- column u.name: Value [("u.name", "u.name")]
+-- column groups_reached: Value [("groups_reached", "groups_reached")]

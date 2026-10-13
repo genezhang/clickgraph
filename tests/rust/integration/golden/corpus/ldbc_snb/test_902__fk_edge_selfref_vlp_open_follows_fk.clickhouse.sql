@@ -28,3 +28,5 @@ SELECT
 FROM vlp_v1_path AS v1
 JOIN ldbc.comment AS v0 ON v1.start_id = v0.commentId
 JOIN ldbc.comment AS v2 ON v1.end_id = v2.commentId
+
+-- column c: Value [("c", "c")]

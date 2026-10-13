@@ -24,3 +24,5 @@ SELECT
 FROM test_integration.users_test AS v0
 JOIN v1_both AS v1 ON v1.__cg_start_0 = v0.user_id
 JOIN test_integration.users_test AS v2 ON v1.__cg_end_0 = v2.user_id
+
+-- column total: Value [("total", "total")]

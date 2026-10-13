@@ -41,3 +41,5 @@ SELECT
       w1.p2_v4_user_id AS "followed.user_id"
 FROM with_w1 AS w1
 LIMIT 1
+-- column follower: Node { label: "User" } [("age", "follower.age"), ("city", "follower.city"), ("country", "follower.country"), ("email", "follower.email"), ("is_active", "follower.is_active"), ("name", "follower.name"), ("registration_date", "follower.registration_date"), ("user_id", "follower.user_id")]
+-- column followed: Node { label: "User" } [("age", "followed.age"), ("city", "followed.city"), ("country", "followed.country"), ("email", "followed.email"), ("is_active", "followed.is_active"), ("name", "followed.name"), ("registration_date", "followed.registration_date"), ("user_id", "followed.user_id")]

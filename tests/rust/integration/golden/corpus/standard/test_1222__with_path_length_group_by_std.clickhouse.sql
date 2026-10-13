@@ -35,3 +35,6 @@ SELECT
       count(*) AS "n"
 FROM with_w2 AS w2
 GROUP BY w2.v4
+
+-- column len: Value [("len", "len")]
+-- column n: Value [("n", "n")]

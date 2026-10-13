@@ -7,3 +7,5 @@ JOIN db_standard.users AS v2 ON v1.followed_id = v2.user_id
 GROUP BY v0.full_name
 ORDER BY count(v2.user_id) DESC NULLS FIRST
 LIMIT 5
+-- column a.name: Value [("a.name", "a.name")]
+-- column cnt: Value [("cnt", "cnt")]

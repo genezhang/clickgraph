@@ -12,3 +12,6 @@ SELECT
 FROM test_integration.users AS v0
 LEFT JOIN optional_o1 AS o1 ON v0.user_id = o1.v0__user_id
 ORDER BY v0.name ASC
+
+-- column a.name: Value [("a.name", "a.name")]
+-- column connection_status: Value [("connection_status", "connection_status")]

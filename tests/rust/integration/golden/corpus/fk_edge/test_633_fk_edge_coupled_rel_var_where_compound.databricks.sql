@@ -5,3 +5,5 @@ JOIN test_integration.orders_fk AS v1 ON v1.order_id = v0.order_id
 JOIN test_integration.customers_fk AS v2 ON v1.customer_id = v2.customer_id
 WHERE (v1.customer_id > 2 AND v0.amount > 0)
 ORDER BY v0.order_id ASC NULLS LAST
+
+-- column o.order_id: Value [("o.order_id", "o.order_id")]

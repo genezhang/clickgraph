@@ -62,3 +62,6 @@ SELECT
       w3.v4 AS "item_count"
 FROM with_w3 AS w3
 ORDER BY w3.v4 DESC NULLS FIRST
+
+-- column folder_name: Value [("folder_name", "folder_name")]
+-- column item_count: Value [("item_count", "item_count")]

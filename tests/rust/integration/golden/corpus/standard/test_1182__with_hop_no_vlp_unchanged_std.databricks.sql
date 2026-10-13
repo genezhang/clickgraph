@@ -37,3 +37,6 @@ SELECT
 FROM with_w2 AS w2
 JOIN test_integration.user_follows_test AS v4 ON v4.follower_id = w2.v3__user_id
 JOIN test_integration.users_test AS v5 ON v4.followed_id = v5.user_id
+
+-- column b.user_id: Value [("b.user_id", "b.user_id")]
+-- column d.user_id: Value [("d.user_id", "d.user_id")]

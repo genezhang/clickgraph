@@ -41,3 +41,5 @@ WHERE NOT array_contains(v3.path_edges, v1.follow_id)
 SELECT 
       count(w2.v5__user_id) AS `count(b)`
 FROM with_w2 AS w2
+
+-- column count(b): Value [("count(b)", "count(b)")]

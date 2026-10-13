@@ -20,3 +20,5 @@ FROM with_w2 AS w2
 SELECT 
       count(w3.v2) AS `c`
 FROM with_w3 AS w3
+
+-- column c: Value [("c", "c")]

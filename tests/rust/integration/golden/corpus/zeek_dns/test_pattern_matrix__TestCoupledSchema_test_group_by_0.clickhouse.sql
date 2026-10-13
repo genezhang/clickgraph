@@ -22,3 +22,5 @@ FROM __cg_nodes_IP AS v0
 GROUP BY v0.ip_address
 ORDER BY count(v0.ip_address) DESC NULLS FIRST
 LIMIT 10
+-- column n.ip_address: Value [("n.ip_address", "n.ip_address")]
+-- column cnt: Value [("cnt", "cnt")]

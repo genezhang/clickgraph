@@ -9,3 +9,4 @@ SELECT
 FROM zeek.dns_log AS v1
 WHERE (v1.`id.orig_h` IS NOT NULL AND v1.query IS NOT NULL)
 LIMIT 5
+-- column r: Rel { rel_type: "REQUESTED", from_label: "IP", to_label: "Domain" } [("from_id", "r.from_id"), ("to_id", "r.to_id"), ("dns_server", "r.dns_server"), ("qtype", "r.qtype"), ("rcode", "r.rcode"), ("timestamp", "r.timestamp"), ("uid", "r.uid")]

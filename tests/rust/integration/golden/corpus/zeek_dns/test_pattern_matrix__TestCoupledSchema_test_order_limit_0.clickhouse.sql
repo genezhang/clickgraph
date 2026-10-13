@@ -21,3 +21,4 @@ FROM __cg_nodes_IP AS v0
 WHERE v0.ip_address IS NOT NULL
 ORDER BY v0.ip_address DESC NULLS FIRST
 LIMIT 5, 10
+-- column n.ip_address: Value [("n.ip_address", "n.ip_address")]

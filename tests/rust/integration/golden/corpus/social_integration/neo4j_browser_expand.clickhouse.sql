@@ -220,3 +220,5 @@ JOIN v6_rels AS v6 ON v6.__cg_start_0 = w4.v4__user_id
 JOIN v7_labels AS v7 ON v6.__cg_end_label = v7.__cg_label AND v6.__cg_end_0 = v7.__cg_id_0
 ORDER BY v7.__cg_label ASC, v7.__cg_id_0 ASC
 LIMIT 100
+-- column path: Graph(Path) [("path", "path")]
+-- column allNeighboursCount: Value [("allNeighboursCount", "allNeighboursCount")]

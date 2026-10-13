@@ -50,3 +50,8 @@ JOIN with_w1 AS w1 ON v5.follower_id = w1.v4__user_id
 JOIN test_integration.users_test AS v8 ON v7.end_id = v8.user_id
 JOIN test_integration.user_follows_test AS v9 ON v9.follower_id = w1.v3__user_id AND v9.followed_id = v8.user_id
 WHERE (NOT has(v7.path_edges, v5.follow_id) AND v5.follow_id <> v9.follow_id AND NOT has(v7.path_edges, v9.follow_id))
+
+-- column z.user_id: Value [("z.user_id", "z.user_id")]
+-- column c.user_id: Value [("c.user_id", "c.user_id")]
+-- column a.user_id: Value [("a.user_id", "a.user_id")]
+-- column b.user_id: Value [("b.user_id", "b.user_id")]

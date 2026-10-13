@@ -73,3 +73,6 @@ SELECT
 FROM brahmand.users_bench AS v0
 LEFT JOIN optional_o1 AS o1 ON v0.user_id = o1.v0__user_id
 GROUP BY v0.email_address
+
+-- column a.email: Value [("a.email", "a.email")]
+-- column rel_count: Value [("rel_count", "rel_count")]

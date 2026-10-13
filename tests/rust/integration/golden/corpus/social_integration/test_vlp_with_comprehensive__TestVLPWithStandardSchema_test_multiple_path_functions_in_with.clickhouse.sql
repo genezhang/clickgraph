@@ -53,3 +53,9 @@ SELECT
       length(w2.v7) AS "node_count", 
       length(w2.v8) AS "rel_count"
 FROM with_w2 AS w2
+
+-- column u1.name: Value [("u1.name", "u1.name")]
+-- column u2.name: Value [("u2.name", "u2.name")]
+-- column hops: Value [("hops", "hops")]
+-- column node_count: Value [("node_count", "node_count")]
+-- column rel_count: Value [("rel_count", "rel_count")]

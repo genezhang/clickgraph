@@ -71,3 +71,6 @@ JOIN data_security.ds_users AS v0 ON v1.start_id = v0.user_id
 JOIN data_security.ds_groups AS v2 ON v1.end_id = v2.group_id
 WHERE v1.end_label = 'Group'
 GROUP BY v0.name
+
+-- column u.name: Value [("u.name", "u.name")]
+-- column avg_depth: Value [("avg_depth", "avg_depth")]

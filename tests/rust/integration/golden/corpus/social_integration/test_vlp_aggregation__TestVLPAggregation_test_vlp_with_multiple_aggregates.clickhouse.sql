@@ -58,3 +58,6 @@ WHERE v0.user_id = 1
 GROUP BY v2.user_id
 ORDER BY count(DISTINCT v4.post_id) DESC NULLS FIRST
 LIMIT 5
+-- column userId: Value [("userId", "userId")]
+-- column postCount: Value [("postCount", "postCount")]
+-- column totalPosts: Value [("totalPosts", "totalPosts")]

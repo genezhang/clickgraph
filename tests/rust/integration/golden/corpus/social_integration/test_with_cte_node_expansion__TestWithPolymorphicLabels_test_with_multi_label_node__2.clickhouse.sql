@@ -16,3 +16,4 @@ SELECT
       w1.p2_v1_title AS "p.title"
 FROM with_w1 AS w1
 LIMIT 1
+-- column p: Node { label: "Post" } [("author_id", "p.author_id"), ("content", "p.content"), ("created_at", "p.created_at"), ("post_id", "p.post_id"), ("title", "p.title")]

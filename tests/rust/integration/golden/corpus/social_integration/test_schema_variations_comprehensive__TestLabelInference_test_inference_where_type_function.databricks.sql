@@ -64,3 +64,5 @@ FROM test_integration.users_test AS v0
 JOIN v1_rels AS v1 ON v1.__cg_start_0 = v0.user_id
 JOIN v2_labels AS v2 ON v1.__cg_end_label = v2.__cg_label AND v1.__cg_end_0 = v2.__cg_id_0
 WHERE v1.__cg_type IN ('FOLLOWS', 'AUTHORED')
+
+-- column total: Value [("total", "total")]

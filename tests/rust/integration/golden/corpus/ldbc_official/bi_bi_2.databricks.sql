@@ -146,3 +146,7 @@ SELECT
 FROM with_w8 AS w8
 ORDER BY abs(w8.v10 - w8.v11) DESC NULLS FIRST, w8.p2_v9_name ASC NULLS LAST
 LIMIT 100
+-- column tag.name: Value [("tag.name", "tag.name")]
+-- column countWindow1: Value [("countWindow1", "countWindow1")]
+-- column countWindow2: Value [("countWindow2", "countWindow2")]
+-- column diff: Value [("diff", "diff")]

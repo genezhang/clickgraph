@@ -23,3 +23,6 @@ SELECT
 FROM db_standard.users AS v0
 JOIN v1_both AS v1 ON v1.__cg_start_0 = v0.user_id
 JOIN db_standard.users AS v2 ON v1.__cg_end_0 = v2.user_id
+
+-- column a.name: Value [("a.name", "a.name")]
+-- column b.name: Value [("b.name", "b.name")]

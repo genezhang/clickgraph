@@ -40,3 +40,5 @@ JOIN test_integration.user_follows_test AS v1 ON v1.followed_id = v2.user_id
 JOIN test_integration.users_test AS v0 ON v1.follower_id = v0.user_id
 JOIN test_integration.users_test AS v6 ON v5.end_id = v6.user_id
 WHERE (v1.follow_id <> v3.follow_id AND NOT has(v5.path_edges, v1.follow_id) AND NOT has(v5.path_edges, v3.follow_id))
+
+-- column count(*): Value [("count(*)", "count(*)")]

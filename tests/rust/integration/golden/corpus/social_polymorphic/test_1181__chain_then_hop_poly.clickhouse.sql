@@ -228,3 +228,5 @@ JOIN brahmand.users_bench AS v4 ON v3.end_id = v4.user_id
 JOIN brahmand.interactions AS v5 ON v5.from_id = v4.user_id
 JOIN brahmand.users_bench AS v6 ON v5.to_id = v6.user_id
 WHERE (v1.end_label = 'User' AND v3.end_label = 'User' AND ((((v5."interaction_type" = 'FOLLOWS') AND (v5."from_type" = 'User')) AND (v5."to_type" = 'User'))) AND NOT hasAny(v1.path_edges, v3.path_edges) AND NOT has(v1.path_edges, concat('FOLLOWS:User:User:', toString(tuple(v5.from_id, v5.to_id, v5.interaction_type, v5.timestamp)))) AND NOT has(v3.path_edges, concat('FOLLOWS:User:User:', toString(tuple(v5.from_id, v5.to_id, v5.interaction_type, v5.timestamp)))))
+
+-- column count(*): Value [("count(*)", "count(*)")]

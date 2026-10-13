@@ -14,3 +14,6 @@ SELECT
       w1.v4 AS `avg_age`
 FROM with_w1 AS w1
 ORDER BY w1.p2_v3_name ASC NULLS LAST
+
+-- column a.name: Value [("a.name", "a.name")]
+-- column avg_age: Value [("avg_age", "avg_age")]

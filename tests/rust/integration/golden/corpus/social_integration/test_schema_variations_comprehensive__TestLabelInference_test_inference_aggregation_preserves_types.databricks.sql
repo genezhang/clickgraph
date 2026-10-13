@@ -12,3 +12,5 @@ SELECT
 FROM with_w1 AS w1
 JOIN test_integration.user_follows_test AS v5 ON v5.follower_id = w1.v3__user_id
 JOIN test_integration.users_test AS v6 ON v5.followed_id = v6.user_id
+
+-- column total: Value [("total", "total")]

@@ -31,3 +31,6 @@ SELECT
       w2.p2_v3_name AS `a.name`, 
       w2.p2_v4_name AS `b.name`
 FROM with_w2 AS w2
+
+-- column a.name: Value [("a.name", "a.name")]
+-- column b.name: Value [("b.name", "b.name")]

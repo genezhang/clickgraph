@@ -106,3 +106,8 @@ WHERE (v4.id = 14 AND has(w5.v3, v12.id))
 GROUP BY v6.id, v6.firstName, v6.lastName
 ORDER BY count(DISTINCT v8.id) DESC NULLS FIRST, toInt64(v6.id) ASC
 LIMIT 20
+-- column personId: Value [("personId", "personId")]
+-- column personFirstName: Value [("personFirstName", "personFirstName")]
+-- column personLastName: Value [("personLastName", "personLastName")]
+-- column tagNames: Value [("tagNames", "tagNames")]
+-- column replyCount: Value [("replyCount", "replyCount")]

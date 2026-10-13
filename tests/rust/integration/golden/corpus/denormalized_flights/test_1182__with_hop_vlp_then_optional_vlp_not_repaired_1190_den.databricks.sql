@@ -122,3 +122,6 @@ SELECT
       o7.p2_v9_code AS `e.code`
 FROM with_w5 AS w5
 LEFT JOIN optional_o7 AS o7 ON w5.v7__code = o7.v7__code
+
+-- column c.code: Value [("c.code", "c.code")]
+-- column e.code: Value [("e.code", "e.code")]

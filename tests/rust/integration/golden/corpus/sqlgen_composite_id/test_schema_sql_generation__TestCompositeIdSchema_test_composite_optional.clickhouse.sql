@@ -12,3 +12,6 @@ SELECT
 FROM db_composite_id.customers AS v0
 LEFT JOIN optional_o1 AS o1 ON v0.customer_id = o1.v0__customer_id
 GROUP BY v0.name
+
+-- column c.name: Value [("c.name", "c.name")]
+-- column accounts: Value [("accounts", "accounts")]

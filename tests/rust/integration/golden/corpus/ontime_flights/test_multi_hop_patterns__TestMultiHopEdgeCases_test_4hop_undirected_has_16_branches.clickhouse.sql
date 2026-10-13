@@ -154,3 +154,4 @@ JOIN v7_both AS v7 ON v7.__cg_start_0 = v6.code
 JOIN __cg_nodes_Airport AS v8 ON v7.__cg_end_0 = v8.code
 WHERE ((v1.flight_id <> v3.flight_id OR v1.flight_number <> v3.flight_number) AND (v1.flight_id <> v5.flight_id OR v1.flight_number <> v5.flight_number) AND (v1.flight_id <> v7.flight_id OR v1.flight_number <> v7.flight_number) AND (v3.flight_id <> v5.flight_id OR v3.flight_number <> v5.flight_number) AND (v3.flight_id <> v7.flight_id OR v3.flight_number <> v7.flight_number) AND (v5.flight_id <> v7.flight_id OR v5.flight_number <> v7.flight_number))
 LIMIT 1
+-- column a.code: Value [("a.code", "a.code")]

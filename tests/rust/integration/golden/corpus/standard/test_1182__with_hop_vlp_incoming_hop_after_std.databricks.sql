@@ -49,3 +49,8 @@ JOIN test_integration.users_test AS v7 ON v6.end_id = v7.user_id
 JOIN test_integration.user_follows_test AS v8 ON v8.followed_id = v7.user_id
 JOIN test_integration.users_test AS v9 ON v8.follower_id = v9.user_id
 WHERE (NOT array_contains(v6.path_edges, v4.follow_id) AND v4.follow_id <> v8.follow_id AND NOT array_contains(v6.path_edges, v8.follow_id))
+
+-- column c.user_id: Value [("c.user_id", "c.user_id")]
+-- column n1.user_id: Value [("n1.user_id", "n1.user_id")]
+-- column n2.user_id: Value [("n2.user_id", "n2.user_id")]
+-- column n3.user_id: Value [("n3.user_id", "n3.user_id")]

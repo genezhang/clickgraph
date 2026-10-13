@@ -68,3 +68,8 @@ JOIN ldbc.Place AS v7 ON v6.PlaceId = v7.id
 WHERE (((v5.type = 'Company')) AND ((v7.type = 'Country')) AND v7.name = 'India' AND v4.workFrom < 2010)
 ORDER BY v4.workFrom ASC, toInt64(w3.p2_v3_id) ASC, v5.name DESC NULLS FIRST
 LIMIT 10
+-- column personId: Value [("personId", "personId")]
+-- column personFirstName: Value [("personFirstName", "personFirstName")]
+-- column personLastName: Value [("personLastName", "personLastName")]
+-- column organizationName: Value [("organizationName", "organizationName")]
+-- column organizationWorkFromYear: Value [("organizationWorkFromYear", "organizationWorkFromYear")]

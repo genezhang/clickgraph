@@ -21,3 +21,7 @@ FROM with_w2 AS w2
 LEFT JOIN optional_o1 AS o1 ON 1 = 1
 CROSS JOIN test_integration.users AS v3
 WHERE v3.name = 'Alice'
+
+-- column a.name: Value [("a.name", "a.name")]
+-- column b.name: Value [("b.name", "b.name")]
+-- column x.name: Value [("x.name", "x.name")]

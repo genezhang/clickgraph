@@ -13,3 +13,7 @@ FROM with_w1 AS w1
 JOIN test_integration.flights AS v4 ON v4.Origin = w1.v3__code
 JOIN test_integration.flights AS v6 ON v6.Dest = v4.Dest
 WHERE (v4.Dest IS NOT NULL AND v6.Origin IS NOT NULL AND (v4.flight_id <> v6.flight_id OR v4.flight_number <> v6.flight_number))
+
+-- column c.code: Value [("c.code", "c.code")]
+-- column n1.code: Value [("n1.code", "n1.code")]
+-- column n2.code: Value [("n2.code", "n2.code")]

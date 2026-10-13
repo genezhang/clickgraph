@@ -7,3 +7,5 @@ FROM test_integration.users_test AS v0
 SELECT 
       w1.v2 AS `n`
 FROM with_w1 AS w1
+
+-- column n: Value [("n", "n")]

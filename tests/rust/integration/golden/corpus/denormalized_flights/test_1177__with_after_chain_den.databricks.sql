@@ -67,3 +67,5 @@ WHERE (v1.Origin IS NOT NULL AND NOT array_contains(v3.path_edges, struct(v1.fli
 SELECT 
       w4.v5 AS `k`
 FROM with_w4 AS w4
+
+-- column k: Value [("k", "k")]

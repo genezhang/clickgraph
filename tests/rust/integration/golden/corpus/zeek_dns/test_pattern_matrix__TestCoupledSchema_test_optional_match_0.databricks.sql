@@ -26,3 +26,6 @@ SELECT
 FROM __cg_nodes_Domain AS v0
 LEFT JOIN optional_o3 AS o3 ON v0.domain_name = o3.v0__domain_name
 GROUP BY v0.domain_name
+
+-- column a.domain_name: Value [("a.domain_name", "a.domain_name")]
+-- column rel_count: Value [("rel_count", "rel_count")]

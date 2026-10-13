@@ -38,3 +38,7 @@ JOIN testdb.reports AS v1 ON v1.emp_id = v2.pid
 JOIN testdb.people AS v0 ON v1.mgr_id = v0.pid
 JOIN testdb.people AS v4 ON v3.end_id = v4.pid
 WHERE NOT array_contains(v3.path_edges, struct(v1.mgr_id, v1.emp_id))
+
+-- column c.pid: Value [("c.pid", "c.pid")]
+-- column a.pid: Value [("a.pid", "a.pid")]
+-- column b.pid: Value [("b.pid", "b.pid")]

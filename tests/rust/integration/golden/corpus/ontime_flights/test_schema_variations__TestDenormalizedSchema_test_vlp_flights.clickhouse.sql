@@ -59,3 +59,5 @@ JOIN __cg_nodes_Airport AS v0 ON v1.start_id = v0.code
 JOIN __cg_nodes_Airport AS v2 ON v1.end_id = v2.code
 WHERE v0.code = 'JFK'
 LIMIT 20
+-- column dest.code: Value [("dest.code", "dest.code")]
+-- column dest.city: Value [("dest.city", "dest.city")]

@@ -67,3 +67,5 @@ WHERE (v1.Origin IS NOT NULL AND NOT has(v3.path_edges, tuple(v1.flight_id, v1.f
 SELECT 
       w4.v5 AS "k"
 FROM with_w4 AS w4
+
+-- column k: Value [("k", "k")]

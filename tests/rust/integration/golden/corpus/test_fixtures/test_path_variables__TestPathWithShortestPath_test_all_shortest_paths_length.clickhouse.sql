@@ -28,3 +28,6 @@ FROM vlp_v1_path AS v1
 JOIN test_integration.users AS v0 ON v1.start_id = v0.user_id
 JOIN test_integration.users AS v2 ON v1.end_id = v2.user_id
 WHERE (v0.name = 'Alice' AND v2.name = 'Diana')
+
+-- column path_count: Value [("path_count", "path_count")]
+-- column min_length: Value [("min_length", "min_length")]

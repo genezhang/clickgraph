@@ -46,3 +46,7 @@ JOIN with_w1 AS w1 ON v6.start_id = w1.v4__user_id
 JOIN test_integration.user_follows_test AS v5 ON v5.follower_id = w1.v3__user_id AND v5.followed_id = w1.v4__user_id
 JOIN test_integration.users_test AS v7 ON v6.end_id = v7.user_id
 WHERE NOT array_contains(v6.path_edges, v5.follow_id)
+
+-- column z.user_id: Value [("z.user_id", "z.user_id")]
+-- column c.user_id: Value [("c.user_id", "c.user_id")]
+-- column n2.user_id: Value [("n2.user_id", "n2.user_id")]

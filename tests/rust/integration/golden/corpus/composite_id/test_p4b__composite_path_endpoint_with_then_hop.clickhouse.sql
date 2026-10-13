@@ -44,3 +44,5 @@ SELECT
 FROM with_w2 AS w2
 JOIN db_composite_id.transfers AS v4 ON v4.from_bank_id = w2.v3__bank_id AND v4.from_account_number = w2.v3__account_number
 JOIN db_composite_id.accounts AS v5 ON v4.to_bank_id = v5.bank_id AND v4.to_account_number = v5.account_number
+
+-- column k: Value [("k", "k")]

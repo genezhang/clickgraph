@@ -26,3 +26,6 @@ JOIN test_integration.users AS v0 ON v1.start_id = v0.user_id
 JOIN test_integration.users AS v2 ON v1.end_id = v2.user_id
 WHERE (v0.name = 'Alice' AND v0.age > 25)
 GROUP BY v0.name
+
+-- column a.name: Value [("a.name", "a.name")]
+-- column reachable_nodes: Value [("reachable_nodes", "reachable_nodes")]

@@ -55,3 +55,6 @@ JOIN v2_labels AS v2 ON v1.__cg_end_label = v2.__cg_label AND v1.__cg_end_0 = v2
 WHERE ((v0."fs_type" = 'Folder'))
 GROUP BY v0.name
 ORDER BY count(v2.__cg_label) DESC NULLS FIRST
+
+-- column f.name: Value [("f.name", "f.name")]
+-- column children_count: Value [("children_count", "children_count")]

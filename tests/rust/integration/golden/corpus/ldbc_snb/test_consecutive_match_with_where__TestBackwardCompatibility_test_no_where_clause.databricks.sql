@@ -3,3 +3,6 @@ SELECT
       v1.personId AS `p.personId`
 FROM ldbc.comment AS v0
 CROSS JOIN ldbc.person AS v1
+
+-- column c.commentId: Value [("c.commentId", "c.commentId")]
+-- column p.personId: Value [("p.personId", "p.personId")]

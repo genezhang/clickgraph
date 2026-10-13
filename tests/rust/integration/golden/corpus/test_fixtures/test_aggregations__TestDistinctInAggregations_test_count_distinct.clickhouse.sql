@@ -31,3 +31,6 @@ JOIN test_integration.users AS v0 ON v1.start_id = v0.user_id
 JOIN test_integration.users AS v2 ON v1.end_id = v2.user_id
 GROUP BY v0.name
 ORDER BY v0.name ASC
+
+-- column a.name: Value [("a.name", "a.name")]
+-- column unique_reachable: Value [("unique_reachable", "unique_reachable")]

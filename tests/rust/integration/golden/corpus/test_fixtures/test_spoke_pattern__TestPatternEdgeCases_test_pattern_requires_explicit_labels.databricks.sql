@@ -8,3 +8,7 @@ JOIN test_integration.users AS v2 ON v1.followed_id = v2.user_id
 JOIN test_integration.follows AS v4 ON v4.followed_id = v2.user_id
 JOIN test_integration.users AS v3 ON v4.follower_id = v3.user_id
 WHERE ((v1.follower_id <> v4.follower_id OR v1.followed_id <> v4.followed_id) AND v2.user_id = 2)
+
+-- column a.name: Value [("a.name", "a.name")]
+-- column b.name: Value [("b.name", "b.name")]
+-- column c.name: Value [("c.name", "c.name")]

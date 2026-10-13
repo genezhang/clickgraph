@@ -22,3 +22,8 @@ LEFT JOIN optional_o1 AS o1 ON v0.user_id = o1.v0__user_id
 LEFT JOIN optional_o2 AS o2 ON v0.user_id = o2.v0__user_id
 GROUP BY v0.name
 ORDER BY count(DISTINCT o1.v2__user_id) + count(DISTINCT o2.v3__user_id) DESC NULLS FIRST, v0.name ASC
+
+-- column n.name: Value [("n.name", "n.name")]
+-- column following: Value [("following", "following")]
+-- column followers: Value [("followers", "followers")]
+-- column total_connections: Value [("total_connections", "total_connections")]

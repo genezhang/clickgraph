@@ -18,3 +18,6 @@ SELECT
 FROM with_w2 AS w2
 JOIN test_integration.flights AS v7 ON v7.Origin = w2.v6__code
 WHERE v7.Dest IS NOT NULL
+
+-- column x: Value [("x", "x")]
+-- column y: Value [("y", "y")]

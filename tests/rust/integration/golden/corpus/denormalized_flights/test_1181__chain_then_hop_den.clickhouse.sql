@@ -89,3 +89,5 @@ JOIN vlp_v3_path AS v3 ON v3.start_id = v2.code
 JOIN __cg_nodes_Airport AS v4 ON v3.end_id = v4.code
 JOIN test_integration.flights AS v5 ON v5.Origin = v4.code
 WHERE (v5.Dest IS NOT NULL AND NOT hasAny(v1.path_edges, v3.path_edges) AND NOT has(v1.path_edges, tuple(v5.flight_id, v5.flight_number)) AND NOT has(v3.path_edges, tuple(v5.flight_id, v5.flight_number)))
+
+-- column count(*): Value [("count(*)", "count(*)")]

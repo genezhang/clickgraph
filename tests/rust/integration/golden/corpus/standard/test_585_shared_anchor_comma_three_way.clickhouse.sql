@@ -13,3 +13,5 @@ JOIN test_integration.post_likes_test AS v4 ON v4.user_id = w1.v1__user_id
 JOIN test_integration.posts_test AS v5 ON v4.post_id = v5.post_id
 JOIN test_integration.user_follows_test AS v6 ON v6.follower_id = w1.v1__user_id
 JOIN test_integration.users_test AS v7 ON v6.followed_id = v7.user_id
+
+-- column p.name: Value [("p.name", "p.name")]

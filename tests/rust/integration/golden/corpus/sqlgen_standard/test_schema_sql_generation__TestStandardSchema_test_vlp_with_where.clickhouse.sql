@@ -30,3 +30,5 @@ FROM vlp_v1_path AS v1
 JOIN db_standard.users AS v0 ON v1.start_id = v0.user_id
 JOIN db_standard.users AS v2 ON v1.end_id = v2.user_id
 WHERE v0.full_name = 'Alice'
+
+-- column b.name: Value [("b.name", "b.name")]

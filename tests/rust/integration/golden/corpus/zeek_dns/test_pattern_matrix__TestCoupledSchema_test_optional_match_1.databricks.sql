@@ -31,3 +31,6 @@ SELECT
 FROM __cg_nodes_IP AS v0
 LEFT JOIN optional_o3 AS o3 ON v0.ip_address = o3.v0__ip_address
 GROUP BY v0.ip_address
+
+-- column a.ip_address: Value [("a.ip_address", "a.ip_address")]
+-- column rel_count: Value [("rel_count", "rel_count")]

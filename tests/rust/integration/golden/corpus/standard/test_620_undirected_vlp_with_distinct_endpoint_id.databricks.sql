@@ -54,3 +54,5 @@ JOIN test_integration.users_test AS v2 ON v1.end_id = v2.user_id
 SELECT 
       w3.v3 AS `x`
 FROM with_w3 AS w3
+
+-- column x: Value [("x", "x")]

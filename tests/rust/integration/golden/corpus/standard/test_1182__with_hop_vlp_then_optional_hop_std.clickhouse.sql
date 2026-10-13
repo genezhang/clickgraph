@@ -54,3 +54,6 @@ JOIN vlp_v6_path AS v6 ON v6.start_id = v5.user_id
 JOIN test_integration.users_test AS v7 ON v6.end_id = v7.user_id
 LEFT JOIN optional_o3 AS o3 ON v7.user_id = o3.v7__user_id
 WHERE NOT has(v6.path_edges, v4.follow_id)
+
+-- column c.user_id: Value [("c.user_id", "c.user_id")]
+-- column d.user_id: Value [("d.user_id", "d.user_id")]

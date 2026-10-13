@@ -35,3 +35,6 @@ SELECT
 FROM db_composite_id.accounts AS v0
 JOIN v1_both AS v1 ON v1.__cg_start_0 = v0.bank_id AND v1.__cg_start_1 = v0.account_number
 JOIN db_composite_id.accounts AS v2 ON v1.__cg_end_0 = v2.bank_id AND v1.__cg_end_1 = v2.account_number
+
+-- column a.account_number: Value [("a.account_number", "a.account_number")]
+-- column b.account_number: Value [("b.account_number", "b.account_number")]

@@ -19,3 +19,6 @@ SELECT
       w2.p2_v6_code AS `x`, 
       w2.p2_v7_code AS `y`
 FROM with_w2 AS w2
+
+-- column x: Value [("x", "x")]
+-- column y: Value [("y", "y")]

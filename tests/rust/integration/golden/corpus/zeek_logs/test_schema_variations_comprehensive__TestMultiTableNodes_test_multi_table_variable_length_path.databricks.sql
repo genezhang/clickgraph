@@ -51,3 +51,5 @@ FROM vlp_v1_path AS v1
 JOIN zeek.dns_log AS v0 ON v1.start_id = v0.`id.orig_h`
 JOIN zeek.dns_log AS v2 ON v1.end_id = v2.query
 WHERE v1.end_label = 'Domain'
+
+-- column paths: Value [("paths", "paths")]

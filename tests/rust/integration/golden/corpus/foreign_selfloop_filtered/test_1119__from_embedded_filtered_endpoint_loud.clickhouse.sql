@@ -44,3 +44,5 @@ FROM vlp_v1_path AS v1
 JOIN testdb.people_f AS v0 ON v1.start_id = v0.pid
 JOIN testdb.people_f AS v2 ON v1.end_id = v2.pid
 WHERE (((v0.active = 1)) AND ((v2.active = 1)))
+
+-- column count(*): Value [("count(*)", "count(*)")]

@@ -20,3 +20,6 @@ SELECT
       CASE WHEN count(*) >= 0 THEN 0 ELSE 0 END AS `rel_count`
 FROM __cg_nodes_IP AS v0
 GROUP BY v0.ip_address
+
+-- column a.ip_address: Value [("a.ip_address", "a.ip_address")]
+-- column rel_count: Value [("rel_count", "rel_count")]

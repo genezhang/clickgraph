@@ -64,3 +64,4 @@ FROM __cg_nodes_Actor AS v0
 JOIN v1_rels AS v1 ON v1.__cg_start_0 = v0.actor_id
 JOIN __cg_nodes_Actor AS v2 ON v1.__cg_end_0 = v2.actor_id
 LIMIT 5
+-- column p: Graph(Path) [("p", "p")]

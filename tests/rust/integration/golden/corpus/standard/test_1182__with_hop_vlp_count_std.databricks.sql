@@ -43,3 +43,5 @@ JOIN test_integration.user_follows_test AS v4 ON v4.followed_id = v5.user_id
 JOIN with_w1 AS w1 ON v4.follower_id = w1.v3__user_id
 JOIN test_integration.users_test AS v7 ON v6.end_id = v7.user_id
 WHERE NOT array_contains(v6.path_edges, v4.follow_id)
+
+-- column count(*): Value [("count(*)", "count(*)")]

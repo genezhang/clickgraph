@@ -55,3 +55,6 @@ JOIN db_composite_id.transfers AS v4 ON v4.to_bank_id = v5.bank_id AND v4.to_acc
 JOIN with_w1 AS w1 ON v4.from_bank_id = w1.v3__bank_id AND v4.from_account_number = w1.v3__account_number
 JOIN db_composite_id.accounts AS v7 ON v6.end_bank_id = v7.bank_id AND v6.end_account_number = v7.account_number
 WHERE NOT has(v6.path_edges, v4.transfer_id)
+
+-- column c.account_number: Value [("c.account_number", "c.account_number")]
+-- column n2.account_number: Value [("n2.account_number", "n2.account_number")]

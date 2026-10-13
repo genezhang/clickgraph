@@ -86,3 +86,6 @@ JOIN v2_labels AS v2 ON v1.end_label = v2.__cg_label AND v1.end_id = v2.__cg_id_
 WHERE v0.user_id = 1
 GROUP BY v1.hop_count
 ORDER BY v1.hop_count ASC NULLS LAST
+
+-- column path_length: Value [("path_length", "path_length")]
+-- column cnt: Value [("cnt", "cnt")]

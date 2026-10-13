@@ -26,3 +26,4 @@ JOIN test_integration.users_test AS v0 ON v1.start_id = v0.user_id
 JOIN test_integration.users_test AS v2 ON v1.end_id = v2.user_id
 WHERE v0.country <> v2.country
 LIMIT 5
+-- column length(p): Value [("length(p)", "length(p)")]

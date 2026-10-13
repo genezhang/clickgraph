@@ -42,3 +42,5 @@ WHERE (NOT array_contains(v3.path_edges, v1.follow_id) AND v0.full_name = 'Alice
 SELECT 
       w2.v5 AS `k`
 FROM with_w2 AS w2
+
+-- column k: Value [("k", "k")]

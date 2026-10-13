@@ -19,3 +19,4 @@ SELECT
       v0.ip_address AS `n.ip_address`
 FROM __cg_nodes_IP AS v0
 LIMIT 5
+-- column n: Node { label: "IP" } [("ip_address", "n.ip_address")]

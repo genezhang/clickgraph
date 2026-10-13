@@ -49,3 +49,6 @@ SELECT
 FROM vlp_v1_path AS v1
 JOIN test_integration.fs_objects_single AS v0 ON v1.start_id = v0.object_id
 JOIN test_integration.fs_objects_single AS v2 ON v1.end_id = v2.object_id
+
+-- column a.name: Value [("a.name", "a.name")]
+-- column b.name: Value [("b.name", "b.name")]

@@ -77,3 +77,7 @@ SELECT
 FROM vlp_v8_path AS v8
 JOIN with_w2 AS w2 ON v8.start_id = w2.v7__code
 JOIN __cg_nodes_Airport AS v9 ON v8.end_id = v9.code
+
+-- column c.code: Value [("c.code", "c.code")]
+-- column a.code: Value [("a.code", "a.code")]
+-- column b.code: Value [("b.code", "b.code")]

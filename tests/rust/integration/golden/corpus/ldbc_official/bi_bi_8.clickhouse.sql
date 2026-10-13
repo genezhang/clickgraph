@@ -446,3 +446,6 @@ FROM with_w28 AS w28
 GROUP BY tupleElement(w28.v35, 8), w28.v36
 ORDER BY w28.v36 + coalesce(sum(w28.v37), 0) DESC NULLS FIRST, tupleElement(w28.v35, 8) ASC
 LIMIT 100
+-- column person.id: Value [("person.id", "person.id")]
+-- column score: Value [("score", "score")]
+-- column friendsScore: Value [("friendsScore", "friendsScore")]

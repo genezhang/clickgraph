@@ -50,3 +50,5 @@ FROM v0_labels AS v0
 JOIN v1_rels AS v1 ON v1.__cg_start_label = v0.__cg_label AND v1.__cg_start_0 = v0.__cg_id_0
 JOIN data_security.ds_groups AS v2 ON v1.__cg_end_0 = v2.group_id
 ORDER BY v2.name ASC
+
+-- column g.name: Value [("g.name", "g.name")]

@@ -116,3 +116,6 @@ JOIN brahmand.users_bench AS v4 ON v3.from_id = v4.user_id
 JOIN brahmand.interactions AS v5 ON v5.to_id = v4.user_id
 JOIN brahmand.users_bench AS v6 ON v5.from_id = v6.user_id
 WHERE (v1.end_label = 'User' AND ((((v3.`interaction_type` = 'FOLLOWS') AND (v3.`from_type` = 'User')) AND (v3.`to_type` = 'User'))) AND ((((v5.`interaction_type` = 'FOLLOWS') AND (v5.`from_type` = 'User')) AND (v5.`to_type` = 'User'))) AND NOT array_contains(v1.path_edges, concat('FOLLOWS:User:User:', to_json(named_struct('_1', CAST(v3.from_id AS STRING), '_2', CAST(v3.to_id AS STRING), '_3', CAST(v3.interaction_type AS STRING), '_4', CAST(v3.timestamp AS STRING)), map('ignoreNullFields', 'false')))) AND NOT array_contains(v1.path_edges, concat('FOLLOWS:User:User:', to_json(named_struct('_1', CAST(v5.from_id AS STRING), '_2', CAST(v5.to_id AS STRING), '_3', CAST(v5.interaction_type AS STRING), '_4', CAST(v5.timestamp AS STRING)), map('ignoreNullFields', 'false')))) AND (v3.from_id <> v5.from_id OR v3.to_id <> v5.to_id OR v3.interaction_type <> v5.interaction_type OR v3.timestamp <> v5.timestamp))
+
+-- column a.user_id: Value [("a.user_id", "a.user_id")]
+-- column d.user_id: Value [("d.user_id", "d.user_id")]

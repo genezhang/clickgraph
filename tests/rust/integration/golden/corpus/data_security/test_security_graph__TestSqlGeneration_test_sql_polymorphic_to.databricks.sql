@@ -70,3 +70,5 @@ FROM data_security.ds_fs_objects AS v0
 JOIN v1_rels AS v1 ON v1.__cg_start_0 = v0.fs_id
 JOIN v2_labels AS v2 ON v1.__cg_end_label = v2.__cg_label AND v1.__cg_end_0 = v2.__cg_id_0
 WHERE (((v0.`fs_type` = 'Folder')) AND v0.name = 'docs')
+
+-- column child: Graph(Node) [("child", "child")]

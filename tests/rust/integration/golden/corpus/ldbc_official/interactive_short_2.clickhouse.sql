@@ -151,3 +151,11 @@ JOIN ldbc.Post_hasCreator_Person AS v8 ON v8.PostId = v7.id
 JOIN ldbc.Person AS v9 ON v8.PersonId = v9.id
 WHERE v6.end_label = 'Post'
 ORDER BY w3.v5 DESC NULLS FIRST, w3.v4 ASC
+
+-- column messageId: Value [("messageId", "messageId")]
+-- column messageContent: Value [("messageContent", "messageContent")]
+-- column messageCreationDate: Value [("messageCreationDate", "messageCreationDate")]
+-- column postId: Value [("postId", "postId")]
+-- column personId: Value [("personId", "personId")]
+-- column personFirstName: Value [("personFirstName", "personFirstName")]
+-- column personLastName: Value [("personLastName", "personLastName")]

@@ -20,3 +20,5 @@ FROM with_w2 AS w2
 GROUP BY tupleElement(w2.v3, 4)
 ORDER BY count(*) DESC NULLS FIRST
 LIMIT 3
+-- column user.country: Value [("user.country", "user.country")]
+-- column user_count: Value [("user_count", "user_count")]

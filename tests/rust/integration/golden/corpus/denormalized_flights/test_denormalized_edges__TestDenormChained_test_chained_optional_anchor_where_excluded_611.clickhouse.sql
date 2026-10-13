@@ -78,3 +78,7 @@ SELECT
 FROM with_w4 AS w4
 LEFT JOIN optional_o6 AS o6 ON w4.v2__code = o6.v2__code AND w4.v0__code = o6.v0__code
 ORDER BY w4.p2_v0_code ASC, w4.p2_v2_code ASC, o6.p2_v4_code ASC
+
+-- column a.code: Value [("a.code", "a.code")]
+-- column b.code: Value [("b.code", "b.code")]
+-- column c.code: Value [("c.code", "c.code")]

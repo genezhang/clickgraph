@@ -7,3 +7,6 @@ JOIN data_security.ds_fs_objects AS v2 ON v1.object_id = v2.fs_id
 WHERE ((((v1."subject_type" = 'User') AND (v1."object_type" = 'File'))) AND ((v2."fs_type" = 'File')))
 GROUP BY v1.privilege
 ORDER BY v1.privilege ASC
+
+-- column a.privilege: Value [("a.privilege", "a.privilege")]
+-- column file_count: Value [("file_count", "file_count")]

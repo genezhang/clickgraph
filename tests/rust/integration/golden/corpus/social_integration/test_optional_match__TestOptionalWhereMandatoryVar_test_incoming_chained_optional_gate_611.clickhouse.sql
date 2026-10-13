@@ -41,3 +41,7 @@ SELECT
 FROM with_w2 AS w2
 LEFT JOIN optional_o4 AS o4 ON w2.v2__user_id = o4.v2__user_id AND w2.v0__user_id = o4.v0__user_id
 ORDER BY w2.p2_v0_user_id ASC, w2.p2_v2_user_id ASC, o4.p2_v4_user_id ASC
+
+-- column a.user_id: Value [("a.user_id", "a.user_id")]
+-- column b.user_id: Value [("b.user_id", "b.user_id")]
+-- column c.user_id: Value [("c.user_id", "c.user_id")]

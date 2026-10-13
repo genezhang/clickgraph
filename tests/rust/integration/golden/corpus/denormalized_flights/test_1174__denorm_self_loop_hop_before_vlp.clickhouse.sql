@@ -61,3 +61,5 @@ JOIN __cg_nodes_Airport AS v0 ON v2.start_id = v0.code
 JOIN test_integration.flights AS v1 ON v1.Origin = v0.code AND v1.Dest = v0.code
 JOIN __cg_nodes_Airport AS v3 ON v2.end_id = v3.code
 WHERE NOT has(v2.path_edges, tuple(v1.flight_id, v1.flight_number))
+
+-- column count(*): Value [("count(*)", "count(*)")]

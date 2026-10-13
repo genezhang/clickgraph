@@ -203,3 +203,16 @@ SELECT
 FROM with_w12 AS w12
 ORDER BY w12.v26 ASC NULLS LAST, w12.p3_v22_lastName ASC NULLS LAST, bigint(w12.p3_v22_id) ASC NULLS LAST
 LIMIT 20
+-- column friendId: Value [("friendId", "friendId")]
+-- column friendLastName: Value [("friendLastName", "friendLastName")]
+-- column distanceFromPerson: Value [("distanceFromPerson", "distanceFromPerson")]
+-- column friendBirthday: Value [("friendBirthday", "friendBirthday")]
+-- column friendCreationDate: Value [("friendCreationDate", "friendCreationDate")]
+-- column friendGender: Value [("friendGender", "friendGender")]
+-- column friendBrowserUsed: Value [("friendBrowserUsed", "friendBrowserUsed")]
+-- column friendLocationIp: Value [("friendLocationIp", "friendLocationIp")]
+-- column friendEmails: Value [("friendEmails", "friendEmails")]
+-- column friendLanguages: Value [("friendLanguages", "friendLanguages")]
+-- column friendCityName: Value [("friendCityName", "friendCityName")]
+-- column friendUniversities: Value [("friendUniversities", "friendUniversities")]
+-- column friendCompanies: Value [("friendCompanies", "friendCompanies")]

@@ -96,3 +96,6 @@ SELECT
       o5.p2_v9_user_id AS "e.user_id"
 FROM with_w3 AS w3
 LEFT JOIN optional_o5 AS o5 ON w3.v7__user_id = o5.v7__user_id
+
+-- column c.user_id: Value [("c.user_id", "c.user_id")]
+-- column e.user_id: Value [("e.user_id", "e.user_id")]

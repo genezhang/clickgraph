@@ -28,3 +28,8 @@ FROM vlp_v1_path AS v1
 JOIN test_integration.users AS v0 ON v1.start_id = v0.user_id
 JOIN test_integration.users AS v2 ON v1.end_id = v2.user_id
 WHERE (v0.name = 'Alice' AND v2.name = 'Eve')
+
+-- column a.name: Value [("a.name", "a.name")]
+-- column a.age: Value [("a.age", "a.age")]
+-- column b.name: Value [("b.name", "b.name")]
+-- column b.age: Value [("b.age", "b.age")]

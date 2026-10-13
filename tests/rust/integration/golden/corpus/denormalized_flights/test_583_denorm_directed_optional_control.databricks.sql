@@ -38,3 +38,6 @@ SELECT
       o3.p2_v2_code AS `b.code`
 FROM __cg_nodes_Airport AS v0
 LEFT JOIN optional_o3 AS o3 ON v0.code = o3.v0__code
+
+-- column a.code: Value [("a.code", "a.code")]
+-- column b.code: Value [("b.code", "b.code")]

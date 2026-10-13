@@ -27,3 +27,5 @@ JOIN test_integration.users AS v2 ON v1.end_id = v2.user_id
 WHERE v0.name = 'Alice'
 ORDER BY v2.age DESC NULLS FIRST
 LIMIT 3
+-- column b.name: Value [("b.name", "b.name")]
+-- column b.age: Value [("b.age", "b.age")]

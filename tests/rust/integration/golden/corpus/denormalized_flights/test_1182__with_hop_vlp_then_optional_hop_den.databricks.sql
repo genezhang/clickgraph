@@ -80,3 +80,6 @@ JOIN vlp_v6_path AS v6 ON v6.start_id = v5.code
 JOIN __cg_nodes_Airport AS v7 ON v6.end_id = v7.code
 LEFT JOIN optional_o5 AS o5 ON v7.code = o5.v7__code
 WHERE NOT array_contains(v6.path_edges, struct(v4.flight_id, v4.flight_number))
+
+-- column c.code: Value [("c.code", "c.code")]
+-- column d.code: Value [("d.code", "d.code")]

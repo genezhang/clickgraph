@@ -28,3 +28,5 @@ GROUP BY e.code
 SELECT 
       count(v0.code) AS `count(n)`
 FROM __cg_nodes_Airport AS v0
+
+-- column count(n): Value [("count(n)", "count(n)")]

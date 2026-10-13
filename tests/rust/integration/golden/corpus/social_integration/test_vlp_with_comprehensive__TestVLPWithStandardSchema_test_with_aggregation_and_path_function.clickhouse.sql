@@ -42,3 +42,7 @@ SELECT
       w2.v6 AS "path_count"
 FROM with_w2 AS w2
 ORDER BY w2.v5 ASC
+
+-- column u1.name: Value [("u1.name", "u1.name")]
+-- column hops: Value [("hops", "hops")]
+-- column path_count: Value [("path_count", "path_count")]

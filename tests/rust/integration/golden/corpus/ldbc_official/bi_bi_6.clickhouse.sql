@@ -242,3 +242,5 @@ LEFT JOIN optional_o8 AS o8 ON w6.v6__id = o8.v6__id
 GROUP BY w6.p2_v4_id
 ORDER BY count(DISTINCT CASE WHEN o8.v9____cg_type IS NULL THEN NULL ELSE tuple(o8.v9____cg_type, o8.v9____cg_from_label, o8.v9____cg_to_label, o8.v9____cg_rid_0, o8.v9____cg_rid_1) END) DESC NULLS FIRST, w6.p2_v4_id ASC
 LIMIT 100
+-- column person1.id: Value [("person1.id", "person1.id")]
+-- column authorityScore: Value [("authorityScore", "authorityScore")]

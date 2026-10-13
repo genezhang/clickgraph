@@ -7,3 +7,5 @@ JOIN db_composite_id.accounts AS v2 ON v1.bank_id = v2.bank_id AND v1.account_nu
 GROUP BY v0.name
 ORDER BY count(CASE WHEN (v2.bank_id IS NULL AND v2.account_number IS NULL) THEN NULL ELSE struct(v2.bank_id, v2.account_number) END) DESC NULLS FIRST
 LIMIT 5
+-- column c.name: Value [("c.name", "c.name")]
+-- column cnt: Value [("cnt", "cnt")]

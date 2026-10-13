@@ -21,3 +21,5 @@ WHERE w2.v1 > 0
 SELECT 
       count(w3.v2) AS "c"
 FROM with_w3 AS w3
+
+-- column c: Value [("c", "c")]

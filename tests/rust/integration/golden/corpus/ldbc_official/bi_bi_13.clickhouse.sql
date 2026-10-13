@@ -349,3 +349,7 @@ SELECT
 FROM with_w20 AS w20
 ORDER BY caseWithExpression(w20.v33, 0, 0, w20.v32 / toFloat64(w20.v33)) DESC NULLS FIRST, tupleElement(w20.v31, 8) ASC
 LIMIT 100
+-- column zombie.id: Value [("zombie.id", "zombie.id")]
+-- column zombieLikeCount: Value [("zombieLikeCount", "zombieLikeCount")]
+-- column totalLikeCount: Value [("totalLikeCount", "totalLikeCount")]
+-- column zombieScore: Value [("zombieScore", "zombieScore")]

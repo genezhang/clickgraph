@@ -21,3 +21,6 @@ SELECT
 FROM __cg_nodes_IP AS v0
 JOIN zeek.conn_log AS v1 ON v1."id.orig_h" = v0.ip
 JOIN __cg_nodes_IP AS v2 ON v1."id.resp_h" = v2.ip
+
+-- column src.ip: Value [("src.ip", "src.ip")]
+-- column dest.ip: Value [("dest.ip", "dest.ip")]

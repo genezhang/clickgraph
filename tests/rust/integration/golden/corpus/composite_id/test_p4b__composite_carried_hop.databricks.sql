@@ -13,3 +13,6 @@ SELECT
 FROM with_w1 AS w1
 JOIN db_composite_id.transfers AS v4 ON v4.from_bank_id = w1.v3__bank_id AND v4.from_account_number = w1.v3__account_number
 JOIN db_composite_id.accounts AS v5 ON v4.to_bank_id = v5.bank_id AND v4.to_account_number = v5.account_number
+
+-- column x: Value [("x", "x")]
+-- column y: Value [("y", "y")]

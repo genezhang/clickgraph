@@ -27,3 +27,5 @@ SELECT
       w1.v4 AS `follower_count`
 FROM with_w1 AS w1
 LIMIT 1
+-- column a: Node { label: "User" } [("age", "a.age"), ("city", "a.city"), ("country", "a.country"), ("email", "a.email"), ("is_active", "a.is_active"), ("name", "a.name"), ("registration_date", "a.registration_date"), ("user_id", "a.user_id")]
+-- column follower_count: Value [("follower_count", "follower_count")]

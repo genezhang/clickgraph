@@ -11,3 +11,6 @@ SELECT
       w1.v3 AS `city`, 
       w1.v4 AS `p`
 FROM with_w1 AS w1
+
+-- column city: Value [("city", "city")]
+-- column p: Value [("p", "p")]

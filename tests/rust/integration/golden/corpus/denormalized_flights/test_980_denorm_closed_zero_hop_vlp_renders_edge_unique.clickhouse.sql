@@ -56,3 +56,5 @@ SELECT
       count(*) AS "count(*)"
 FROM vlp_v1_path AS v1
 JOIN __cg_nodes_Airport AS v0 ON v1.start_id = v0.code AND v1.end_id = v0.code
+
+-- column count(*): Value [("count(*)", "count(*)")]

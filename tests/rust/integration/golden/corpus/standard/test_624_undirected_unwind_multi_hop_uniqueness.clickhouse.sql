@@ -59,3 +59,6 @@ SELECT
       w3.p2_v4_name AS "c.name", 
       w3.v5 AS "n"
 FROM with_w3 AS w3
+
+-- column c.name: Value [("c.name", "c.name")]
+-- column n: Value [("n", "n")]

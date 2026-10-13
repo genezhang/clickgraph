@@ -31,3 +31,4 @@ FROM __cg_nodes_Airport AS v0
 WHERE v0.city IS NOT NULL
 ORDER BY v0.city DESC NULLS FIRST
 LIMIT 10 OFFSET 5
+-- column n.city: Value [("n.city", "n.city")]

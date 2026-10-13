@@ -32,3 +32,6 @@ JOIN test_integration.users AS v0 ON v1.start_id = v0.user_id
 JOIN test_integration.users AS v2 ON v1.end_id = v2.user_id
 WHERE v0.user_id IN (1, 2)
 GROUP BY v0.user_id
+
+-- column u1.user_id: Value [("u1.user_id", "u1.user_id")]
+-- column reached: Value [("reached", "reached")]

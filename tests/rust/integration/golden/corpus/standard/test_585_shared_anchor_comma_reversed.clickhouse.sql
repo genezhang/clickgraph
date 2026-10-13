@@ -13,3 +13,7 @@ JOIN test_integration.post_likes_test AS v2 ON v2.user_id = w1.v1__user_id
 JOIN test_integration.posts_test AS v3 ON v2.post_id = v3.post_id
 JOIN test_integration.posts_test AS v4 ON v4.author_id = w1.v1__user_id
 JOIN test_integration.posts_test AS v5 ON v4.post_id = v5.post_id
+
+-- column p.name: Value [("p.name", "p.name")]
+-- column x.title: Value [("x.title", "x.title")]
+-- column y.title: Value [("y.title", "y.title")]

@@ -14,3 +14,4 @@ SELECT
       v0.resolved_ip AS `n.resolved_ip`
 FROM __cg_nodes_ResolvedIP AS v0
 LIMIT 10
+-- column n.resolved_ip: Value [("n.resolved_ip", "n.resolved_ip")]

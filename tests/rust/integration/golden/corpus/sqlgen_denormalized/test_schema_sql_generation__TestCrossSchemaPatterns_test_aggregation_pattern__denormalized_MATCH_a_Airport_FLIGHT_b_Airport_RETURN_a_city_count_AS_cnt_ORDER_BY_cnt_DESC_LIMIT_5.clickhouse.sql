@@ -6,3 +6,5 @@ WHERE (v1.origin_code IS NOT NULL AND v1.dest_code IS NOT NULL)
 GROUP BY v1.origin_city
 ORDER BY count(*) DESC NULLS FIRST
 LIMIT 5
+-- column a.city: Value [("a.city", "a.city")]
+-- column cnt: Value [("cnt", "cnt")]

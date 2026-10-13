@@ -41,3 +41,7 @@ SELECT
       w2.p2_v5_name AS `u2.name`, 
       w2.v6 AS `path_len`
 FROM with_w2 AS w2
+
+-- column u1.name: Value [("u1.name", "u1.name")]
+-- column u2.name: Value [("u2.name", "u2.name")]
+-- column path_len: Value [("path_len", "path_len")]

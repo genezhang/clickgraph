@@ -14,3 +14,6 @@ SELECT
       w1.p2_v3_name AS "g.name", 
       w1.v4 AS "cnt"
 FROM with_w1 AS w1
+
+-- column g.name: Value [("g.name", "g.name")]
+-- column cnt: Value [("cnt", "cnt")]

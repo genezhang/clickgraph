@@ -9,3 +9,5 @@ SELECT
 FROM with_w1 AS w1
 CROSS JOIN test_zeek.conn_log AS v5
 WHERE (v5.orig_h IS NOT NULL AND v5.resp_h IS NOT NULL AND (v5.resp_h = '192.168.4.76' AND v5.orig_h = w1.v3))
+
+-- column peer_ip: Value [("peer_ip", "peer_ip")]

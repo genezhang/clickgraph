@@ -12,3 +12,6 @@ SELECT
 FROM db_polymorphic.users AS v0
 LEFT JOIN optional_o1 AS o1 ON v0.user_id = o1.v0__user_id
 GROUP BY v0.full_name
+
+-- column u.name: Value [("u.name", "u.name")]
+-- column liked: Value [("liked", "liked")]

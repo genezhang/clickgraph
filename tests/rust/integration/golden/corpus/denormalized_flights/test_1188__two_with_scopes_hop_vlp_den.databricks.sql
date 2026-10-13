@@ -78,3 +78,6 @@ JOIN test_integration.flights AS v7 ON v7.Dest = v8.code
 JOIN with_w2 AS w2 ON v7.Origin = w2.v6__code
 JOIN __cg_nodes_Airport AS v10 ON v9.end_id = v10.code
 WHERE NOT array_contains(v9.path_edges, struct(v7.flight_id, v7.flight_number))
+
+-- column a.code: Value [("a.code", "a.code")]
+-- column d.code: Value [("d.code", "d.code")]

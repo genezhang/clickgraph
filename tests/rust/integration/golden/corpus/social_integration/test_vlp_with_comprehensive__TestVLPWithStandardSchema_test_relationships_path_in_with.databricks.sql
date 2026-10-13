@@ -46,3 +46,7 @@ SELECT
       w2.p2_v5_name AS `u2.name`, 
       array_size(w2.v6) AS `rel_count`
 FROM with_w2 AS w2
+
+-- column u1.name: Value [("u1.name", "u1.name")]
+-- column u2.name: Value [("u2.name", "u2.name")]
+-- column rel_count: Value [("rel_count", "rel_count")]

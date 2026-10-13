@@ -16,3 +16,6 @@ SELECT
 FROM v0_labels AS v0
 GROUP BY array(v0.__cg_label)
 ORDER BY array(v0.__cg_label) ASC NULLS LAST
+
+-- column label: Value [("label", "label")]
+-- column cnt: Value [("cnt", "cnt")]

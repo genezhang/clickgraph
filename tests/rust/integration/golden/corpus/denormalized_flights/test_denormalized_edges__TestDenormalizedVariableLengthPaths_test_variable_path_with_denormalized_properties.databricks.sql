@@ -61,3 +61,6 @@ JOIN __cg_nodes_Airport AS v2 ON v1.end_id = v2.code
 WHERE (v0.code = 'LAX' AND v2.code = 'ATL')
 ORDER BY v1.hop_count ASC NULLS LAST
 LIMIT 1
+-- column origin.city: Value [("origin.city", "origin.city")]
+-- column dest.city: Value [("dest.city", "dest.city")]
+-- column hops: Value [("hops", "hops")]

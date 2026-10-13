@@ -13,3 +13,7 @@ FROM data_security.ds_users AS v0
 JOIN data_security.ds_memberships AS v1 ON v1.member_id = v0.user_id
 JOIN data_security.ds_groups AS v2 ON v1.group_id = v2.group_id
 WHERE (((v1.`member_type` = 'User')) AND v0.name = 'Alice')
+
+-- column g: Node { label: "Group" } [("description", "g.description"), ("group_id", "g.group_id"), ("name", "g.name")]
+-- column r: Rel { rel_type: "MEMBER_OF", from_label: "User", to_label: "Group" } [("from_id", "r.from_id"), ("to_id", "r.to_id")]
+-- column u: Node { label: "User" } [("department", "u.department"), ("email", "u.email"), ("exposure", "u.exposure"), ("name", "u.name"), ("user_id", "u.user_id")]

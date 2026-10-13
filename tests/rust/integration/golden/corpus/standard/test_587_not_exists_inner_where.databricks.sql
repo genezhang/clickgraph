@@ -12,3 +12,5 @@ SELECT
 FROM test_integration.users_test AS v0
 LEFT JOIN subquery_s1 AS s1 ON v0.user_id = s1.v0__user_id
 WHERE NOT coalesce(s1.__value, false)
+
+-- column a.name: Value [("a.name", "a.name")]

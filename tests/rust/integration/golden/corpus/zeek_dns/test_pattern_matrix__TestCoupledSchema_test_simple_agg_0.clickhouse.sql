@@ -18,3 +18,5 @@ GROUP BY e.ip_address
 SELECT 
       count(v0.ip_address) AS "count(n)"
 FROM __cg_nodes_IP AS v0
+
+-- column count(n): Value [("count(n)", "count(n)")]

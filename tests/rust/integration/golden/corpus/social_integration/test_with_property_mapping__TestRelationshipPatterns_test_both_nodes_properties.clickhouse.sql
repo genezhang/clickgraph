@@ -11,3 +11,5 @@ SELECT
       w1.v4 AS "bName"
 FROM with_w1 AS w1
 LIMIT 3
+-- column aName: Value [("aName", "aName")]
+-- column bName: Value [("bName", "bName")]

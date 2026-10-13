@@ -30,3 +30,6 @@ SELECT
       w3.__cg_c0 AS `entity`, 
       w3.__cg_c1 AS `name`
 FROM with_w3 AS w3
+
+-- column entity: Value [("entity", "entity")]
+-- column name: Value [("name", "name")]

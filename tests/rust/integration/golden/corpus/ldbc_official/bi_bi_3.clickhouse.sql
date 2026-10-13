@@ -140,3 +140,8 @@ WHERE (((v0.type = 'Country')) AND ((v2.type = 'City')) AND v0.name = 'India' AN
 GROUP BY v6.id, v6.title, v6.creationDate, v4.id
 ORDER BY count(DISTINCT CASE WHEN v10.__cg_label IS NULL THEN NULL ELSE tuple(v10.__cg_label, v10.__cg_id_0) END) DESC NULLS FIRST, v6.id ASC
 LIMIT 20
+-- column forum.id: Value [("forum.id", "forum.id")]
+-- column forum.title: Value [("forum.title", "forum.title")]
+-- column forum.creationDate: Value [("forum.creationDate", "forum.creationDate")]
+-- column person.id: Value [("person.id", "person.id")]
+-- column messageCount: Value [("messageCount", "messageCount")]

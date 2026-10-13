@@ -88,3 +88,9 @@ JOIN ldbc.Forum AS v4 ON v3.ForumId = v4.id
 JOIN ldbc.Forum_hasModerator_Person AS v5 ON v5.ForumId = v4.id
 JOIN ldbc.Person AS v6 ON v5.PersonId = v6.id
 WHERE (v1.end_label = 'Post' AND CAST(coalesce(v0.p2_v0_id__cg0, v0.p2_v0_id__cg1), if(replaceRegexpOne(replaceRegexpOne(replaceRegexpAll(toTypeName(v0.p2_v0_id__cg0), 'Nullable\\(|LowCardinality\\(|\\)', ''), '^U?Int\\d+$', 'Int'), '^(String|FixedString\\(\\d+)$', 'String') = replaceRegexpOne(replaceRegexpOne(replaceRegexpAll(toTypeName(v0.p2_v0_id__cg1), 'Nullable\\(|LowCardinality\\(|\\)', ''), '^U?Int\\d+$', 'Int'), '^(String|FixedString\\(\\d+)$', 'String') AND toTypeName(coalesce(v0.p2_v0_id__cg0, v0.p2_v0_id__cg1)) NOT LIKE 'Variant(%', toTypeName(coalesce(v0.p2_v0_id__cg0, v0.p2_v0_id__cg1)), 'ClickGraph_property_has_different_types_on_different_labels_or_types')) = 3)
+
+-- column forumId: Value [("forumId", "forumId")]
+-- column forumTitle: Value [("forumTitle", "forumTitle")]
+-- column moderatorId: Value [("moderatorId", "moderatorId")]
+-- column moderatorFirstName: Value [("moderatorFirstName", "moderatorFirstName")]
+-- column moderatorLastName: Value [("moderatorLastName", "moderatorLastName")]

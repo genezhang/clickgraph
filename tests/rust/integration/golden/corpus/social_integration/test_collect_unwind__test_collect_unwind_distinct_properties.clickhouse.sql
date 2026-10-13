@@ -17,3 +17,5 @@ SELECT DISTINCT
       tupleElement(w2.v3, 3) AS "user.city"
 FROM with_w2 AS w2
 ORDER BY tupleElement(w2.v3, 3) ASC
+
+-- column user.city: Value [("user.city", "user.city")]

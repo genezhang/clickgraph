@@ -19,3 +19,5 @@ SELECT
 FROM with_w2 AS w2
 ORDER BY tupleElement(w2.v3, 3) ASC
 LIMIT 3
+-- column user.name: Value [("user.name", "user.name")]
+-- column user.city: Value [("user.city", "user.city")]

@@ -99,3 +99,5 @@ WHERE (v0.name = 'Hamid_Karzai' AND (v1.__cg_type <> 'HAS_TAG' OR v1.__cg_from_l
 GROUP BY v6.name
 ORDER BY count(DISTINCT v4.id) DESC NULLS FIRST, v6.name ASC
 LIMIT 100
+-- column relatedTag.name: Value [("relatedTag.name", "relatedTag.name")]
+-- column count: Value [("count", "count")]

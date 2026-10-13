@@ -88,3 +88,6 @@ SELECT
 FROM __cg_nodes_Actor AS v0
 JOIN v1_rels AS v1 ON v1.__cg_start_0 = v0.actor_id
 JOIN __cg_nodes_Actor AS v2 ON v1.__cg_end_0 = v2.actor_id
+
+-- column a.name: Value [("a.name", "a.name")]
+-- column b.name: Value [("b.name", "b.name")]

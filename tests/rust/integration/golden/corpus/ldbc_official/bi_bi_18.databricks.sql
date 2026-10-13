@@ -83,3 +83,6 @@ WHERE (v0.name = 'Hamid_Karzai' AND (v1.PersonId <> v7.PersonId OR v1.TagId <> v
 GROUP BY v2.id, v6.id
 ORDER BY count(DISTINCT v4.id) DESC NULLS FIRST, v2.id ASC NULLS LAST, v6.id ASC NULLS LAST
 LIMIT 20
+-- column person1Id: Value [("person1Id", "person1Id")]
+-- column person2Id: Value [("person2Id", "person2Id")]
+-- column mutualFriendCount: Value [("mutualFriendCount", "mutualFriendCount")]

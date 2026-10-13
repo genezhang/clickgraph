@@ -38,3 +38,6 @@ JOIN test_integration.users_test AS v0 ON v1.follower_id = v0.user_id
 JOIN test_integration.users_test AS v4 ON v3.end_id = v4.user_id
 WHERE NOT has(v3.path_edges, v1.follow_id)
 GROUP BY v3.hop_count + 1
+
+-- column l: Value [("l", "l")]
+-- column n: Value [("n", "n")]

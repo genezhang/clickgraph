@@ -4,3 +4,6 @@ SELECT
 FROM test_integration.users_expressions_test AS v0
 WHERE v0.user_id IN (11, 3, 12)
 ORDER BY v0.user_id ASC NULLS LAST
+
+-- column u.user_id: Value [("u.user_id", "u.user_id")]
+-- column u.age_group: Value [("u.age_group", "u.age_group")]

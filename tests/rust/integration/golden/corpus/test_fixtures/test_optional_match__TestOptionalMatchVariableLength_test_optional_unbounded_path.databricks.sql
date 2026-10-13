@@ -52,3 +52,6 @@ FROM with_w1 AS w1
 LEFT JOIN optional_o3 AS o3 ON w1.v0__user_id = o3.v0__user_id
 GROUP BY w1.p2_v0_name
 ORDER BY count(DISTINCT o3.v2__user_id) DESC NULLS FIRST, w1.p2_v0_name ASC NULLS LAST
+
+-- column a.name: Value [("a.name", "a.name")]
+-- column reachable_count: Value [("reachable_count", "reachable_count")]

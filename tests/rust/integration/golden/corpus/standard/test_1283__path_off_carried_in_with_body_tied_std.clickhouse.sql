@@ -44,3 +44,5 @@ JOIN test_integration.users_test AS v5 ON v4.end_id = v5.user_id
 SELECT 
       count(*) AS "k"
 FROM with_w3 AS w3
+
+-- column k: Value [("k", "k")]

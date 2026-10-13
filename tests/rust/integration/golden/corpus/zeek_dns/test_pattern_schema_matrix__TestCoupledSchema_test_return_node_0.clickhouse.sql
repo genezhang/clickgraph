@@ -14,3 +14,4 @@ SELECT
       v0.resolved_ip AS "n.resolved_ip"
 FROM __cg_nodes_ResolvedIP AS v0
 LIMIT 5
+-- column n: Node { label: "ResolvedIP" } [("resolved_ip", "n.resolved_ip")]

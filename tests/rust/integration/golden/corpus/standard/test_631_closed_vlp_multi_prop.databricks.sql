@@ -31,3 +31,6 @@ SELECT
       v0.country AS `a.country`
 FROM vlp_v1_path AS v1
 JOIN test_integration.users_test AS v0 ON v1.start_id = v0.user_id AND v1.end_id = v0.user_id
+
+-- column a.name: Value [("a.name", "a.name")]
+-- column a.country: Value [("a.country", "a.country")]

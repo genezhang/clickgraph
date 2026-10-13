@@ -32,3 +32,5 @@ SELECT
       w3.__cg_c0 AS `id`
 FROM with_w3 AS w3
 ORDER BY w3.__cg_arm ASC NULLS LAST, w3.__cg_row ASC NULLS LAST
+
+-- column id: Value [("id", "id")]

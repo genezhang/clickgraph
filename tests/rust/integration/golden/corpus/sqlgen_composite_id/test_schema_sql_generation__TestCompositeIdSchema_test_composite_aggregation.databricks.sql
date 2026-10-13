@@ -6,3 +6,7 @@ FROM db_composite_id.customers AS v0
 JOIN db_composite_id.account_ownership AS v1 ON v1.customer_id = v0.customer_id
 JOIN db_composite_id.accounts AS v2 ON v1.bank_id = v2.bank_id AND v1.account_number = v2.account_number
 GROUP BY v0.name
+
+-- column c.name: Value [("c.name", "c.name")]
+-- column accounts: Value [("accounts", "accounts")]
+-- column total_balance: Value [("total_balance", "total_balance")]

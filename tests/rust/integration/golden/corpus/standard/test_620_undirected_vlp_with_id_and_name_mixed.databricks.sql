@@ -56,3 +56,5 @@ SELECT
       w3.v4 AS `nm`
 FROM with_w3 AS w3
 ORDER BY w3.v4 ASC NULLS LAST
+
+-- column nm: Value [("nm", "nm")]

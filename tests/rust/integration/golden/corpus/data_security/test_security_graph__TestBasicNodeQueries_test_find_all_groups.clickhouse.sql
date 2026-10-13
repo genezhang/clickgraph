@@ -3,3 +3,6 @@ SELECT
       v0.description AS "g.description"
 FROM data_security.ds_groups AS v0
 ORDER BY v0.name ASC
+
+-- column g.name: Value [("g.name", "g.name")]
+-- column g.description: Value [("g.description", "g.description")]

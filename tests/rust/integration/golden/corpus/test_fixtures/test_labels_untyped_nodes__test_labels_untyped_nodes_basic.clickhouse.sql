@@ -14,3 +14,5 @@ SELECT DISTINCT
       [v0.__cg_label] AS "label"
 FROM v0_labels AS v0
 ORDER BY [v0.__cg_label] ASC
+
+-- column label: Value [("label", "label")]

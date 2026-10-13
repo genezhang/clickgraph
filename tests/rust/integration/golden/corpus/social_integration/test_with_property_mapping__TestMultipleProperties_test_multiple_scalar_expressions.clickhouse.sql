@@ -11,3 +11,6 @@ SELECT
       w1.v3 AS "id"
 FROM with_w1 AS w1
 LIMIT 1
+-- column n: Value [("n", "n")]
+-- column e: Value [("e", "e")]
+-- column id: Value [("id", "id")]

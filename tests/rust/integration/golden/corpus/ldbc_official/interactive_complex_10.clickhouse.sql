@@ -180,3 +180,9 @@ SELECT
 FROM with_w11 AS w11
 ORDER BY w11.v29 - (w11.v28 - w11.v29) DESC NULLS FIRST, w11.p3_v26_id ASC
 LIMIT 10
+-- column personId: Value [("personId", "personId")]
+-- column personFirstName: Value [("personFirstName", "personFirstName")]
+-- column personLastName: Value [("personLastName", "personLastName")]
+-- column commonInterestScore: Value [("commonInterestScore", "commonInterestScore")]
+-- column personGender: Value [("personGender", "personGender")]
+-- column personCityName: Value [("personCityName", "personCityName")]

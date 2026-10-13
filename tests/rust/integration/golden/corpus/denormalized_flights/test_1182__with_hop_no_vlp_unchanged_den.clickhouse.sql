@@ -64,3 +64,6 @@ SELECT
 FROM with_w4 AS w4
 JOIN test_integration.flights AS v4 ON v4.Origin = w4.v3__code
 WHERE v4.Dest IS NOT NULL
+
+-- column b.code: Value [("b.code", "b.code")]
+-- column d.code: Value [("d.code", "d.code")]

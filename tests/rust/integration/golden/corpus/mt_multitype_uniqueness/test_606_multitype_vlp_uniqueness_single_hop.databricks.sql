@@ -36,3 +36,6 @@ SELECT
 FROM mt606.members AS v0
 JOIN v1_rels AS v1 ON v1.__cg_start_0 = v0.id
 JOIN mt606.members AS v2 ON v1.__cg_end_0 = v2.id
+
+-- column a.id: Value [("a.id", "a.id")]
+-- column b.id: Value [("b.id", "b.id")]

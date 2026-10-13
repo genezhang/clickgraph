@@ -74,3 +74,5 @@ JOIN data_security.ds_users AS v0 ON v1.start_id = v0.user_id
 JOIN data_security.ds_groups AS v2 ON v1.end_id = v2.group_id
 WHERE (v1.end_label = 'Group' AND v0.name = 'Alice')
 ORDER BY v2.name ASC
+
+-- column group_name: Value [("group_name", "group_name")]

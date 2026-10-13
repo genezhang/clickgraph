@@ -31,3 +31,6 @@ SELECT
 FROM vlp_v1_path AS v1
 JOIN testdb.people AS v0 ON v1.start_id = v0.pid
 JOIN testdb.people AS v2 ON v1.end_id = v2.pid
+
+-- column a.pid: Value [("a.pid", "a.pid")]
+-- column b.pid: Value [("b.pid", "b.pid")]

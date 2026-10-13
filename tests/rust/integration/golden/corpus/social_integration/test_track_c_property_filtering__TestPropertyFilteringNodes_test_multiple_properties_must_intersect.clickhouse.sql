@@ -19,3 +19,6 @@ SELECT
       v0.p2_v0_email AS "email"
 FROM v0_labels AS v0
 WHERE (v0.p2_v0_user_id = 1 AND v0.p2_v0_email IS NOT NULL)
+
+-- column uid: Value [("uid", "uid")]
+-- column email: Value [("email", "email")]

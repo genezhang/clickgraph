@@ -44,3 +44,5 @@ SELECT
 FROM test_integration.users_test AS v0
 LEFT JOIN subquery_s3 AS s3 ON v0.user_id = s3.v0__user_id
 WHERE NOT coalesce(s3.__value, false)
+
+-- column a.user_id: Value [("a.user_id", "a.user_id")]

@@ -82,3 +82,11 @@ SELECT
       w6.v11 / w6.v7 AS `percentageOfMessages`
 FROM with_w6 AS w6
 ORDER BY w6.v8 DESC NULLS FIRST, w6.v9 ASC NULLS LAST, w6.v10 ASC NULLS LAST
+
+-- column year: Value [("year", "year")]
+-- column isComment: Value [("isComment", "isComment")]
+-- column lengthCategory: Value [("lengthCategory", "lengthCategory")]
+-- column messageCount: Value [("messageCount", "messageCount")]
+-- column averageMessageLength: Value [("averageMessageLength", "averageMessageLength")]
+-- column sumMessageLength: Value [("sumMessageLength", "sumMessageLength")]
+-- column percentageOfMessages: Value [("percentageOfMessages", "percentageOfMessages")]

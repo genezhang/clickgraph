@@ -54,3 +54,5 @@ SELECT
       count(*) AS `k`
 FROM with_w1 AS w1
 LEFT JOIN optional_o3 AS o3 ON w1.v2__user_id = o3.v2__user_id AND w1.v0__user_id = o3.v0__user_id
+
+-- column k: Value [("k", "k")]

@@ -26,3 +26,7 @@ LEFT JOIN optional_o1 AS o1 ON v0.user_id = o1.v0__user_id
 LEFT JOIN optional_o2 AS o2 ON o1.v2__user_id = o2.v2__user_id
 WHERE v0.name = 'Alice'
 ORDER BY o1.p2_v2_name ASC, o2.p2_v4_name ASC
+
+-- column a.name: Value [("a.name", "a.name")]
+-- column b.name: Value [("b.name", "b.name")]
+-- column c.name: Value [("c.name", "c.name")]

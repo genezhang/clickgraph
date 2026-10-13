@@ -16,3 +16,7 @@ SELECT
       w1.v5 AS "avg_age"
 FROM with_w1 AS w1
 ORDER BY w1.p2_v3_name ASC
+
+-- column a.name: Value [("a.name", "a.name")]
+-- column follows: Value [("follows", "follows")]
+-- column avg_age: Value [("avg_age", "avg_age")]

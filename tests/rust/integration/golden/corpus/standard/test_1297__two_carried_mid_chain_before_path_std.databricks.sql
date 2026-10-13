@@ -46,3 +46,5 @@ JOIN test_integration.users_test AS v5 ON v6.follower_id = v5.user_id
 JOIN test_integration.user_follows_test AS v7 ON v7.follower_id = w1.v4__user_id AND v7.followed_id = w1.v3__user_id
 JOIN test_integration.users_test AS v9 ON v8.end_id = v9.user_id
 WHERE (v6.follow_id <> v7.follow_id AND NOT array_contains(v8.path_edges, v6.follow_id) AND NOT array_contains(v8.path_edges, v7.follow_id))
+
+-- column k: Value [("k", "k")]

@@ -136,3 +136,7 @@ FROM vlp_v8_path AS v8
 JOIN with_w2 AS w2 ON v8.start_id = w2.v7__user_id
 JOIN brahmand.users_bench AS v9 ON v8.end_id = v9.user_id
 WHERE v8.end_label = 'User'
+
+-- column c.user_id: Value [("c.user_id", "c.user_id")]
+-- column a.user_id: Value [("a.user_id", "a.user_id")]
+-- column b.user_id: Value [("b.user_id", "b.user_id")]

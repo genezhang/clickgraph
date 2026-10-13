@@ -55,3 +55,6 @@ SELECT
       o3.p2_v2_name AS "b.name"
 FROM with_w1 AS w1
 LEFT JOIN optional_o3 AS o3 ON w1.v0__user_id = o3.v0__user_id
+
+-- column a.name: Value [("a.name", "a.name")]
+-- column b.name: Value [("b.name", "b.name")]

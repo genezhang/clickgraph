@@ -7,3 +7,5 @@ JOIN db_fk_edge.orders_fk AS v2 ON v1.order_id = v2.order_id
 GROUP BY v0.name
 ORDER BY count(v2.order_id) DESC NULLS FIRST
 LIMIT 5
+-- column c.name: Value [("c.name", "c.name")]
+-- column cnt: Value [("cnt", "cnt")]

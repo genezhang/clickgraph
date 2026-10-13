@@ -23,3 +23,5 @@ SELECT
       count(*) AS "count(*)"
 FROM test_integration.users_test AS v0
 JOIN v1_both AS v1 ON v1.__cg_start_0 = v0.user_id AND v1.__cg_end_0 = v0.user_id
+
+-- column count(*): Value [("count(*)", "count(*)")]

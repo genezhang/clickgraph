@@ -35,3 +35,6 @@ SELECT
       w2.v3 AS `x`, 
       w2.v4 AS `y`
 FROM with_w2 AS w2
+
+-- column x: Value [("x", "x")]
+-- column y: Value [("y", "y")]

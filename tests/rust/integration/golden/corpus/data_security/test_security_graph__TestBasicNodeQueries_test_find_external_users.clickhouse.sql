@@ -4,3 +4,6 @@ SELECT
 FROM data_security.ds_users AS v0
 WHERE v0.exposure = 'external'
 ORDER BY v0.name ASC
+
+-- column u.name: Value [("u.name", "u.name")]
+-- column u.email: Value [("u.email", "u.email")]

@@ -32,3 +32,5 @@ FROM __cg_nodes_Airport AS v0
 GROUP BY v0.state
 ORDER BY count(v0.code) DESC NULLS FIRST
 LIMIT 10
+-- column n.state: Value [("n.state", "n.state")]
+-- column cnt: Value [("cnt", "cnt")]

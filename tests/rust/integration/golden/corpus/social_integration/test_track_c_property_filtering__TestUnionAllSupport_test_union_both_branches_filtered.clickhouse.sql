@@ -107,3 +107,6 @@ SELECT
       w6.__cg_c0 AS "entity", 
       w6.__cg_c1 AS "value"
 FROM with_w6 AS w6
+
+-- column entity: Value [("entity", "entity")]
+-- column value: Value [("value", "value")]

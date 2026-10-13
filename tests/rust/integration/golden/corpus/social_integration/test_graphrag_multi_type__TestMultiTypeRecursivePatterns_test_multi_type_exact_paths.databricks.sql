@@ -86,3 +86,6 @@ JOIN v2_labels AS v2 ON v1.end_label = v2.__cg_label AND v1.end_id = v2.__cg_id_
 WHERE v0.user_id = 1
 GROUP BY try_element_at(array(v2.__cg_label), 2)
 ORDER BY try_element_at(array(v2.__cg_label), 2) ASC NULLS LAST
+
+-- column node_type: Value [("node_type", "node_type")]
+-- column cnt: Value [("cnt", "cnt")]

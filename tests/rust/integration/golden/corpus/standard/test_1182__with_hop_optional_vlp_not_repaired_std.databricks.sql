@@ -62,3 +62,6 @@ SELECT
       o4.p2_v7_user_id AS `b.user_id`
 FROM with_w2 AS w2
 LEFT JOIN optional_o4 AS o4 ON w2.v5__user_id = o4.v5__user_id
+
+-- column c.user_id: Value [("c.user_id", "c.user_id")]
+-- column b.user_id: Value [("b.user_id", "b.user_id")]

@@ -14,3 +14,6 @@ SELECT
       w1.v4 AS `rc`
 FROM with_w1 AS w1
 ORDER BY w1.p2_v3_order_id ASC NULLS LAST
+
+-- column o.order_id: Value [("o.order_id", "o.order_id")]
+-- column rc: Value [("rc", "rc")]

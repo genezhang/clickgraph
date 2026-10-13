@@ -7,3 +7,6 @@ JOIN test_integration.users AS v2 ON v1.followed_id = v2.user_id
 WHERE (v0.age > 25 AND v2.age > 25)
 GROUP BY v0.name
 ORDER BY v0.name ASC
+
+-- column a.name: Value [("a.name", "a.name")]
+-- column mature_follows: Value [("mature_follows", "mature_follows")]

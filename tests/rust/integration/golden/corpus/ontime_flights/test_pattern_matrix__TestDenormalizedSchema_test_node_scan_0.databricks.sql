@@ -29,3 +29,4 @@ SELECT
       v0.code AS `n.code`
 FROM __cg_nodes_Airport AS v0
 LIMIT 10
+-- column n.code: Value [("n.code", "n.code")]

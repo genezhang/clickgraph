@@ -54,3 +54,5 @@ FROM __cg_nodes_IP AS v0
 JOIN zeek.dns_log AS v1 ON v1.`id.orig_h` = v0.ip
 JOIN __cg_nodes_Domain AS v2 ON v1.query = v2.name
 LIMIT 1
+-- column src: Node { label: "IP" } [("ip", "src.ip"), ("port", "src.port")]
+-- column d: Node { label: "Domain" } [("name", "d.name")]

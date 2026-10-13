@@ -11,3 +11,6 @@ SELECT
       w1.v3 AS "lower_n"
 FROM with_w1 AS w1
 LIMIT 1
+-- column n1: Value [("n1", "n1")]
+-- column n2: Value [("n2", "n2")]
+-- column lower_n: Value [("lower_n", "lower_n")]

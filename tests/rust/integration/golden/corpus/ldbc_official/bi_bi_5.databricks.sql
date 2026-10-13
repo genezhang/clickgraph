@@ -210,3 +210,8 @@ SELECT
 FROM with_w10 AS w10
 ORDER BY 1 * w10.v17 + 2 * w10.v19 + 10 * w10.v18 DESC NULLS FIRST, w10.p3_v16_id ASC NULLS LAST
 LIMIT 100
+-- column person.id: Value [("person.id", "person.id")]
+-- column replyCount: Value [("replyCount", "replyCount")]
+-- column likeCount: Value [("likeCount", "likeCount")]
+-- column messageCount: Value [("messageCount", "messageCount")]
+-- column score: Value [("score", "score")]

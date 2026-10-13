@@ -107,3 +107,5 @@ SELECT
 FROM with_w7 AS w7
 ORDER BY w7.v13 DESC NULLS FIRST, w7.p3_v12_id ASC
 LIMIT 20
+-- column forumName: Value [("forumName", "forumName")]
+-- column postCount: Value [("postCount", "postCount")]

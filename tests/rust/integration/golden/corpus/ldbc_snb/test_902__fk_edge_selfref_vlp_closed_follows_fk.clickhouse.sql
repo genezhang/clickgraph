@@ -27,3 +27,5 @@ SELECT
       count(*) AS "c"
 FROM vlp_v1_path AS v1
 JOIN ldbc.comment AS v0 ON v1.start_id = v0.commentId AND v1.end_id = v0.commentId
+
+-- column c: Value [("c", "c")]

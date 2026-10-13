@@ -148,3 +148,11 @@ SELECT
 FROM with_w3 AS w3
 LEFT JOIN optional_o5 AS o5 ON w3.v0____cg_label = o5.v0____cg_label AND w3.v0____cg_id_0 = o5.v0____cg_id_0 AND w3.v4__id = o5.v4__id
 ORDER BY w3.p2_v2_creationDate DESC NULLS FIRST, w3.p2_v4_id ASC NULLS LAST
+
+-- column commentId: Value [("commentId", "commentId")]
+-- column commentContent: Value [("commentContent", "commentContent")]
+-- column commentCreationDate: Value [("commentCreationDate", "commentCreationDate")]
+-- column replyAuthorId: Value [("replyAuthorId", "replyAuthorId")]
+-- column replyAuthorFirstName: Value [("replyAuthorFirstName", "replyAuthorFirstName")]
+-- column replyAuthorLastName: Value [("replyAuthorLastName", "replyAuthorLastName")]
+-- column replyAuthorKnowsOriginalMessageAuthor: Value [("replyAuthorKnowsOriginalMessageAuthor", "replyAuthorKnowsOriginalMessageAuthor")]

@@ -25,3 +25,6 @@ JOIN v1_both AS v1 ON v1.__cg_start_0 = v0.user_id
 JOIN test_integration.users AS v2 ON v1.__cg_end_0 = v2.user_id
 GROUP BY v0.name
 ORDER BY count(DISTINCT v2.user_id) DESC NULLS FIRST, v0.name ASC NULLS LAST
+
+-- column a.name: Value [("a.name", "a.name")]
+-- column connections: Value [("connections", "connections")]

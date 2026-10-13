@@ -127,3 +127,5 @@ FROM with_w5 AS w5
 JOIN brahmand.interactions AS v7 ON v7.from_id = w5.v6__user_id
 JOIN brahmand.users_bench AS v8 ON v7.to_id = v8.user_id
 WHERE ((((v7.`interaction_type` = 'FOLLOWS') AND (v7.`from_type` = 'User')) AND (v7.`to_type` = 'User')))
+
+-- column count(*): Value [("count(*)", "count(*)")]

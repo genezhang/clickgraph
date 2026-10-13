@@ -36,3 +36,5 @@ JOIN testdb.reports AS v1 ON v1.emp_id = v2.pid
 JOIN testdb.people AS v0 ON v1.mgr_id = v0.pid
 JOIN testdb.people AS v4 ON v3.end_id = v4.pid
 WHERE NOT has(v3.path_edges, tuple(v1.mgr_id, v1.emp_id))
+
+-- column count(*): Value [("count(*)", "count(*)")]

@@ -7,3 +7,5 @@ JOIN test_integration.users_test AS v2 ON v1.followed_id = v2.user_id
 GROUP BY v0.user_id
 ORDER BY count(v1.follow_id) DESC NULLS FIRST
 LIMIT 10
+-- column u.user_id: Value [("u.user_id", "u.user_id")]
+-- column follow_count: Value [("follow_count", "follow_count")]

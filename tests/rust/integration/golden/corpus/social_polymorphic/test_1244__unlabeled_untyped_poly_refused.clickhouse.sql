@@ -407,3 +407,5 @@ SELECT
 FROM v0_labels AS v0
 JOIN v1_rels AS v1 ON v1.__cg_start_label = v0.__cg_label AND v1.__cg_start_0 = v0.__cg_id_0
 JOIN v2_labels AS v2 ON v1.__cg_end_label = v2.__cg_label AND v1.__cg_end_0 = v2.__cg_id_0
+
+-- column n: Value [("n", "n")]

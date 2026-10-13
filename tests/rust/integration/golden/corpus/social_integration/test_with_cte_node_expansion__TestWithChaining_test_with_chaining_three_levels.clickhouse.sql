@@ -93,3 +93,6 @@ SELECT
       w3.p2_v8_user_id AS "c.user_id"
 FROM with_w3 AS w3
 LIMIT 1
+-- column a: Node { label: "User" } [("age", "a.age"), ("city", "a.city"), ("country", "a.country"), ("email", "a.email"), ("is_active", "a.is_active"), ("name", "a.name"), ("registration_date", "a.registration_date"), ("user_id", "a.user_id")]
+-- column b: Node { label: "User" } [("age", "b.age"), ("city", "b.city"), ("country", "b.country"), ("email", "b.email"), ("is_active", "b.is_active"), ("name", "b.name"), ("registration_date", "b.registration_date"), ("user_id", "b.user_id")]
+-- column c: Node { label: "User" } [("age", "c.age"), ("city", "c.city"), ("country", "c.country"), ("email", "c.email"), ("is_active", "c.is_active"), ("name", "c.name"), ("registration_date", "c.registration_date"), ("user_id", "c.user_id")]

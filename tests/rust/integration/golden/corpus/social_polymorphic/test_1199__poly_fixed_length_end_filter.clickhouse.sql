@@ -115,3 +115,5 @@ FROM vlp_v1_path AS v1
 JOIN brahmand.users_bench AS v0 ON v1.end_id = v0.user_id
 JOIN brahmand.users_bench AS v2 ON v1.start_id = v2.user_id
 WHERE (v1.end_label = 'User' AND v2.user_id = 3)
+
+-- column count(*): Value [("count(*)", "count(*)")]

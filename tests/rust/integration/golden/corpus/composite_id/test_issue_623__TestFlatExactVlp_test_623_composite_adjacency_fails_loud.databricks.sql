@@ -42,3 +42,5 @@ JOIN db_composite_id.accounts AS v2 ON v1.end_bank_id = v2.bank_id AND v1.end_ac
 JOIN db_composite_id.transfers AS v3 ON v3.from_bank_id = v2.bank_id AND v3.from_account_number = v2.account_number
 JOIN db_composite_id.accounts AS v4 ON v3.to_bank_id = v4.bank_id AND v3.to_account_number = v4.account_number
 WHERE NOT array_contains(v1.path_edges, v3.transfer_id)
+
+-- column count(*): Value [("count(*)", "count(*)")]

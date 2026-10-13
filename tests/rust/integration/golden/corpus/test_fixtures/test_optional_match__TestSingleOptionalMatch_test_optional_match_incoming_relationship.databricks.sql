@@ -14,3 +14,6 @@ SELECT
 FROM test_integration.users AS v0
 LEFT JOIN optional_o1 AS o1 ON v0.user_id = o1.v0__user_id
 WHERE v0.name = 'Alice'
+
+-- column a.name: Value [("a.name", "a.name")]
+-- column b.name: Value [("b.name", "b.name")]

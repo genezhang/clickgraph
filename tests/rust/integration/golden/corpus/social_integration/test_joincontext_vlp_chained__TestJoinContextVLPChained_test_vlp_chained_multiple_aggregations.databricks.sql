@@ -35,3 +35,5 @@ JOIN test_integration.posts_test AS v4 ON v3.post_id = v4.post_id
 WHERE v0.user_id = 1
 GROUP BY v2.user_id
 LIMIT 10
+-- column u2.user_id: Value [("u2.user_id", "u2.user_id")]
+-- column post_count: Value [("post_count", "post_count")]

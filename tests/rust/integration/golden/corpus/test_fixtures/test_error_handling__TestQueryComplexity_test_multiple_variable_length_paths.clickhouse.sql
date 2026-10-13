@@ -63,3 +63,5 @@ JOIN test_integration.users AS v2 ON v1.end_id = v2.user_id
 JOIN vlp_v3_path AS v3 ON v3.start_id = v2.user_id
 JOIN test_integration.users AS v4 ON v3.end_id = v4.user_id
 WHERE (NOT hasAny(v1.path_edges, v3.path_edges) AND v0.name = 'Alice')
+
+-- column count: Value [("count", "count")]

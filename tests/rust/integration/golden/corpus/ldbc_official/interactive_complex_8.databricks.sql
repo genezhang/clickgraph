@@ -91,3 +91,9 @@ JOIN ldbc.Person AS v6 ON v5.PersonId = v6.id
 WHERE (v0.id = 14 AND (v1.__cg_type <> 'HAS_CREATOR' OR v1.__cg_from_label <> 'Comment' OR v1.__cg_to_label <> 'Person' OR v1.__cg_rid_0 <> v5.CommentId OR v1.__cg_rid_1 <> v5.PersonId))
 ORDER BY v4.creationDate DESC NULLS FIRST, v4.id ASC NULLS LAST
 LIMIT 20
+-- column personId: Value [("personId", "personId")]
+-- column personFirstName: Value [("personFirstName", "personFirstName")]
+-- column personLastName: Value [("personLastName", "personLastName")]
+-- column commentCreationDate: Value [("commentCreationDate", "commentCreationDate")]
+-- column commentId: Value [("commentId", "commentId")]
+-- column commentContent: Value [("commentContent", "commentContent")]

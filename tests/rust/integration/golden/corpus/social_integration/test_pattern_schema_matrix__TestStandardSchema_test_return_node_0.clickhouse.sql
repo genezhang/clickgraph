@@ -6,3 +6,4 @@ SELECT
       v0.post_title AS "n.title"
 FROM test_integration.posts_test AS v0
 LIMIT 5
+-- column n: Node { label: "Post" } [("author_id", "n.author_id"), ("content", "n.content"), ("created_at", "n.created_at"), ("post_id", "n.post_id"), ("title", "n.title")]

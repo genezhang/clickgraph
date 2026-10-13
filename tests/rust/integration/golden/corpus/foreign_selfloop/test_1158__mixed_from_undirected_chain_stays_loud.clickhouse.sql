@@ -42,3 +42,7 @@ JOIN testdb.people AS v2 ON v1.__cg_end_0 = v2.pid
 JOIN v3_both AS v3 ON v3.__cg_start_0 = v2.pid
 JOIN testdb.people AS v4 ON v3.__cg_end_0 = v4.pid
 WHERE (v1.mgr_id <> v3.mgr_id OR v1.emp_id <> v3.emp_id)
+
+-- column a.pid: Value [("a.pid", "a.pid")]
+-- column c.pid: Value [("c.pid", "c.pid")]
+-- column e.pid: Value [("e.pid", "e.pid")]

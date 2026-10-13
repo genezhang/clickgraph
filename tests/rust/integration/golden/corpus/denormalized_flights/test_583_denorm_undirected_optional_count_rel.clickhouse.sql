@@ -73,3 +73,6 @@ FROM __cg_nodes_Airport AS v0
 LEFT JOIN optional_o3 AS o3 ON v0.code = o3.v0__code
 GROUP BY v0.code
 ORDER BY v0.code ASC
+
+-- column a.code: Value [("a.code", "a.code")]
+-- column c: Value [("c", "c")]

@@ -12,3 +12,6 @@ SELECT
       w1.p2_v3_name AS `c.name`, 
       w1.v4 AS `rc`
 FROM with_w1 AS w1
+
+-- column c.name: Value [("c.name", "c.name")]
+-- column rc: Value [("rc", "rc")]

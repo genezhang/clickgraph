@@ -17,3 +17,7 @@ SELECT
 FROM data_security.ds_users AS v0
 LEFT JOIN optional_o1 AS o1 ON v0.user_id = o1.v0__user_id
 ORDER BY v0.name ASC
+
+-- column u.name: Value [("u.name", "u.name")]
+-- column direct_file: Value [("direct_file", "direct_file")]
+-- column r.privilege: Value [("r.privilege", "r.privilege")]

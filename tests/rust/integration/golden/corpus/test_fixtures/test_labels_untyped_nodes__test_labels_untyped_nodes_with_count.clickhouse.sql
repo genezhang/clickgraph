@@ -16,3 +16,6 @@ SELECT
 FROM v0_labels AS v0
 GROUP BY [v0.__cg_label]
 ORDER BY [v0.__cg_label] ASC
+
+-- column label: Value [("label", "label")]
+-- column cnt: Value [("cnt", "cnt")]

@@ -14,3 +14,6 @@ SELECT
       w1.p2_v3_name AS `f.name`, 
       w1.p2_v3_email AS `f.email`
 FROM with_w1 AS w1
+
+-- column f.name: Value [("f.name", "f.name")]
+-- column f.email: Value [("f.email", "f.email")]

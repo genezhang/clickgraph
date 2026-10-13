@@ -5098,6 +5098,18 @@ slice that will handle it.
       (`LOWERED`). `with_cte_column_refs` now scans the bound plan's SQL:
       the legacy violations (#1189, #933) are gone and none is new
       (verified live by planting one).
+      - Adversarial review (goldens byte-equal to `translate_bound_plan`'s
+        output, 16 runs without a flap). Closed: the column-reference
+        check read only `with_` CTEs of ClickHouse, a fifth of the CTEs;
+        it now reads every CTE (OPTIONAL MATCH, subquery, walk, union) on
+        both dialects, linear per scope (1 s), and flags a planted
+        reference in each kind. The result's shape (how HTTP and Bolt read
+        the rows; S14c1 removes the legacy shape fallback) is locked as
+        `-- column` lines. The server's options (Neo4j-compat mode, Bolt's
+        id mapper; `ReadOptions::neo4j_compat` overrides the process-wide
+        setting) are a second pass, locked as `{dialect}_compat` where they
+        differ (35 per dialect). A golden of no entry, or a panic, fails
+        the sweep.
     - [ ] **S14c1: the legacy translate route and its tests.** `cypher`
       required in `ReadOptions`; `BoundPlanMode`, `Route::Legacy`,
       `TranslateError::{Planning, Render}`, `where_label_constraints`,
@@ -5109,6 +5121,10 @@ slice that will handle it.
       route); the legacy modules made `pub(crate)` so the build lists the
       dead set; `ExecutorKind` / `WriteGuardError` and
       `get_query_type` / `QueryType` moved to homes outside the planner.
+      `normalize` / `normalize_golden_text` move to `corpus_sweep` before
+      `sql_golden_tests` goes. The 29 parse-error goldens per dialect lock
+      the legacy parser's text, which the read seam still answers with
+      (`translate_text_read`): retiring that parse changes them.
     - [ ] **S14c2: the legacy write planner** (`write_plan_builder`,
       `write_clause_builder`, the rest of `write_guard`, the write
       `LogicalPlan` variants).

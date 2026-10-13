@@ -32,3 +32,7 @@ FROM vlp_v1_path AS v1
 JOIN test_integration.users AS v0 ON v1.start_id = v0.user_id
 JOIN test_integration.users AS v2 ON v1.end_id = v2.user_id
 WHERE v0.name = 'Alice'
+
+-- column avg_path_length: Value [("avg_path_length", "avg_path_length")]
+-- column min_path_length: Value [("min_path_length", "min_path_length")]
+-- column max_path_length: Value [("max_path_length", "max_path_length")]

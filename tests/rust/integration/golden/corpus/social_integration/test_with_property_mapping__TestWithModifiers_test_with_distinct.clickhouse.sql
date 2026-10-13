@@ -7,3 +7,4 @@ SELECT
       w1.v1 AS "userName"
 FROM with_w1 AS w1
 LIMIT 5
+-- column userName: Value [("userName", "userName")]

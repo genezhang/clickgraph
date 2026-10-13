@@ -44,3 +44,6 @@ SELECT
       w4.__cg_c0 AS "entity", 
       w4.__cg_c1 AS "value"
 FROM with_w4 AS w4
+
+-- column entity: Value [("entity", "entity")]
+-- column value: Value [("value", "value")]

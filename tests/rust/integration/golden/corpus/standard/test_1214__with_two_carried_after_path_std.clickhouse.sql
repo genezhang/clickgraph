@@ -44,3 +44,5 @@ SELECT
 FROM with_w2 AS w2
 JOIN test_integration.user_follows_test AS v7 ON v7.follower_id = w2.v6__user_id
 JOIN test_integration.users_test AS v8 ON v7.followed_id = v8.user_id
+
+-- column count(*): Value [("count(*)", "count(*)")]

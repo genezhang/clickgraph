@@ -497,3 +497,7 @@ SELECT
 FROM with_w28 AS w28
 ORDER BY w28.v48__k0 DESC NULLS FIRST, w28.v48__k1 ASC NULLS LAST, w28.v48__k2 ASC NULLS LAST
 LIMIT 100
+-- column top.person1Id: Value [("top.person1Id", "top.person1Id")]
+-- column top.person2Id: Value [("top.person2Id", "top.person2Id")]
+-- column city1.name: Value [("city1.name", "city1.name")]
+-- column top.score: Value [("top.score", "top.score")]

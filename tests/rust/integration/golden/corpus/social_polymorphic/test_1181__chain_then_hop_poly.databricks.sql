@@ -228,3 +228,5 @@ JOIN brahmand.users_bench AS v4 ON v3.end_id = v4.user_id
 JOIN brahmand.interactions AS v5 ON v5.from_id = v4.user_id
 JOIN brahmand.users_bench AS v6 ON v5.to_id = v6.user_id
 WHERE (v1.end_label = 'User' AND v3.end_label = 'User' AND ((((v5.`interaction_type` = 'FOLLOWS') AND (v5.`from_type` = 'User')) AND (v5.`to_type` = 'User'))) AND NOT arrays_overlap(v1.path_edges, v3.path_edges) AND NOT array_contains(v1.path_edges, concat('FOLLOWS:User:User:', to_json(named_struct('_1', CAST(v5.from_id AS STRING), '_2', CAST(v5.to_id AS STRING), '_3', CAST(v5.interaction_type AS STRING), '_4', CAST(v5.timestamp AS STRING)), map('ignoreNullFields', 'false')))) AND NOT array_contains(v3.path_edges, concat('FOLLOWS:User:User:', to_json(named_struct('_1', CAST(v5.from_id AS STRING), '_2', CAST(v5.to_id AS STRING), '_3', CAST(v5.interaction_type AS STRING), '_4', CAST(v5.timestamp AS STRING)), map('ignoreNullFields', 'false')))))
+
+-- column count(*): Value [("count(*)", "count(*)")]

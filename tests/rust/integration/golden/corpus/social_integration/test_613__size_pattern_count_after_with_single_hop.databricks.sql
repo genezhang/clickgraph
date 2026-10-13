@@ -17,3 +17,6 @@ SELECT
       coalesce(s2.__value, 0) AS `c`
 FROM with_w1 AS w1
 LEFT JOIN subquery_s2 AS s2 ON w1.v1__user_id = s2.v1__user_id
+
+-- column a.user_id: Value [("a.user_id", "a.user_id")]
+-- column c: Value [("c", "c")]

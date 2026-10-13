@@ -19,3 +19,4 @@ SELECT
       v0.ip_address AS `n.ip_address`
 FROM __cg_nodes_IP AS v0
 LIMIT 10
+-- column n.ip_address: Value [("n.ip_address", "n.ip_address")]

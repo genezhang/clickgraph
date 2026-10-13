@@ -23,3 +23,5 @@ GROUP BY e.ip
 SELECT 
       count(DISTINCT v0.ip) AS "cnt"
 FROM __cg_nodes_IP AS v0
+
+-- column cnt: Value [("cnt", "cnt")]

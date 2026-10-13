@@ -160,3 +160,6 @@ SELECT
 FROM with_w10 AS w10
 GROUP BY w10.v6
 ORDER BY count(w10.v5__id) DESC NULLS FIRST, w10.v6 DESC NULLS FIRST
+
+-- column messageCount: Value [("messageCount", "messageCount")]
+-- column personCount: Value [("personCount", "personCount")]

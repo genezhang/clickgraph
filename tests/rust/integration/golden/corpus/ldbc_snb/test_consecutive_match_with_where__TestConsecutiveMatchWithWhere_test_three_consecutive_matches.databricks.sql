@@ -9,3 +9,6 @@ JOIN ldbc.comment AS v3 ON v3.commentId = v2.commentId
 JOIN ldbc.person AS v4 ON v3.creatorId = v4.personId
 WHERE v0.commentId = 100
 LIMIT 5
+-- column c.commentId: Value [("c.commentId", "c.commentId")]
+-- column reply.commentId: Value [("reply.commentId", "reply.commentId")]
+-- column p.personId: Value [("p.personId", "p.personId")]

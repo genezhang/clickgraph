@@ -32,3 +32,6 @@ SELECT
       w2.v4 AS "friends"
 FROM with_w2 AS w2
 ORDER BY w2.v4 DESC NULLS FIRST
+
+-- column a.name: Value [("a.name", "a.name")]
+-- column friends: Value [("friends", "friends")]

@@ -61,3 +61,5 @@ FROM __cg_nodes_Airport AS v0
 JOIN v1_both AS v1 ON v1.__cg_start_0 = v0.code
 JOIN __cg_nodes_Airport AS v2 ON v1.__cg_end_0 = v2.code
 LIMIT 5
+-- column a.code: Value [("a.code", "a.code")]
+-- column b.code: Value [("b.code", "b.code")]

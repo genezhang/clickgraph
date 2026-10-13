@@ -18,3 +18,5 @@ SELECT
 FROM test_integration.users_test AS v0
 LEFT JOIN optional_o1 AS o1 ON v0.user_id = o1.v0__user_id
 LEFT JOIN optional_o2 AS o2 ON o1.v2__post_id = o2.v2__post_id
+
+-- column total: Value [("total", "total")]

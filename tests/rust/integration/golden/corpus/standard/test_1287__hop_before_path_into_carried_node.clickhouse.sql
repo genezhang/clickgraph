@@ -41,3 +41,5 @@ JOIN test_integration.users_test AS v6 ON v7.end_id = v6.user_id
 JOIN test_integration.user_follows_test AS v5 ON v5.followed_id = v6.user_id
 JOIN test_integration.users_test AS v4 ON v5.follower_id = v4.user_id
 WHERE NOT has(v7.path_edges, v5.follow_id)
+
+-- column k: Value [("k", "k")]

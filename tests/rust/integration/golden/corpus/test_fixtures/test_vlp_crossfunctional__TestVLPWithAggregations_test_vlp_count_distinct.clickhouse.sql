@@ -31,3 +31,6 @@ FROM vlp_v1_path AS v1
 JOIN test_integration.users AS v0 ON v1.start_id = v0.user_id
 JOIN test_integration.users AS v2 ON v1.end_id = v2.user_id
 WHERE v0.user_id = 1
+
+-- column unique_reached: Value [("unique_reached", "unique_reached")]
+-- column total_paths: Value [("total_paths", "total_paths")]

@@ -56,3 +56,5 @@ SELECT
 FROM with_w4 AS w4
 ORDER BY w4.v13 DESC NULLS FIRST, w4.p3_v12_name ASC
 LIMIT 10
+-- column tagName: Value [("tagName", "tagName")]
+-- column postCount: Value [("postCount", "postCount")]

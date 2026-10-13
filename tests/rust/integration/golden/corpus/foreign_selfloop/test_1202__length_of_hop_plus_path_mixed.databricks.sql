@@ -38,3 +38,6 @@ JOIN testdb.people AS v0 ON v1.mgr_id = v0.pid
 JOIN testdb.people AS v4 ON v3.end_id = v4.pid
 WHERE NOT array_contains(v3.path_edges, struct(v1.mgr_id, v1.emp_id))
 GROUP BY v3.hop_count + 1
+
+-- column l: Value [("l", "l")]
+-- column n: Value [("n", "n")]

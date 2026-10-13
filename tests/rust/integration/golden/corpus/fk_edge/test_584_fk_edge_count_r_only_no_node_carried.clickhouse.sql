@@ -8,3 +8,5 @@ JOIN test_integration.customers_fk AS v2 ON v1.customer_id = v2.customer_id
 SELECT 
       w1.v3 AS "rc"
 FROM with_w1 AS w1
+
+-- column rc: Value [("rc", "rc")]

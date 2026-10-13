@@ -75,3 +75,6 @@ SELECT
 FROM with_w4 AS w4
 ORDER BY w4.p2_v5_city ASC NULLS LAST
 LIMIT 5
+-- column a.city: Value [("a.city", "a.city")]
+-- column b.city: Value [("b.city", "b.city")]
+-- column node_count: Value [("node_count", "node_count")]

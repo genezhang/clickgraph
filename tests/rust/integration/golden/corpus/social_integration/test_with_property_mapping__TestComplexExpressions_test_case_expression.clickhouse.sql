@@ -7,3 +7,4 @@ SELECT
       w1.v1 AS "status"
 FROM with_w1 AS w1
 LIMIT 1
+-- column status: Value [("status", "status")]

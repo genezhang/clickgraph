@@ -14,3 +14,4 @@ SELECT
       v0.domain_name AS `n.domain_name`
 FROM __cg_nodes_Domain AS v0
 LIMIT 10
+-- column n.domain_name: Value [("n.domain_name", "n.domain_name")]

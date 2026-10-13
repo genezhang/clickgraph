@@ -34,7 +34,8 @@
 # sql_golden_tests.rs, and the sweep was verified clean across 12
 # fresh-process runs after un-excluding.
 #
-# The 5 entries below remain excluded for a DIFFERENT, harness-level reason:
+# Until P-4c S14c0, 5 entries remained excluded for a DIFFERENT, harness-level
+# reason (the legacy pipeline's):
 # their SQL embeds the process-global anonymous-alias counter INSIDE a CTE
 # identifier (`pattern_union_t805`), which `normalize()`'s `\bt\d+\b` regex
 # cannot remap (`_` is a word character — no boundary before the `t`). The
@@ -49,5 +50,5 @@
 # goldens would contain `_t\d+` — un-exclude them when normalize() is widened.
 #
 # P-4c S14c0: the sweep locks the bound plan's SQL now, which has no such
-# counter in its names; the 5 entries above were the legacy pipeline's and
-# are locked again (verified over fresh-process and whole-binary runs).
+# counter in its names; those 5 entries are locked again (verified over
+# fresh-process and whole-binary runs). The list is empty.

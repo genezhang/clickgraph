@@ -34,3 +34,5 @@ JOIN test_integration.users AS v0 ON v1.end_id = v0.user_id
 JOIN test_integration.users AS v2 ON v1.start_id = v2.user_id
 WHERE v2.name = 'Diana'
 ORDER BY v0.name ASC
+
+-- column a.name: Value [("a.name", "a.name")]

@@ -125,3 +125,6 @@ JOIN v3_rels AS v3 ON v3.__cg_start_0 = v2.group_id
 JOIN v4_labels AS v4 ON v3.__cg_end_label = v4.__cg_label AND v3.__cg_end_0 = v4.__cg_id_0
 WHERE (v1.end_label = 'Group' AND v0.exposure = 'external')
 ORDER BY v0.name ASC
+
+-- column u.name: Value [("u.name", "u.name")]
+-- column via_group: Value [("via_group", "via_group")]

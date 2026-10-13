@@ -211,3 +211,11 @@ FROM with_w6 AS w6
 LEFT JOIN subquery_s8 AS s8 ON w6.v9__id = s8.v9__id AND w6.v11__id = s8.v11__id
 ORDER BY w6.v10__k4 DESC NULLS FIRST, toInt64(w6.p2_v9_id) ASC
 LIMIT 20
+-- column personId: Value [("personId", "personId")]
+-- column personFirstName: Value [("personFirstName", "personFirstName")]
+-- column personLastName: Value [("personLastName", "personLastName")]
+-- column likeCreationDate: Value [("likeCreationDate", "likeCreationDate")]
+-- column commentOrPostId: Value [("commentOrPostId", "commentOrPostId")]
+-- column commentOrPostContent: Value [("commentOrPostContent", "commentOrPostContent")]
+-- column minutesLatency: Value [("minutesLatency", "minutesLatency")]
+-- column isNew: Value [("isNew", "isNew")]

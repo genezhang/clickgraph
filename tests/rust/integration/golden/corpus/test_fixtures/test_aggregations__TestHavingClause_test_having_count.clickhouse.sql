@@ -14,3 +14,6 @@ SELECT
       w1.v4 AS "follows"
 FROM with_w1 AS w1
 ORDER BY w1.p2_v3_name ASC
+
+-- column a.name: Value [("a.name", "a.name")]
+-- column follows: Value [("follows", "follows")]

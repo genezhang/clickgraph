@@ -14,3 +14,6 @@ SELECT
       w1.v4 AS "follow_count"
 FROM with_w1 AS w1
 ORDER BY w1.p2_v3_name ASC
+
+-- column a.name: Value [("a.name", "a.name")]
+-- column follow_count: Value [("follow_count", "follow_count")]

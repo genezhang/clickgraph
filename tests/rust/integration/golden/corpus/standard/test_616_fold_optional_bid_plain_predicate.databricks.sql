@@ -13,3 +13,6 @@ SELECT
       o1.p2_v2_id AS `b.id`
 FROM test_integration.users_test AS v0
 LEFT JOIN optional_o1 AS o1 ON v0.user_id = o1.v0__user_id
+
+-- column a.id: Value [("a.id", "a.id")]
+-- column b.id: Value [("b.id", "b.id")]

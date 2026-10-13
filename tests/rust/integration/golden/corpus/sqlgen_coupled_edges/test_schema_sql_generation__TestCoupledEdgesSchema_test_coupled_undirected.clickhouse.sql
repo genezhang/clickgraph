@@ -54,3 +54,6 @@ SELECT
 FROM __cg_nodes_IP AS v0
 JOIN v1_both AS v1 ON v1.__cg_start_0 = v0.ip
 JOIN __cg_nodes_IP AS v2 ON v1.__cg_end_0 = v2.ip
+
+-- column ip.ip: Value [("ip.ip", "ip.ip")]
+-- column other.ip: Value [("other.ip", "other.ip")]

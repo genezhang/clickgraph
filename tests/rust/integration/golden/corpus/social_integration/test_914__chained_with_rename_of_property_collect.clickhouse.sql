@@ -11,3 +11,5 @@ FROM with_w1 AS w1
 SELECT 
       coalesce(groupArray(w2.v2), []) AS "ages"
 FROM with_w2 AS w2
+
+-- column ages: Value [("ages", "ages")]

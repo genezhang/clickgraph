@@ -65,3 +65,5 @@ SELECT
 FROM with_w3 AS w3
 ORDER BY w3.v6 DESC NULLS FIRST
 LIMIT 5
+-- column userId: Value [("userId", "userId")]
+-- column postCount: Value [("postCount", "postCount")]

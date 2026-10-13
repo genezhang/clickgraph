@@ -15,3 +15,4 @@ SELECT
 FROM __cg_nodes_ResolvedIP AS v0
 WHERE v0.resolved_ip IS NOT NULL
 LIMIT 10
+-- column n.resolved_ip: Value [("n.resolved_ip", "n.resolved_ip")]

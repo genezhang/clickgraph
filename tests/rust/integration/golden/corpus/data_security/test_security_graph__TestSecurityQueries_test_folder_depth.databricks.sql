@@ -51,3 +51,6 @@ JOIN data_security.ds_fs_objects AS v0 ON v1.start_id = v0.fs_id
 JOIN data_security.ds_fs_objects AS v2 ON v1.end_id = v2.fs_id
 WHERE (((v0.`fs_type` = 'Folder')) AND ((v2.`fs_type` = 'Folder')) AND v0.name = 'root')
 ORDER BY v2.path ASC NULLS LAST
+
+-- column f.name: Value [("f.name", "f.name")]
+-- column f.path: Value [("f.path", "f.path")]

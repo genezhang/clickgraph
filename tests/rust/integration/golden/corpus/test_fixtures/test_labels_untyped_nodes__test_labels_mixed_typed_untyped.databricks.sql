@@ -19,3 +19,5 @@ FROM test_integration.users AS v0
 CROSS JOIN v1_labels AS v1
 WHERE v0.user_id = v1.p2_v1_user_id
 LIMIT 1
+-- column user_labels: Value [("user_labels", "user_labels")]
+-- column n_labels: Value [("n_labels", "n_labels")]

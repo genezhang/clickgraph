@@ -17,3 +17,5 @@ FROM __cg_nodes_ResolvedIP AS v0
 GROUP BY v0.resolved_ip
 ORDER BY count(v0.resolved_ip) DESC NULLS FIRST
 LIMIT 10
+-- column n.resolved_ip: Value [("n.resolved_ip", "n.resolved_ip")]
+-- column cnt: Value [("cnt", "cnt")]

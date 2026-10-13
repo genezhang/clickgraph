@@ -29,3 +29,5 @@ SELECT
       count(*) AS `n`
 FROM __cg_nodes_Airport AS v0
 WHERE v0.state = 'CA'
+
+-- column n: Value [("n", "n")]

@@ -12,3 +12,6 @@ FROM zeek.dns_log AS v1
 LEFT JOIN optional_o1 AS o1 ON v1.query = o1.v2__name
 WHERE (v1."id.orig_h" IS NOT NULL AND v1.query IS NOT NULL)
 GROUP BY v1.query
+
+-- column d.name: Value [("d.name", "d.name")]
+-- column resolutions: Value [("resolutions", "resolutions")]

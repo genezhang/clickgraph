@@ -13,3 +13,5 @@ GROUP BY e.domain_name
 SELECT 
       count(v0.domain_name) AS "count(n)"
 FROM __cg_nodes_Domain AS v0
+
+-- column count(n): Value [("count(n)", "count(n)")]

@@ -58,3 +58,5 @@ SELECT
       w4.__cg_c0 AS `id`
 FROM with_w4 AS w4
 ORDER BY w4.__cg_arm ASC NULLS LAST, w4.__cg_row ASC NULLS LAST
+
+-- column id: Value [("id", "id")]

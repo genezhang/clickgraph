@@ -11,3 +11,5 @@ FROM with_w1 AS w1
 SELECT 
       coalesce(sum(w2.v2), 0) AS "total"
 FROM with_w2 AS w2
+
+-- column total: Value [("total", "total")]

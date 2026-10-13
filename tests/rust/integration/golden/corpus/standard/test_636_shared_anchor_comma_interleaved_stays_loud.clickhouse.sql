@@ -16,3 +16,5 @@ JOIN test_integration.posts_test AS v7 ON v6.post_id = v7.post_id
 JOIN test_integration.user_follows_test AS v8 ON v8.followed_id = w1.v1__user_id
 JOIN test_integration.users_test AS v9 ON v8.follower_id = v9.user_id
 WHERE v4.follow_id <> v8.follow_id
+
+-- column p.name: Value [("p.name", "p.name")]

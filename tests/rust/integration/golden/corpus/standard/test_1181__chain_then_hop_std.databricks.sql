@@ -65,3 +65,7 @@ JOIN test_integration.users_test AS v4 ON v3.end_id = v4.user_id
 JOIN test_integration.user_follows_test AS v5 ON v5.follower_id = v4.user_id
 JOIN test_integration.users_test AS v6 ON v5.followed_id = v6.user_id
 WHERE (NOT arrays_overlap(v1.path_edges, v3.path_edges) AND NOT array_contains(v1.path_edges, v5.follow_id) AND NOT array_contains(v3.path_edges, v5.follow_id))
+
+-- column a.user_id: Value [("a.user_id", "a.user_id")]
+-- column c.user_id: Value [("c.user_id", "c.user_id")]
+-- column y.user_id: Value [("y.user_id", "y.user_id")]

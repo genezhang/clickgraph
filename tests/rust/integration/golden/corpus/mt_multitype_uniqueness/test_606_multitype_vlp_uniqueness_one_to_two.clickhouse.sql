@@ -59,3 +59,6 @@ SELECT
 FROM vlp_v1_path AS v1
 JOIN mt606.members AS v0 ON v1.start_id = v0.id
 JOIN mt606.members AS v2 ON v1.end_id = v2.id
+
+-- column a.id: Value [("a.id", "a.id")]
+-- column b.id: Value [("b.id", "b.id")]

@@ -8,3 +8,5 @@ JOIN brahmand.interactions AS v3 ON v3.from_id = v2.user_id
 JOIN brahmand.users_bench AS v4 ON v3.to_id = v4.user_id
 WHERE (((((v1.`interaction_type` = 'AUTHORED') AND (v1.`from_type` = 'User')) AND (v1.`to_type` = 'User'))) AND ((((v3.`interaction_type` = 'FOLLOWS') AND (v3.`from_type` = 'User')) AND (v3.`to_type` = 'User'))))
 LIMIT 5
+-- column a.email: Value [("a.email", "a.email")]
+-- column c.email: Value [("c.email", "c.email")]

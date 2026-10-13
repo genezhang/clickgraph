@@ -87,3 +87,7 @@ SELECT
       o3.p2_v7_code AS "b.code"
 FROM with_w1 AS w1
 LEFT JOIN optional_o3 AS o3 ON w1.v3__code = o3.v3__code
+
+-- column c.code: Value [("c.code", "c.code")]
+-- column a.code: Value [("a.code", "a.code")]
+-- column b.code: Value [("b.code", "b.code")]

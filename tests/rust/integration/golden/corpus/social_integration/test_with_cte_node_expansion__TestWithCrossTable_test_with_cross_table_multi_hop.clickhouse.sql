@@ -48,3 +48,6 @@ FROM with_w1 AS w1
 JOIN test_integration.posts_test AS v5 ON v5.author_id = w1.v3__user_id
 JOIN test_integration.posts_test AS v6 ON v5.post_id = v6.post_id
 LIMIT 1
+-- column a: Node { label: "User" } [("age", "a.age"), ("city", "a.city"), ("country", "a.country"), ("email", "a.email"), ("is_active", "a.is_active"), ("name", "a.name"), ("registration_date", "a.registration_date"), ("user_id", "a.user_id")]
+-- column b: Node { label: "User" } [("age", "b.age"), ("city", "b.city"), ("country", "b.country"), ("email", "b.email"), ("is_active", "b.is_active"), ("name", "b.name"), ("registration_date", "b.registration_date"), ("user_id", "b.user_id")]
+-- column c: Node { label: "Post" } [("author_id", "c.author_id"), ("content", "c.content"), ("created_at", "c.created_at"), ("post_id", "c.post_id"), ("title", "c.title")]

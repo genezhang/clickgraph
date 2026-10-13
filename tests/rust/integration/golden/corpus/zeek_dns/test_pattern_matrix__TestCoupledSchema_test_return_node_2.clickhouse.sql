@@ -14,3 +14,4 @@ SELECT
       v0.domain_name AS "n.domain_name"
 FROM __cg_nodes_Domain AS v0
 LIMIT 5
+-- column n: Node { label: "Domain" } [("domain_name", "n.domain_name")]

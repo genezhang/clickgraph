@@ -9,3 +9,5 @@ SELECT
       w1.v3 AS "oid"
 FROM with_w1 AS w1
 ORDER BY w1.v3 ASC
+
+-- column oid: Value [("oid", "oid")]

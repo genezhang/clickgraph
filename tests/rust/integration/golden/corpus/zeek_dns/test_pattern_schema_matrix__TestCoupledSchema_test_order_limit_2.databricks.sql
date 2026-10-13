@@ -16,3 +16,4 @@ FROM __cg_nodes_ResolvedIP AS v0
 WHERE v0.resolved_ip IS NOT NULL
 ORDER BY v0.resolved_ip DESC NULLS FIRST
 LIMIT 10 OFFSET 5
+-- column n.resolved_ip: Value [("n.resolved_ip", "n.resolved_ip")]

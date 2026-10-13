@@ -15,3 +15,6 @@ SELECT
       w1.v4 AS `user_count`
 FROM with_w1 AS w1
 ORDER BY w1.v4 DESC NULLS FIRST
+
+-- column g.name: Value [("g.name", "g.name")]
+-- column user_count: Value [("user_count", "user_count")]

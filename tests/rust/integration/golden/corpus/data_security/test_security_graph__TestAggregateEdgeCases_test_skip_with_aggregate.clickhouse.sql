@@ -8,3 +8,5 @@ WHERE ((v1."member_type" = 'User'))
 GROUP BY v0.name
 ORDER BY v0.name ASC
 LIMIT 1, 5
+-- column g.name: Value [("g.name", "g.name")]
+-- column cnt: Value [("cnt", "cnt")]

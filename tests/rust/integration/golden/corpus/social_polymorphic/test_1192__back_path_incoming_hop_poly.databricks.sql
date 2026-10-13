@@ -115,3 +115,7 @@ JOIN brahmand.users_bench AS v2 ON v1.end_id = v2.user_id
 JOIN brahmand.interactions AS v3 ON v3.to_id = v2.user_id
 JOIN brahmand.users_bench AS v4 ON v3.from_id = v4.user_id
 WHERE (v1.end_label = 'User' AND ((((v3.`interaction_type` = 'FOLLOWS') AND (v3.`from_type` = 'User')) AND (v3.`to_type` = 'User'))) AND NOT array_contains(v1.path_edges, concat('FOLLOWS:User:User:', to_json(named_struct('_1', CAST(v3.from_id AS STRING), '_2', CAST(v3.to_id AS STRING), '_3', CAST(v3.interaction_type AS STRING), '_4', CAST(v3.timestamp AS STRING)), map('ignoreNullFields', 'false')))))
+
+-- column a.user_id: Value [("a.user_id", "a.user_id")]
+-- column b.user_id: Value [("b.user_id", "b.user_id")]
+-- column c.user_id: Value [("c.user_id", "c.user_id")]

@@ -89,3 +89,5 @@ SELECT
 FROM with_w6 AS w6
 ORDER BY w6.v16 DESC NULLS FIRST, w6.v15 ASC NULLS LAST
 LIMIT 10
+-- column tagName: Value [("tagName", "tagName")]
+-- column postCount: Value [("postCount", "postCount")]

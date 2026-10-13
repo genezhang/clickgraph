@@ -30,3 +30,6 @@ SELECT
       count(*) AS "n"
 FROM __cg_nodes_Airport AS v0
 GROUP BY v0.state
+
+-- column s: Value [("s", "s")]
+-- column n: Value [("n", "n")]

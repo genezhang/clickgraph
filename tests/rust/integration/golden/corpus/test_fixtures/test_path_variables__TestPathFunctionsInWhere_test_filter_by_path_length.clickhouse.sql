@@ -31,3 +31,5 @@ JOIN test_integration.users AS v0 ON v1.start_id = v0.user_id
 JOIN test_integration.users AS v2 ON v1.end_id = v2.user_id
 WHERE (v0.name = 'Alice' AND v1.hop_count >= 2)
 ORDER BY v2.name ASC
+
+-- column b.name: Value [("b.name", "b.name")]

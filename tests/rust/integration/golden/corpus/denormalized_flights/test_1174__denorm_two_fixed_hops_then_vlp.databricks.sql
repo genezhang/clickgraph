@@ -64,3 +64,5 @@ JOIN test_integration.flights AS v3 ON v3.Dest = v4.code
 JOIN test_integration.flights AS v1 ON v3.Origin = v1.Dest
 JOIN __cg_nodes_Airport AS v6 ON v5.end_id = v6.code
 WHERE (v1.Origin IS NOT NULL AND v1.Dest IS NOT NULL AND (v1.flight_id <> v3.flight_id OR v1.flight_number <> v3.flight_number) AND NOT array_contains(v5.path_edges, struct(v1.flight_id, v1.flight_number)) AND NOT array_contains(v5.path_edges, struct(v3.flight_id, v3.flight_number)))
+
+-- column count(*): Value [("count(*)", "count(*)")]

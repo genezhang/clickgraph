@@ -34,3 +34,5 @@ JOIN test_integration.posts_test AS v3 ON v3.author_id = v2.user_id
 JOIN test_integration.posts_test AS v4 ON v3.post_id = v4.post_id
 WHERE v0.user_id = 1
 LIMIT 5
+-- column u2.name: Value [("u2.name", "u2.name")]
+-- column p.content: Value [("p.content", "p.content")]

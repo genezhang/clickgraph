@@ -78,3 +78,5 @@ SELECT
       count(DISTINCT w3.v0__code) AS `c`
 FROM with_w3 AS w3
 LEFT JOIN optional_o5 AS o5 ON w3.v0__code = o5.v0__code
+
+-- column c: Value [("c", "c")]

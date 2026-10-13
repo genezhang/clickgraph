@@ -107,3 +107,5 @@ WHERE (1262305305684 <= v24.creationDate AND v24.creationDate <= 1354157106851)
 SELECT 
       count(*) AS `count`
 FROM with_w7 AS w7
+
+-- column count: Value [("count", "count")]

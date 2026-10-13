@@ -129,3 +129,5 @@ JOIN brahmand.users_bench AS v5 ON v6.from_id = v5.user_id
 JOIN brahmand.interactions AS v7 ON v7.from_id = w1.v4__user_id AND v7.to_id = w1.v3__user_id
 JOIN brahmand.users_bench AS v9 ON v8.end_id = v9.user_id
 WHERE (((((v6.`interaction_type` = 'FOLLOWS') AND (v6.`from_type` = 'User')) AND (v6.`to_type` = 'User'))) AND ((((v7.`interaction_type` = 'FOLLOWS') AND (v7.`from_type` = 'User')) AND (v7.`to_type` = 'User'))) AND v8.end_label = 'User' AND (v6.from_id <> v7.from_id OR v6.to_id <> v7.to_id OR v6.interaction_type <> v7.interaction_type OR v6.timestamp <> v7.timestamp) AND NOT array_contains(v8.path_edges, concat('FOLLOWS:User:User:', to_json(named_struct('_1', CAST(v6.from_id AS STRING), '_2', CAST(v6.to_id AS STRING), '_3', CAST(v6.interaction_type AS STRING), '_4', CAST(v6.timestamp AS STRING)), map('ignoreNullFields', 'false')))) AND NOT array_contains(v8.path_edges, concat('FOLLOWS:User:User:', to_json(named_struct('_1', CAST(v7.from_id AS STRING), '_2', CAST(v7.to_id AS STRING), '_3', CAST(v7.interaction_type AS STRING), '_4', CAST(v7.timestamp AS STRING)), map('ignoreNullFields', 'false')))))
+
+-- column k: Value [("k", "k")]

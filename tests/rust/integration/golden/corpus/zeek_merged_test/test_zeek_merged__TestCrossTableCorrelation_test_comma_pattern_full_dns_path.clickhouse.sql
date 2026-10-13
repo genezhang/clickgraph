@@ -8,3 +8,8 @@ JOIN zeek.dns_log AS v3 ON v3.query = v1.query
 JOIN zeek.conn_log AS v5 ON v5."id.orig_h" = v1."id.orig_h"
 WHERE (v1."id.orig_h" IS NOT NULL AND v1.query IS NOT NULL AND v3.answers IS NOT NULL AND v5."id.resp_h" IS NOT NULL AND v1."id.orig_h" = '192.168.1.10')
 ORDER BY v1.query ASC
+
+-- column srcip.ip: Value [("srcip.ip", "srcip.ip")]
+-- column d.name: Value [("d.name", "d.name")]
+-- column resolved_ip: Value [("resolved_ip", "resolved_ip")]
+-- column accessed_ip: Value [("accessed_ip", "accessed_ip")]

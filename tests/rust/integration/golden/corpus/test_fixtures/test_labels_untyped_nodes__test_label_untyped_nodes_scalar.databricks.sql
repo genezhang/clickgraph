@@ -14,3 +14,5 @@ SELECT DISTINCT
       v0.__cg_label AS `lbl`
 FROM v0_labels AS v0
 ORDER BY `lbl` ASC NULLS LAST
+
+-- column lbl: Value [("lbl", "lbl")]

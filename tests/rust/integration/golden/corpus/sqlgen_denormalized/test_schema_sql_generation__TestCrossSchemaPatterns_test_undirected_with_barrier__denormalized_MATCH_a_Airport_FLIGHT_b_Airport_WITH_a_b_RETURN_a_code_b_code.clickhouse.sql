@@ -68,3 +68,6 @@ SELECT
       w4.p2_v3_code AS "a.code", 
       w4.p2_v4_code AS "b.code"
 FROM with_w4 AS w4
+
+-- column a.code: Value [("a.code", "a.code")]
+-- column b.code: Value [("b.code", "b.code")]

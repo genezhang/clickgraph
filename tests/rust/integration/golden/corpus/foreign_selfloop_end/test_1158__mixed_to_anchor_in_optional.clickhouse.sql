@@ -11,3 +11,6 @@ SELECT
       o1.p2_v1_pid AS "a.pid"
 FROM testdb.people AS v0
 LEFT JOIN optional_o1 AS o1 ON v0.pid = o1.v0__pid
+
+-- column b.pid: Value [("b.pid", "b.pid")]
+-- column a.pid: Value [("a.pid", "a.pid")]

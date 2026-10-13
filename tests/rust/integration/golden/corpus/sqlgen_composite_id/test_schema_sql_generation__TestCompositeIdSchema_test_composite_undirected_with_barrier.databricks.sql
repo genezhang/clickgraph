@@ -45,3 +45,6 @@ SELECT
       w2.p2_v3_account_number AS `a.account_number`, 
       w2.p2_v4_account_number AS `b.account_number`
 FROM with_w2 AS w2
+
+-- column a.account_number: Value [("a.account_number", "a.account_number")]
+-- column b.account_number: Value [("b.account_number", "b.account_number")]

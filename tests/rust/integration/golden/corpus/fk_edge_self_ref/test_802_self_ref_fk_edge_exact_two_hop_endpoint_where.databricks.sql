@@ -33,3 +33,5 @@ FROM vlp_v1_path AS v1
 JOIN test_integration.fs_objects_single AS v0 ON v1.end_id = v0.object_id
 JOIN test_integration.fs_objects_single AS v2 ON v1.start_id = v2.object_id
 WHERE v2.name = 'x'
+
+-- column a.name: Value [("a.name", "a.name")]

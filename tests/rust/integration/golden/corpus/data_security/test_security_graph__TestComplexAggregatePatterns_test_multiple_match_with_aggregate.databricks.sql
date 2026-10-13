@@ -9,3 +9,6 @@ JOIN data_security.ds_fs_objects AS v4 ON v3.object_id = v4.fs_id
 WHERE (((v1.`member_type` = 'User')) AND (((v3.`subject_type` = 'User') AND (v3.`object_type` = 'File'))) AND ((v4.`fs_type` = 'File')))
 GROUP BY v2.name
 ORDER BY count(DISTINCT v4.fs_id) DESC NULLS FIRST
+
+-- column g.name: Value [("g.name", "g.name")]
+-- column accessible_files: Value [("accessible_files", "accessible_files")]

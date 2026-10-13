@@ -40,3 +40,6 @@ SELECT
 FROM vlp_v1_path AS v1
 JOIN db_composite_id.accounts AS v0 ON v1.start_bank_id = v0.bank_id AND v1.start_account_number = v0.account_number
 JOIN db_composite_id.accounts AS v2 ON v1.end_bank_id = v2.bank_id AND v1.end_account_number = v2.account_number
+
+-- column a.bank_id: Value [("a.bank_id", "a.bank_id")]
+-- column b.bank_id: Value [("b.bank_id", "b.bank_id")]

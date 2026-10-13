@@ -27,3 +27,5 @@ JOIN v1_both AS v1 ON v1.__cg_start_0 = v0.user_id
 JOIN test_integration.users_test AS v2 ON v1.__cg_end_0 = v2.user_id
 WHERE v0.user_id = 1
 LIMIT 10
+-- column neighbor.user_id: Value [("neighbor.user_id", "neighbor.user_id")]
+-- column neighbor.name: Value [("neighbor.name", "neighbor.name")]

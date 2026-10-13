@@ -26,3 +26,7 @@ FROM test_integration.orders_fk AS v0
 LEFT JOIN optional_o1 AS o1 ON v0.order_id = o1.v0__order_id
 LEFT JOIN optional_o2 AS o2 ON v0.order_id = o2.v0__order_id
 ORDER BY v0.order_id ASC NULLS LAST
+
+-- column o.order_id: Value [("o.order_id", "o.order_id")]
+-- column c.customer_id: Value [("c.customer_id", "c.customer_id")]
+-- column d.customer_id: Value [("d.customer_id", "d.customer_id")]

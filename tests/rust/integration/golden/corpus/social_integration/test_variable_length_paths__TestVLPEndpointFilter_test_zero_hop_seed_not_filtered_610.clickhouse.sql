@@ -34,3 +34,6 @@ JOIN test_integration.users_test AS v0 ON v1.end_id = v0.user_id
 JOIN test_integration.users_test AS v2 ON v1.start_id = v2.user_id
 WHERE v2.user_id > 2
 ORDER BY v0.user_id ASC, v2.user_id ASC
+
+-- column a.user_id: Value [("a.user_id", "a.user_id")]
+-- column b.user_id: Value [("b.user_id", "b.user_id")]

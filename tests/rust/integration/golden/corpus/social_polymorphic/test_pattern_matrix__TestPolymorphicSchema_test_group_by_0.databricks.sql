@@ -5,3 +5,5 @@ FROM brahmand.users_bench AS v0
 GROUP BY v0.full_name
 ORDER BY count(v0.user_id) DESC NULLS FIRST
 LIMIT 10
+-- column n.name: Value [("n.name", "n.name")]
+-- column cnt: Value [("cnt", "cnt")]

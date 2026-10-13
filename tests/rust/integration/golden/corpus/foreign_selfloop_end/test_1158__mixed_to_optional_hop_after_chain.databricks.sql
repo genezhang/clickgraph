@@ -14,3 +14,7 @@ FROM testdb.people AS v0
 JOIN testdb.reports AS v1 ON v1.mgr_id = v0.pid
 JOIN testdb.people AS v2 ON v1.emp_id = v2.pid
 LEFT JOIN optional_o1 AS o1 ON v2.pid = o1.v2__pid
+
+-- column a.pid: Value [("a.pid", "a.pid")]
+-- column b.pid: Value [("b.pid", "b.pid")]
+-- column c.pid: Value [("c.pid", "c.pid")]

@@ -8,3 +8,6 @@ SELECT
       count(*) AS "n"
 FROM with_w1 AS w1
 GROUP BY w1.v1
+
+-- column ag: Value [("ag", "ag")]
+-- column n: Value [("n", "n")]

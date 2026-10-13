@@ -10,3 +10,5 @@ GROUP BY v0.user_id
 SELECT 
       avg(w1.v4) AS `avg_follows_per_user`
 FROM with_w1 AS w1
+
+-- column avg_follows_per_user: Value [("avg_follows_per_user", "avg_follows_per_user")]

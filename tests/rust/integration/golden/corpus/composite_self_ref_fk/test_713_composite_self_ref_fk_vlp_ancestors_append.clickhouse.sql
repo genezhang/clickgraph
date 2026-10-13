@@ -38,3 +38,5 @@ FROM vlp_v1_path AS v1
 JOIN test_integration.fs_objects_composite AS v0 ON v1.start_region = v0.region AND v1.start_object_id = v0.object_id
 JOIN test_integration.fs_objects_composite AS v2 ON v1.end_region = v2.region AND v1.end_object_id = v2.object_id
 WHERE v0.name = 'doc'
+
+-- column b.name: Value [("b.name", "b.name")]

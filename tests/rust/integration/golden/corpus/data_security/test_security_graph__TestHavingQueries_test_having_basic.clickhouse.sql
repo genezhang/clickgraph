@@ -14,3 +14,6 @@ SELECT
       w1.v4 AS "member_count"
 FROM with_w1 AS w1
 ORDER BY w1.v4 DESC NULLS FIRST
+
+-- column group_name: Value [("group_name", "group_name")]
+-- column member_count: Value [("member_count", "member_count")]

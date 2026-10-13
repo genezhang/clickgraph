@@ -12,3 +12,5 @@ SELECT
 FROM data_security.ds_users AS v0
 LEFT JOIN subquery_s1 AS s1 ON v0.user_id = s1.v0__user_id
 WHERE coalesce(s1.__value, false)
+
+-- column u.name: Value [("u.name", "u.name")]

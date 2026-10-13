@@ -61,3 +61,4 @@ JOIN __cg_nodes_Airport AS v0 ON v1.start_id = v0.code
 JOIN __cg_nodes_Airport AS v2 ON v1.end_id = v2.code
 WHERE (v0.code = 'LAX' AND v2.code = 'ATL')
 LIMIT 1
+-- column hops: Value [("hops", "hops")]

@@ -31,3 +31,4 @@ FROM __cg_nodes_Airport AS v0
 WHERE v0.code IS NOT NULL
 ORDER BY v0.code DESC NULLS FIRST
 LIMIT 10 OFFSET 5
+-- column n.code: Value [("n.code", "n.code")]

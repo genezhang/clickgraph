@@ -4,3 +4,7 @@ SELECT
       CASE WHEN v0.age < 25 THEN 'Young' WHEN v0.age < 35 THEN 'Adult' ELSE 'Senior' END AS `age_group`
 FROM test_integration.users AS v0
 ORDER BY CASE WHEN v0.age < 25 THEN 'Young' WHEN v0.age < 35 THEN 'Adult' ELSE 'Senior' END ASC NULLS LAST, v0.name ASC NULLS LAST
+
+-- column n.name: Value [("n.name", "n.name")]
+-- column n.age: Value [("n.age", "n.age")]
+-- column age_group: Value [("age_group", "age_group")]

@@ -66,3 +66,6 @@ JOIN v4_both AS v4 ON v4.__cg_end_0 = v5.user_id
 JOIN with_w1 AS w1 ON v4.__cg_start_0 = w1.v3__user_id
 JOIN test_integration.users_test AS v7 ON v6.end_id = v7.user_id
 WHERE NOT has(v6.path_edges, v4.follow_id)
+
+-- column c.user_id: Value [("c.user_id", "c.user_id")]
+-- column b.user_id: Value [("b.user_id", "b.user_id")]

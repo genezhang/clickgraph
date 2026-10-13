@@ -45,3 +45,6 @@ SELECT
       count(*) AS "k"
 FROM with_w2 AS w2
 GROUP BY w2.p2_v3_bank_id
+
+-- column x: Value [("x", "x")]
+-- column k: Value [("k", "k")]

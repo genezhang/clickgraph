@@ -102,3 +102,5 @@ JOIN v1_rels AS v1 ON v1.__cg_start_0 = v0.ip
 JOIN v2_labels AS v2 ON v1.__cg_end_label = v2.__cg_label AND v1.__cg_end_0 = v2.__cg_id_0
 WHERE v0.ip = '192.168.1.10'
 LIMIT 10
+-- column type(r): Value [("type(r)", "type(r)")]
+-- column target: Graph(Node) [("target", "target")]

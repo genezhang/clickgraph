@@ -7,3 +7,6 @@ JOIN data_security.ds_users AS v2 ON v1.member_id = v2.user_id
 WHERE ((v1."member_type" = 'User'))
 GROUP BY v0.name
 ORDER BY v0.name ASC
+
+-- column g.name: Value [("g.name", "g.name")]
+-- column members: Value [("members", "members")]

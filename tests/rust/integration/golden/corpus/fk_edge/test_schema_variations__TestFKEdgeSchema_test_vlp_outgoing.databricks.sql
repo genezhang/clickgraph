@@ -57,3 +57,5 @@ JOIN test_integration.customers_fk AS v0 ON v1.start_id = v0.customer_id
 JOIN test_integration.orders_fk AS v2 ON v1.end_id = v2.order_id
 WHERE (v1.end_label = 'Order' AND v0.customer_id = 1)
 LIMIT 10
+-- column o.order_id: Value [("o.order_id", "o.order_id")]
+-- column o.total_amount: Value [("o.total_amount", "o.total_amount")]

@@ -43,3 +43,7 @@ SELECT
 FROM with_w2 AS w2
 LEFT JOIN optional_o4 AS o4 ON w2.v0__user_id = o4.v0__user_id AND (w2.v2__user_id = o4.v2__user_id OR (w2.v2__user_id IS NULL AND o4.v2__user_id IS NULL))
 ORDER BY w2.p2_v2_name ASC NULLS LAST, o4.p2_v4_name ASC NULLS LAST
+
+-- column a.name: Value [("a.name", "a.name")]
+-- column b.name: Value [("b.name", "b.name")]
+-- column c.name: Value [("c.name", "c.name")]

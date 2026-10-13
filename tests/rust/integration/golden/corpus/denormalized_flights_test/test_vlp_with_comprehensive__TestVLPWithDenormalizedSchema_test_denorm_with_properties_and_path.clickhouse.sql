@@ -70,3 +70,7 @@ SELECT
 FROM with_w4 AS w4
 ORDER BY w4.v5 ASC
 LIMIT 5
+-- column origin: Value [("origin", "origin")]
+-- column dest: Value [("dest", "dest")]
+-- column dest_state: Value [("dest_state", "dest_state")]
+-- column hops: Value [("hops", "hops")]

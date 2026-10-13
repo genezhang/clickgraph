@@ -56,3 +56,6 @@ SELECT
       w3.v3 AS "x", 
       w3.v4 AS "y"
 FROM with_w3 AS w3
+
+-- column x: Value [("x", "x")]
+-- column y: Value [("y", "y")]

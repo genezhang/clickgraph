@@ -92,3 +92,4 @@ JOIN v3_both AS v3 ON v3.__cg_start_0 = v2.code
 JOIN __cg_nodes_Airport AS v4 ON v3.__cg_end_0 = v4.code
 WHERE (v1.flight_id <> v3.flight_id OR v1.flight_number <> v3.flight_number)
 LIMIT 1
+-- column a.code: Value [("a.code", "a.code")]

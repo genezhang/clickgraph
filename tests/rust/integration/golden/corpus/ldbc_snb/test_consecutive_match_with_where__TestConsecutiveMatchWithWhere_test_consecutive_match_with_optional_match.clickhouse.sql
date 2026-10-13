@@ -16,3 +16,7 @@ FROM ldbc.comment AS v0
 CROSS JOIN ldbc.person AS v1
 LEFT JOIN optional_o1 AS o1 ON v1.personId = o1.v1__personId
 WHERE (v0.commentId = 100 AND v1.personId = 1)
+
+-- column c.commentId: Value [("c.commentId", "c.commentId")]
+-- column p.personId: Value [("p.personId", "p.personId")]
+-- column friend.personId: Value [("friend.personId", "friend.personId")]

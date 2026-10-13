@@ -17,3 +17,5 @@ FROM __cg_nodes_Domain AS v0
 GROUP BY v0.domain_name
 ORDER BY count(v0.domain_name) DESC NULLS FIRST
 LIMIT 10
+-- column n.domain_name: Value [("n.domain_name", "n.domain_name")]
+-- column cnt: Value [("cnt", "cnt")]

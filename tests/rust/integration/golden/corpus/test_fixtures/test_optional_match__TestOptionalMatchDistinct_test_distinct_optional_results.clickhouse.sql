@@ -11,3 +11,5 @@ SELECT DISTINCT
 FROM test_integration.users AS v0
 LEFT JOIN optional_o1 AS o1 ON v0.user_id = o1.v0__user_id
 ORDER BY o1.p2_v2_name ASC
+
+-- column b.name: Value [("b.name", "b.name")]

@@ -13,3 +13,7 @@ FROM with_w1 AS w1
 CROSS JOIN zeek.conn_log AS v6
 WHERE (v6."id.orig_h" IS NOT NULL AND v6."id.resp_h" IS NOT NULL AND v6."id.orig_h" = w1.v3)
 ORDER BY w1.v3 ASC, w1.v4 ASC
+
+-- column source_ip: Value [("source_ip", "source_ip")]
+-- column domain: Value [("domain", "domain")]
+-- column dest_ip: Value [("dest_ip", "dest_ip")]

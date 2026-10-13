@@ -42,3 +42,6 @@ JOIN test_integration.users_test AS v0 ON v1.follower_id = v0.user_id
 JOIN test_integration.users_test AS v4 ON v3.end_id = v4.user_id
 WHERE NOT array_contains(v3.path_edges, v1.follow_id)
 LIMIT 10
+-- column a.name: Value [("a.name", "a.name")]
+-- column b.name: Value [("b.name", "b.name")]
+-- column c.name: Value [("c.name", "c.name")]

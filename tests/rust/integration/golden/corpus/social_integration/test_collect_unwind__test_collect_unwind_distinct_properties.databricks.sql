@@ -17,3 +17,5 @@ SELECT DISTINCT
       (w2.v3)._3 AS `user.city`
 FROM with_w2 AS w2
 ORDER BY `user.city` ASC NULLS LAST
+
+-- column user.city: Value [("user.city", "user.city")]

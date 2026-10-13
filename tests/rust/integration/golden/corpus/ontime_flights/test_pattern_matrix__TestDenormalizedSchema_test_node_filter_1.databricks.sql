@@ -30,3 +30,4 @@ SELECT
 FROM __cg_nodes_Airport AS v0
 WHERE v0.city IS NOT NULL
 LIMIT 10
+-- column n.city: Value [("n.city", "n.city")]

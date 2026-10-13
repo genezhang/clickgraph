@@ -19,3 +19,6 @@ SELECT
       CASE WHEN w2.v4 = 0 THEN 'No follows' WHEN w2.v4 = 1 THEN 'One follow' ELSE 'Multiple follows' END AS "follow_status"
 FROM with_w2 AS w2
 ORDER BY w2.p2_v3_name ASC
+
+-- column a.name: Value [("a.name", "a.name")]
+-- column follow_status: Value [("follow_status", "follow_status")]

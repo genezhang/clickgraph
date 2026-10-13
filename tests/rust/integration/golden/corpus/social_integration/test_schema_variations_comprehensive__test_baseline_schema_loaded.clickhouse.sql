@@ -14,3 +14,4 @@ SELECT
       count(v0.__cg_label) AS "count(n)"
 FROM v0_labels AS v0
 LIMIT 1
+-- column count(n): Value [("count(n)", "count(n)")]

@@ -1,13 +1,15 @@
 //! P-4b S1 ratchet (`docs/design/WITH_EXPORT_CONTRACT.md` §3): every reference
-//! to a WITH CTE's columns must name a column that CTE actually exports.
+//! to a CTE's columns must name a column that CTE actually exports.
 //!
-//! Scans the ClickHouse goldens under `golden/` (which `corpus_sweep` and
-//! `sql_golden_tests` keep equal to the renderer's current output). For each
-//! binding `with_<..> AS <alias>` in one SQL scope (a CTE body, or the outer
-//! query outside every CTE body), each `<alias>.<col>` reference in that same
-//! scope must be one of the columns that CTE's SELECT exports. A violation is SQL
-//! that ClickHouse rejects with Code 47: almost always an identity / join-key
-//! column that was guessed from a naming convention instead of looked up.
+//! Scans the corpus goldens of both dialects under `golden/corpus/` (the bound
+//! plan's SQL, which `corpus_sweep` keeps equal to its output; P-4c S14c0).
+//! For each binding `<cte> AS <alias>` of any CTE (a WITH's, an OPTIONAL
+//! MATCH's, a subquery's, a walk's, a union's) in one SQL scope (a CTE body,
+//! or the outer query outside every CTE body), each `<alias>.<col>` reference
+//! in that same scope must be one of the columns that CTE's SELECT exports. A
+//! violation is SQL that ClickHouse rejects with Code 47: almost always an
+//! identity / join-key column that was guessed from a naming convention
+//! instead of looked up.
 //!
 //! This is a ratchet over a text scan, not a SQL parser. The known violations
 //! are allowlisted with their issue. A NEW violation fails the test (route the
@@ -17,6 +19,22 @@
 use regex::Regex;
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
+
+// The scan's patterns, compiled once.
+static DEF: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?:WITH RECURSIVE|WITH|,)\s*(\w+)\s+AS\s*\(").unwrap());
+static QUOTED: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?i)\bAS\s+"([^"]+)""#).unwrap());
+static BARE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)\bAS\s+([A-Za-z_]\w*)\b").unwrap());
+static PLAIN: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?s)^\s*SELECT\s+([\w\s,]+?)\s+FROM\b").unwrap());
+static SELECT_STAR: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"SELECT\s+(?:DISTINCT\s+)?\*").unwrap());
+static BINDING: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\b([\w.]+)\s+AS\s+(\w+)\b").unwrap());
+static REFERENCE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"(?:^|[^"\w.])(\w+)\.(?:"(\w+)"|(\w+))"#).unwrap());
 
 /// `(golden path relative to golden/, violation, tracking issue)`.
 /// The legacy pipeline's guessed columns (#1189, #933) went with the corpus
@@ -52,11 +70,10 @@ fn find_close(s: &[u8], start: usize) -> usize {
 /// Top-level CTE bodies by name, plus the outer query text (everything outside
 /// every CTE body).
 fn split_ctes(sql: &str) -> (HashMap<String, String>, String) {
-    let def = Regex::new(r"(?:WITH RECURSIVE|WITH|,)\s*(\w+)\s+AS\s*\(").unwrap();
     let bytes = sql.as_bytes();
     let mut bodies = HashMap::new();
     let mut spans: Vec<(usize, usize)> = Vec::new();
-    for caps in def.captures_iter(sql) {
+    for caps in DEF.captures_iter(sql) {
         let whole = caps.get(0).unwrap();
         if spans
             .iter()
@@ -82,58 +99,57 @@ fn split_ctes(sql: &str) -> (HashMap<String, String>, String) {
     (bodies, outer)
 }
 
-/// Column names a CTE body exports (`AS "x"` and bare `AS x` aliases). Bare
-/// aliases also catch table aliases — over-permissive, which can only hide a
-/// violation, never invent one.
+/// Column names a CTE body exports (`AS "x"`, bare `AS x`, either case,
+/// and a plain `SELECT a, b FROM` list). Bare aliases also catch table
+/// aliases — over-permissive, which can only hide a violation, never invent
+/// one.
 fn cte_columns(body: &str) -> BTreeSet<String> {
-    let quoted = Regex::new(r#"\bAS\s+"([^"]+)""#).unwrap();
-    let bare = Regex::new(r"\bAS\s+([A-Za-z_]\w*)\s*(?:,|\n|$)").unwrap();
-    quoted
+    let mut cols: BTreeSet<String> = QUOTED
         .captures_iter(body)
-        .chain(bare.captures_iter(body))
+        .chain(BARE.captures_iter(body))
         .map(|c| c[1].to_string())
-        .collect()
+        .collect();
+    if let Some(c) = PLAIN.captures(body) {
+        cols.extend(c[1].split(',').map(|x| x.trim().to_string()));
+    }
+    cols
 }
 
 /// Violations in one rendered SQL statement, as `"<alias>.<col> not in <cte>"`.
 fn violations_in_sql(sql: &str) -> BTreeSet<String> {
     let mut out = BTreeSet::new();
-    if !sql.contains("with_") {
-        return out;
-    }
     let (bodies, outer) = split_ctes(sql);
-    let select_star = Regex::new(r"SELECT\s+(?:DISTINCT\s+)?\*").unwrap();
     let columns: HashMap<&str, BTreeSet<String>> = bodies
         .iter()
-        .filter(|(name, _)| name.starts_with("with_"))
-        .filter(|(_, body)| !select_star.is_match(body.split("FROM").next().unwrap_or("")))
+        .filter(|(_, body)| !SELECT_STAR.is_match(body.split("FROM").next().unwrap_or("")))
         .map(|(name, body)| (name.as_str(), cte_columns(body)))
         .filter(|(_, cols)| !cols.is_empty())
         .collect();
-    let binding = Regex::new(r"\b(with_\w+)\s+AS\s+(\w+)\b").unwrap();
+    // Each scope's bindings `<relation> AS <alias>` and references
+    // `<alias>.<col>` / `<alias>."<col>"` (not inside a quoted `"a.b"`
+    // label), each read once.
     for scope in bodies.values().chain(std::iter::once(&outer)) {
-        for caps in binding.captures_iter(scope) {
-            let (cte, alias) = (&caps[1], &caps[2]);
+        let mut bound: HashMap<&str, BTreeSet<&str>> = HashMap::new();
+        for caps in BINDING.captures_iter(scope) {
+            let (relation, alias) = (caps.get(1).unwrap().as_str(), caps.get(2).unwrap().as_str());
+            bound.entry(alias).or_default().insert(relation);
+        }
+        for r in REFERENCE.captures_iter(scope) {
+            let alias = r.get(1).unwrap().as_str();
+            // Bound to one CTE only (an alias bound to another relation in
+            // the same scope too is ambiguous: skipped).
+            let Some(sources) = bound.get(alias) else {
+                continue;
+            };
+            let [cte] = sources.iter().copied().collect::<Vec<_>>()[..] else {
+                continue;
+            };
             let Some(cols) = columns.get(cte) else {
                 continue;
             };
-            let alias_q = regex::escape(alias);
-            // The alias rebound to a base table in the same scope: ambiguous, skip.
-            let rebind = Regex::new(&format!(r"\b([\w.]+)\s+AS\s+{alias_q}\b")).unwrap();
-            if rebind
-                .captures_iter(scope)
-                .any(|c| !c[1].starts_with("with_"))
-            {
-                continue;
-            }
-            // `<alias>.<col>` / `<alias>."<col>"`, not inside a quoted `"a.b"` label.
-            let reference =
-                Regex::new(&format!(r#"(?:^|[^"\w.]){alias_q}\.(?:"(\w+)"|(\w+))"#)).unwrap();
-            for r in reference.captures_iter(scope) {
-                let col = r.get(1).or_else(|| r.get(2)).unwrap().as_str();
-                if !cols.contains(col) {
-                    out.insert(format!("{alias}.{col} not in {cte}"));
-                }
+            let col = r.get(2).or_else(|| r.get(3)).unwrap().as_str();
+            if !cols.contains(col) {
+                out.insert(format!("{alias}.{col} not in {cte}"));
             }
         }
     }
@@ -145,7 +161,7 @@ fn collect_goldens(dir: &Path, out: &mut Vec<PathBuf>) {
         let path = entry.unwrap().path();
         if path.is_dir() {
             collect_goldens(&path, out);
-        } else if path.to_string_lossy().ends_with(".clickhouse.sql") {
+        } else if path.to_string_lossy().ends_with(".sql") {
             out.push(path);
         }
     }
@@ -158,16 +174,17 @@ fn with_cte_column_refs_ratchet() {
         env!("CARGO_MANIFEST_DIR")
     ));
     let mut files = Vec::new();
-    collect_goldens(&root, &mut files);
+    collect_goldens(&root.join("corpus"), &mut files);
     assert!(
-        files.len() > 1000,
-        "expected the ClickHouse corpus goldens under {root:?}, found {}",
+        files.len() > 2000,
+        "expected the corpus goldens of both dialects under {root:?}, found {}",
         files.len()
     );
 
     let mut found: BTreeSet<(String, String)> = BTreeSet::new();
     for path in &files {
-        let sql = std::fs::read_to_string(path).unwrap();
+        // Spark quotes with backticks.
+        let sql = std::fs::read_to_string(path).unwrap().replace('`', "\"");
         let rel = path
             .strip_prefix(&root)
             .unwrap()

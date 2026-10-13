@@ -72,3 +72,6 @@ SELECT
       w5.p2_v7_user_id AS "fid", 
       w5.v6 AS "d"
 FROM with_w5 AS w5
+
+-- column fid: Value [("fid", "fid")]
+-- column d: Value [("d", "d")]
