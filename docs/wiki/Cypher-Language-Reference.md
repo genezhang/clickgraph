@@ -369,17 +369,17 @@ WHERE u.nickname IS NULL
 WHERE u.email IS NOT NULL
 ```
 
-**A NULL list on ClickHouse.** ClickHouse has no NULL array, so where a list may be NULL ClickGraph holds it as `[]` beside the condition under which it is NULL, read from where the NULL comes from: a CASE's `null` (or missing) branch, `split()` of a NULL string, `tail()` / `reverse()` / a slice / a comprehension / `+` of a NULL list, `coalesce()` of lists. `IS [NOT] NULL`, `size()`, `coalesce()`, `count()`, `collect()`, `+`, `IN`, `=` / `<>`, `reduce()`, `ORDER BY`, grouping and DISTINCT answer as Neo4j does, also after a WITH (which carries the condition beside the list) and inside an OPTIONAL MATCH or a subquery, and a returned NULL list is `null`:
+**A NULL list on ClickHouse.** ClickHouse has no NULL array. Where a list may be NULL and ClickGraph knows where the NULL comes from — a CASE's `null` (or missing) branch, `split()` of a NULL string, `tail()` / `reverse()` / a slice / a comprehension / `+` / `coalesce()` of such a list, a list a WITH carries — it holds the list as `[]` beside the condition under which it is NULL, and `IS [NOT] NULL`, `size()`, `isEmpty()`, `head()` / `last()` / `l[i]`, `coalesce()`, `count()`, `collect()`, `min()` / `max()`, `+`, `IN`, comparisons, `reduce()`, `ORDER BY` (NULL last), grouping and DISTINCT answer as Neo4j does — also after a WITH (which carries the condition as a column) and inside an OPTIONAL MATCH or a subquery. Used anywhere else (a map's value, a list's element, a function's argument) and when returned, it is NULL:
 
 ```cypher
 UNWIND ['a,b', null] AS s
 WITH split(s, ',') AS l
-RETURN l, l IS NULL AS n, size(l) AS sz, coalesce(l, ['d']) AS c
--- ["a", "b"], false, 2, ["a", "b"]
--- null,       true,  null, ["d"]
+RETURN l, l IS NULL AS n, size(l) AS sz, coalesce(l, ['d']) AS c, {k: l} AS m
+-- ["a", "b"], false, 2, ["a", "b"], {k: ["a", "b"]}
+-- null,       true,  null, ["d"],   {k: null}
 ```
 
-A list whose source is not one of these (an array property of a node an OPTIONAL MATCH left NULL, an UNWIND of a list of lists, a map's value, another function) is read as it is held. A CASE with no ELSE beside a list, used inside a list, a map or an aggregate's result, is a ClickHouse `Variant`: right where it is returned, refused by ClickHouse where an array function reads it (and on ClickHouse 25, where `use_variant_as_common_type` is off).
+A list whose NULL source is not known (an array property of a node an OPTIONAL MATCH left NULL, an UNWIND of a list of lists, a map's value, another function) is read as ClickHouse holds it. A CASE of lists that is NULL is a ClickHouse `Variant` where it is used as a value: ClickHouse refuses it where an array function reads it, and ClickHouse 25 (`use_variant_as_common_type` off) refuses it. Spark has NULL lists of its own.
 
 ### Logical Operators
 

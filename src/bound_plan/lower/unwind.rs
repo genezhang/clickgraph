@@ -228,10 +228,11 @@ impl Kind {
                         .collect(),
                 )
             }
-            // A list of values that may be NULL: held as `[]` where it is
-            // (`null_list.rs`), which what reads it tells by its source.
+            // A list of values that may be NULL: on ClickHouse held as `[]`
+            // where it is (`null_list.rs`), which what reads it tells by its
+            // source. (A dialect with NULL lists reads it as it is.)
             (Kind::Null, Kind::List(k)) | (Kind::List(k), Kind::Null)
-                if !matches!(*k, Kind::Element(_)) =>
+                if !matches!(*k, Kind::Element(_)) && super::null_list::null_as_empty() =>
             {
                 Kind::List(k)
             }
@@ -543,7 +544,8 @@ impl<'s> Lowerer<'s> {
         };
         // An expression can still be refused (a node in a list), and can be
         // NULL by the schema (a property of an element that matches nothing).
-        let probe = self.expr(expr, &HashMap::new())?;
+        // (A NULL list held as `[]`: no rows, as of NULL.)
+        let probe = self.held_list(expr, &HashMap::new())?;
         // (`split(null, …)` lowers to `[]`, `null_list.rs`.)
         if empty
             || matches!(&probe, RenderExpr::Literal(Literal::Null))
@@ -564,7 +566,7 @@ impl<'s> Lowerer<'s> {
         if ordered && !self.one_row {
             self.number_rows()?;
         }
-        let e = self.expr(expr, &HashMap::new())?;
+        let e = self.held_list(expr, &HashMap::new())?;
         let element = kind.element();
         let list = match kind {
             Kind::List(_) => e,

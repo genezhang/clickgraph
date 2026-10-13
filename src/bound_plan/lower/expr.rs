@@ -244,6 +244,11 @@ impl Lowerer<'_> {
     }
 
     pub(super) fn expr(&self, e: &LogicalExpr, items: &Items) -> Result<RenderExpr, LowerError> {
+        // A list held as `[]` where it is NULL, used as a value: NULL there
+        // (`null_list.rs`).
+        if let Some(v) = self.unheld(e, items)? {
+            return Ok(v);
+        }
         Ok(match e {
             LogicalExpr::Literal(l) => RenderExpr::Literal(literal(l)),
             LogicalExpr::Parameter(p) => RenderExpr::Parameter(p.clone()),
@@ -456,8 +461,9 @@ impl Lowerer<'_> {
                     None => return unsupported("a key of a map (its value's type is not known)"),
                 }
             }
+            // (Of a NULL list held as `[]`: NULL, as `[][i]`.)
             LogicalExpr::ArraySubscript { array, index } => RenderExpr::ArraySubscript {
-                array: Box::new(self.expr(array, items)?),
+                array: Box::new(self.held_list(array, items)?),
                 index: Box::new(self.expr(index, items)?),
             },
             LogicalExpr::ArraySlicing { array, from, to } => RenderExpr::ArraySlicing {
@@ -681,8 +687,16 @@ impl Lowerer<'_> {
                     }
                 }
             }
-            // Lists compared: NULL where either is.
-            (O::Equal | O::NotEqual, [a, b]) if list(a) || list(b) => {
+            // Lists compared: NULL where either is; else the held lists.
+            (
+                O::Equal
+                | O::NotEqual
+                | O::LessThan
+                | O::GreaterThan
+                | O::LessThanEqual
+                | O::GreaterThanEqual,
+                [a, b],
+            ) if list(a) || list(b) => {
                 let mut parts = Vec::new();
                 for x in [a, b] {
                     if list(x) {
@@ -690,7 +704,14 @@ impl Lowerer<'_> {
                     }
                 }
                 if let null_list::ListNull::When(c) = null_list::ListNull::any(parts) {
-                    let value = self.operator_body(op, items, filter)?;
+                    // (What it refuses stays refused.)
+                    let value = match self.operator_body(op, items, filter)? {
+                        constant @ RenderExpr::Literal(_) => constant,
+                        _ => RenderExpr::OperatorApplicationExp(OperatorApplication {
+                            operator: op.operator,
+                            operands: vec![self.held_list(a, items)?, self.held_list(b, items)?],
+                        }),
+                    };
                     // A boolean, as the comparison is (#1057).
                     return Ok(RenderExpr::Raw(current_function_mapper().cast_bool(
                         &render_expr_to_sql_plain(&RenderExpr::Case(RenderCase {
@@ -858,6 +879,14 @@ impl Lowerer<'_> {
             return Ok(RenderExpr::OperatorApplicationExp(OperatorApplication {
                 operator: O::And,
                 operands: operands?,
+            }));
+        }
+        // A filter's `x IN l`: the list held (a NULL one as `[]`: no row
+        // either way, `null_list.rs`).
+        if let (O::In | O::NotIn, [x, list]) = (op.operator, op.operands.as_slice()) {
+            return Ok(RenderExpr::OperatorApplicationExp(OperatorApplication {
+                operator: op.operator,
+                operands: vec![self.expr(x, items)?, self.held_list(list, items)?],
             }));
         }
         Ok(RenderExpr::OperatorApplicationExp(OperatorApplication {
@@ -1527,7 +1556,7 @@ impl Lowerer<'_> {
     /// appended or prepended as a list of itself; NULL with NULL. `None`
     /// when neither side is known to be a list (the emitter decides).
     /// ClickHouse's `plus` of arrays adds them element by element.
-    fn list_addition(
+    pub(super) fn list_addition(
         &self,
         a: &LogicalExpr,
         b: &LogicalExpr,
@@ -1574,6 +1603,15 @@ impl Lowerer<'_> {
             if matches!(self.kind(x), Kind::List(_)) {
                 parts.push(self.list_null(x, items)?);
             }
+        }
+        if parts
+            .iter()
+            .any(|p| matches!(p, null_list::ListNull::When(_)))
+            && parts.contains(&null_list::ListNull::Unknown)
+        {
+            return unsupported(
+                "`+` of a list that may be NULL and a list not known to be NULL or not",
+            );
         }
         Ok(Some(match null_list::ListNull::any(parts) {
             null_list::ListNull::When(c) => null_list::empty_where(c, concat, true),
@@ -1830,7 +1868,7 @@ impl Lowerer<'_> {
 
     /// A bare variable: a projected item, a node / relationship identity, or
     /// a comprehension / reduce variable (printed by its generated name).
-    fn variable(&self, name: &str, items: &Items) -> Result<RenderExpr, LowerError> {
+    pub(super) fn variable(&self, name: &str, items: &Items) -> Result<RenderExpr, LowerError> {
         let Some(v) = parse_var(name) else {
             return unsupported("an unbound variable");
         };
@@ -2247,11 +2285,22 @@ impl Lowerer<'_> {
         if f.args.iter().any(|a| self.holds_maps(a) && map_arg(a)) {
             return unsupported(format!("{}() of a map", f.name));
         }
+        // A list these read is held (a NULL one as `[]`, `null_list.rs`):
+        // `head` / `last` of it is NULL, and the list `tail` / `reverse`
+        // give is NULL where it is (`Lowerer::unheld`); `isEmpty` reads it
+        // (`Lowerer::list_fn`).
+        let reads_list = matches!(
+            f.name.to_ascii_lowercase().as_str(),
+            "head" | "last" | "tail" | "reverse" | "isempty"
+        );
         let args = f
             .args
             .iter()
             .map(|a| match a {
                 LogicalExpr::MapLiteral(entries) if constructor => self.map_as_is(entries, items),
+                a if reads_list && matches!(self.kind(a), Kind::List(_)) => {
+                    self.held_list(a, items)
+                }
                 a => self.expr(a, items),
             })
             .collect::<Result<Vec<_>, _>>()?;
@@ -2362,6 +2411,27 @@ impl Lowerer<'_> {
                 && self.never_null_element_list(arg);
             if self.holds_elements(arg) && !collected_list {
                 return unsupported(format!("{}() of lists of nodes or relationships", f.name));
+            }
+        }
+        // A list that may be NULL, held as `[]` (`null_list.rs`): its least /
+        // greatest of the rows where it is not NULL.
+        if let (Some(arg), "min" | "max", false) = (arg, name.as_str(), distinct) {
+            if matches!(self.kind(arg), Kind::List(_)) && !self.holds_elements(arg) {
+                if let null_list::ListNull::When(c) = self.list_null(arg, items)? {
+                    let Some(spelling) = current_function_mapper().lists() else {
+                        return unsupported(format!("{name}() of lists in this SQL dialect"));
+                    };
+                    let present = render_expr_to_sql_plain(&RenderExpr::OperatorApplicationExp(
+                        OperatorApplication {
+                            operator: lx::Operator::Not,
+                            operands: vec![c],
+                        },
+                    ));
+                    let value = render_expr_to_sql_plain(&self.held_list(arg, items)?);
+                    return Ok(RenderExpr::Raw((spelling.aggregate_if)(
+                        &name, &value, &present,
+                    )));
+                }
             }
         }
         // A list that may be NULL, held as `[]` (`null_list.rs`): counted

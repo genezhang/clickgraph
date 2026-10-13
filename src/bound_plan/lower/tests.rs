@@ -4282,8 +4282,9 @@ fn databricks_size_of_a_list() {
     )
     .unwrap();
     assert!(
-        // Spark has NULL arrays: `split()` of NULL is one already.
-        got.contains("CASE WHEN v0.email_address IS NULL THEN NULL ELSE array_size(split("),
+        // Spark has NULL arrays: `split()` of NULL is one already, and its
+        // size NULL.
+        got.contains("array_size(split("),
         "{got}"
     );
     // `split()` of NULL is NULL (held as `[]`), its size NULL (#1377).
