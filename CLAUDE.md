@@ -231,7 +231,7 @@ Five schema variations exist: Standard, FK-edge, Denormalized, Polymorphic, Comp
 | `GRAPH_CONFIG_PATH` | **Required for server mode** — YAML schema file path |
 | `RUST_LOG` | Logging level (debug, info) |
 | `CLICKGRAPH_THREAD_STACK_MB` | Tokio worker thread stack (default 128 MB) |
-| `CLICKGRAPH_STATS_ENABLED` | Stats-informed anchor selection (default false; ordering only, see `docs/design/STATS_PLANNING.md`). Inert since the P-4c cutover: only the legacy planner (deleted in S14c3) read the stats; whether the fetch stays for a join ordering in the lowering (S11o10) is open |
+| `CLICKGRAPH_STATS_ENABLED` | Stats-informed anchor selection (default false; ordering only, see `docs/design/STATS_PLANNING.md`). Inert since the P-4c cutover: only the legacy planner (deleted in S14c3) read the stats. Kept (user, 2026-10-13) for shaping the lowering's SQL if ClickHouse's own optimizer falls short (e.g. join ordering, S11o10) |
 | `CLICKGRAPH_STATS_TTL_SECS` | Row-count cache TTL for stats-informed planning (default 300) |
 | `CLICKGRAPH_CHDB_TESTS` | Set to `1` to enable chdb e2e tests |
 | `CLICKGRAPH_LLM_PROVIDER` | LLM provider for schema discovery (`anthropic` or `openai`) |
