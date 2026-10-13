@@ -94,6 +94,23 @@ fn is_null(e: RenderExpr) -> RenderExpr {
 }
 
 impl Lowerer<'_> {
+    /// The list `e` where what reads it tells its NULL by its source
+    /// ([`Lowerer::list_null`]): a CASE of lists held as ClickHouse holds a
+    /// NULL list, `[]` (`Lowerer::case_held`); any other as it is.
+    pub(super) fn held_list(
+        &self,
+        e: &LogicalExpr,
+        items: &Items,
+    ) -> Result<RenderExpr, LowerError> {
+        let null_as_empty = crate::sql_generator::function_mapper::current_function_mapper()
+            .lists()
+            .is_some_and(|l| l.null_as_empty);
+        match e {
+            LogicalExpr::Case(c) if null_as_empty => self.case_held(c, true, items),
+            e => self.expr(e, items),
+        }
+    }
+
     /// When the list value `e` is NULL ([`ListNull`]). Of an expression
     /// that is not a list, `Unknown`.
     pub(super) fn list_null(&self, e: &LogicalExpr, items: &Items) -> Result<ListNull, LowerError> {
@@ -259,8 +276,11 @@ impl Lowerer<'_> {
         f: &lx::ScalarFnCall,
         items: &Items,
     ) -> Result<RenderExpr, LowerError> {
+        let null_as_empty = crate::sql_generator::function_mapper::current_function_mapper()
+            .lists()
+            .is_some_and(|l| l.null_as_empty);
         match f.name.to_ascii_lowercase().as_str() {
-            "split" => Ok(match self.list_null(e, items)? {
+            "split" if null_as_empty => Ok(match self.list_null(e, items)? {
                 // Of a NULL literal: no split at all.
                 ListNull::When(RenderExpr::Literal(Literal::Boolean(true))) => {
                     RenderExpr::List(Vec::new())
@@ -307,21 +327,21 @@ impl Lowerer<'_> {
             return Ok(RenderExpr::Literal(Literal::Null));
         };
         if rest.is_empty() {
-            return self.expr(first, items);
+            return self.held_list(first, items);
         }
         let null = match self.kind(first) {
             Kind::List(_) | Kind::Null => self.list_null(first, items)?,
             _ => ListNull::Unknown,
         };
         Ok(match null {
-            ListNull::Never => self.expr(first, items)?,
+            ListNull::Never => self.held_list(first, items)?,
             ListNull::When(RenderExpr::Literal(Literal::Boolean(true))) => {
                 self.coalesce_lists(rest, items)?
             }
             ListNull::When(c) => RenderExpr::Case(RenderCase {
                 expr: None,
                 when_then: vec![(c, self.coalesce_lists(rest, items)?)],
-                else_expr: Some(Box::new(self.expr(first, items)?)),
+                else_expr: Some(Box::new(self.held_list(first, items)?)),
             }),
             ListNull::Unknown => {
                 RenderExpr::ScalarFnCall(crate::render_plan::render_expr::ScalarFnCall {
@@ -392,7 +412,7 @@ impl Lowerer<'_> {
         }
         let plain =
             crate::sql_generator::emitters::clickhouse::to_sql_query::render_expr_to_sql_plain;
-        let value = plain(&self.element(l, items)?);
+        let value = plain(&self.held_list(l, items)?);
         let present = plain(&RenderExpr::OperatorApplicationExp(OperatorApplication {
             operator: lx::Operator::Not,
             operands: vec![c.clone()],

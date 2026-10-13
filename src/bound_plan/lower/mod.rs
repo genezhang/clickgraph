@@ -1694,6 +1694,21 @@ impl<'s> Lowerer<'s> {
                 let column = column_of(e, &w)?;
                 q.values.insert(*v, col_at(&d, &column));
                 columns.push(column.clone());
+                // When a list is NULL (`null_list.rs`): its column too, and
+                // joined on (a NULL list and `[]` are held alike).
+                let null = match self.list_nulls.get(v) {
+                    Some(Some(n)) if !is_constant(n) => {
+                        let n_column = column_of(n, &w)?;
+                        q.list_nulls.insert(*v, Some(col_at(&d, &n_column)));
+                        columns.push(n_column.clone());
+                        Some((n_column, n.clone()))
+                    }
+                    Some(n) => {
+                        q.list_nulls.insert(*v, n.clone());
+                        None
+                    }
+                    None => None,
+                };
                 if determined.contains(v) {
                     continue;
                 }
@@ -1704,6 +1719,14 @@ impl<'s> Lowerer<'s> {
                     // A value's nullability is not tracked.
                     null_safe: where_only.contains(v),
                 });
+                if let Some((n_column, n)) = null {
+                    correlation.push(Correlated {
+                        inner: col_at(&d, &n_column),
+                        outer: n,
+                        column: n_column,
+                        null_safe: true,
+                    });
+                }
                 continue;
             }
             let Some(scan) = self.scans.get(v).cloned() else {
@@ -5404,8 +5427,18 @@ impl<'s> Lowerer<'s> {
             let e = match self.node_id_item(&k.expr) {
                 // As an `id(n)` item: by the node's key (S11e).
                 Some((v, _)) => self.identity_value(v)?,
-                None => self.expr(&k.expr, items)?,
+                None => self.held_list(&k.expr, items)?,
             };
+            // A list that may be NULL, held as `[]` (`null_list.rs`): NULL
+            // last ascending, first descending, as Neo4j sorts.
+            if matches!(self.kind(&k.expr), unwind::Kind::List(_)) {
+                if let null_list::ListNull::When(c) = self.list_null(&k.expr, items)? {
+                    sorted.push(OrderByItem {
+                        expression: c,
+                        order: order.clone(),
+                    });
+                }
+            }
             sorted.push(OrderByItem {
                 expression: e,
                 order,
@@ -5594,7 +5627,26 @@ impl<'s> Lowerer<'s> {
                     continue;
                 }
             }
-            let e = self.expr(&it.expr, &HashMap::new())?;
+            // A list that may be NULL, held as `[]` (`null_list.rs`): when
+            // it is NULL is grouped and made distinct by too; a WITH carries
+            // it, the final RETURN returns NULL where it holds. (`None`: not
+            // known; `Some(None)`: never NULL.)
+            let list_null = match self.kind(&it.expr) {
+                unwind::Kind::List(_) => match self.list_null(&it.expr, &HashMap::new())? {
+                    null_list::ListNull::Never => Some(None),
+                    // Of an aggregate's group, not a value of it.
+                    null_list::ListNull::When(_) if it.aggregate => None,
+                    null_list::ListNull::When(c) => Some(Some(c)),
+                    null_list::ListNull::Unknown => None,
+                },
+                _ => None,
+            };
+            // Held as ClickHouse holds a NULL list, `[]`, beside its
+            // condition (`Lowerer::held_list`).
+            let e = match &list_null {
+                Some(Some(_)) => self.held_list(&it.expr, &HashMap::new())?,
+                _ => self.expr(&it.expr, &HashMap::new())?,
+            };
             // A map or a list of maps (of `Dynamic` values) is grouped, and
             // made distinct, by its key (`CypherUnion::distinct_key`, as a
             // UNION's): ClickHouse groups no `Dynamic`, and compares `1` and
@@ -5662,20 +5714,6 @@ impl<'s> Lowerer<'s> {
                     continue;
                 }
             }
-            // A list that may be NULL, held as `[]` (`null_list.rs`): when
-            // it is NULL is grouped and made distinct by too; a WITH carries
-            // it, the final RETURN returns NULL where it holds. (`None`: not
-            // known; `Some(None)`: never NULL.)
-            let list_null = match self.kind(&it.expr) {
-                unwind::Kind::List(_) => match self.list_null(&it.expr, &HashMap::new())? {
-                    null_list::ListNull::Never => Some(None),
-                    // Of an aggregate's group, not a value of it.
-                    null_list::ListNull::When(_) if it.aggregate => None,
-                    null_list::ListNull::When(c) => Some(Some(c)),
-                    null_list::ListNull::Unknown => None,
-                },
-                _ => None,
-            };
             if let (Some(Some(c)), true) = (&list_null, aggregating && !it.aggregate) {
                 body.group_by.push(c.clone());
             }

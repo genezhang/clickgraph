@@ -489,6 +489,25 @@ impl<'s> Lowerer<'s> {
                     column,
                     null_safe: true,
                 });
+                // When a list is NULL (`null_list.rs`): its column too, and
+                // joined on (a NULL list and `[]` are held alike).
+                match self.list_nulls.get(v).cloned() {
+                    Some(Some(n)) if !is_constant(&n) => {
+                        let column = format!("{}__null", v.name());
+                        body.select.push(select(n.clone(), &column));
+                        q.list_nulls.insert(*v, Some(col_at(&d, &column)));
+                        correlation.push(Correlated {
+                            inner: col_at(&d, &column),
+                            outer: n,
+                            column,
+                            null_safe: true,
+                        });
+                    }
+                    Some(n) => {
+                        q.list_nulls.insert(*v, n);
+                    }
+                    None => {}
+                }
                 continue;
             }
             // Its identity / endpoint columns and the properties `Q` reads.

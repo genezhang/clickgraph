@@ -296,6 +296,7 @@ impl FunctionMapper for ClickhouseFunctionMapper {
             sorted: |l| format!("arraySort({l})"),
             // No `Nullable(Array)`: a `Dynamic` holds NULL and the array.
             null_list: |c, l| format!("if({c}, NULL, CAST({l}, 'Dynamic'))"),
+            null_as_empty: true,
             fingerprint: |v| format!("cityHash64({v})"),
             map_keys: |m| format!("mapKeys({m})"),
             // A `Map(String, Dynamic)`, as a graph value's (S6c): each value

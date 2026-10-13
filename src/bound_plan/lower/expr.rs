@@ -416,13 +416,24 @@ impl Lowerer<'_> {
                 }
                 self.case(c, items)?
             }
-            LogicalExpr::ReduceExpr(r) => RenderExpr::ReduceExpr(ReduceExpr {
-                accumulator: r.accumulator.clone(),
-                initial_value: Box::new(self.expr(&r.initial_value, items)?),
-                variable: r.variable.clone(),
-                list: Box::new(self.expr(&r.list, items)?),
-                expression: Box::new(self.expr(&r.expression, items)?),
-            }),
+            LogicalExpr::ReduceExpr(r) => {
+                let reduce = RenderExpr::ReduceExpr(ReduceExpr {
+                    accumulator: r.accumulator.clone(),
+                    initial_value: Box::new(self.expr(&r.initial_value, items)?),
+                    variable: r.variable.clone(),
+                    list: Box::new(self.held_list(&r.list, items)?),
+                    expression: Box::new(self.expr(&r.expression, items)?),
+                });
+                // Over a NULL list (held as `[]`, `null_list.rs`): NULL.
+                match self.list_null(&r.list, items)? {
+                    null_list::ListNull::When(c) => RenderExpr::Case(RenderCase {
+                        expr: None,
+                        when_then: vec![(c, RenderExpr::Literal(Literal::Null))],
+                        else_expr: Some(Box::new(reduce)),
+                    }),
+                    _ => reduce,
+                }
+            }
             LogicalExpr::ArraySubscript { array, .. } | LogicalExpr::ArraySlicing { array, .. }
                 if self.holds_elements(array) =>
             {
@@ -528,7 +539,7 @@ impl Lowerer<'_> {
         // Also gives the parameter its kind (an element of the list's).
         let kind = self.kind(list);
         self.local_kinds.borrow_mut().insert(x, kind.element());
-        let list = self.expr(list, items)?;
+        let list = self.held_list(list, items)?;
         if kind == Kind::Null || matches!(list, RenderExpr::Literal(Literal::Null)) {
             return Ok(RenderExpr::Literal(Literal::Null));
         }
@@ -637,6 +648,37 @@ impl Lowerer<'_> {
                             operands: vec![c],
                         }),
                     });
+                }
+            }
+            // `x IN [a, …]` of lists, one of which may be NULL: `x = a OR …`
+            // through `=` of lists (NULL where either is), as Cypher's `IN`.
+            (O::In | O::NotIn, [x, LogicalExpr::List(xs)])
+                if !xs.is_empty() && (list(x) || xs.iter().any(list)) =>
+            {
+                let mut parts = Vec::new();
+                for e in std::iter::once(x).chain(xs) {
+                    if list(e) {
+                        parts.push(self.list_null(e, items)?);
+                    }
+                }
+                if matches!(
+                    null_list::ListNull::any(parts),
+                    null_list::ListNull::When(_)
+                ) {
+                    let op_of = |operator, operands| {
+                        LogicalExpr::OperatorApplicationExp(LOp { operator, operands })
+                    };
+                    let any = xs
+                        .iter()
+                        .map(|item| op_of(O::Equal, vec![x.clone(), item.clone()]))
+                        .reduce(|a, b| op_of(O::Or, vec![a, b]));
+                    if let Some(any) = any {
+                        let e = match op.operator {
+                            O::NotIn => op_of(O::Not, vec![any]),
+                            _ => any,
+                        };
+                        return self.expr(&e, items);
+                    }
                 }
             }
             // Lists compared: NULL where either is.
@@ -1244,7 +1286,7 @@ impl Lowerer<'_> {
             return unsupported("IN of a list expression in this SQL dialect");
         };
         let x_sql = render_expr_to_sql_plain(&self.expr(x, items)?);
-        let list_sql = render_expr_to_sql_plain(&self.expr(list, items)?);
+        let list_sql = render_expr_to_sql_plain(&self.held_list(list, items)?);
         // A NULL list is held as `[]` (`null_list.rs`): NULL where its
         // source is.
         let list_null = match self.list_null(list, items)?.condition() {
@@ -1519,7 +1561,7 @@ impl Lowerer<'_> {
                 Kind::Scalar | Kind::Boolean => RenderExpr::List(vec![self.element(e, items)?]),
                 // A list, or a value that must be one (ClickHouse refuses
                 // to concatenate anything else).
-                _ => self.expr(e, items)?,
+                _ => self.held_list(e, items)?,
             });
         }
         let concat = RenderExpr::ScalarFnCall(ScalarFnCall {
@@ -1721,14 +1763,26 @@ impl Lowerer<'_> {
     }
 
     fn case(&self, c: &LogicalCase, items: &Items) -> Result<RenderExpr, LowerError> {
-        // A CASE of lists: a NULL result is held as `[]` (`null_list.rs`);
-        // what reads it tells NULL by the CASE's conditions.
-        let lists = c
-            .when_then
-            .iter()
-            .map(|(_, t)| t)
-            .chain(c.else_expr.as_deref())
-            .any(|t| matches!(self.kind(t), Kind::List(_)));
+        self.case_held(c, false, items)
+    }
+
+    /// A CASE; `held`: of lists whose NULL travels beside it (a WITH's
+    /// `{v}__null`, a reader of its source: `null_list.rs`), its NULL results
+    /// the empty list, as ClickHouse holds a NULL list (an array is never
+    /// NULL; a `Variant` of one no array function takes). Elsewhere a NULL
+    /// stays NULL (a list of them, a map's value, …).
+    pub(super) fn case_held(
+        &self,
+        c: &LogicalCase,
+        held: bool,
+        items: &Items,
+    ) -> Result<RenderExpr, LowerError> {
+        let lists = held
+            && c.when_then
+                .iter()
+                .map(|(_, t)| t)
+                .chain(c.else_expr.as_deref())
+                .any(|t| matches!(self.kind(t), Kind::List(_)));
         // A list literal of several items may be of several types (a
         // `Variant`), which ClickHouse converts no `[]` to: then the empty
         // list of its type.
@@ -2135,7 +2189,7 @@ impl Lowerer<'_> {
                 // Of a list, which the dialect may count apart from a
                 // string's characters (S12).
                 Kind::List(_) => {
-                    let list = render_expr_to_sql_plain(&self.expr(arg, items)?);
+                    let list = render_expr_to_sql_plain(&self.held_list(arg, items)?);
                     let size = RenderExpr::Raw(current_function_mapper().list_size(&list));
                     // NULL of a NULL list (held as `[]`, `null_list.rs`).
                     return Ok(match self.list_null(arg, items)? {
@@ -2313,7 +2367,10 @@ impl Lowerer<'_> {
         // A list that may be NULL, held as `[]` (`null_list.rs`): counted
         // and collected where its source is not NULL.
         if let (Some(arg), "count" | "collect") = (arg, name.as_str()) {
-            if matches!(self.kind(arg), Kind::List(_)) && !self.holds_elements(arg) {
+            // (`collect()` of a CASE of lists or NULL: `collect_list_case`,
+            // whose NULL results are of the lists' type.)
+            let case = name == "collect" && list_or_null_case(self, arg).is_some();
+            if matches!(self.kind(arg), Kind::List(_)) && !self.holds_elements(arg) && !case {
                 if let null_list::ListNull::When(c) = self.list_null(arg, items)? {
                     return self.aggregate_present_list(&name, arg, &c, distinct, items);
                 }

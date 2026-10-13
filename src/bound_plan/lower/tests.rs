@@ -4282,7 +4282,8 @@ fn databricks_size_of_a_list() {
     )
     .unwrap();
     assert!(
-        got.contains("array_size(CASE WHEN v0.email_address IS NULL THEN array() ELSE split("),
+        // Spark has NULL arrays: `split()` of NULL is one already.
+        got.contains("CASE WHEN v0.email_address IS NULL THEN NULL ELSE array_size(split("),
         "{got}"
     );
     // `split()` of NULL is NULL (held as `[]`), its size NULL (#1377).
@@ -4873,6 +4874,30 @@ fn a_null_list_is_told_by_its_source() {
     has(
         "UNWIND ['a,b', null] AS s RETURN split(s, ',') IS NULL AS n",
         &[r#"w1.v0 IS NULL AS Nullable(Bool)) AS "n""#],
+    );
+    // ORDER BY: NULL last ascending (its condition first); reduce() over
+    // it NULL; carried into an OPTIONAL MATCH and joined on.
+    has(
+        "UNWIND ['a', null] AS s WITH split(s, ',') AS l \
+         RETURN reduce(t = '', y IN l | t + y) AS r ORDER BY l",
+        &[
+            "CASE WHEN w2.v1__null THEN NULL ELSE arrayFold(",
+            "ORDER BY w2.v1__null ASC, w2.v1 ASC",
+        ],
+    );
+    has(
+        "UNWIND ['a', null] AS s WITH s, split(s, ',') AS l \
+         OPTIONAL MATCH (u:User) WHERE u.user_id = 1 AND l IS NULL RETURN s, u.name",
+        &[
+            "d3.v2__null",
+            "(w2.v2__null = o4.v2__null OR (w2.v2__null IS NULL AND o4.v2__null IS NULL))",
+        ],
+    );
+    // Held as `[]` only beside its condition: inside a list (or a map, an
+    // aggregate) a NULL stays NULL (review).
+    has(
+        "UNWIND [1, 2] AS x RETURN [CASE WHEN x > 1 THEN [x] END, [5]] AS ll",
+        &["[CASE WHEN w1.v0 > 1 THEN [w1.v0] END, [5]]"],
     );
     // A list that is never NULL: no condition.
     has(
@@ -6560,11 +6585,9 @@ fn a_collect_of_lists_or_null_and_a_list_grouping_key() {
     has(
         "MATCH (u:User) OPTIONAL MATCH (u)-[:FOLLOWS]->(f:User) \
          RETURN u.user_id AS id, collect(CASE WHEN f IS NULL THEN null ELSE [f.name, f.age] END) AS l",
-        // A NULL list is held as the empty list of the list's type (a
-        // Variant here: `null_list.rs`), not collected.
-        &["coalesce(groupArrayIf(CASE WHEN o1.v2__user_id IS NULL THEN arrayFilter(__cg_e -> \
-           false, [o1.p2_v2_name, o1.p2_v2_age]) ELSE [o1.p2_v2_name, o1.p2_v2_age] END, NOT \
-           CASE WHEN o1.v2__user_id IS NULL THEN true ELSE false END), [])"],
+        &["coalesce(groupArrayIf(CASE WHEN o1.v2__user_id IS NULL THEN [o1.p2_v2_name, \
+           o1.p2_v2_age] ELSE [o1.p2_v2_name, o1.p2_v2_age] END, CASE WHEN o1.v2__user_id IS \
+           NULL THEN false ELSE true END), [])"],
     );
     // Over ordered rows (S11o6 review): the ordered collect has the flag.
     let got = squash(&sql(
@@ -6572,10 +6595,7 @@ fn a_collect_of_lists_or_null_and_a_list_grouping_key() {
          RETURN u.user_id AS id, collect(CASE WHEN f IS NULL THEN null ELSE [f.name, f.age] END) AS l",
     ));
     assert!(!got.contains("THEN [] ELSE"), "{got}");
-    assert!(
-        got.contains("NOT CASE WHEN w3.v4__user_id IS NULL THEN true ELSE false END"),
-        "{got}"
-    );
+    assert!(got.contains("THEN false ELSE true END"), "{got}");
     let got = squash(&sql(
         "MATCH (u:User) WITH [u.name, u.age] AS l, count(*) AS c RETURN l, c",
     ));
@@ -6844,7 +6864,7 @@ fn a_simple_case_never_matches_null() {
     // and of NULL is not compared (review).
     has(
         "UNWIND [1, null] AS x RETURN collect(CASE x WHEN null THEN [0] WHEN 1 THEN [1] END) AS c",
-        &["CASE WHEN w1.v0 = 1 THEN [1] ELSE [] END), NOT CASE WHEN w1.v0 = 1 THEN false ELSE true END"],
+        &["CASE WHEN w1.v0 = 1 THEN [1] ELSE [0] END), CASE WHEN w1.v0 = 1 THEN true ELSE false END"],
     );
     has(
         "MATCH (n:User), (m:User) RETURN sum(CASE n WHEN null THEN 1 ELSE 0 END) AS a, \

@@ -356,7 +356,8 @@ impl<'s> Lowerer<'s> {
                     | "floor" | "round" | "sign" | "sqrt" | "exp" | "log" | "log10" | "rand"
                     | "tolower" | "toupper" | "trim" | "ltrim" | "rtrim" | "substring"
                     | "replace" | "left" | "right" | "type" => Kind::Scalar,
-                    "tail" => match arg(0) {
+                    // (`reverse()` of a string is a string.)
+                    "tail" | "reverse" => match arg(0) {
                         l @ Kind::List(_) => l,
                         _ => Kind::Unknown,
                     },
