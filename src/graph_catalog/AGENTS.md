@@ -166,17 +166,14 @@ Auto-discovery populates `column_names` on schemas and detects MergeTree engine 
 
 ### Upstream (graph_catalog imports from)
 - `crate::server::models::SqlDialect` — dialect enum for SQL literal generation in `schema_types.rs`
-- `crate::query_planner::plan_ctx::PlanCtx` — used only in `pattern_schema.rs` factory method
 
 ### Downstream (who imports graph_catalog)
 - **server/** — `graph_catalog.rs` (schema admin), `mod.rs` (init), `query_context.rs` (task-local),
   `bolt_protocol/id_rewriter.rs`, `bolt_protocol/result_transformer.rs`
-- **query_planner/** — `plan_ctx/`, `logical_expr/`, `translator/`, `optimizer/`,
-  `logical_plan/` (match_clause, mod)
-- **clickhouse_query_generator/** — `json_builder.rs`, `variable_length_cte.rs`, `pagerank.rs`,
-  `multi_type_vlp_joins.rs`, `to_sql_query.rs`
-- **render_plan/** — `plan_builder_helpers.rs`, `plan_builder_utils.rs`, `join_builder.rs`,
-  `cte_extraction.rs`, `cte_generation.rs`, `cte_manager/`
+- **bound_plan/** — the binder (labels, union labels), lowering (`lower/`), writes
+- **query_planner/** — `logical_expr/`, `logical_plan/` (types only since P-4c S14c3)
+- **sql_generator/emitters/clickhouse/** — `variable_length_cte.rs`, `pagerank.rs`, `to_sql_query.rs`
+- **render_plan/** — `cte_generation.rs`, `cte_manager/`
 
 ### Key External Crates
 - `serde` / `serde_yaml` — YAML configuration deserialization

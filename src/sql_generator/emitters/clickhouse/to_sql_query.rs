@@ -4540,4 +4540,96 @@ mod tests {
         let sql = expr.to_sql();
         assert_eq!(sql, "1 + 2");
     }
+
+    #[test]
+    fn cte_rewrite_scanner_honours_backslash_escaped_quote_and_multibyte_1217() {
+        // Spark spells a literal quote `\'`; the literal does not end there, so the
+        // `vlp_a_b` after it is still INSIDE the string and must stay intact.
+        let sql = "FROM vlp_a_b WHERE x = 'it\\'s vlp_a_b é' AND y IN (SELECT 1 FROM vlp_a_b)";
+        assert_eq!(
+            rewrite_cte_name_structural(sql, "vlp_a_b", "z"),
+            "FROM z WHERE x = 'it\\'s vlp_a_b é' AND y IN (SELECT 1 FROM z)"
+        );
+    }
+
+    #[test]
+    fn rewrite_cte_name_structural_targets_refs_not_string_literals_618() {
+        // Header + recursive self-ref rewritten; a string literal that happens to
+        // equal the CTE name is LEFT INTACT (else a silent wrong result).
+        let sql =
+            "vlp_a_b AS (\n  WHERE start_node.full_name = 'vlp_a_b'\n  UNION ALL\n  FROM vlp_a_b vp\n)";
+        assert_eq!(
+            rewrite_cte_name_structural(sql, "vlp_a_b", "vlp_a_b_2"),
+            "vlp_a_b_2 AS (\n  WHERE start_node.full_name = 'vlp_a_b'\n  UNION ALL\n  FROM vlp_a_b_2 vp\n)"
+        );
+        // Must NOT corrupt an occurrence that is a prefix of a longer identifier.
+        assert_eq!(
+            rewrite_cte_name_structural("FROM vlp_a_b_2 vp", "vlp_a_b", "vlp_a_b_9"),
+            "FROM vlp_a_b_2 vp"
+        );
+        // JOIN reference is rewritten too.
+        assert_eq!(
+            rewrite_cte_name_structural("JOIN vlp_a_b ON x", "vlp_a_b", "vlp_a_b_2"),
+            "JOIN vlp_a_b_2 ON x"
+        );
+        // A bare column/alias occurrence NOT after FROM/JOIN and not a header is
+        // left alone (conservative — never over-rewrite).
+        assert_eq!(
+            rewrite_cte_name_structural("SELECT vlp_a_b.x FROM t", "vlp_a_b", "z"),
+            "SELECT vlp_a_b.x FROM t"
+        );
+        // Escaped quote inside a string literal doesn't desync the scanner.
+        assert_eq!(
+            rewrite_cte_name_structural(
+                "WHERE n = 'a''vlp_a_b' AND FROM vlp_a_b vp",
+                "vlp_a_b",
+                "vlp_a_b_2"
+            ),
+            "WHERE n = 'a''vlp_a_b' AND FROM vlp_a_b_2 vp"
+        );
+    }
+
+    /// #642: the derived sub-CTE family (`<base>_inner`/`_to_target`/…) bundled in
+    /// a VLP RawSql blob must be discovered (only at `AS (` definition headers) and
+    /// renamed together with the base, so a second union arm with the same aliases
+    /// doesn't re-define e.g. `vlp_a_b_inner` (Code 179).
+    #[test]
+    fn discover_and_rewrite_derived_cte_family_642() {
+        // Discovery: only names defined as `<base>_<suffix> AS (` headers.
+        let sql = "vlp_a_b_inner AS (\n  FROM vlp_a_b_inner vp\n),\nvlp_a_b_to_target AS (\n  SELECT * FROM vlp_a_b_inner\n),\nvlp_a_b AS (\n  SELECT * FROM vlp_a_b_to_target\n)";
+        let mut found = discover_derived_cte_names(sql, "vlp_a_b");
+        found.sort();
+        assert_eq!(found, vec!["vlp_a_b_inner", "vlp_a_b_to_target"]);
+
+        // A `<base>_<suffix>` that is only REFERENCED (never a header) is NOT
+        // discovered — e.g. a bare `FROM foo_inner` with no `foo_inner AS (`.
+        assert_eq!(
+            discover_derived_cte_names("SELECT * FROM vlp_a_b_inner", "vlp_a_b"),
+            Vec::<String>::new()
+        );
+
+        // A string literal that looks like a header must NOT be discovered.
+        assert_eq!(
+            discover_derived_cte_names("WHERE x = 'vlp_a_b_inner AS ('", "vlp_a_b"),
+            Vec::<String>::new()
+        );
+
+        // Full family rewrite (base + derived) via rewrite_cte_self_name_in_raw_sql.
+        let mut content = CteContent::RawSql(sql.to_string());
+        rewrite_cte_self_name_in_raw_sql(&mut content, "vlp_a_b", "vlp_a_b_2");
+        let CteContent::RawSql(rewritten) = &content else {
+            panic!("expected RawSql");
+        };
+        // Every header and cross-reference of the family is renamed.
+        assert!(rewritten.contains("vlp_a_b_2_inner AS ("));
+        assert!(rewritten.contains("FROM vlp_a_b_2_inner vp"));
+        assert!(rewritten.contains("vlp_a_b_2_to_target AS ("));
+        assert!(rewritten.contains("SELECT * FROM vlp_a_b_2_inner")); // to_target's ref
+        assert!(rewritten.contains("vlp_a_b_2 AS ("));
+        assert!(rewritten.contains("SELECT * FROM vlp_a_b_2_to_target")); // outer's ref
+                                                                          // The un-suffixed base must NOT leak (no bare `vlp_a_b_inner`/`vlp_a_b AS`).
+        assert!(!rewritten.contains("vlp_a_b_inner"));
+        assert!(!rewritten.contains("vlp_a_b_to_target"));
+        assert!(!rewritten.contains("\nvlp_a_b AS ("));
+    }
 }

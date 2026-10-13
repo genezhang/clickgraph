@@ -688,3 +688,38 @@ fn render_in_list_rhs(
             .in_list_predicate(lhs_sql, &item_sqls, negate),
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn render_in_list_rhs_with_null_expands_for_three_valued_logic_855() {
+        use crate::render_plan::render_expr::Literal as RLit;
+        // `x IN [1, 2, null]` on the CTE-body path must expand element-wise so
+        // three-valued IN holds (#855): a plain `x IN (…)` value-list would
+        // collapse the null to a non-match. `x` here is a pre-rendered LHS.
+        let list = RenderExpr::List(vec![
+            RenderExpr::Literal(RLit::Integer(1)),
+            RenderExpr::Literal(RLit::Integer(2)),
+            RenderExpr::Literal(RLit::Null),
+        ]);
+        assert_eq!(
+            render_in_list_rhs(&list, "x", false, &[]).unwrap(),
+            "(x = 1 OR x = 2 OR x = NULL)"
+        );
+        assert_eq!(
+            render_in_list_rhs(&list, "x", true, &[]).unwrap(),
+            "(x <> 1 AND x <> 2 AND x <> NULL)"
+        );
+        // A null-free list keeps the byte-stable value-list form (0 churn).
+        let nn = RenderExpr::List(vec![
+            RenderExpr::Literal(RLit::Integer(1)),
+            RenderExpr::Literal(RLit::Integer(2)),
+        ]);
+        assert_eq!(
+            render_in_list_rhs(&nn, "x", false, &[]).unwrap(),
+            "x IN (1, 2)"
+        );
+    }
+}

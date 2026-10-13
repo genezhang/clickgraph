@@ -97,8 +97,8 @@ matters — tests should not depend on specific code assignments.
 
 | Utility | Used by |
 |---------|---------|
-| `cte_naming` | `render_plan/plan_builder.rs` |
-| `id_encoding` | `server/bolt_protocol/id_mapper.rs`, `server/graph_catalog.rs`, `query_planner/optimizer/union_pruning.rs` |
+| `cte_naming` | (no caller since P-4c S14c3; removed in S14c7) |
+| `id_encoding` | `server/bolt_protocol/id_mapper.rs`, `server/graph_catalog.rs` |
 | `serde_arc` | `query_planner/logical_plan/mod.rs`, `query_planner/logical_expr/mod.rs` |
 | `serde_arc_vec` | `query_planner/logical_plan/mod.rs` |
 
