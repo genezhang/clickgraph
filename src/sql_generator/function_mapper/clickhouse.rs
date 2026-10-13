@@ -224,9 +224,10 @@ impl FunctionMapper for ClickhouseFunctionMapper {
             // kind; another is of its type's (#1432): a `Date32` is a
             // `Date`, a `DateTime64` a `DateTime` of its zone (the session's
             // when the type names none), its fraction without trailing
-            // zeros. Not JSON: `toJSONString` quotes a 64-bit integer as a
-            // string under `output_format_json_quote_64bit_integers`. NULL
-            // is one group.
+            // zeros, then its instant in microseconds (two instants of a DST
+            // fall-back hour print alike; the text has the rest). Not JSON:
+            // `toJSONString` quotes a 64-bit integer as a string under
+            // `output_format_json_quote_64bit_integers`. NULL is one group.
             distinct_key: |v| {
                 let ty = format!("dynamicType(CAST({v}, 'Dynamic'))");
                 // `Int[0-9]`: not an `Interval…`.
@@ -234,6 +235,15 @@ impl FunctionMapper for ClickhouseFunctionMapper {
                 let string =
                     format!("match({ty}, '^(String|FixedString|Enum|UUID|IPv|LowCardinality)')");
                 let zone = format!("extract({ty}, '''([^'']*)''')");
+                let clock = format!(
+                    "replaceRegexpOne(replaceRegexpOne(toString({v}), \
+                     '(\\\\.[0-9]*[1-9])0+$', '\\\\1'), '\\\\.0+$', '')"
+                );
+                // NULL of a value of another type, not an error.
+                let instant = format!(
+                    "ifNull(toString(toUnixTimestamp64Micro(accurateCastOrNull(\
+                     CAST({v}, 'Dynamic'), 'DateTime64(6, ''UTC'')'))), '')"
+                );
                 // `toString` drops a FixedString's trailing zero bytes,
                 // which the output prints: padded back to its width.
                 format!(
@@ -245,8 +255,8 @@ impl FunctionMapper for ClickhouseFunctionMapper {
                      multiIf({number} AND toString({v}) = '-0', '0', \
                      startsWith({ty}, 'FixedString'), \
                      rightPad(toString({v}), toUInt64OrZero(extract({ty}, '[0-9]+')), '\\0'), \
-                     match({ty}, '^(DateTime|Time)'), replaceRegexpOne(replaceRegexpOne(\
-                     toString({v}), '(\\\\.[0-9]*[1-9])0+$', '\\\\1'), '\\\\.0+$', ''), \
+                     startsWith({ty}, 'DateTime'), concat({clock}, ' ', {instant}), \
+                     startsWith({ty}, 'Time'), {clock}, \
                      toString({v})))"
                 )
             },
@@ -454,6 +464,9 @@ mod tests {
             ),
             format!("startsWith({ty}, 'Time'), 'Time', {ty})"),
             r"replaceRegexpOne(replaceRegexpOne(toString(x), '(\\.[0-9]*[1-9])0+$', '\\1'), '\\.0+$', '')"
+                .to_string(),
+            "ifNull(toString(toUnixTimestamp64Micro(accurateCastOrNull(CAST(x, 'Dynamic'), \
+             'DateTime64(6, ''UTC'')'))), '')"
                 .to_string(),
         ] {
             assert!(key.contains(&part), "missing `{part}` in\n{key}");
