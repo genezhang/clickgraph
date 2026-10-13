@@ -386,6 +386,20 @@ impl<'s> Lowerer<'s> {
                     "count" | "sum" | "avg" => Kind::Scalar,
                     "min" | "max" => match arg {
                         Kind::Scalar | Kind::Boolean | Kind::Null => Kind::Scalar,
+                        // Of lists of values that may be NULL (ClickHouse,
+                        // `null_list.rs`): a list, NULL of a group of none.
+                        Kind::List(k)
+                            if !matches!(*k, Kind::Element(_))
+                                && super::null_list::null_as_empty()
+                                && f.args.first().is_some_and(|a| {
+                                    matches!(
+                                        self.list_null(a, &HashMap::new()),
+                                        Ok(super::null_list::ListNull::When(_))
+                                    )
+                                }) =>
+                        {
+                            Kind::List(k)
+                        }
                         _ => Kind::Unknown,
                     },
                     _ => Kind::Unknown,

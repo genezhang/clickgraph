@@ -1034,7 +1034,7 @@ impl<'s> Lowerer<'s> {
                 self.relation(input)?;
                 let exprs: Vec<&LogicalExpr> = keys.iter().map(|k| &k.expr).collect();
                 self.apply_subqueries(&exprs)?;
-                let keys = self.sort_keys(keys, &HashMap::new())?;
+                let keys = self.sort_keys(keys, &HashMap::new(), None)?;
                 // Sorting by constants keeps the order the rows had.
                 if !keys.is_empty() {
                     self.order = RowOrder::Keys(keys);
@@ -5389,10 +5389,14 @@ impl<'s> Lowerer<'s> {
     // ------------------------------------------------------------- segments
 
     /// `ORDER BY` keys over the current relation (and a projection's items).
+    /// `of_group`: of a DISTINCT that is no aggregation, the items it groups
+    /// by a key (lists, maps: `items` holds them as they are); a sort key
+    /// reading one is any one of its group's.
     fn sort_keys(
         &self,
         keys: &[SortKey],
         items: &HashMap<VarId, RenderExpr>,
+        of_group: Option<&HashSet<VarId>>,
     ) -> Result<Vec<OrderByItem>, LowerError> {
         if keys.iter().any(|k| self.holds_elements(&k.expr)) {
             // A tuple would sort by its columns.
@@ -5446,6 +5450,25 @@ impl<'s> Lowerer<'s> {
                 Some((v, _)) => self.identity_value(v)?,
                 // (A list held where its NULL is known: `null_list.rs`.)
                 None => self.held_list(&k.expr, items)?,
+            };
+            // A key reading an item of a DISTINCT's group: any one of the
+            // group's, one value by DISTINCT (not a grouping key).
+            let reads_group = of_group.is_some_and(|vars| {
+                let mut found = false;
+                crate::bound_plan::expr::visit(&k.expr, &mut |x| {
+                    if let LogicalExpr::TableAlias(
+                        crate::query_planner::logical_expr::TableAlias(n),
+                    ) = x
+                    {
+                        found |= parse_var(n).is_some_and(|v| vars.contains(&v));
+                    }
+                });
+                found
+            });
+            let e = match (reads_group, current_function_mapper().cypher_union()) {
+                (true, Some(u)) => RenderExpr::Raw((u.any)(&render_expr_to_sql_plain(&e))),
+                (true, None) => return unsupported("ORDER BY a grouped list in this SQL dialect"),
+                (false, _) => e,
             };
             // A list that may be NULL, held as `[]` (`null_list.rs`): NULL
             // last ascending, first descending, as Neo4j sorts.
@@ -5509,6 +5532,9 @@ impl<'s> Lowerer<'s> {
         // List items that may be NULL: when, and the list held so, over the
         // input rows and of a group (`Lowerer::held_items`).
         let mut held_items: Vec<(VarId, RenderExpr, RenderExpr, RenderExpr)> = Vec::new();
+        // Each item as it is (no group's), and those a DISTINCT keys by a key.
+        let mut raw_env: HashMap<VarId, RenderExpr> = HashMap::new();
+        let mut keyed_items: HashSet<VarId> = HashSet::new();
         // `id(n)` items: their column is the node's key, not the id returned.
         // Path elements a WITH already exports (`WITH p, p AS q`).
         let mut exported: Vec<VarId> = Vec::new();
@@ -5655,8 +5681,15 @@ impl<'s> Lowerer<'s> {
             let list_null = match self.kind(&it.expr) {
                 unwind::Kind::List(_) => match self.list_null(&it.expr, &HashMap::new())? {
                     null_list::ListNull::Never => Some(None),
-                    // Of an aggregate's group, not a value of it.
-                    null_list::ListNull::When(_) if it.aggregate => None,
+                    // Of an aggregate's group, not a value of it (but
+                    // `min` / `max` of lists, `Lowerer::min_max_list`).
+                    null_list::ListNull::When(_)
+                        if it.aggregate
+                            && !matches!(&it.expr, LogicalExpr::AggregateFnCall(f)
+                                if matches!(f.name.to_ascii_lowercase().as_str(), "min" | "max")) =>
+                    {
+                        None
+                    }
                     null_list::ListNull::When(c) => Some(Some(c)),
                     null_list::ListNull::Unknown => None,
                 },
@@ -5713,8 +5746,13 @@ impl<'s> Lowerer<'s> {
                 _ => e.clone(),
             };
             items_env.insert(it.var, read);
+            raw_env.insert(it.var, e.clone());
+            if map_key.is_some() || held.is_some() {
+                keyed_items.insert(it.var);
+            }
             if let (Some(Some(flag)), Some(held)) = (&list_null, &held) {
-                let grouped = match aggregating || body.distinct {
+                // (An aggregate is its group's already.)
+                let grouped = match (aggregating || body.distinct) && !it.aggregate {
                     true => match current_function_mapper().cypher_union() {
                         Some(u) => RenderExpr::Raw((u.any)(&render_expr_to_sql_plain(held))),
                         None => return unsupported("a grouped list in this SQL dialect"),
@@ -5843,7 +5881,8 @@ impl<'s> Lowerer<'s> {
                         _ => (e, false),
                     };
                     let column = body.column(e, &it.name);
-                    if map_key.is_some() || null {
+                    // (An aggregate is its group's already.)
+                    if map_key.is_some() || (null && !it.aggregate) {
                         body.determined.push(column.clone());
                     }
                     shape.push(ResultColumn {
@@ -5870,9 +5909,13 @@ impl<'s> Lowerer<'s> {
                 );
             }
         };
-        set_held(true);
-        body.order_by = self.sort_keys(&p.order_by, &items_env)?;
+        // (A DISTINCT that is no aggregation reads its items as they are,
+        // a key reading one it groups by a key being any one of its group's.)
         set_held(aggregating);
+        body.order_by = match body.distinct && !aggregating {
+            true => self.sort_keys(&p.order_by, &raw_env, Some(&keyed_items))?,
+            false => self.sort_keys(&p.order_by, &items_env, None)?,
+        };
         // Without its own ORDER BY, a projection keeps the order of its input
         // rows. The SQL keeps it only for a plain projection; after DISTINCT or
         // aggregation it is lost, so a SKIP / LIMIT relying on it is refused.

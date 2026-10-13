@@ -2425,41 +2425,15 @@ impl Lowerer<'_> {
         // A list that may be NULL, held as `[]` (`null_list.rs`): its least /
         // greatest of the rows where it is not NULL.
         // (DISTINCT changes no least or greatest.)
-        if let (Some(arg), "min" | "max") = (arg, name.as_str()) {
-            if matches!(self.kind(arg), Kind::List(_)) && !self.holds_elements(arg) {
-                if let null_list::ListNull::When(c) = self.list_null(arg, items)? {
-                    let Some(spelling) = current_function_mapper().lists() else {
-                        return unsupported(format!("{name}() of lists in this SQL dialect"));
-                    };
-                    let present = render_expr_to_sql_plain(&RenderExpr::OperatorApplicationExp(
-                        OperatorApplication {
-                            operator: lx::Operator::Not,
-                            operands: vec![c.clone()],
-                        },
-                    ));
-                    let value = render_expr_to_sql_plain(&self.held_list(arg, items)?);
-                    // NULL of a group with no list that is not NULL.
-                    let counted = RenderExpr::AggregateFnCall(AggregateFnCall {
-                        name: "count".to_string(),
-                        args: vec![RenderExpr::Case(RenderCase {
-                            expr: None,
-                            when_then: vec![(c, RenderExpr::Literal(Literal::Null))],
-                            else_expr: Some(Box::new(RenderExpr::Literal(Literal::Integer(1)))),
-                        })],
-                    });
-                    let none = RenderExpr::OperatorApplicationExp(OperatorApplication {
-                        operator: lx::Operator::Equal,
-                        operands: vec![counted, RenderExpr::Literal(Literal::Integer(0))],
-                    });
-                    return Ok(RenderExpr::Case(RenderCase {
-                        expr: None,
-                        when_then: vec![(none, RenderExpr::Literal(Literal::Null))],
-                        else_expr: Some(Box::new(RenderExpr::Raw((spelling.aggregate_if)(
-                            &name, &value, &present,
-                        )))),
-                    }));
-                }
-            }
+        // Of lists that may be NULL (`null_list.rs`): as a value, NULL of a
+        // group with no list that is not NULL (a ClickHouse `Variant`); what
+        // knows its NULL reads it held (`Lowerer::min_max_list`).
+        if let Some((none, held)) = self.min_max_list(f, items)? {
+            return Ok(RenderExpr::Case(RenderCase {
+                expr: None,
+                when_then: vec![(none, RenderExpr::Literal(Literal::Null))],
+                else_expr: Some(Box::new(held)),
+            }));
         }
         // A list that may be NULL, held as `[]` (`null_list.rs`): counted
         // and collected where its source is not NULL.

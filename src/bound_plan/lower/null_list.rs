@@ -142,6 +142,9 @@ impl Lowerer<'_> {
                 LogicalExpr::Operator(op) | LogicalExpr::OperatorApplicationExp(op) => {
                     op.operator == lx::Operator::Addition
                 }
+                LogicalExpr::AggregateFnCall(f) => {
+                    matches!(f.name.to_ascii_lowercase().as_str(), "min" | "max")
+                }
                 _ => false,
             }
     }
@@ -164,6 +167,10 @@ impl Lowerer<'_> {
                 None => self.expr(e, items),
             },
             LogicalExpr::Case(c) => self.case_held(c, true, items),
+            LogicalExpr::AggregateFnCall(f) => match self.min_max_list(f, items)? {
+                Some((_, held)) => Ok(held),
+                None => self.expr(e, items),
+            },
             LogicalExpr::ScalarFnCall(f) => {
                 if let Some((how, x, body, list)) = comprehension(f) {
                     return self.comprehension(how, x, body, list, items, true);
@@ -227,6 +234,10 @@ impl Lowerer<'_> {
             LogicalExpr::AggregateFnCall(f) if f.name.eq_ignore_ascii_case("collect") => {
                 ListNull::Never
             }
+            LogicalExpr::AggregateFnCall(f) => match self.min_max_list(f, items)? {
+                Some((none, _)) => ListNull::When(none),
+                None => ListNull::Unknown,
+            },
             LogicalExpr::Case(c) => {
                 let conditions = self.case_conditions(c, items)?;
                 let mut when_then = Vec::new();
@@ -618,5 +629,63 @@ impl Lowerer<'_> {
                 args: vec![RenderExpr::Raw(list), RenderExpr::List(Vec::new())],
             }),
         })
+    }
+}
+
+impl Lowerer<'_> {
+    /// `min(l)` / `max(l)` (DISTINCT or not) of a list `l` that may be NULL:
+    /// when it is NULL — of a group with no list that is not NULL — and its
+    /// value held (of the lists that are not NULL; `[]` of none).
+    pub(super) fn min_max_list(
+        &self,
+        f: &lx::AggregateFnCall,
+        items: &Items,
+    ) -> Result<Option<(RenderExpr, RenderExpr)>, LowerError> {
+        use crate::render_plan::render_expr::AggregateFnCall;
+        let name = f.name.to_ascii_lowercase();
+        if !matches!(name.as_str(), "min" | "max") {
+            return Ok(None);
+        }
+        let arg = match f.args.as_slice() {
+            [LogicalExpr::OperatorApplicationExp(op) | LogicalExpr::Operator(op)]
+                if op.operator == lx::Operator::Distinct && op.operands.len() == 1 =>
+            {
+                &op.operands[0]
+            }
+            [one] => one,
+            _ => return Ok(None),
+        };
+        if !matches!(self.kind(arg), Kind::List(_)) || self.holds_elements(arg) {
+            return Ok(None);
+        }
+        let ListNull::When(c) = self.list_null(arg, items)? else {
+            return Ok(None);
+        };
+        let m = crate::sql_generator::function_mapper::current_function_mapper();
+        let Some(spelling) = m.lists() else {
+            return super::unsupported(format!("{name}() of lists in this SQL dialect"));
+        };
+        let plain =
+            crate::sql_generator::emitters::clickhouse::to_sql_query::render_expr_to_sql_plain;
+        let present = plain(&RenderExpr::OperatorApplicationExp(OperatorApplication {
+            operator: lx::Operator::Not,
+            operands: vec![c.clone()],
+        }));
+        // (DISTINCT changes no least or greatest.)
+        let value = plain(&self.held_list(arg, items)?);
+        let held = RenderExpr::Raw((spelling.aggregate_if)(&name, &value, &present));
+        let counted = RenderExpr::AggregateFnCall(AggregateFnCall {
+            name: "count".to_string(),
+            args: vec![RenderExpr::Case(RenderCase {
+                expr: None,
+                when_then: vec![(c, RenderExpr::Literal(Literal::Null))],
+                else_expr: Some(Box::new(RenderExpr::Literal(Literal::Integer(1)))),
+            })],
+        });
+        let none = RenderExpr::OperatorApplicationExp(OperatorApplication {
+            operator: lx::Operator::Equal,
+            operands: vec![counted, RenderExpr::Literal(Literal::Integer(0))],
+        });
+        Ok(Some((none, held)))
     }
 }

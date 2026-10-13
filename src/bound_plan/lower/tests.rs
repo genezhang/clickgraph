@@ -4910,8 +4910,8 @@ fn a_null_list_is_told_by_its_source() {
         "UNWIND [1, 2] AS x WITH x % 2 AS g, CASE WHEN x > 5 THEN [x] END AS l \
          RETURN g, max(l) AS m",
         &[
-            "CASE WHEN count(CASE WHEN w2.v2__null THEN NULL ELSE 1 END) = 0 THEN NULL \
-           ELSE maxIf(w2.v2__held, NOT w2.v2__null) END",
+            "if(count(CASE WHEN w2.v2__null THEN NULL ELSE 1 END) = 0, NULL, \
+             CAST(maxIf(w2.v2__held, NOT w2.v2__null), 'Dynamic')) AS \"m\"",
         ],
     );
     // A DISTINCT's sort key of a list item is no grouping key (it is an

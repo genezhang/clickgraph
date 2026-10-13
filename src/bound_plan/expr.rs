@@ -934,7 +934,7 @@ pub(crate) fn rename_refs(
     }
 }
 
-fn visit(e: &LogicalExpr, f: &mut dyn FnMut(&LogicalExpr)) {
+pub(crate) fn visit(e: &LogicalExpr, f: &mut dyn FnMut(&LogicalExpr)) {
     f(e);
     for c in children(e) {
         visit(c, f);
