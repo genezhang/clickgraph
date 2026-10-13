@@ -26,7 +26,7 @@ pub use function_translator::{
     get_supported_functions, is_ch_aggregate_function, is_function_supported, CH_AGG_PREFIX,
     CH_PASSTHROUGH_PREFIX,
 };
-pub use variable_length_cte::{NodeProperty, VariableLengthCteGenerator, WeightCteConfig};
+pub use variable_length_cte::{NodeProperty, VariableLengthCteGenerator};
 
 /// Convert a Cypher query string directly to ClickHouse SQL.
 ///

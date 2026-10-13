@@ -9,7 +9,6 @@ pub mod expression_parser;
 pub mod filter_parser;
 pub mod graph_schema;
 pub mod llm_prompt;
-pub mod node_classification;
 pub mod pattern_schema;
 pub mod schema_discovery;
 
@@ -47,13 +46,8 @@ pub use graph_schema::{
     is_node_denormalized_on_edge, Direction, EdgeTablePattern, GraphSchema, GraphSchemaElement,
     NodeIdSchema, NodeSchema, RelationshipSchema,
 };
-pub use node_classification::{
-    has_denormalized_properties_on_side, is_node_denormalized, rel_has_any_denormalized,
-    rel_has_both_nodes_denormalized, rel_has_denormalized_properties,
-};
 pub use pattern_schema::{
-    CoupledEdgeContext, EdgeAccessStrategy, JoinStrategy, NodeAccessStrategy, NodePosition,
-    PatternSchemaContext,
+    EdgeAccessStrategy, JoinStrategy, NodeAccessStrategy, PatternSchemaContext,
 };
 #[allow(unused_imports)]
 pub use schema_discovery::{
