@@ -364,7 +364,7 @@ impl Lowerer<'_> {
                 self.unless_null(&[v], RenderExpr::Literal(Literal::Boolean(holds)))?
             }
             LogicalExpr::Operator(op) | LogicalExpr::OperatorApplicationExp(op) => {
-                self.operator(op, items)?
+                self.operator(op, items, false)?
             }
             // A list's elements are tuples of one type: of one label, or one
             // definition, and nothing else (`elements.rs`).
@@ -599,7 +599,25 @@ impl Lowerer<'_> {
         xs.iter().map(|x| self.expr(x, items)).collect()
     }
 
-    fn operator(&self, op: &LOp, items: &Items) -> Result<RenderExpr, LowerError> {
+    /// A filter's condition, whose NULL drops a row as false does: as
+    /// [`Self::expr`], but an `x IN l` reached through ANDs only is the
+    /// dialect's two-valued `IN`, the same rows here, which a walk's start
+    /// and ClickHouse's key analysis read (#1423 review).
+    pub(super) fn condition(
+        &self,
+        p: &LogicalExpr,
+        items: &Items,
+    ) -> Result<RenderExpr, LowerError> {
+        match p {
+            LogicalExpr::Operator(op) | LogicalExpr::OperatorApplicationExp(op) => {
+                self.operator(op, items, true)
+            }
+            _ => self.expr(p, items),
+        }
+    }
+
+    /// `filter`: of a condition ([`Self::condition`]).
+    fn operator(&self, op: &LOp, items: &Items, filter: bool) -> Result<RenderExpr, LowerError> {
         use lx::Operator as O;
         if let Some(e) = self.id_comparison(op)? {
             return Ok(e);
@@ -711,6 +729,42 @@ impl Lowerer<'_> {
         }
         if let Some(e) = self.boolean_operator(op, items)? {
             return Ok(e);
+        }
+        // `x IN …` of values.
+        if let (O::In | O::NotIn, [x, list]) = (op.operator, op.operands.as_slice()) {
+            let negated = op.operator == O::NotIn;
+            let null = |e: &LogicalExpr| {
+                matches!(e, LogicalExpr::Literal(lx::Literal::Null)) || self.kind(e) == Kind::Null
+            };
+            match list {
+                // `null IN []` is false.
+                LogicalExpr::List(xs) if xs.is_empty() => {
+                    // Still lowered: what is refused in it stays refused.
+                    self.expr(x, items)?;
+                    return Ok(RenderExpr::Literal(Literal::Boolean(negated)));
+                }
+                _ if null(list) => {
+                    self.expr(x, items)?;
+                    return Ok(RenderExpr::Literal(Literal::Null));
+                }
+                // A list of items: `x = a OR x = b …` (the SQL printer).
+                LogicalExpr::List(_) => {}
+                // A filter's: as it is (NULL and false drop the row alike).
+                _ if filter && !negated && !null(x) => {}
+                _ => return self.in_values(x, list, negated, items),
+            }
+        }
+        // A filter's AND: of conditions.
+        if filter && op.operator == O::And {
+            let operands: Result<Vec<RenderExpr>, LowerError> = op
+                .operands
+                .iter()
+                .map(|o| self.condition(o, items))
+                .collect();
+            return Ok(RenderExpr::OperatorApplicationExp(OperatorApplication {
+                operator: O::And,
+                operands: operands?,
+            }));
         }
         Ok(RenderExpr::OperatorApplicationExp(OperatorApplication {
             operator: op.operator,
@@ -1118,6 +1172,48 @@ impl Lowerer<'_> {
             m.list_size(&list_sql),
             if negated { "true" } else { "false" },
             x_absent.join(" OR ")
+        ))))
+    }
+
+    /// `x [NOT] IN l` of a value `x` and a list expression `l` (not a list of
+    /// items): Cypher's three-valued `IN`. NULL where `l` is; of an empty
+    /// `l`, false (`null IN []` too); else NULL where `x` is; true where an
+    /// element is `x`; NULL where an element is NULL; else false.
+    /// (ClickHouse's `x IN l` is false where an element is NULL, #1423.)
+    fn in_values(
+        &self,
+        x: &LogicalExpr,
+        list: &LogicalExpr,
+        negated: bool,
+        items: &Items,
+    ) -> Result<RenderExpr, LowerError> {
+        let m = current_function_mapper();
+        let Some(spelling) = m.lists() else {
+            return unsupported("IN of a list expression in this SQL dialect");
+        };
+        let x_sql = render_expr_to_sql_plain(&self.expr(x, items)?);
+        let list_sql = render_expr_to_sql_plain(&self.expr(list, items)?);
+        let (found, not_found) = match negated {
+            true => ("false", "true"),
+            false => ("true", "false"),
+        };
+        // A NULL `x`: not looked up (Spark refuses a NULL-typed one).
+        if matches!(x, LogicalExpr::Literal(lx::Literal::Null)) || self.kind(x) == Kind::Null {
+            return Ok(RenderExpr::Raw(m.cast_bool(&format!(
+                "CASE WHEN ({list_sql}) IS NULL THEN NULL WHEN {} = 0 THEN {not_found} \
+                 ELSE NULL END",
+                m.list_size(&list_sql),
+            ))));
+        }
+        const T: &str = "__cg_in";
+        let nulls = (spelling.filter)(T, &format!("{T} IS NULL"), &list_sql);
+        Ok(RenderExpr::Raw(m.cast_bool(&format!(
+            "CASE WHEN ({list_sql}) IS NULL THEN NULL WHEN {} = 0 THEN {not_found} \
+             WHEN ({x_sql}) IS NULL THEN NULL WHEN {}({list_sql}, {x_sql}) THEN {found} \
+             WHEN {} > 0 THEN NULL ELSE {not_found} END",
+            m.list_size(&list_sql),
+            m.array_contains(),
+            m.list_size(&nulls),
         ))))
     }
 
@@ -1776,6 +1872,7 @@ impl Lowerer<'_> {
                     operands: f.args.clone(),
                 },
                 items,
+                false,
             );
         }
         if let Some((how, x, body, list)) = comprehension(f) {

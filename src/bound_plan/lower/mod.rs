@@ -1047,7 +1047,7 @@ impl<'s> Lowerer<'s> {
             BoundOp::Filter { input, predicate } => {
                 self.relation(input)?;
                 self.apply_subqueries(&[predicate])?;
-                let e = self.expr(predicate, &HashMap::new())?;
+                let e = self.condition(predicate, &HashMap::new())?;
                 self.filters.push(e);
                 Ok(())
             }
@@ -1141,7 +1141,7 @@ impl<'s> Lowerer<'s> {
             }
         }
         let filter = predicate
-            .map(|p| self.expr(p, &HashMap::new()))
+            .map(|p| self.condition(p, &HashMap::new()))
             .transpose()?;
         let own: Vec<RenderExpr> = conditions.iter().chain(&filter).cloned().collect();
         // A shortest path's conditions (§4.8): the WHERE conjuncts that read
@@ -1237,7 +1237,7 @@ impl<'s> Lowerer<'s> {
             let deferred: Vec<&LogicalExpr> = deferred.iter().collect();
             self.apply_subqueries(&deferred)?;
             for c in deferred {
-                let e = self.expr(c, &HashMap::new())?;
+                let e = self.condition(c, &HashMap::new())?;
                 self.filters.push(e);
             }
         }
@@ -5742,7 +5742,7 @@ impl<'s> Lowerer<'s> {
             }
         }
         if let Some(f) = &p.filter {
-            let e = self.expr(f, &items_env)?;
+            let e = self.condition(f, &items_env)?;
             if p.skip.is_some() || p.limit.is_some() {
                 // The WHERE filters the rows the SKIP / LIMIT kept (#1311):
                 // computed per row here, applied by the next segment.

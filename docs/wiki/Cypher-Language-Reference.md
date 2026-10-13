@@ -354,6 +354,9 @@ WHERE toLower(u.name) CONTAINS 'alice'
 WHERE u.country IN ['USA', 'Canada', 'UK']
 WHERE u.status NOT IN ['banned', 'suspended']
 
+-- Three-valued, as in Neo4j: NULL where no element is the value and one is NULL
+RETURN 2 IN [1, null] AS a, null IN [1] AS b, null IN [] AS c   -- null, null, false
+
 -- Empty check
 WHERE u.tags = []
 ```
