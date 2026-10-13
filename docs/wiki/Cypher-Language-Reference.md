@@ -248,10 +248,12 @@ WHERE start.user_id = 1
 RETURN end.name
 ```
 
-**Configuration:**
-- Default max depth: 10 hops
-- Configure via `--max-var-len-hops` CLI flag
-- Environment: `MAX_VAR_LEN_HOPS=50`
+**Depth:**
+- An unbounded range (`*`, `*2..`, `*0..`) is unbounded: the walk is a trail (no
+  relationship twice), so it ends when no trail extends.
+- ClickHouse bounds the recursion's depth (`max_recursive_cte_evaluation_depth`): the
+  server sets it from `--max-cte-depth` / `CLICKGRAPH_MAX_CTE_DEPTH` (default 100). A
+  walk deeper than that fails with a ClickHouse error rather than being cut short.
 
 ### Path Variables
 

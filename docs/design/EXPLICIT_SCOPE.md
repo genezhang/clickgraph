@@ -5171,9 +5171,9 @@ slice that will handle it.
       - The corpus goldens byte-identical, census 1477, the ratchet 143
         decreases (one comment reworded off a dialect token), TCK
         569/2/20 as on main, chdb `writes_e2e` 18/20 (#1436).
-      - `CLICKGRAPH_STATS_ENABLED` is now read by nothing: its fetch stays
-        until decided (kept for the lowering's join ordering, S11o10, or
-        removed).
+      - `CLICKGRAPH_STATS_ENABLED` is now read by nothing: its fetch is
+        kept (user, 2026-10-13) for shaping the lowering's SQL if
+        ClickHouse's optimizer falls short (join ordering, S11o10).
     - [x] **S14c5: the printer, the IR and the query context** (~5k
       lines). The printer is plain only: the name-keyed `PropertyAccessExp`
       resolution (variable registry, multi-type VLP JSON, `__vlp_bare_col`)

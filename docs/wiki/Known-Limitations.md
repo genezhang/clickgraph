@@ -276,9 +276,11 @@ RETURN name, follows
 ### Variable-Length Path Queries
 
 **Recursion Depth:**
-- Default: 10 hops (reasonable for most graphs)
-- Maximum: 1000 hops (configurable)
-- Configure via `--max-var-len-hops` or `MAX_VAR_LEN_HOPS` env var
+- An unbounded range (`*`, `*2..`) is not cut at a fixed depth: the walk ends when no
+  trail (path without a repeated relationship) extends.
+- ClickHouse bounds the recursion (`max_recursive_cte_evaluation_depth`), set from
+  `--max-cte-depth` / `CLICKGRAPH_MAX_CTE_DEPTH` (default 100); a deeper walk fails
+  loudly.
 
 **Performance Warning:**
 ```cypher
