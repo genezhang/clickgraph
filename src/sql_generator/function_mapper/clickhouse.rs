@@ -217,24 +217,36 @@ impl FunctionMapper for ClickhouseFunctionMapper {
             // common type of the arms' `Dynamic` columns is `Dynamic`.
             any_type: |v| format!("CAST({v}, 'Dynamic')"),
             // The value's kind and text: values of different kinds are
-            // different (`1`, `'1'`, `true`), numbers equal by value (`1` =
-            // `1.0`, an `Int64` = a `UInt8`, `-0.0` = `0`), and inside a
-            // list a string is quoted. A value the output shows as a
-            // string (FixedString, Enum, UUID, a date) is of the string
-            // kind. Not JSON: `toJSONString` quotes a 64-bit integer as a
+            // different (`1`, `'1'`, `true`, a date and its text), numbers
+            // equal by value (`1` = `1.0`, an `Int64` = a `UInt8`, `-0.0` =
+            // `0`), and inside a list a string is quoted. A value the output
+            // shows as a string (FixedString, Enum, UUID) is of the string
+            // kind; another is of its type's (#1432): a `Date32` is a
+            // `Date`, a `DateTime64` a `DateTime` of its zone (the session's
+            // when the type names none), its fraction without trailing
+            // zeros. Not JSON: `toJSONString` quotes a 64-bit integer as a
             // string under `output_format_json_quote_64bit_integers`. NULL
             // is one group.
             distinct_key: |v| {
                 let ty = format!("dynamicType(CAST({v}, 'Dynamic'))");
-                let number = format!("match({ty}, '^(U?Int|Float|BFloat|Decimal)')");
+                // `Int[0-9]`: not an `Interval…`.
+                let number = format!("match({ty}, '^(U?Int[0-9]|Float|BFloat|Decimal)')");
+                let string =
+                    format!("match({ty}, '^(String|FixedString|Enum|UUID|IPv|LowCardinality)')");
+                let zone = format!("extract({ty}, '''([^'']*)''')");
                 // `toString` drops a FixedString's trailing zero bytes,
                 // which the output prints: padded back to its width.
                 format!(
                     "tuple(multiIf({ty} = 'None', '', {ty} = 'Bool', 'b', {number}, 'n', \
-                     match({ty}, '^(Array|Map|Tuple)'), 'c', 's'), \
+                     match({ty}, '^(Array|Map|Tuple)'), 'c', {string}, 's', \
+                     {ty} = 'Date32', 'Date', startsWith({ty}, 'DateTime'), \
+                     concat('DateTime ', if({zone} = '', timezone(), {zone})), \
+                     startsWith({ty}, 'Time'), 'Time', {ty}), \
                      multiIf({number} AND toString({v}) = '-0', '0', \
                      startsWith({ty}, 'FixedString'), \
                      rightPad(toString({v}), toUInt64OrZero(extract({ty}, '[0-9]+')), '\\0'), \
+                     match({ty}, '^(DateTime|Time)'), replaceRegexpOne(replaceRegexpOne(\
+                     toString({v}), '(\\\\.[0-9]*[1-9])0+$', '\\\\1'), '\\\\.0+$', ''), \
                      toString({v})))"
                 )
             },
