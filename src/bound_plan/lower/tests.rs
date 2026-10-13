@@ -6639,3 +6639,63 @@ fn a_component_of_an_epoch_millis_datetime() {
         ],
     );
 }
+
+/// #1470: a comparison's value is a boolean, which ClickHouse holds as
+/// `UInt8`. `toString()` of it is `'true'`; compared with a number or a
+/// string it is not equal and has no order (NULL with a NULL operand), as
+/// in Neo4j; `x IN [ … ]` of the two is an `=` per element.
+#[test]
+fn a_boolean_compared_with_a_number_is_a_boolean() {
+    has(
+        "WITH 1 < 2 AS b RETURN toString(b) AS s, b < 3 AS lt, b = 1 AS eq, \
+         1 <> b AS ne, b IN [1, true] AS i, toString(true) AS t, toString(1) AS n",
+        &[
+            "toString(CAST(1 < 2 AS Nullable(Bool))) AS \"s\"",
+            "NULL AS \"lt\"",
+            "CASE WHEN (1 < 2) IS NULL THEN NULL ELSE false END AS \"eq\"",
+            "CASE WHEN (1 < 2) IS NULL THEN NULL ELSE true END AS \"ne\"",
+            "(CASE WHEN (1 < 2) IS NULL THEN NULL ELSE false END OR (1 < 2) = true)",
+            "toString(true) AS \"t\"",
+            "toString(1) AS \"n\"",
+        ],
+    );
+    // Literals: no NULL test.
+    has(
+        "RETURN true < 1 AS a, true = 1 AS b",
+        &["NULL AS \"a\"", "CAST(false AS Nullable(Bool)) AS \"b\""],
+    );
+    // A boolean against a boolean, a number against a number: as before.
+    has(
+        "WITH 1 < 2 AS b, 2 AS n RETURN b = true AS x, n < 3 AS y",
+        &["(1 < 2) = true", "2 < 3"],
+    );
+    for (q, why) in [
+        (
+            "WITH 1 < 2 AS b RETURN [b] = [1] AS w",
+            "a list of booleans compared with a list of other values",
+        ),
+        (
+            "WITH 1 < 2 AS b RETURN b IN range(0, 3) AS w",
+            "a boolean looked up in a list of other values (IN)",
+        ),
+        ("WITH 1 < 2 AS b RETURN 'a' + b AS w", "+ of a boolean"),
+    ] {
+        not_lowered(q, why);
+    }
+}
+
+/// A comparison, `IN`, `IS NULL` or `NOT` operand of another is
+/// parenthesized: ClickHouse reads `false = 1 < 2` as `(false = 1) < 2`
+/// and `a IS NULL = b IS NULL` as `((a IS NULL) = b) IS NULL`.
+#[test]
+fn a_comparison_operand_of_a_comparison_is_parenthesized() {
+    has(
+        "WITH 1 < 2 AS b RETURN false = b AS x",
+        &["false = (1 < 2)"],
+    );
+    has(
+        "UNWIND [true, null] AS a \
+         RETURN (a AND true) IS NULL = (true AND a) IS NULL AS r",
+        &["((w1.v0 AND true) IS NULL) = ((true AND w1.v0) IS NULL)"],
+    );
+}
