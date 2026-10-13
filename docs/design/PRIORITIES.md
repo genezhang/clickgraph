@@ -740,6 +740,7 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-10-13: **P-1: #1470 a comparison's value as a value** (`toString()` of it is `'true'`; against a number or a string it is not equal and has no order; a comparison / `IN` / `IS NULL` / `NOT` operand of another is parenthesized; two TCK Boolean1 scenarios pass).
 - 2026-10-12: **P-4c S14b: the embedded write cutover** (what `bound_plan::write` does not plan is "Not supported", with what to use instead; the legacy write planner is no longer reached).
 - 2026-10-12: **P-4c S13d: embedded DELETE … RETURN as Neo4j** (read before the writes; deleted-node property reads Neo4j's error).
 - 2026-10-12: **P-4c S12f: `allShortestPaths` and shortest-path elements on Databricks** (the search keeps the paths on Spark; Databricks lowers 1442 of 1442).

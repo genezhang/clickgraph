@@ -413,7 +413,7 @@ impl Lowerer<'_> {
                 {
                     return unsupported("CASE of nodes or relationships of a list");
                 }
-                RenderExpr::Case(self.case(c, items)?)
+                self.case(c, items)?
             }
             LogicalExpr::ReduceExpr(r) => RenderExpr::ReduceExpr(ReduceExpr {
                 accumulator: r.accumulator.clone(),
@@ -709,10 +709,179 @@ impl Lowerer<'_> {
         {
             return unsupported("a comparison or operator over maps");
         }
+        if let Some(e) = self.boolean_operator(op, items)? {
+            return Ok(e);
+        }
         Ok(RenderExpr::OperatorApplicationExp(OperatorApplication {
             operator: op.operator,
             operands: self.all(&op.operands, items)?,
         }))
+    }
+
+    /// Whether `a` and `b` are a boolean and a number or a string (in either
+    /// order): never equal, of no order (#1470).
+    pub(super) fn apart(&self, a: &LogicalExpr, b: &LogicalExpr) -> bool {
+        let boolean = |e: &LogicalExpr| self.kind(e) == Kind::Boolean;
+        (boolean(a) && self.never_boolean(b)) || (self.never_boolean(a) && boolean(b))
+    }
+
+    /// Whether list `e` may hold a boolean, and whether it may hold a
+    /// number or a string (`never_boolean`), as far as known here.
+    fn list_elements(&self, e: &LogicalExpr) -> (bool, bool) {
+        match e {
+            LogicalExpr::List(xs) => (
+                xs.iter().any(|x| self.kind(x) == Kind::Boolean),
+                xs.iter().any(|x| self.never_boolean(x)),
+            ),
+            _ => (
+                matches!(self.kind(e), Kind::List(k) if *k == Kind::Boolean),
+                self.never_boolean_elements(e),
+            ),
+        }
+    }
+
+    /// Whether list `e` holds numbers or strings only (`never_boolean`).
+    fn never_boolean_elements(&self, e: &LogicalExpr) -> bool {
+        match e {
+            LogicalExpr::ScalarFnCall(f) => matches!(
+                f.name.to_ascii_lowercase().as_str(),
+                "range" | "split" | "keys"
+            ),
+            LogicalExpr::AggregateFnCall(f) if f.name.eq_ignore_ascii_case("collect") => {
+                f.args.first().is_some_and(|x| self.never_boolean(x))
+            }
+            _ => false,
+        }
+    }
+
+    /// An operator over a boolean and a number or a string (#1470), which
+    /// ClickHouse would read as a number (it holds a boolean as `UInt8`).
+    /// Cypher: they are not equal (`=` false, `<>` true), have no order
+    /// (`<` … NULL), and are NULL when either is; `x IN [ … ]` is an `=` per
+    /// element; `+` is a type error. `None`: not such an operator.
+    pub(super) fn boolean_operator(
+        &self,
+        op: &LOp,
+        items: &Items,
+    ) -> Result<Option<RenderExpr>, LowerError> {
+        use lx::Operator as O;
+        let boolean = |e: &LogicalExpr| self.kind(e) == Kind::Boolean;
+        let apart = |a: &LogicalExpr, b: &LogicalExpr| self.apart(a, b);
+        let [a, b] = op.operands.as_slice() else {
+            return Ok(None);
+        };
+        // Lists of which one may hold a boolean where the other holds a
+        // number or a string: ClickHouse compares them as numbers. Lists of
+        // different lengths are not equal whatever they hold.
+        let may_pair = || {
+            let (ea, eb) = (self.list_elements(a), self.list_elements(b));
+            (ea.0 && eb.1) || (ea.1 && eb.0)
+        };
+        let lists_apart = match (op.operator, a, b) {
+            (O::Equal | O::NotEqual, LogicalExpr::List(xs), LogicalExpr::List(ys)) => {
+                xs.len() == ys.len() && xs.iter().zip(ys).any(|(x, y)| apart(x, y))
+            }
+            (O::Equal | O::NotEqual, _, _) => may_pair(),
+            (O::LessThan | O::GreaterThan | O::LessThanEqual | O::GreaterThanEqual, _, _) => {
+                may_pair()
+            }
+            _ => false,
+        };
+        if lists_apart {
+            return unsupported("a list of booleans compared with a list of other values");
+        }
+        match op.operator {
+            O::Equal | O::NotEqual if apart(a, b) => {
+                let operands = [self.expr(a, items)?, self.expr(b, items)?];
+                let nulls: Vec<RenderExpr> = operands
+                    .into_iter()
+                    .filter(|e| !matches!(e, RenderExpr::Literal(l) if *l != Literal::Null))
+                    .map(|e| {
+                        RenderExpr::OperatorApplicationExp(OperatorApplication {
+                            operator: O::IsNull,
+                            operands: vec![e],
+                        })
+                    })
+                    .collect();
+                let value = RenderExpr::Literal(Literal::Boolean(op.operator == O::NotEqual));
+                if nulls.is_empty() {
+                    return Ok(Some(value));
+                }
+                Ok(Some(RenderExpr::Case(RenderCase {
+                    expr: None,
+                    when_then: vec![(super::or_all(nulls), RenderExpr::Literal(Literal::Null))],
+                    else_expr: Some(Box::new(value)),
+                })))
+            }
+            O::LessThan | O::GreaterThan | O::LessThanEqual | O::GreaterThanEqual
+                if apart(a, b) =>
+            {
+                // Still lowered: what is refused in them stays refused.
+                self.expr(a, items)?;
+                self.expr(b, items)?;
+                Ok(Some(RenderExpr::Literal(Literal::Null)))
+            }
+            O::In | O::NotIn => {
+                let mixed = match b {
+                    LogicalExpr::List(xs) => xs.iter().any(|x| apart(a, x)),
+                    _ => false,
+                };
+                if mixed {
+                    let LogicalExpr::List(xs) = b else {
+                        return Ok(None);
+                    };
+                    // `x IN [e, …]` is `x = e OR …` (NULL where none is
+                    // equal and one is NULL).
+                    let any = xs
+                        .iter()
+                        .map(|x| {
+                            LogicalExpr::OperatorApplicationExp(LOp {
+                                operator: O::Equal,
+                                operands: vec![a.clone(), x.clone()],
+                            })
+                        })
+                        .reduce(|l, r| {
+                            LogicalExpr::OperatorApplicationExp(LOp {
+                                operator: O::Or,
+                                operands: vec![l, r],
+                            })
+                        });
+                    let Some(any) = any else {
+                        return Ok(None);
+                    };
+                    let any = match op.operator {
+                        O::NotIn => LogicalExpr::OperatorApplicationExp(LOp {
+                            operator: O::Not,
+                            operands: vec![any],
+                        }),
+                        _ => any,
+                    };
+                    return self.expr(&any, items).map(Some);
+                }
+                // Another list known to hold the other kind of values.
+                let booleans = matches!(self.kind(b), Kind::List(k) if *k == Kind::Boolean);
+                if (boolean(a) && self.never_boolean_elements(b))
+                    || (self.never_boolean(a) && booleans)
+                {
+                    return unsupported("a boolean looked up in a list of other values (IN)");
+                }
+                Ok(None)
+            }
+            // A list's `+` was lowered before (`list_addition`); with NULL
+            // it is NULL.
+            O::Addition
+            | O::Subtraction
+            | O::Multiplication
+            | O::Division
+            | O::ModuloDivision
+            | O::Exponentiation
+                if (boolean(a) && (boolean(b) || self.never_boolean(b)))
+                    || (boolean(b) && self.never_boolean(a)) =>
+            {
+                unsupported("arithmetic of a boolean (Neo4j: a type error)")
+            }
+            _ => Ok(None),
+        }
     }
 
     /// `id(n) = N`, `id(n) <> N`, `id(n) [NOT] IN [N, …]` of a node `n` and
@@ -1350,24 +1519,36 @@ impl Lowerer<'_> {
         })
     }
 
-    fn case(&self, c: &LogicalCase, items: &Items) -> Result<RenderCase, LowerError> {
-        Ok(RenderCase {
-            expr: c
-                .expr
-                .as_ref()
-                .map(|e| self.expr(e, items).map(Box::new))
-                .transpose()?,
-            when_then: c
-                .when_then
-                .iter()
-                .map(|(w, t)| Ok((self.expr(w, items)?, self.expr(t, items)?)))
-                .collect::<Result<_, LowerError>>()?,
-            else_expr: c
-                .else_expr
-                .as_ref()
-                .map(|e| self.expr(e, items).map(Box::new))
-                .transpose()?,
-        })
+    fn case(&self, c: &LogicalCase, items: &Items) -> Result<RenderExpr, LowerError> {
+        let mut when_then = Vec::new();
+        for (w, t) in &c.when_then {
+            let (w_sql, t_sql) = (self.expr(w, items)?, self.expr(t, items)?);
+            // `CASE b WHEN 1 …` of a boolean and a number or a string (or
+            // the other way): never equal, the branch never matches
+            // (ClickHouse would compare them as numbers, #1470).
+            if c.expr.as_ref().is_some_and(|x| self.apart(x, w)) {
+                continue;
+            }
+            when_then.push((w_sql, t_sql));
+        }
+        let expr = c
+            .expr
+            .as_ref()
+            .map(|e| self.expr(e, items).map(Box::new))
+            .transpose()?;
+        let else_expr = c
+            .else_expr
+            .as_ref()
+            .map(|e| self.expr(e, items).map(Box::new))
+            .transpose()?;
+        if when_then.is_empty() {
+            return Ok(else_expr.map_or(RenderExpr::Literal(Literal::Null), |e| *e));
+        }
+        Ok(RenderExpr::Case(RenderCase {
+            expr,
+            when_then,
+            else_expr,
+        }))
     }
 
     /// A bare variable: a projected item, a node / relationship identity, or
@@ -1757,6 +1938,20 @@ impl Lowerer<'_> {
                 };
                 let m = render_expr_to_sql_plain(&self.expr(arg, items)?);
                 return Ok(RenderExpr::Raw((spelling.map_keys)(&m)));
+            }
+        }
+        // `toString()` of a boolean is `'true'` / `'false'`: ClickHouse holds
+        // it as `UInt8` (`'1'`), so it is cast first, as a returned one is
+        // (#1470).
+        if let (true, [arg]) = (f.name.eq_ignore_ascii_case("tostring"), f.args.as_slice()) {
+            if self.kind(arg) == Kind::Boolean
+                && !matches!(arg, LogicalExpr::Literal(lx::Literal::Boolean(_)))
+            {
+                let value = render_expr_to_sql_plain(&self.expr(arg, items)?);
+                return Ok(RenderExpr::ScalarFnCall(ScalarFnCall {
+                    name: f.name.clone(),
+                    args: vec![RenderExpr::Raw(current_function_mapper().cast_bool(&value))],
+                }));
             }
         }
         // A map given to another function: its values are held as values of

@@ -319,6 +319,48 @@ fn is_known_scalar(expr: &RenderExpr) -> bool {
 // `render_interval_arithmetic` + the `FunctionMapper` epoch/timestamp methods).
 // ---------------------------------------------------------------------------
 
+/// An operand `sql` of `outer`, parenthesized when it is a comparison, `IN`,
+/// `IS [NOT] NULL` or `NOT` and `outer` is one of those (but `NOT`) or
+/// arithmetic: SQL has no precedence that keeps Cypher's grouping there
+/// (ClickHouse reads `a = b < c` as `(a = b) < c`, `a < b IN l` as
+/// `(a < b) IN l`, `NOT a = b` as `NOT (a = b)`).
+fn operand_sql(outer: Operator, operand: &RenderExpr, sql: String) -> String {
+    use Operator as O;
+    let loose = |o: Operator| {
+        matches!(
+            o,
+            O::Equal
+                | O::NotEqual
+                | O::LessThan
+                | O::GreaterThan
+                | O::LessThanEqual
+                | O::GreaterThanEqual
+                | O::In
+                | O::NotIn
+                | O::IsNull
+                | O::IsNotNull
+        )
+    };
+    let arithmetic = matches!(
+        outer,
+        O::Addition
+            | O::Subtraction
+            | O::Multiplication
+            | O::Division
+            | O::ModuloDivision
+            | O::Exponentiation
+    );
+    match operand {
+        RenderExpr::OperatorApplicationExp(inner)
+            if (loose(outer) || arithmetic)
+                && (loose(inner.operator) || inner.operator == O::Not) =>
+        {
+            format!("({sql})")
+        }
+        _ => sql,
+    }
+}
+
 /// `list1 + list2` -> dialect array concat. Operands flatten via `to_sql()`
 /// (always qualified), so this is independent of the calling path's aliasing.
 fn render_list_addition(op: &OperatorApplication) -> Option<String> {
@@ -2520,7 +2562,11 @@ impl RenderExpr {
                     }
                 }
 
-                let rendered: Vec<String> = op.operands.iter().map(|e| e.to_sql()).collect();
+                let rendered: Vec<String> = op
+                    .operands
+                    .iter()
+                    .map(|e| operand_sql(op.operator, e, e.to_sql()))
+                    .collect();
 
                 // Special handling for RegexMatch - ClickHouse uses match() function
                 if op.operator == Operator::RegexMatch && rendered.len() == 2 {
@@ -2566,8 +2612,10 @@ impl RenderExpr {
                         // whereas CH `IN (…)` collapses it to a non-match.
                         if has_non_constant || in_list_has_null_literal(op) {
                             let lhs = &rendered[0];
-                            let item_sqls: Vec<String> =
-                                list_items.iter().map(|item| item.to_sql()).collect();
+                            let item_sqls: Vec<String> = list_items
+                                .iter()
+                                .map(|item| operand_sql(Operator::Equal, item, item.to_sql()))
+                                .collect();
                             if op.operator == Operator::In {
                                 let clauses: Vec<String> = item_sqls
                                     .iter()
@@ -3014,7 +3062,7 @@ impl RenderExpr {
                 let rendered: Vec<String> = op
                     .operands
                     .iter()
-                    .map(|e| e.to_sql_without_table_alias())
+                    .map(|e| operand_sql(op.operator, e, e.to_sql_without_table_alias()))
                     .collect();
 
                 // Special handling for RegexMatch - ClickHouse uses match() function
@@ -3060,8 +3108,10 @@ impl RenderExpr {
                         // whereas CH `IN (…)` collapses it to a non-match.
                         if has_non_constant || in_list_has_null_literal(op) {
                             let lhs = &rendered[0];
-                            let item_sqls: Vec<String> =
-                                list_items.iter().map(|item| item.to_sql()).collect();
+                            let item_sqls: Vec<String> = list_items
+                                .iter()
+                                .map(|item| operand_sql(Operator::Equal, item, item.to_sql()))
+                                .collect();
                             if op.operator == Operator::In {
                                 let clauses: Vec<String> = item_sqls
                                     .iter()
@@ -3343,7 +3393,11 @@ impl ToSql for OperatorApplication {
             }
         }
 
-        let rendered: Vec<String> = self.operands.iter().map(|e| e.to_sql()).collect();
+        let rendered: Vec<String> = self
+            .operands
+            .iter()
+            .map(|e| operand_sql(self.operator, e, e.to_sql()))
+            .collect();
 
         // Debug operand information
         log::debug!(
@@ -3396,8 +3450,10 @@ impl ToSql for OperatorApplication {
                 // three-valued IN/NOT IN semantics hold (#855).
                 if has_non_constant || in_list_has_null_literal(self) {
                     let lhs = &rendered[0];
-                    let item_sqls: Vec<String> =
-                        list_items.iter().map(|item| item.to_sql()).collect();
+                    let item_sqls: Vec<String> = list_items
+                        .iter()
+                        .map(|item| operand_sql(Operator::Equal, item, item.to_sql()))
+                        .collect();
                     if self.operator == Operator::In {
                         let clauses: Vec<String> = item_sqls
                             .iter()

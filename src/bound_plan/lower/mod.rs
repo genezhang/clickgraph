@@ -333,6 +333,7 @@ impl Query<'_> {
             graph_values: HashMap::new(),
             map_keys: HashMap::new(),
             kinds: HashMap::new(),
+            never_boolean: HashSet::new(),
             local_kinds: RefCell::new(HashMap::new()),
             local_lists: RefCell::new(HashMap::new()),
             collect_order: None,
@@ -630,6 +631,8 @@ struct Lowerer<'s> {
     map_keys: HashMap<VarId, MapKeys>,
     /// What each projected or unwound value is (`unwind.rs`).
     kinds: HashMap<VarId, unwind::Kind>,
+    /// Projected values that are never a boolean (`Lowerer::never_boolean`).
+    never_boolean: HashSet<VarId>,
     /// What each comprehension parameter is: an element of its list. Filled
     /// in as [`Lowerer::kind`] reads the comprehension (variables are unique
     /// per query, so one map serves every scope).
@@ -1004,6 +1007,9 @@ impl<'s> Lowerer<'s> {
                 for item in &projection.items {
                     let kind = self.kind(&item.expr);
                     self.kinds.insert(item.var, kind);
+                    if self.never_boolean(&item.expr) {
+                        self.never_boolean.insert(item.var);
+                    }
                 }
                 // Aggregating with no grouping item: one row.
                 if projection.aggregates() && projection.items.iter().all(|i| i.aggregate) {
@@ -4696,6 +4702,24 @@ impl<'s> Lowerer<'s> {
         props
             .iter()
             .map(|(prop, value)| {
+                // A boolean and a number or a string are never equal, as in
+                // a WHERE (#1470).
+                let read = LogicalExpr::PropertyAccessExp(
+                    crate::query_planner::logical_expr::PropertyAccess {
+                        table_alias: crate::query_planner::logical_expr::TableAlias(format!(
+                            "v{}",
+                            v.0
+                        )),
+                        column: PropertyValue::Column(prop.clone()),
+                    },
+                );
+                let equal = crate::query_planner::logical_expr::OperatorApplication {
+                    operator: Operator::Equal,
+                    operands: vec![read, value.clone()],
+                };
+                if let Some(e) = self.boolean_operator(&equal, &HashMap::new())? {
+                    return Ok(e);
+                }
                 let lhs = self.property(v, prop)?;
                 let rhs = self.expr(value, &HashMap::new())?;
                 Ok(RenderExpr::OperatorApplicationExp(eq(lhs, rhs)))
@@ -5404,6 +5428,9 @@ impl<'s> Lowerer<'s> {
         for it in &p.items {
             let kind = self.kind(&it.expr);
             self.kinds.insert(it.var, kind);
+            if self.never_boolean(&it.expr) {
+                self.never_boolean.insert(it.var);
+            }
             // A WITH item holding `id(n)` (S11l): returned later, it is that
             // node's id (Bolt encodes it).
             if let (Some(_), Some(label), false) = (cte, self.node_id_of(&it.expr), it.aggregate) {

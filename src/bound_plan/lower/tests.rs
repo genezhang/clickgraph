@@ -6639,3 +6639,141 @@ fn a_component_of_an_epoch_millis_datetime() {
         ],
     );
 }
+
+/// #1470: a comparison's value is a boolean, which ClickHouse holds as
+/// `UInt8`. `toString()` of it is `'true'`; compared with a number or a
+/// string it is not equal and has no order (NULL with a NULL operand), as
+/// in Neo4j; `x IN [ … ]` of the two is an `=` per element.
+#[test]
+fn a_boolean_compared_with_a_number_is_a_boolean() {
+    has(
+        "WITH 1 < 2 AS b RETURN toString(b) AS s, b < 3 AS lt, b = 1 AS eq, \
+         1 <> b AS ne, b IN [1, true] AS i, toString(true) AS t, toString(1) AS n",
+        &[
+            "toString(CAST(1 < 2 AS Nullable(Bool))) AS \"s\"",
+            "NULL AS \"lt\"",
+            "CASE WHEN (1 < 2) IS NULL THEN NULL ELSE false END AS \"eq\"",
+            "CASE WHEN (1 < 2) IS NULL THEN NULL ELSE true END AS \"ne\"",
+            "(CASE WHEN (1 < 2) IS NULL THEN NULL ELSE false END OR (1 < 2) = true)",
+            "toString(true) AS \"t\"",
+            "toString(1) AS \"n\"",
+        ],
+    );
+    // Literals: no NULL test.
+    has(
+        "RETURN true < 1 AS a, true = 1 AS b",
+        &["NULL AS \"a\"", "CAST(false AS Nullable(Bool)) AS \"b\""],
+    );
+    // A boolean against a boolean, a number against a number: as before.
+    has(
+        "WITH 1 < 2 AS b, 2 AS n RETURN b = true AS x, n < 3 AS y",
+        &["(1 < 2) = true", "2 < 3"],
+    );
+    for (q, why) in [
+        (
+            "WITH 1 < 2 AS b RETURN [b] = [1] AS w",
+            "a list of booleans compared with a list of other values",
+        ),
+        (
+            "WITH 1 < 2 AS b RETURN b IN range(0, 3) AS w",
+            "a boolean looked up in a list of other values (IN)",
+        ),
+        (
+            "WITH 1 < 2 AS b RETURN [b] < [1, 2] AS w",
+            "a list of booleans compared with a list of other values",
+        ),
+        (
+            "WITH 1 < 2 AS b RETURN 'a' + b AS w",
+            "arithmetic of a boolean",
+        ),
+        (
+            "WITH 1 < 2 AS b RETURN b - 1 AS w",
+            "arithmetic of a boolean",
+        ),
+    ] {
+        not_lowered(q, why);
+    }
+    // With NULL, `+` is NULL; lists of different lengths are not equal.
+    has(
+        "WITH 1 < 2 AS b RETURN b + null AS r, [b] = [true, false] AS l",
+        &["(1 < 2) + NULL AS \"r\""],
+    );
+    // A simple CASE's branch of the other kind never matches.
+    has(
+        "WITH 1 < 2 AS b RETURN CASE b WHEN 1 THEN 'one' ELSE 'other' END AS c, \
+         CASE b WHEN 1 THEN 'one' END AS d, \
+         CASE b WHEN true THEN 't' WHEN 1 THEN 'one' END AS e",
+        &[
+            "'other' AS \"c\"",
+            "NULL AS \"d\"",
+            "caseWithExpression(1 < 2, true, 't', NULL) AS \"e\"",
+        ],
+    );
+}
+
+/// #1470: a property the schema declares boolean or numeric is compared
+/// with the other kind as Cypher does, in a pattern's property map as in a
+/// WHERE.
+#[test]
+fn a_declared_property_against_the_other_kind() {
+    let schema = GraphSchemaConfig::from_yaml_str(
+        r#"
+name: typed
+graph_schema:
+  nodes:
+    - label: P
+      database: db
+      table: p
+      node_id: id
+      property_mappings: { id: id, ok: ok_flag, n: n }
+      property_types: { ok: boolean, n: integer }
+  edges: []
+"#,
+    )
+    .unwrap()
+    .to_graph_schema()
+    .unwrap();
+    let got = |q: &str| {
+        squash(
+            &translate_bound_plan(q, &schema, &ReadOptions::default())
+                .unwrap_or_else(|e| panic!("{q}: {e}"))
+                .sql,
+        )
+    };
+    for q in [
+        "MATCH (p:P {ok: 1}) RETURN p.id AS i",
+        "MATCH (p:P) WHERE p.ok = 1 RETURN p.id AS i",
+    ] {
+        let sql = got(q);
+        assert!(
+            sql.contains("CASE WHEN v0.ok_flag IS NULL THEN NULL ELSE false END"),
+            "{q}: {sql}"
+        );
+    }
+    let sql = got("MATCH (p:P {n: true}) WHERE NOT p.ok IN [1, 2] RETURN p.id AS i");
+    for part in [
+        "CASE WHEN v0.n IS NULL THEN NULL ELSE false END",
+        "NOT (CASE WHEN v0.ok_flag IS NULL THEN NULL ELSE false END \
+         OR CASE WHEN v0.ok_flag IS NULL THEN NULL ELSE false END)",
+    ] {
+        assert!(sql.contains(part), "missing `{part}` in {sql}");
+    }
+    // Of one kind: compared as before.
+    assert!(got("MATCH (p:P {ok: true}) RETURN p.id AS i").contains("v0.ok_flag = true"));
+}
+
+/// A comparison, `IN`, `IS NULL` or `NOT` operand of another is
+/// parenthesized: ClickHouse reads `false = 1 < 2` as `(false = 1) < 2`
+/// and `a IS NULL = b IS NULL` as `((a IS NULL) = b) IS NULL`.
+#[test]
+fn a_comparison_operand_of_a_comparison_is_parenthesized() {
+    has(
+        "WITH 1 < 2 AS b RETURN false = b AS x",
+        &["false = (1 < 2)"],
+    );
+    has(
+        "UNWIND [true, null] AS a \
+         RETURN (a AND true) IS NULL = (true AND a) IS NULL AS r",
+        &["((w1.v0 AND true) IS NULL) = ((true AND w1.v0) IS NULL)"],
+    );
+}

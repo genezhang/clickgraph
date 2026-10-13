@@ -403,7 +403,88 @@ impl<'s> Lowerer<'s> {
     /// What property `p` of node or relationship `v` is: a value of the
     /// type every label / type of `v` declares, if they do.
     fn property_kind(&self, v: VarId, p: &str) -> Kind {
-        let declared: Vec<Option<&SchemaType>> = match &self.binding(v).kind {
+        match self.declared_types(v, p).as_slice() {
+            [] => Kind::Unknown,
+            ts if ts.iter().all(|t| t == &Some(&SchemaType::Boolean)) => Kind::Boolean,
+            ts if ts.iter().all(Option::is_some) => Kind::Scalar,
+            _ => Kind::Unknown,
+        }
+    }
+
+    /// Whether `e` is never a boolean: a number or a string (`Kind::Scalar`
+    /// does not tell, as a `CASE` of a boolean or a number is one too). A
+    /// boolean compared with it is not equal, and has no order (#1470).
+    pub(super) fn never_boolean(&self, e: &LogicalExpr) -> bool {
+        use lx::Operator as O;
+        match e {
+            LogicalExpr::Literal(
+                lx::Literal::Integer(_) | lx::Literal::Float(_) | lx::Literal::String(_),
+            ) => true,
+            LogicalExpr::TableAlias(lx::TableAlias(n)) => {
+                parse_var(n).is_some_and(|v| self.never_boolean.contains(&v))
+            }
+            LogicalExpr::PropertyAccessExp(pa) => match &pa.column {
+                PropertyValue::Column(p) => parse_var(&pa.table_alias.0).is_some_and(|v| {
+                    let ts = self.declared_types(v, p);
+                    !ts.is_empty()
+                        && ts
+                            .iter()
+                            .all(|t| t.is_some_and(|t| *t != SchemaType::Boolean))
+                }),
+                _ => false,
+            },
+            LogicalExpr::Operator(op) | LogicalExpr::OperatorApplicationExp(op) => {
+                match op.operator {
+                    O::Subtraction
+                    | O::Multiplication
+                    | O::Division
+                    | O::ModuloDivision
+                    | O::Exponentiation => true,
+                    // Of numbers or strings (a boolean's is an error).
+                    O::Addition => self.kind(e) == Kind::Scalar,
+                    _ => false,
+                }
+            }
+            LogicalExpr::ScalarFnCall(f) => matches!(
+                f.name.to_ascii_lowercase().as_str(),
+                "size"
+                    | "length"
+                    | "tostring"
+                    | "tointeger"
+                    | "tofloat"
+                    | "abs"
+                    | "ceil"
+                    | "floor"
+                    | "round"
+                    | "sign"
+                    | "sqrt"
+                    | "exp"
+                    | "log"
+                    | "log10"
+                    | "rand"
+                    | "tolower"
+                    | "toupper"
+                    | "trim"
+                    | "ltrim"
+                    | "rtrim"
+                    | "substring"
+                    | "replace"
+                    | "left"
+                    | "right"
+                    | "type"
+            ),
+            LogicalExpr::AggregateFnCall(f) => matches!(
+                f.name.to_ascii_lowercase().as_str(),
+                "count" | "sum" | "avg"
+            ),
+            _ => false,
+        }
+    }
+
+    /// The type each label / type of node or relationship `v` declares for
+    /// property `p` (`None`: one that does not).
+    fn declared_types(&self, v: VarId, p: &str) -> Vec<Option<&SchemaType>> {
+        match &self.binding(v).kind {
             BindingKind::Node { labels } => labels
                 .iter()
                 .map(|l| {
@@ -436,12 +517,6 @@ impl<'s> Lowerer<'s> {
                 },
                 _ => vec![None],
             },
-        };
-        match declared.as_slice() {
-            [] => Kind::Unknown,
-            ts if ts.iter().all(|t| t == &Some(&SchemaType::Boolean)) => Kind::Boolean,
-            ts if ts.iter().all(Option::is_some) => Kind::Scalar,
-            _ => Kind::Unknown,
         }
     }
 
