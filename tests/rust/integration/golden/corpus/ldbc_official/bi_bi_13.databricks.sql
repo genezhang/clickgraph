@@ -345,9 +345,9 @@ SELECT
       (w20.v31)._8 AS `zombie.id`, 
       w20.v32 AS `zombieLikeCount`, 
       w20.v33 AS `totalLikeCount`, 
-      CASE w20.v33 WHEN 0 THEN 0 ELSE w20.v32 / double(w20.v33) END AS `zombieScore`
+      CASE WHEN w20.v33 = 0 THEN 0 ELSE w20.v32 / double(w20.v33) END AS `zombieScore`
 FROM with_w20 AS w20
-ORDER BY CASE w20.v33 WHEN 0 THEN 0 ELSE w20.v32 / double(w20.v33) END DESC NULLS FIRST, (w20.v31)._8 ASC NULLS LAST
+ORDER BY CASE WHEN w20.v33 = 0 THEN 0 ELSE w20.v32 / double(w20.v33) END DESC NULLS FIRST, (w20.v31)._8 ASC NULLS LAST
 LIMIT 100
 -- column zombie.id: Value [("zombie.id", "zombie.id")]
 -- column zombieLikeCount: Value [("zombieLikeCount", "zombieLikeCount")]

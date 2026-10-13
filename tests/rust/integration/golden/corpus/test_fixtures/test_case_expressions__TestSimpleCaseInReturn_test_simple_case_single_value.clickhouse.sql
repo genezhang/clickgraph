@@ -1,6 +1,6 @@
 SELECT 
       v0.name AS "n.name", 
-      caseWithExpression(v0.name, 'Alice', 'Admin', 'User') AS "role"
+      CASE WHEN v0.name = 'Alice' THEN 'Admin' ELSE 'User' END AS "role"
 FROM test_integration.users AS v0
 ORDER BY v0.name ASC
 

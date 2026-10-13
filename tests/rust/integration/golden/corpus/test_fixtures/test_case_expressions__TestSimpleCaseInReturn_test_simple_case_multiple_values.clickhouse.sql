@@ -1,6 +1,6 @@
 SELECT 
       v0.name AS "n.name", 
-      caseWithExpression(v0.name, 'Alice', 'Level 3', 'Bob', 'Level 2', 'Charlie', 'Level 2', 'Level 1') AS "level"
+      CASE WHEN v0.name = 'Alice' THEN 'Level 3' WHEN v0.name = 'Bob' THEN 'Level 2' WHEN v0.name = 'Charlie' THEN 'Level 2' ELSE 'Level 1' END AS "level"
 FROM test_integration.users AS v0
 ORDER BY v0.name ASC
 

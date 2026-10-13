@@ -8,10 +8,10 @@ JOIN test_integration.users AS v2 ON v1.followed_id = v2.user_id
 )
 SELECT 
       v0.name AS "a.name", 
-      caseWithExpression(o1.p2_v2_name, NULL, 'No follow', o1.p2_v2_name) AS "followed"
+      o1.p2_v2_name AS "followed"
 FROM test_integration.users AS v0
 LEFT JOIN optional_o1 AS o1 ON v0.user_id = o1.v0__user_id
-ORDER BY v0.name ASC, caseWithExpression(o1.p2_v2_name, NULL, 'No follow', o1.p2_v2_name) ASC
+ORDER BY v0.name ASC, o1.p2_v2_name ASC
 
 -- column a.name: Value [("a.name", "a.name")]
 -- column followed: Value [("followed", "followed")]

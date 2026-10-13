@@ -1618,20 +1618,39 @@ impl Lowerer<'_> {
     fn case(&self, c: &LogicalCase, items: &Items) -> Result<RenderExpr, LowerError> {
         let mut when_then = Vec::new();
         for (w, t) in &c.when_then {
-            let (w_sql, t_sql) = (self.expr(w, items)?, self.expr(t, items)?);
-            // `CASE b WHEN 1 …` of a boolean and a number or a string (or
-            // the other way): never equal, the branch never matches
-            // (ClickHouse would compare them as numbers, #1470).
-            if c.expr.as_ref().is_some_and(|x| self.apart(x, w)) {
+            // `CASE x WHEN w …` is `CASE WHEN x = w …`: three-valued, a NULL
+            // never matches (ClickHouse's `caseWithExpression` takes NULL
+            // for equal to NULL, #1412).
+            let w_sql = match &c.expr {
+                // `CASE b WHEN 1 …` of a boolean and a number or a string
+                // (or the other way): never equal, the branch never matches
+                // (ClickHouse would compare them as numbers, #1470).
+                Some(x) if self.apart(x, w) => {
+                    self.expr(w, items)?;
+                    self.expr(t, items)?;
+                    continue;
+                }
+                Some(x) => self.expr(
+                    &LogicalExpr::OperatorApplicationExp(LOp {
+                        operator: lx::Operator::Equal,
+                        operands: vec![(**x).clone(), w.clone()],
+                    }),
+                    items,
+                )?,
+                None => self.expr(w, items)?,
+            };
+            let t_sql = self.expr(t, items)?;
+            // `WHEN null` of a simple CASE (or `CASE null`) never matches.
+            let null = |e: &LogicalExpr| matches!(e, LogicalExpr::Literal(lx::Literal::Null));
+            if c.expr.as_deref().is_some_and(|x| null(x) || null(w)) {
                 continue;
             }
             when_then.push((w_sql, t_sql));
         }
-        let expr = c
-            .expr
-            .as_ref()
-            .map(|e| self.expr(e, items).map(Box::new))
-            .transpose()?;
+        if let Some(x) = &c.expr {
+            // Still lowered: what is refused in it stays refused.
+            self.expr(x, items)?;
+        }
         let else_expr = c
             .else_expr
             .as_ref()
@@ -1641,7 +1660,7 @@ impl Lowerer<'_> {
             return Ok(else_expr.map_or(RenderExpr::Literal(Literal::Null), |e| *e));
         }
         Ok(RenderExpr::Case(RenderCase {
-            expr,
+            expr: None,
             when_then,
             else_expr,
         }))

@@ -69,7 +69,7 @@ vlp_v2_path AS (
     WHERE w.frontier = 1 AND w.depth = 0
 )
 SELECT 
-      caseWithExpression((v0.id IS NULL OR v1.id IS NULL), true, 0 - 1, v2.hop_count) AS "shortestPathLength"
+      CASE WHEN (v0.id IS NULL OR v1.id IS NULL) = true THEN 0 - 1 ELSE v2.hop_count END AS "shortestPathLength"
 FROM vlp_v2_path AS v2
 JOIN ldbc.Person AS v0 ON v2.start_id = v0.id
 JOIN ldbc.Person AS v1 ON v2.end_id = v1.id

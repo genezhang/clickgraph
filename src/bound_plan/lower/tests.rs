@@ -6760,7 +6760,24 @@ fn a_boolean_compared_with_a_number_is_a_boolean() {
         &[
             "'other' AS \"c\"",
             "NULL AS \"d\"",
-            "caseWithExpression(1 < 2, true, 't', NULL) AS \"e\"",
+            "CASE WHEN (1 < 2) = true THEN 't' END AS \"e\"",
+        ],
+    );
+}
+
+/// #1412: a simple CASE compares with `=`, three-valued: a NULL input or
+/// `WHEN` value never matches (ClickHouse's `caseWithExpression` takes NULL
+/// for equal to NULL).
+#[test]
+fn a_simple_case_never_matches_null() {
+    has(
+        "UNWIND [1, null] AS x RETURN CASE x WHEN null THEN 'n' WHEN 1 THEN 'one' \
+         ELSE 'other' END AS a, CASE x WHEN x THEN 'self' END AS b, \
+         CASE x WHEN null THEN 'n' END AS c",
+        &[
+            r#"CASE WHEN w1.v0 = 1 THEN 'one' ELSE 'other' END AS "a""#,
+            r#"CASE WHEN w1.v0 = w1.v0 THEN 'self' END AS "b""#,
+            r#"NULL AS "c""#,
         ],
     );
 }
