@@ -29,7 +29,7 @@ FROM zeek.conn_log AS e
 __cg_nodes_IP AS (
 SELECT 
       e.ip AS `ip`, 
-      CASE WHEN count(DISTINCT CASE WHEN regexp_replace(regexp_replace(typeof(e.port__cg2), '^(tinyint|smallint|int|bigint)$', 'int'), '^((var)?char\\(\\d+\\)|string( collate .*)?)$', 'string') = regexp_replace(regexp_replace(typeof(e.port__cg3), '^(tinyint|smallint|int|bigint)$', 'int'), '^((var)?char\\(\\d+\\)|string( collate .*)?)$', 'string') THEN coalesce(e.port__cg2, e.port__cg3) ELSE raise_error('ClickGraph: a property has different types on different labels or types') END) > 1 THEN raise_error('ClickGraph: rows of one :IP node hold several values of its property port: the property is not the node\'s, or its id columns do not identify it') ELSE any_value(CASE WHEN regexp_replace(regexp_replace(typeof(e.port__cg2), '^(tinyint|smallint|int|bigint)$', 'int'), '^((var)?char\\(\\d+\\)|string( collate .*)?)$', 'string') = regexp_replace(regexp_replace(typeof(e.port__cg3), '^(tinyint|smallint|int|bigint)$', 'int'), '^((var)?char\\(\\d+\\)|string( collate .*)?)$', 'string') THEN coalesce(e.port__cg2, e.port__cg3) ELSE raise_error('ClickGraph: a property has different types on different labels or types') END, true) END AS `port`
+      any_value(CASE WHEN regexp_replace(regexp_replace(typeof(e.port__cg2), '^(tinyint|smallint|int|bigint)$', 'int'), '^((var)?char\\(\\d+\\)|string( collate .*)?)$', 'string') = regexp_replace(regexp_replace(typeof(e.port__cg3), '^(tinyint|smallint|int|bigint)$', 'int'), '^((var)?char\\(\\d+\\)|string( collate .*)?)$', 'string') THEN coalesce(e.port__cg2, e.port__cg3) ELSE raise_error('ClickGraph: a property has different types on different labels or types') END, true) AS `port`
 FROM __cg_nodes_IP__cg_rows AS e
 WHERE NOT isnull(e.ip)
 GROUP BY e.ip

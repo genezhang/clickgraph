@@ -56,6 +56,12 @@ struct Cli {
     #[arg(long, env = "CG_DIALECT", global = true, value_enum)]
     dialect: Option<DialectArg>,
 
+    /// Fail a query reading a property of a node embedded in edge tables
+    /// when the rows of one node id hold several values of it (#531);
+    /// without it any one of the values is read
+    #[arg(long, env = "CG_CHECK_NODE_PROPERTIES", global = true)]
+    check_node_properties: bool,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -126,7 +132,7 @@ enum SchemaCommands {
 
         /// Also check, in ClickHouse (--clickhouse), that the rows of each
         /// node embedded in edge tables hold one value of each property
-        /// per node id (a query reading a property they do not is an error)
+        /// per node id (a query reads any one of such a property's values)
         #[arg(long)]
         data: bool,
 
@@ -188,6 +194,7 @@ enum SchemaCommands {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
+    clickgraph::server::query_context::set_check_node_properties(cli.check_node_properties);
     let cfg = CgConfig::load(
         &cli.schema,
         &cli.clickhouse,
@@ -242,7 +249,7 @@ async fn main() -> Result<()> {
                 if data {
                     let sampling = match full {
                         true => None,
-                        false => Some(commands::schema::Sampling {
+                        false => Some(clickgraph::graph_catalog::node_property_check::Sampling {
                             one_in: sample.max(1),
                             max_rows: max_rows.max(1),
                         }),

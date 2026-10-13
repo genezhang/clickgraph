@@ -31,16 +31,18 @@ impl FunctionMapper for ClickhouseFunctionMapper {
         format!("anyIfOrNull({value}, NOT isNull({value}))")
     }
 
-    fn one_value(&self, value: &str, message: &str) -> String {
-        // `uniqUpTo(1)` counts up to two distinct values in constant memory;
-        // of their hashes, so that every type (a `Map`, a `Variant`) counts
-        // and a NaN is the one value it is. `throwIf` is 0 unless it throws:
-        // the element of a one-element array keeps the value's type.
+    fn one_value(&self, value: &str, message: &str) -> Option<String> {
+        // `uniqUpTo(1)` counts up to two distinct keys in constant memory;
+        // of the hashes of DISTINCT's keys (`-0.0` is `0.0`, a FixedString
+        // its padded text, integers of any width one number). `throwIf` is
+        // 0 unless it throws: the element of a one-element array keeps the
+        // value's type.
+        let key = (self.cypher_union()?.distinct_key)(value);
         let message = message.replace('\\', "\\\\").replace('\'', "\\'");
-        format!(
-            "arrayElement([{}], 1 + throwIf(uniqUpToIf(1)(cityHash64({value}), NOT isNull({value})) > 1, '{message}'))",
+        Some(format!(
+            "arrayElement([{}], 1 + throwIf(uniqUpToIf(1)(cityHash64({key}), NOT isNull({value})) > 1, '{message}'))",
             self.any_non_null(value)
-        )
+        ))
     }
 
     fn arrays_overlap(&self) -> &'static str {
@@ -251,10 +253,14 @@ impl FunctionMapper for ClickhouseFunctionMapper {
                     "replaceRegexpOne(replaceRegexpOne(toString({v}), \
                      '(\\\\.[0-9]*[1-9])0+$', '\\\\1'), '\\\\.0+$', '')"
                 );
-                // NULL of a value of another type, not an error.
+                // NULL of a value of another type, not an error: only a
+                // DateTime is cast (`accurateCastOrNull` of a NaN or an
+                // infinite Float throws, and a `multiIf` branch is computed
+                // for every row).
                 let instant = format!(
                     "ifNull(toString(toUnixTimestamp64Micro(accurateCastOrNull(\
-                     CAST({v}, 'Dynamic'), 'DateTime64(6, ''UTC'')'))), '')"
+                     if(startsWith({ty}, 'DateTime'), CAST({v}, 'Dynamic'), NULL), \
+                     'DateTime64(6, ''UTC'')'))), '')"
                 );
                 // `toString` drops a FixedString's trailing zero bytes,
                 // which the output prints: padded back to its width.
@@ -481,7 +487,8 @@ mod tests {
             format!("startsWith({ty}, 'Time'), 'Time', {ty})"),
             r"replaceRegexpOne(replaceRegexpOne(toString(x), '(\\.[0-9]*[1-9])0+$', '\\1'), '\\.0+$', '')"
                 .to_string(),
-            "ifNull(toString(toUnixTimestamp64Micro(accurateCastOrNull(CAST(x, 'Dynamic'), \
+            "ifNull(toString(toUnixTimestamp64Micro(accurateCastOrNull(if(startsWith(\
+             dynamicType(CAST(x, 'Dynamic')), 'DateTime'), CAST(x, 'Dynamic'), NULL), \
              'DateTime64(6, ''UTC'')'))), '')"
                 .to_string(),
         ] {

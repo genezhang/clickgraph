@@ -152,8 +152,9 @@ impl<'s> Lowerer<'s> {
     ///   `p__cg{k}` (source `k`; NULL in other sources' rows), so that each
     ///   source's column keeps its own type;
     /// * `{name}`: one row per non-NULL id, each property the value of its
-    ///   sources' columns (`FunctionMapper::one_value`: an error when the
-    ///   rows of one id hold several, #531), read through
+    ///   sources' columns (`any`: the rows of one id hold one value; checked
+    ///   with `FunctionMapper::one_value` when `check_node_properties`: an
+    ///   error when they hold several, #531), read through
     ///   `FunctionMapper::one_type_guard` when several sources hold it (on
     ///   each row, before the aggregate): an error unless their types
     ///   differ only in what changes no value.
@@ -272,17 +273,28 @@ impl<'s> Lowerer<'s> {
                         ),
                     },
                 };
-            // A node has one value of a property: rows of one id that hold
-            // several are no node's, an error (#531), not any of them.
-            let message = format!(
-                "ClickGraph: rows of one :{} node hold several values of its property {p}: \
-                 the property is not the node's, or its id columns do not identify it",
-                relation.label
-            );
-            items.push(select(
-                RenderExpr::Raw(mapper.one_value(&value, &message)),
-                p,
-            ));
+            // A node has one value of a property. Rows of one id that hold
+            // several are no node's: any of them is read, or, checked
+            // (`check_node_properties`), they are an error (#531).
+            let value = match self.options.check_node_properties {
+                true => {
+                    let message = format!(
+                        "ClickGraph: rows of one :{} node hold several values of its property \
+                         {p}: the property is not the node's, or its id columns do not identify it",
+                        relation.label
+                    );
+                    match mapper.one_value(&value, &message) {
+                        Some(v) => v,
+                        None => {
+                            return unsupported(
+                                "checking a node property's values in this SQL dialect",
+                            )
+                        }
+                    }
+                }
+                false => mapper.any_non_null(&value),
+            };
+            items.push(select(RenderExpr::Raw(value), p));
         }
         let not_null: Vec<String> = ids
             .iter()

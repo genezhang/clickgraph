@@ -128,6 +128,7 @@ pub async fn run_with_config(config: ServerConfig) {
     // by the query planner; embedded/`cg` never call this so they keep the
     // identity-mapping default.
     query_context::set_server_neo4j_compat(config.neo4j_compat_mode);
+    query_context::set_check_node_properties(config.check_node_properties);
 
     // Test that logging is working
     log::debug!("=== SERVER STARTING (debug log test) ===");

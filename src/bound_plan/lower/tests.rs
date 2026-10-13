@@ -4251,43 +4251,57 @@ fn embedded_property_skips_variant_nulls() {
 }
 
 /// #531: the rows of one id of an embedded node holding several values of a
-/// property are no node's: an error naming the label and the property, not
-/// any of the values (a value's hash counted, up to two, on ClickHouse;
-/// `count(DISTINCT)` on Spark). The id is read as before.
+/// property are no node's. By default any of the values is read (main's
+/// SQL); checked (`check_node_properties`), they are an error naming the
+/// label and the property, counted by DISTINCT's keys (up to two hashes on
+/// ClickHouse, `count(DISTINCT)` on Spark). The id is read as before.
 #[test]
-fn embedded_property_of_several_values_is_an_error() {
+fn embedded_property_of_several_values_is_an_error_when_checked() {
     let message = "ClickGraph: rows of one :Airport node hold several values of its property city";
-    let got = squash(
-        &translate_bound_plan(
-            "MATCH (a:Airport) RETURN a.city AS c",
-            &embedded_schema(),
-            &ReadOptions::default(),
+    let checked = ReadOptions {
+        check_node_properties: Some(true),
+        ..ReadOptions::default()
+    };
+    let read = |q: &str, options: &ReadOptions| {
+        squash(
+            &translate_bound_plan(q, &embedded_schema(), options)
+                .unwrap()
+                .sql,
         )
-        .unwrap()
-        .sql,
+    };
+    let unchecked = read(
+        "MATCH (a:Airport) RETURN a.city AS c",
+        &ReadOptions::default(),
     );
+    assert!(!unchecked.contains("throwIf("), "{unchecked}");
+    assert!(unchecked.contains("anyIfOrNull("), "{unchecked}");
+    let got = read("MATCH (a:Airport) RETURN a.city AS c", &checked);
     assert!(got.contains("arrayElement([anyIfOrNull("), "{got}");
     assert!(
-        got.contains("1 + throwIf(uniqUpToIf(1)(cityHash64("),
+        got.contains("1 + throwIf(uniqUpToIf(1)(cityHash64(tuple(multiIf(dynamicType("),
         "{got}"
     );
     assert!(got.contains(message), "{got}");
-    let got = squash(
-        &databricks_sql("MATCH (a:Airport) RETURN a.city AS c", &embedded_schema()).unwrap(),
-    );
-    assert!(got.contains("CASE WHEN count(DISTINCT "), "{got}");
-    assert!(got.contains(&format!("raise_error('{message}")), "{got}");
     // The id is the group's key, not a property's aggregate.
-    let got = squash(
-        &translate_bound_plan(
-            "MATCH (i:IP) RETURN i.ip AS ip",
-            &embedded_schema(),
-            &ReadOptions::default(),
-        )
-        .unwrap()
-        .sql,
-    );
+    let got = read("MATCH (i:IP) RETURN i.ip AS ip", &checked);
     assert!(!got.contains("throwIf(uniqUpToIf"), "{got}");
+    // Spark: DISTINCT's keys of the non-NULL values (a VARIANT has no
+    // DISTINCT of its own).
+    use crate::server::query_context::{set_current_schema, with_query_context_sync, QueryContext};
+    let ctx = QueryContext {
+        dialect: crate::sql_generator::SqlDialect::Databricks,
+        ..QueryContext::default()
+    };
+    let schema = embedded_schema();
+    let got = with_query_context_sync(ctx, || {
+        set_current_schema(std::sync::Arc::new(schema.clone()));
+        translate_bound_plan("MATCH (a:Airport) RETURN a.city AS c", &schema, &checked)
+            .map(|t| squash(&t.sql))
+    })
+    .unwrap();
+    assert!(got.contains("CASE WHEN count(DISTINCT CASE WHEN "), "{got}");
+    assert!(got.contains("schema_of_variant("), "{got}");
+    assert!(got.contains(&format!("raise_error('{message}")), "{got}");
 }
 
 /// S12a review: Spark `sequence` is never empty (`sequence(1, 0)` is

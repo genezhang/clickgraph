@@ -39,6 +39,10 @@ pub struct ReadOptions {
     /// `None`: the server's setting (`server_neo4j_compat`). The corpus
     /// goldens lock both modes in one process (P-4c S14c0).
     pub neo4j_compat: Option<bool>,
+    /// Check that the rows of each id of a node embedded in edge tables
+    /// hold one value of each property read (#531); `None`: the process
+    /// setting (`query_context::check_node_properties`).
+    pub check_node_properties: Option<bool>,
 }
 
 /// Wall-clock time spent in each translation stage (HTTP metrics).
@@ -481,6 +485,9 @@ fn bound_plan_or_reason(
             neo4j_compat: options
                 .neo4j_compat
                 .unwrap_or_else(crate::server::query_context::server_neo4j_compat),
+            check_node_properties: options
+                .check_node_properties
+                .unwrap_or_else(crate::server::query_context::check_node_properties),
             id_lookup: options.id_mapper.clone().map(|mapper| {
                 // The query's schema (the context's: an `Arc`, not a copy).
                 let schema = crate::server::query_context::get_current_schema()

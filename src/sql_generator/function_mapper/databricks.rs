@@ -421,14 +421,18 @@ impl FunctionMapper for DatabricksFunctionMapper {
         format!("any_value({value}, true)")
     }
 
-    fn one_value(&self, value: &str, message: &str) -> String {
+    fn one_value(&self, value: &str, message: &str) -> Option<String> {
         // `raise_error` is evaluated on the groups of several values only;
-        // its NULL takes the value's type. `count(DISTINCT)` skips NULLs.
+        // its NULL takes the value's type. Counted by DISTINCT's keys
+        // (`variant_key`: a VARIANT has no DISTINCT of its own); a NULL
+        // value is its key `':'`, not counted.
+        let key = (self.cypher_union()?.distinct_key)(value);
         let message = message.replace('\\', "\\\\").replace('\'', "\\'");
-        format!(
-            "CASE WHEN count(DISTINCT {value}) > 1 THEN raise_error('{message}') ELSE {} END",
+        Some(format!(
+            "CASE WHEN count(DISTINCT CASE WHEN {value} IS NOT NULL THEN {key} END) > 1 \
+             THEN raise_error('{message}') ELSE {} END",
             self.any_non_null(value)
-        )
+        ))
     }
 
     fn graph_values(&self) -> Option<super::GraphValues> {

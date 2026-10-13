@@ -3040,6 +3040,7 @@ impl BoltHandler {
                     cypher: query.to_string(),
                     id_mapper: Some(id_mapper_snapshot.clone()),
                     neo4j_compat: None,
+                    check_node_properties: None,
                 },
             ) {
                 Ok(Some(t)) => Ok(t),
@@ -3065,6 +3066,7 @@ impl BoltHandler {
                     cypher: query.to_string(),
                     id_mapper: Some(id_mapper_snapshot.clone()),
                     neo4j_compat: None,
+                    check_node_properties: None,
                 },
             )
         };

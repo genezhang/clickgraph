@@ -18,6 +18,7 @@ cg nl        --schema <file>  --execute "<...>"       # NL → Cypher → execut
 cg schema show   --schema <file> [--format text|json] # Compact agent-friendly schema view
 cg schema validate [<file>]                           # Structural validation (no CH needed)
 cg --clickhouse <url> schema validate [<file>] --data [--sample N] [--max-rows M] [--full]  # + one value per embedded node id (sampled)
+cg --check-node-properties query ...                  # fail a read of an embedded node's property whose rows disagree
 cg schema discover --clickhouse <url> --database <db> --out <file>  # LLM-assisted schema gen
 cg schema diff <old.yaml> <new.yaml>                  # Node/relationship diff
 ```
