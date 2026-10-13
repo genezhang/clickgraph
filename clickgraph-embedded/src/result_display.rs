@@ -124,7 +124,9 @@ fn format_graph_value(m: &[(String, Value)]) -> Option<String> {
     };
     let mut visible: Vec<_> = props
         .iter()
-        .filter(|(k, v)| !INTERNAL_FIELDS.contains(&k.as_str()) && !v.is_null())
+        // Only the TCK's id property: the element's ids are outside `properties`,
+        // so a property named `from_id` or `_version` is the user's.
+        .filter(|(k, v)| k != "_tck_id" && !v.is_null())
         .collect();
     visible.sort_by(|(a, _), (b, _)| a.cmp(b));
     let props = if visible.is_empty() {
@@ -132,7 +134,7 @@ fn format_graph_value(m: &[(String, Value)]) -> Option<String> {
     } else {
         let pairs: Vec<String> = visible
             .iter()
-            .map(|(k, v)| format!("{k}: {}", format_value(v)))
+            .map(|(k, v)| format!("{k}: {}", format_property(v)))
             .collect();
         format!("{{{}}}", pairs.join(", "))
     };
@@ -167,6 +169,29 @@ fn format_graph_value(m: &[(String, Value)]) -> Option<String> {
         return Some(format!("[{}]", join(format!(":{rel_type}"))));
     }
     None
+}
+
+/// Format a property value of a graph value as it is: a string stays a quoted
+/// string (no list or number read into its text, as `format_value` and
+/// `format_map_value` do for the legacy pipeline's stringified values).
+fn format_property(v: &Value) -> String {
+    match v {
+        Value::String(s) => format!("'{}'", s.replace('\\', "\\\\").replace('\'', "\\'")),
+        Value::List(items) => {
+            let parts: Vec<String> = items.iter().map(format_property).collect();
+            format!("[{}]", parts.join(", "))
+        }
+        Value::Map(m) => {
+            let mut pairs: Vec<_> = m.iter().collect();
+            pairs.sort_by(|(a, _), (b, _)| a.cmp(b));
+            let parts: Vec<String> = pairs
+                .iter()
+                .map(|(k, v)| format!("{k}: {}", format_property(v)))
+                .collect();
+            format!("{{{}}}", parts.join(", "))
+        }
+        other => format_value(other),
+    }
 }
 
 /// Format a float: openCypher floats always show a decimal point (`2.0`, `0.5`).
@@ -862,9 +887,16 @@ mod tests {
                 ("num", Value::Int64(1)),
                 ("_tck_id", Value::string("x")),
                 ("name", Value::string("")),
+                ("from_id", Value::Int64(7)),
+                ("s", Value::string("[1, 2]")),
+                ("m", map(vec![("k", Value::string("1"))])),
+                ("l", Value::List(vec![Value::string("it's")])),
             ],
         );
-        assert_eq!(format_value(&n), "(:A:B {name: '', num: 1})");
+        assert_eq!(
+            format_value(&n),
+            "(:A:B {from_id: 7, l: ['it\\'s'], m: {k: '1'}, name: '', num: 1, s: '[1, 2]'})"
+        );
         assert_eq!(format_value(&node(&["A"], vec![])), "(:A)");
         let unlabeled = node(&["__Unlabeled"], vec![("name", Value::string("x1"))]);
         assert_eq!(format_value(&unlabeled), "({name: 'x1'})");
