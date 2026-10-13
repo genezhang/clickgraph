@@ -199,7 +199,7 @@ nodes:
 - ❌ No native date/time type in Cypher results (returned as strings)
 - ❌ Nested structures (Tuple, Nested) require custom handling
 - ❌ Map type not directly supported
-- ⚠️ A boolean compared with a number or a string follows Cypher (`=` false, ordering NULL) only when the number's or string's type is known: a literal, arithmetic, a string or number function, or a property whose type the schema declares (`property_types`). A property of undeclared type compared with a boolean is compared as ClickHouse compares it: as a number, `true` being 1.
+- ⚠️ A boolean compared with a number or a string follows Cypher (`=` false, ordering NULL) only when the number's or string's type is known: a literal, arithmetic, a string or number function, or a property whose type the schema declares (`property_types`). A property of undeclared type compared with a boolean is compared as ClickHouse compares it: as a number, `true` being 1. So are values whose kind is not known where they are compared: `coalesce(b, 1) = 1`, lists of lists (`[[b]] = [[1]]`), and a list mixing booleans and numbers (`[b] + [1]` shows `[true, true]`; Neo4j `[true, 1]`).
 
 ### Query Performance
 
