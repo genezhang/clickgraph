@@ -917,7 +917,7 @@ with driver.session(database="social_network") as session:
 driver.close()
 ```
 
-**Use with cypher-shell:**
+**Use with cypher-shell** (server started with `--neo4j-compat-mode`):
 ```bash
 cypher-shell -a bolt://localhost:7687 -d social_network
 > MATCH (u:User) RETURN u.name LIMIT 5;

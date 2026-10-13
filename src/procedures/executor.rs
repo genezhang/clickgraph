@@ -26,6 +26,11 @@ pub async fn execute_procedure_by_name(
         .get(procedure_name)
         .ok_or_else(|| format!("Unknown procedure: {}", procedure_name))?;
 
+    // It reads no schema: answered in every database, `system` too.
+    if procedure_name == "db.ping" {
+        return super::dbms_stubs::ping_rows();
+    }
+
     // Neo4j reserves the `system` database for administrative state; it holds no
     // user graph. Neo4j Browser routes housekeeping/introspection CALLs (id()
     // resolution, db.* metadata) to it, which arrive here with schema_name
@@ -668,6 +673,21 @@ mod tests {
                 matches!(result, Ok(ref rows) if rows.is_empty()),
                 "procedure against reserved '{db}' database must return Ok(empty), got {result:?}"
             );
+        }
+    }
+
+    /// #1476 review: `db.ping()` reads no schema and answers in every
+    /// database, `system` too (Neo4j: "available in all databases").
+    #[tokio::test]
+    async fn db_ping_answers_in_the_system_database() {
+        let registry = crate::procedures::ProcedureRegistry::new();
+        let result = execute_procedure_by_name("db.ping", "system", &registry).await;
+        match result {
+            Ok(rows) => {
+                assert_eq!(rows.len(), 1);
+                assert_eq!(rows[0].get("success"), Some(&serde_json::json!(true)));
+            }
+            Err(e) => panic!("db.ping on system: {e}"),
         }
     }
 

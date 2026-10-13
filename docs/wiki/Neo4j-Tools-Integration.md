@@ -470,6 +470,8 @@ won't produce error messages.
 
 ### Cypher Shell
 
+`cypher-shell` refuses a server that does not identify as Neo4j, and calls `db.ping()` when it connects: start ClickGraph with `--neo4j-compat-mode`.
+
 ```bash
 cypher-shell -a bolt://localhost:7687 -u neo4j -p password
 
@@ -493,7 +495,7 @@ Add ClickGraph as a remote database:
 1. **Read-Only:** Only `MATCH` and `RETURN` queries supported (no `CREATE`, `SET`, `DELETE`, `MERGE`)
 2. **Single Schema per Connection:** Bolt connections bound to one schema (cannot switch with `USE` clause)
 3. **No Transaction Support:** `BEGIN`, `COMMIT`, `ROLLBACK` not implemented
-4. **Limited Procedure Set:** Only 5 procedures currently (4 schema + 1 algorithm)
+4. **Limited Procedure Set:** the schema procedures, `dbms.*` / Browser probes, `db.ping()`, `apoc.meta.*`, search and export procedures (see the [Cypher Language Reference](Cypher-Language-Reference.md))
 
 ### Not Supported
 

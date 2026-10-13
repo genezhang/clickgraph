@@ -32,6 +32,7 @@ pub fn list_procedures(_schema: &GraphSchema) -> ProcedureResult {
         ("dbms.security.showCurrentUser", "Show current user"),
         ("dbms.procedures", "List procedures"),
         ("dbms.functions", "List functions"),
+        ("db.ping", "Whether the server answers"),
     ];
 
     Ok(procedures
@@ -48,6 +49,21 @@ pub fn list_procedures(_schema: &GraphSchema) -> ProcedureResult {
             ])
         })
         .collect())
+}
+
+/// db.ping() - Whether the server answers: one row, `success: true`, as
+/// Neo4j's. cypher-shell calls it on connect (#1476).
+pub fn ping(_schema: &GraphSchema) -> ProcedureResult {
+    ping_rows()
+}
+
+/// `db.ping()`'s row, which reads no schema: answered in every database,
+/// `system` too, as Neo4j's ("available in all databases").
+pub fn ping_rows() -> ProcedureResult {
+    Ok(vec![HashMap::from([(
+        "success".to_string(),
+        serde_json::json!(true),
+    )])])
 }
 
 /// dbms.functions() - Returns empty list (we don't support custom functions yet)
