@@ -434,6 +434,32 @@ mod tests {
         assert_eq!(m.quote_alias("x\"y"), "\"x\"\"y\"");
     }
 
+    /// #1432: a date is not a string of its text, nor an interval a number;
+    /// a `Date32` is a `Date`, a `DateTime64` a `DateTime` of its zone.
+    #[test]
+    fn a_distinct_key_tells_temporal_values_by_type() {
+        let Some(u) = ClickhouseFunctionMapper.cypher_union() else {
+            panic!("ClickHouse has a Cypher UNION");
+        };
+        let key = (u.distinct_key)("x");
+        let ty = "dynamicType(CAST(x, 'Dynamic'))";
+        let zone = format!("extract({ty}, '''([^'']*)''')");
+        for part in [
+            format!("match({ty}, '^(U?Int[0-9]|Float|BFloat|Decimal)'), 'n'"),
+            format!("match({ty}, '^(String|FixedString|Enum|UUID|IPv|LowCardinality)'), 's'"),
+            format!("{ty} = 'Date32', 'Date'"),
+            format!(
+                "startsWith({ty}, 'DateTime'), \
+                 concat('DateTime ', if({zone} = '', timezone(), {zone}))"
+            ),
+            format!("startsWith({ty}, 'Time'), 'Time', {ty})"),
+            r"replaceRegexpOne(replaceRegexpOne(toString(x), '(\\.[0-9]*[1-9])0+$', '\\1'), '\\.0+$', '')"
+                .to_string(),
+        ] {
+            assert!(key.contains(&part), "missing `{part}` in\n{key}");
+        }
+    }
+
     #[test]
     fn cast_bool_uses_nullable_bool_for_null_safety() {
         // #1057: Nullable(Bool), not bare Bool — CAST(NULL>2 AS Bool) throws
