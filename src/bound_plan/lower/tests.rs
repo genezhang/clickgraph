@@ -4377,7 +4377,7 @@ fn databricks_lists() {
         .unwrap(),
     );
     for part in [
-        "NOT array_contains(coalesce(s1.__value, array()), 'x')",
+        "WHEN array_contains(coalesce(s1.__value, array()), 'x') THEN true",
         "try_element_at(coalesce(s2.__value, array()), 1) AS `h`",
         "try_element_at(array(1, 2), 6) AS `e`",
     ] {
@@ -4830,6 +4830,40 @@ fn comprehension_parameters_compare_as_values() {
     has(
         "RETURN [x IN [1, 2] | [y IN [1, 2] WHERE y <> x]] AS l",
         &[r#"arrayMap(v0 -> arrayFilter(v1 -> v1 <> v0, [1, 2]), [1, 2]) AS "l""#],
+    );
+}
+
+/// #1423: `x IN` a list expression is three-valued, as for a list of items
+/// (ClickHouse's `x IN l` is false where an element is NULL): NULL where no
+/// element is `x` and one is NULL, or `x` is NULL and the list is not empty.
+#[test]
+fn in_a_list_expression_is_three_valued() {
+    let l = "arrayMap(v1 -> v1, [1, NULL])";
+    has(
+        "UNWIND [2] AS x RETURN x IN [y IN [1, null] | y] AS a",
+        &[&format!(
+            "CASE WHEN ({l}) IS NULL THEN NULL WHEN length({l}) = 0 THEN false \
+             WHEN (w1.v0) IS NULL THEN NULL WHEN has({l}, w1.v0) THEN true \
+             WHEN length(arrayFilter(__cg_in -> __cg_in IS NULL, {l})) > 0 THEN NULL \
+             ELSE false END"
+        )],
+    );
+    has(
+        "UNWIND [2] AS x RETURN x NOT IN [y IN [1] | y] AS a",
+        &[
+            "length(arrayMap(v1 -> v1, [1])) = 0 THEN true",
+            "has(arrayMap(v1 -> v1, [1]), w1.v0) THEN false",
+            "THEN NULL ELSE true END",
+        ],
+    );
+    // `null IN []` is false; `x IN null` is NULL.
+    has(
+        "UNWIND [2, null] AS x RETURN x IN [] AS a, NOT x IN [] AS b, x IN null AS c",
+        &[
+            r#"CAST(false AS Nullable(Bool)) AS "a""#,
+            r#"CAST(NOT false AS Nullable(Bool)) AS "b""#,
+            r#"NULL AS "c""#,
+        ],
     );
 }
 

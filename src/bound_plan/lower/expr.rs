@@ -712,6 +712,22 @@ impl Lowerer<'_> {
         if let Some(e) = self.boolean_operator(op, items)? {
             return Ok(e);
         }
+        // `x IN …` of values.
+        if let (O::In | O::NotIn, [x, list]) = (op.operator, op.operands.as_slice()) {
+            let negated = op.operator == O::NotIn;
+            match list {
+                // `null IN []` is false.
+                LogicalExpr::List(xs) if xs.is_empty() => {
+                    return Ok(RenderExpr::Literal(Literal::Boolean(negated)));
+                }
+                LogicalExpr::Literal(lx::Literal::Null) => {
+                    return Ok(RenderExpr::Literal(Literal::Null));
+                }
+                // A list of items: `x = a OR x = b …` (the SQL printer).
+                LogicalExpr::List(_) => {}
+                _ => return self.in_values(x, list, negated, items),
+            }
+        }
         Ok(RenderExpr::OperatorApplicationExp(OperatorApplication {
             operator: op.operator,
             operands: self.all(&op.operands, items)?,
@@ -1118,6 +1134,40 @@ impl Lowerer<'_> {
             m.list_size(&list_sql),
             if negated { "true" } else { "false" },
             x_absent.join(" OR ")
+        ))))
+    }
+
+    /// `x [NOT] IN l` of a value `x` and a list expression `l` (not a list of
+    /// items): Cypher's three-valued `IN`. NULL where `l` is; of an empty
+    /// `l`, false (`null IN []` too); else NULL where `x` is; true where an
+    /// element is `x`; NULL where an element is NULL; else false.
+    /// (ClickHouse's `x IN l` is false where an element is NULL, #1423.)
+    fn in_values(
+        &self,
+        x: &LogicalExpr,
+        list: &LogicalExpr,
+        negated: bool,
+        items: &Items,
+    ) -> Result<RenderExpr, LowerError> {
+        let m = current_function_mapper();
+        let Some(spelling) = m.lists() else {
+            return unsupported("IN of a list expression in this SQL dialect");
+        };
+        let x_sql = render_expr_to_sql_plain(&self.expr(x, items)?);
+        let list_sql = render_expr_to_sql_plain(&self.expr(list, items)?);
+        const T: &str = "__cg_in";
+        let nulls = (spelling.filter)(T, &format!("{T} IS NULL"), &list_sql);
+        let (found, not_found) = match negated {
+            true => ("false", "true"),
+            false => ("true", "false"),
+        };
+        Ok(RenderExpr::Raw(m.cast_bool(&format!(
+            "CASE WHEN ({list_sql}) IS NULL THEN NULL WHEN {} = 0 THEN {not_found} \
+             WHEN ({x_sql}) IS NULL THEN NULL WHEN {}({list_sql}, {x_sql}) THEN {found} \
+             WHEN {} > 0 THEN NULL ELSE {not_found} END",
+            m.list_size(&list_sql),
+            m.array_contains(),
+            m.list_size(&nulls),
         ))))
     }
 
