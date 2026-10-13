@@ -1615,23 +1615,54 @@ impl Lowerer<'_> {
         })
     }
 
+    /// The condition of each `WHEN` of `c` (`None`: it never matches). Of a
+    /// simple CASE, `CASE x WHEN w …` is `CASE WHEN x = w …`: three-valued,
+    /// a NULL never matches (ClickHouse's `caseWithExpression` takes NULL for
+    /// equal to NULL, #1412).
+    fn case_conditions(
+        &self,
+        c: &LogicalCase,
+        items: &Items,
+    ) -> Result<Vec<Option<RenderExpr>>, LowerError> {
+        let null = |e: &LogicalExpr| matches!(e, LogicalExpr::Literal(lx::Literal::Null));
+        c.when_then
+            .iter()
+            .map(|(w, _)| match c.expr.as_deref() {
+                None => self.expr(w, items).map(Some),
+                Some(x) if null(x) || null(w) => Ok(None),
+                // `CASE b WHEN 1 …` of a boolean and a number or a string
+                // (or the other way): never equal (ClickHouse would compare
+                // them as numbers, #1470).
+                Some(x) if self.apart(x, w) => {
+                    // Still lowered: what is refused in it stays refused.
+                    self.expr(w, items)?;
+                    Ok(None)
+                }
+                Some(x) => self
+                    .expr(
+                        &LogicalExpr::OperatorApplicationExp(LOp {
+                            operator: lx::Operator::Equal,
+                            operands: vec![x.clone(), w.clone()],
+                        }),
+                        items,
+                    )
+                    .map(Some),
+            })
+            .collect()
+    }
+
     fn case(&self, c: &LogicalCase, items: &Items) -> Result<RenderExpr, LowerError> {
         let mut when_then = Vec::new();
-        for (w, t) in &c.when_then {
-            let (w_sql, t_sql) = (self.expr(w, items)?, self.expr(t, items)?);
-            // `CASE b WHEN 1 …` of a boolean and a number or a string (or
-            // the other way): never equal, the branch never matches
-            // (ClickHouse would compare them as numbers, #1470).
-            if c.expr.as_ref().is_some_and(|x| self.apart(x, w)) {
-                continue;
+        for (condition, (_, t)) in self
+            .case_conditions(c, items)?
+            .into_iter()
+            .zip(&c.when_then)
+        {
+            let t_sql = self.expr(t, items)?;
+            if let Some(w_sql) = condition {
+                when_then.push((w_sql, t_sql));
             }
-            when_then.push((w_sql, t_sql));
         }
-        let expr = c
-            .expr
-            .as_ref()
-            .map(|e| self.expr(e, items).map(Box::new))
-            .transpose()?;
         let else_expr = c
             .else_expr
             .as_ref()
@@ -1641,7 +1672,7 @@ impl Lowerer<'_> {
             return Ok(else_expr.map_or(RenderExpr::Literal(Literal::Null), |e| *e));
         }
         Ok(RenderExpr::Case(RenderCase {
-            expr,
+            expr: None,
             when_then,
             else_expr,
         }))
@@ -2324,28 +2355,36 @@ impl Lowerer<'_> {
             }
         };
         let flag = |e: Option<&LogicalExpr>| RenderExpr::Literal(Literal::Boolean(!is_null(e)));
-        let subject = c
-            .expr
-            .as_ref()
-            .map(|e| self.expr(e, items).map(Box::new))
-            .transpose()?;
         let mut value = RenderCase {
-            expr: subject.clone(),
+            expr: None,
             when_then: Vec::new(),
             else_expr: Some(Box::new(result(c.else_expr.as_deref())?)),
         };
         let mut present = RenderCase {
-            expr: subject,
+            expr: None,
             when_then: Vec::new(),
             else_expr: Some(Box::new(flag(c.else_expr.as_deref()))),
         };
-        for (w, t) in &c.when_then {
-            let w = self.expr(w, items)?;
-            value.when_then.push((w.clone(), result(Some(t))?));
-            present.when_then.push((w, flag(Some(t))));
+        for (condition, (_, t)) in self
+            .case_conditions(c, items)?
+            .into_iter()
+            .zip(&c.when_then)
+        {
+            let t_sql = result(Some(t))?;
+            if let Some(w) = condition {
+                value.when_then.push((w.clone(), t_sql));
+                present.when_then.push((w, flag(Some(t))));
+            }
         }
-        let value = render_expr_to_sql_plain(&RenderExpr::Case(value));
-        let present = render_expr_to_sql_plain(&RenderExpr::Case(present));
+        // Of no branch that may match: the ELSE's.
+        let case = |c: RenderCase| match (c.when_then.is_empty(), c.else_expr) {
+            (true, Some(e)) => render_expr_to_sql_plain(&e),
+            (_, else_expr) => {
+                render_expr_to_sql_plain(&RenderExpr::Case(RenderCase { else_expr, ..c }))
+            }
+        };
+        let value = case(value);
+        let present = case(present);
         // Over rows in an order (`Lowerer::collect_order`): in it.
         let list = match &self.collect_order {
             Some(key) => {

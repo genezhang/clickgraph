@@ -740,6 +740,7 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-10-13: **P-1: #1412 a simple CASE never matches NULL** (`CASE x WHEN w` lowered as `CASE WHEN x = w`, through the lowering's `=`; TCK green).
 - 2026-10-13: **P-1: #1423 `x IN` a list expression is three-valued** (the bound plan lowers it to a `CASE` over `FunctionMapper` spellings on both dialects; `null IN []` is false; LDBC IC12's filter gives the same rows).
 - 2026-10-13: **P-1: #1479 a list comprehension's `|` next to a name** (`[x IN l|x]` parses; only `WHERE` must be a word).
 - 2026-10-13: **P-1: #1411 what follows a procedure's YIELD** (WHERE / RETURN / ORDER BY / SKIP / LIMIT applied on HTTP and Bolt; the rest refused; #1320 closed as fixed by the bound plan).

@@ -345,9 +345,9 @@ SELECT
       tupleElement(w20.v31, 8) AS "zombie.id", 
       w20.v32 AS "zombieLikeCount", 
       w20.v33 AS "totalLikeCount", 
-      caseWithExpression(w20.v33, 0, 0, w20.v32 / toFloat64(w20.v33)) AS "zombieScore"
+      CASE WHEN w20.v33 = 0 THEN 0 ELSE w20.v32 / toFloat64(w20.v33) END AS "zombieScore"
 FROM with_w20 AS w20
-ORDER BY caseWithExpression(w20.v33, 0, 0, w20.v32 / toFloat64(w20.v33)) DESC NULLS FIRST, tupleElement(w20.v31, 8) ASC
+ORDER BY CASE WHEN w20.v33 = 0 THEN 0 ELSE w20.v32 / toFloat64(w20.v33) END DESC NULLS FIRST, tupleElement(w20.v31, 8) ASC
 LIMIT 100
 -- column zombie.id: Value [("zombie.id", "zombie.id")]
 -- column zombieLikeCount: Value [("zombieLikeCount", "zombieLikeCount")]
