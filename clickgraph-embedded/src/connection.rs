@@ -1252,6 +1252,10 @@ impl<'db> Connection<'db> {
                 clickgraph::open_cypher_parser::ast::CypherStatement::CopyTo(_) => None,
             };
             if let Some(name) = proc_name {
+                if clickgraph::procedures::is_sql_procedure(&name) {
+                    clickgraph::procedures::executor::sql_procedure_tail_refused(&stmt)
+                        .map_err(EmbeddedError::Query)?;
+                }
                 if clickgraph::procedures::apoc_export::is_export_procedure(&name) {
                     return self.handle_export_call(cypher).await;
                 }

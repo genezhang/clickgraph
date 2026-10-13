@@ -39,7 +39,6 @@ enum ExecutionPlan {
 #[derive(Debug)]
 struct ProcedureBranch {
     proc_name: String,
-    has_return: bool,
 }
 
 use crate::server::{graph_catalog, parameter_substitution};
@@ -2456,6 +2455,16 @@ impl BoltHandler {
             };
             let is_procedure = crate::procedures::is_procedure_only_statement(&parsed_stmt);
             let is_union = crate::procedures::is_procedure_union_query(&parsed_stmt);
+            if let CypherStatement::Query { query: q, .. } = &parsed_stmt {
+                if is_procedure
+                    && q.call_clause
+                        .as_ref()
+                        .is_some_and(|c| crate::procedures::is_sql_procedure(c.procedure_name))
+                {
+                    crate::procedures::executor::sql_procedure_tail_refused(&parsed_stmt)
+                        .map_err(BoltError::query_error)?;
+                }
+            }
 
             log::debug!("Query execution using schema: {}", effective_schema);
             log::debug!(
@@ -2489,7 +2498,6 @@ impl BoltHandler {
                             if let Some(call_clause) = &query_ast.call_clause {
                                 branches.push(ProcedureBranch {
                                     proc_name: call_clause.procedure_name.to_string(),
-                                    has_return: query_ast.return_clause.is_some(),
                                 });
                             }
 
@@ -2498,7 +2506,6 @@ impl BoltHandler {
                                 if let Some(call_clause) = &union_clause.query.call_clause {
                                     branches.push(ProcedureBranch {
                                         proc_name: call_clause.procedure_name.to_string(),
-                                        has_return: union_clause.query.return_clause.is_some(),
                                     });
                                 }
                             }
@@ -2847,7 +2854,7 @@ impl BoltHandler {
                             .collect::<Result<Vec<_>, _>>()?
                     } else {
                         log::info!("Executing simple procedure via Bolt: {}", proc_name);
-                        crate::procedures::executor::execute_procedure_by_name(
+                        let rows = crate::procedures::executor::execute_procedure_by_name(
                             &proc_name,
                             &effective_schema,
                             &registry,
@@ -2855,7 +2862,10 @@ impl BoltHandler {
                         .await
                         .map_err(|e| {
                             BoltError::query_error(format!("Procedure execution failed: {}", e))
-                        })?
+                        })?;
+                        // What follows the CALL (YIELD, WHERE; #1411)
+                        crate::procedures::executor::apply_statement_tail(rows, query, 0)
+                            .map_err(BoltError::query_error)?
                     }
                 }
                 ExecutionPlan::ProcedureWithReturn { proc_name } => {
@@ -2870,28 +2880,11 @@ impl BoltHandler {
                     .await
                     .map_err(BoltError::query_error)?;
 
-                    // Parse original query to get RETURN clause (procedures don't have id() in RETURN)
-                    let return_clause = match open_cypher_parser::parse_cypher_statement(query) {
-                        Ok((_, CypherStatement::Query { query, .. })) => {
-                            query.return_clause.ok_or_else(|| {
-                                BoltError::query_error("Expected RETURN clause".to_string())
-                            })?
-                        }
-                        _ => {
-                            return Err(BoltError::query_error(
-                                "Failed to parse RETURN clause".to_string(),
-                            ))
-                        }
-                    };
-
-                    // Apply RETURN clause
-                    crate::procedures::return_evaluator::apply_return_clause(
-                        raw_results,
-                        &return_clause,
-                    )
-                    .map_err(|e| {
-                        BoltError::query_error(format!("RETURN evaluation failed: {}", e))
-                    })?
+                    // What follows the CALL (YIELD, WHERE, RETURN; #1411)
+                    crate::procedures::executor::apply_statement_tail(raw_results, query, 0)
+                        .map_err(|e| {
+                            BoltError::query_error(format!("RETURN evaluation failed: {}", e))
+                        })?
                 }
                 ExecutionPlan::Union { branches } => {
                     log::info!(
@@ -2911,46 +2904,16 @@ impl BoltHandler {
                         .await
                         .map_err(BoltError::query_error)?;
 
-                        // Apply RETURN clause if branch has one
-                        let transformed_results = if branch.has_return {
-                            // Parse to get return clause for this branch (after await - safe)
-                            let return_clause =
-                                match open_cypher_parser::parse_cypher_statement(query) {
-                                    Ok((
-                                        _,
-                                        CypherStatement::Query {
-                                            query: main_q,
-                                            union_clauses,
-                                        },
-                                    )) => {
-                                        if idx == 0 {
-                                            main_q.return_clause
-                                        } else {
-                                            union_clauses
-                                                .get(idx - 1)
-                                                .and_then(|uc| uc.query.return_clause.clone())
-                                        }
-                                    }
-                                    _ => None,
-                                };
-
-                            if let Some(ref rc) = return_clause {
-                                crate::procedures::return_evaluator::apply_return_clause(
-                                    raw_results,
-                                    rc,
-                                )
-                                .map_err(|e| {
-                                    BoltError::query_error(format!(
-                                        "RETURN evaluation failed: {}",
-                                        e
-                                    ))
-                                })?
-                            } else {
-                                raw_results
-                            }
-                        } else {
-                            raw_results
-                        };
+                        // What follows this branch's CALL (YIELD, WHERE, RETURN; #1411)
+                        let transformed_results =
+                            crate::procedures::executor::apply_statement_tail(
+                                raw_results,
+                                query,
+                                idx,
+                            )
+                            .map_err(|e| {
+                                BoltError::query_error(format!("RETURN evaluation failed: {}", e))
+                            })?;
 
                         all_results.extend(transformed_results);
                     }

@@ -115,13 +115,12 @@ pub fn is_procedure_union_query(stmt: &CypherStatement<'_>) -> bool {
                 return false;
             }
 
-            // Main query must be a CALL with optional YIELD/RETURN
+            // Main query must be a CALL; what follows it is applied (or
+            // refused) by `apply_statement_tail`
             let main_is_call = query.call_clause.is_some()
                 && query.match_clauses.is_empty()
                 && query.optional_match_clauses.is_empty()
-                && query.reading_clauses.is_empty()
-                && query.where_clause.is_none()
-                && query.with_clause.is_none();
+                && query.reading_clauses.is_empty();
 
             log::debug!(
                 "is_procedure_union_query: union_clauses={}, call_clause={:?}, main_is_call={}",
@@ -144,8 +143,6 @@ pub fn is_procedure_union_query(stmt: &CypherStatement<'_>) -> bool {
                     && union_clause.query.match_clauses.is_empty()
                     && union_clause.query.optional_match_clauses.is_empty()
                     && union_clause.query.reading_clauses.is_empty()
-                    && union_clause.query.where_clause.is_none()
-                    && union_clause.query.with_clause.is_none()
             })
         }
         CypherStatement::ProcedureCall(_) => {
@@ -250,12 +247,140 @@ pub async fn execute_procedure_query(
     // Execute the procedure to get raw results
     let raw_results = execute_procedure_by_name(proc_name, schema_name, registry).await?;
 
-    // If there's a RETURN clause, apply transformations
-    if let Some(return_clause) = &query.return_clause {
-        crate::procedures::return_evaluator::apply_return_clause(raw_results, return_clause)
-    } else {
-        // No RETURN clause - return raw results
-        Ok(raw_results)
+    apply_query_tail(raw_results, query)
+}
+
+/// Refuse what follows the YIELD of a procedure answered by its own SQL
+/// (vector / fulltext search, export): that SQL is built from the call's
+/// arguments alone, so a WHERE, RETURN or UNION after it would be dropped
+/// (#1411).
+pub fn sql_procedure_tail_refused(stmt: &CypherStatement<'_>) -> Result<(), String> {
+    let CypherStatement::Query {
+        query,
+        union_clauses,
+    } = stmt
+    else {
+        return Ok(());
+    };
+    let clauses = [
+        (query.where_clause.is_some(), "WHERE"),
+        (query.with_clause.is_some(), "WITH"),
+        (!query.unwind_clauses.is_empty(), "UNWIND"),
+        (query.return_clause.is_some(), "RETURN"),
+        (query.order_by_clause.is_some(), "ORDER BY"),
+        (query.skip_clause.is_some(), "SKIP"),
+        (query.limit_clause.is_some(), "LIMIT"),
+        (!union_clauses.is_empty(), "UNION"),
+    ];
+    match clauses.iter().find(|(present, _)| *present) {
+        Some((_, clause)) => {
+            let name = query
+                .call_clause
+                .as_ref()
+                .map_or("the procedure", |c| c.procedure_name);
+            Err(format!(
+                "Not supported: {clause} after {name} (its rows are returned as the CALL yields them)"
+            ))
+        }
+        None => Ok(()),
+    }
+}
+
+/// Apply the tail of branch `branch` (0: the first query, then each UNION ALL
+/// arm) of the procedure-only `statement` to the rows its procedure returned.
+/// A standalone procedure call has none.
+pub fn apply_statement_tail(
+    rows: Vec<HashMap<String, serde_json::Value>>,
+    statement: &str,
+    branch: usize,
+) -> ProcedureResult {
+    let (_, stmt) = open_cypher_parser::parse_cypher_statement(statement)
+        .map_err(|e| format!("Parse error: {}", e))?;
+    match &stmt {
+        CypherStatement::Query {
+            query,
+            union_clauses,
+        } => {
+            if union_clauses.iter().any(|u| {
+                matches!(
+                    u.union_type,
+                    crate::open_cypher_parser::ast::UnionType::Distinct
+                )
+            }) {
+                return Err("Not supported: UNION of procedure calls (UNION ALL is)".to_string());
+            }
+            let query = match branch {
+                0 => query,
+                n => {
+                    &union_clauses
+                        .get(n - 1)
+                        .ok_or_else(|| format!("No UNION branch {n}"))?
+                        .query
+                }
+            };
+            apply_query_tail(rows, query)
+        }
+        CypherStatement::ProcedureCall(_) | CypherStatement::CopyTo(_) => Ok(rows),
+    }
+}
+
+/// Apply what follows `CALL … YIELD` in a procedure-only query to the
+/// procedure's rows: the YIELD's columns, the WHERE, then the RETURN. A clause
+/// this does not evaluate is refused, never dropped (#1411).
+pub fn apply_query_tail(
+    rows: Vec<HashMap<String, serde_json::Value>>,
+    query: &crate::open_cypher_parser::ast::OpenCypherQueryAst<'_>,
+) -> ProcedureResult {
+    let unevaluated = [
+        (query.with_clause.is_some(), "WITH"),
+        (!query.unwind_clauses.is_empty(), "UNWIND"),
+        (query.order_by_clause.is_some(), "ORDER BY"),
+        (query.skip_clause.is_some(), "SKIP"),
+        (query.limit_clause.is_some(), "LIMIT"),
+        (
+            query.return_clause.as_ref().is_some_and(|r| r.distinct),
+            "RETURN DISTINCT",
+        ),
+    ];
+    if let Some((_, clause)) = unevaluated.iter().find(|(present, _)| *present) {
+        return Err(format!("Not supported: {clause} after a procedure call"));
+    }
+
+    let mut rows = rows;
+    if let Some(columns) = query
+        .call_clause
+        .as_ref()
+        .and_then(|c| c.yield_items.as_ref())
+    {
+        // A column no row has is not one of the procedure's; one some rows
+        // lack is NULL there.
+        if let Some(unknown) = columns
+            .iter()
+            .find(|c| !rows.is_empty() && rows.iter().all(|row| !row.contains_key(**c)))
+        {
+            return Err(format!("Unknown procedure output: `{unknown}`"));
+        }
+        rows = rows
+            .into_iter()
+            .map(|mut row| {
+                columns
+                    .iter()
+                    .map(|c| {
+                        let value = row.remove(*c).unwrap_or(serde_json::Value::Null);
+                        (c.to_string(), value)
+                    })
+                    .collect()
+            })
+            .collect();
+    }
+    if let Some(where_clause) = &query.where_clause {
+        rows = crate::procedures::return_evaluator::apply_where(rows, &where_clause.conditions)?;
+    }
+    match &query.return_clause {
+        Some(return_clause) => {
+            crate::procedures::return_evaluator::apply_return_clause(rows, return_clause)
+        }
+        None => Ok(rows),
     }
 }
 
@@ -530,5 +655,146 @@ mod tests {
             !is_procedure_union_query(&stmt),
             "Single CALL should not be detected as UNION"
         );
+    }
+
+    fn rows(column: &str, values: &[serde_json::Value]) -> Vec<HashMap<String, serde_json::Value>> {
+        values
+            .iter()
+            .map(|v| HashMap::from([(column.to_string(), v.clone())]))
+            .collect()
+    }
+
+    fn labels() -> Vec<HashMap<String, serde_json::Value>> {
+        rows(
+            "label",
+            &[serde_json::json!("Post"), serde_json::json!("User")],
+        )
+    }
+
+    fn tail(rows: Vec<HashMap<String, serde_json::Value>>, q: &str) -> ProcedureResult {
+        apply_statement_tail(rows, q, 0)
+    }
+
+    fn column(result: ProcedureResult, c: &str) -> Vec<serde_json::Value> {
+        result.unwrap().iter().map(|r| r[c].clone()).collect()
+    }
+
+    #[test]
+    fn a_where_after_yield_filters_the_rows() {
+        let q = "CALL db.labels() YIELD label WHERE label = 'User' RETURN label";
+        assert_eq!(
+            column(tail(labels(), q), "label"),
+            [serde_json::json!("User")]
+        );
+        let q = "CALL db.labels() YIELD label WHERE label STARTS WITH 'P' OR label = 'X'";
+        assert_eq!(
+            column(tail(labels(), q), "label"),
+            [serde_json::json!("Post")]
+        );
+        let q = "CALL db.labels() YIELD label WHERE NOT label IN ['User', 'X']";
+        assert_eq!(
+            column(tail(labels(), q), "label"),
+            [serde_json::json!("Post")]
+        );
+    }
+
+    #[test]
+    fn a_where_that_is_null_drops_the_row() {
+        let input = rows(
+            "x",
+            &[
+                serde_json::json!(1),
+                serde_json::Value::Null,
+                serde_json::json!(2.0),
+            ],
+        );
+        let kept = |q: &str| column(tail(input.clone(), q), "x");
+        let q = |w: &str| format!("CALL p() YIELD x WHERE {w} RETURN x");
+        assert_eq!(kept(&q("x = 1")), [serde_json::json!(1)]);
+        assert_eq!(kept(&q("x = 2")), [serde_json::json!(2.0)]);
+        assert_eq!(kept(&q("NOT x = 1")), [serde_json::json!(2.0)]);
+        assert_eq!(kept(&q("x IS NULL")), [serde_json::Value::Null]);
+        // NULL IN a list, and a list holding NULL: NULL, never true
+        assert_eq!(
+            kept(&q("NOT x IN [1, null]")),
+            Vec::<serde_json::Value>::new()
+        );
+        assert_eq!(kept(&q("x < 'a'")), Vec::<serde_json::Value>::new());
+        assert_eq!(kept(&q("x > 1 AND x < 3")), [serde_json::json!(2.0)]);
+        assert_eq!(kept(&q("x = 1 OR x IS NULL")).len(), 2);
+    }
+
+    #[test]
+    fn yield_keeps_its_columns() {
+        let input = vec![HashMap::from([
+            ("a".to_string(), serde_json::json!(1)),
+            ("b".to_string(), serde_json::json!(2)),
+        ])];
+        let out = tail(input.clone(), "CALL p() YIELD a WHERE a = 1").unwrap();
+        assert_eq!(
+            out,
+            [HashMap::from([("a".to_string(), serde_json::json!(1))])]
+        );
+        let err = tail(input, "CALL p() YIELD c RETURN c").unwrap_err();
+        assert!(err.contains("Unknown procedure output"), "{err}");
+    }
+
+    #[test]
+    fn clauses_not_evaluated_are_refused() {
+        for (q, clause) in [
+            ("CALL db.labels() YIELD label RETURN label ORDER BY label", "ORDER BY"),
+            ("CALL db.labels() YIELD label RETURN label LIMIT 1", "LIMIT"),
+            ("CALL db.labels() YIELD label RETURN label SKIP 1", "SKIP"),
+            ("CALL db.labels() YIELD label WITH label RETURN label", "WITH"),
+            ("CALL db.labels() YIELD label RETURN DISTINCT label", "RETURN DISTINCT"),
+            ("CALL db.labels() YIELD label RETURN label, count(*)", "grouping key"),
+            ("CALL db.labels() YIELD label RETURN label UNION CALL db.labels() YIELD label RETURN label", "UNION"),
+        ] {
+            let err = tail(labels(), q).unwrap_err();
+            assert!(err.starts_with("Not supported") && err.contains(clause), "{q}: {err}");
+        }
+    }
+
+    #[test]
+    fn each_union_all_branch_has_its_own_tail() {
+        let q = "CALL db.labels() YIELD label WHERE label = 'User' RETURN label \
+                 UNION ALL CALL db.labels() YIELD label WHERE label = 'Post' RETURN label";
+        assert!(is_procedure_union_query(&parse(q)));
+        assert_eq!(
+            column(apply_statement_tail(labels(), q, 0), "label"),
+            [serde_json::json!("User")]
+        );
+        assert_eq!(
+            column(apply_statement_tail(labels(), q, 1), "label"),
+            [serde_json::json!("Post")]
+        );
+    }
+
+    #[test]
+    fn aggregates_skip_nulls() {
+        let input = rows("x", &[serde_json::json!(1), serde_json::Value::Null]);
+        let q = "CALL p() YIELD x RETURN count(x) AS c, count(*) AS n, collect(x) AS l";
+        let out = tail(input, q).unwrap();
+        assert_eq!(out[0]["c"], serde_json::json!(1));
+        assert_eq!(out[0]["n"], serde_json::json!(2));
+        assert_eq!(out[0]["l"], serde_json::json!([1]));
+    }
+
+    fn parse(q: &str) -> CypherStatement<'_> {
+        open_cypher_parser::parse_cypher_statement(q).unwrap().1
+    }
+
+    #[test]
+    fn a_clause_after_a_sql_procedure_is_refused() {
+        let call = "CALL db.index.vector.queryNodes('idx', 5, [1.0, 2.0]) YIELD node, score";
+        assert!(sql_procedure_tail_refused(&parse(call)).is_ok());
+        for (rest, clause) in [(" WHERE score > 0.5", "WHERE"), (" RETURN node", "RETURN")] {
+            let q = format!("{call}{rest}");
+            let err = sql_procedure_tail_refused(&parse(&q)).unwrap_err();
+            assert!(
+                err.starts_with("Not supported") && err.contains(clause),
+                "{err}"
+            );
+        }
     }
 }

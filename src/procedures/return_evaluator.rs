@@ -8,8 +8,11 @@
 //! 2. Evaluates RETURN expressions (COLLECT, maps, arrays, etc.)
 //! 3. Returns transformed results: [{result: {name: "labels", data: ["User", "Post", ...]}}]
 
-use crate::open_cypher_parser::ast::{Expression, Literal, ReturnClause};
+use crate::open_cypher_parser::ast::{
+    Expression, Literal, Operator, OperatorApplication, ReturnClause,
+};
 use serde_json::Value as JsonValue;
+use std::cmp::Ordering;
 use std::collections::HashMap;
 
 /// Result type for expression evaluation
@@ -68,6 +71,18 @@ pub fn apply_return_clause(
         .any(|item| has_aggregation_in_expr(&item.expression));
 
     if has_aggregation {
+        // One record for all the rows: a value read outside an aggregate would
+        // be a grouping key, which this does not evaluate.
+        if return_clause
+            .return_items
+            .iter()
+            .any(|item| reads_row_outside_aggregate(&item.expression))
+        {
+            return Err(
+                "Not supported: a grouping key beside an aggregate after a procedure call"
+                    .to_string(),
+            );
+        }
         // Apply aggregations: all results -> single aggregated record
         apply_aggregated_return(&results, return_clause)
     } else {
@@ -113,6 +128,56 @@ fn has_aggregation_in_expr(expr: &Expression) -> bool {
         }
         _ => false,
     }
+}
+
+/// Whether an expression reads the current row outside an aggregate call.
+fn reads_row_outside_aggregate(expr: &Expression) -> bool {
+    match expr {
+        Expression::Variable(_) | Expression::PropertyAccessExp(_) => true,
+        Expression::FunctionCallExp(func) => {
+            !matches!(
+                func.name.to_uppercase().as_str(),
+                "COLLECT" | "COUNT" | "SUM" | "AVG" | "MIN" | "MAX"
+            ) && func.args.iter().any(reads_row_outside_aggregate)
+        }
+        Expression::MapLiteral(pairs) => pairs.iter().any(|(_, e)| reads_row_outside_aggregate(e)),
+        Expression::List(exprs) => exprs.iter().any(reads_row_outside_aggregate),
+        Expression::OperatorApplicationExp(op) => {
+            op.operands.iter().any(reads_row_outside_aggregate)
+        }
+        Expression::ArraySlicing { array, from, to } => {
+            reads_row_outside_aggregate(array)
+                || from.as_deref().is_some_and(reads_row_outside_aggregate)
+                || to.as_deref().is_some_and(reads_row_outside_aggregate)
+        }
+        Expression::ArraySubscript { array, index } => {
+            reads_row_outside_aggregate(array) || reads_row_outside_aggregate(index)
+        }
+        _ => false,
+    }
+}
+
+/// The value of an aggregate's one argument for each record; a NULL is
+/// skipped, as Cypher's aggregates skip it.
+fn aggregate_arguments(
+    name: &str,
+    args: &[Expression],
+    all_records: &[HashMap<String, JsonValue>],
+) -> Result<Vec<JsonValue>, String> {
+    let [arg] = args else {
+        return Err(format!(
+            "{name} expects exactly 1 argument, got {}",
+            args.len()
+        ));
+    };
+    let mut values = Vec::new();
+    for record in all_records {
+        let value = evaluate_expr(arg, &EvalContext::with_variables(record.clone()))?;
+        if !value.is_null() {
+            values.push(value);
+        }
+    }
+    Ok(values)
 }
 
 /// Apply aggregated RETURN: all records -> single record with aggregated values
@@ -184,28 +249,22 @@ fn evaluate_aggregation_expr(
             let func_name_upper = func.name.to_uppercase();
 
             match func_name_upper.as_str() {
-                "COLLECT" => {
-                    if func.args.len() != 1 {
-                        return Err(format!(
-                            "COLLECT expects exactly 1 argument, got {}",
-                            func.args.len()
-                        ));
-                    }
-
-                    // Collect values from all records
-                    let mut collected = Vec::new();
-                    for record in all_records {
-                        let context = EvalContext::with_variables(record.clone());
-                        let value = evaluate_expr(&func.args[0], &context)?;
-                        collected.push(value);
-                    }
-
-                    Ok(JsonValue::Array(collected))
-                }
+                "COLLECT" => Ok(JsonValue::Array(aggregate_arguments(
+                    "COLLECT",
+                    &func.args,
+                    all_records,
+                )?)),
                 "COUNT" => {
-                    // COUNT(*) or COUNT(expr)
-                    Ok(JsonValue::Number(all_records.len().into()))
+                    let count = match func.args.as_slice() {
+                        [] | [Expression::Variable("*")] => all_records.len(),
+                        args => aggregate_arguments("COUNT", args, all_records)?.len(),
+                    };
+                    Ok(JsonValue::Number(count.into()))
                 }
+                "SUM" | "AVG" | "MIN" | "MAX" => Err(format!(
+                    "Not supported: {} after a procedure call",
+                    func.name
+                )),
                 _ => {
                     // Non-aggregation function in aggregation context
                     // Evaluate it as if we have access to first record (for constants/literals)
@@ -290,12 +349,177 @@ fn evaluate_expr(expr: &Expression, context: &EvalContext) -> EvalResult {
                 prop_access.key
             ))
         }
+        Expression::OperatorApplicationExp(op) => evaluate_operator(op, context),
         Expression::FunctionCallExp(func) => Err(format!(
             "Function calls in non-aggregation context not yet supported: {}",
             func.name
         )),
         _ => Err(format!("Expression type not yet supported: {:?}", expr)),
     }
+}
+
+/// Keep the records a WHERE condition is true for (false and NULL drop one).
+pub fn apply_where(
+    results: Vec<HashMap<String, JsonValue>>,
+    condition: &Expression,
+) -> Result<Vec<HashMap<String, JsonValue>>, String> {
+    let mut kept = Vec::new();
+    for record in results {
+        let context = EvalContext::with_variables(record.clone());
+        match evaluate_expr(condition, &context)? {
+            JsonValue::Bool(true) => kept.push(record),
+            JsonValue::Bool(false) | JsonValue::Null => {}
+            other => return Err(format!("WHERE expects a boolean, got {other}")),
+        }
+    }
+    Ok(kept)
+}
+
+/// A boolean, comparison or string-predicate operator, by Cypher's rules:
+/// NULL where an operand is NULL or the operands are not comparable.
+fn evaluate_operator(op: &OperatorApplication, context: &EvalContext) -> EvalResult {
+    let operands = op
+        .operands
+        .iter()
+        .map(|e| evaluate_expr(e, context))
+        .collect::<Result<Vec<_>, _>>()?;
+    let truth = |v: &JsonValue| match v {
+        JsonValue::Bool(b) => Ok(Some(*b)),
+        JsonValue::Null => Ok(None),
+        other => Err(format!("{:?} expects a boolean, got {other}", op.operator)),
+    };
+    let value = |b: Option<bool>| b.map_or(JsonValue::Null, JsonValue::Bool);
+    let unary = || match operands.as_slice() {
+        [a] => Ok(a),
+        _ => Err(format!("{:?} expects 1 operand", op.operator)),
+    };
+    let binary = || match operands.as_slice() {
+        [a, b] => Ok((a, b)),
+        _ => Err(format!("{:?} expects 2 operands", op.operator)),
+    };
+    let order = |want: fn(Ordering) -> bool| -> EvalResult {
+        let (a, b) = binary()?;
+        Ok(value(compare(a, b)?.map(want)))
+    };
+    let strings = |test: fn(&str, &str) -> bool| -> EvalResult {
+        Ok(match binary()? {
+            (JsonValue::String(a), JsonValue::String(b)) => JsonValue::Bool(test(a, b)),
+            _ => JsonValue::Null,
+        })
+    };
+    match op.operator {
+        Operator::And | Operator::Or => {
+            let (decisive, other) = match op.operator {
+                Operator::And => (false, true),
+                _ => (true, false),
+            };
+            let truths = operands.iter().map(truth).collect::<Result<Vec<_>, _>>()?;
+            Ok(if truths.contains(&Some(decisive)) {
+                JsonValue::Bool(decisive)
+            } else if truths.contains(&None) {
+                JsonValue::Null
+            } else {
+                JsonValue::Bool(other)
+            })
+        }
+        Operator::Not => Ok(value(truth(unary()?)?.map(|b| !b))),
+        Operator::IsNull => Ok(JsonValue::Bool(unary()?.is_null())),
+        Operator::IsNotNull => Ok(JsonValue::Bool(!unary()?.is_null())),
+        Operator::Equal => {
+            let (a, b) = binary()?;
+            Ok(value(equal(a, b)))
+        }
+        Operator::NotEqual => {
+            let (a, b) = binary()?;
+            Ok(value(equal(a, b).map(|e| !e)))
+        }
+        Operator::LessThan => order(|o| o == Ordering::Less),
+        Operator::GreaterThan => order(|o| o == Ordering::Greater),
+        Operator::LessThanEqual => order(|o| o != Ordering::Greater),
+        Operator::GreaterThanEqual => order(|o| o != Ordering::Less),
+        Operator::In | Operator::NotIn => {
+            let (a, list) = binary()?;
+            let found = match list {
+                JsonValue::Null => None,
+                JsonValue::Array(items) => {
+                    let matches: Vec<_> = items.iter().map(|item| equal(a, item)).collect();
+                    if matches.contains(&Some(true)) {
+                        Some(true)
+                    } else if matches.contains(&None) {
+                        None
+                    } else {
+                        Some(false)
+                    }
+                }
+                other => return Err(format!("IN expects a list, got {other}")),
+            };
+            Ok(value(match op.operator {
+                Operator::In => found,
+                _ => found.map(|f| !f),
+            }))
+        }
+        Operator::StartsWith => strings(|a, b| a.starts_with(b)),
+        Operator::EndsWith => strings(|a, b| a.ends_with(b)),
+        Operator::Contains => strings(|a, b| a.contains(b)),
+        other => Err(format!(
+            "Not supported: the operator {} after a procedure call",
+            String::from(other)
+        )),
+    }
+}
+
+/// Cypher equality: NULL if either side is NULL (or a NULL inside lists or
+/// maps decides it), false for values of different types.
+fn equal(a: &JsonValue, b: &JsonValue) -> Option<bool> {
+    let all = |pairs: Vec<Option<bool>>| {
+        if pairs.contains(&Some(false)) {
+            Some(false)
+        } else if pairs.contains(&None) {
+            None
+        } else {
+            Some(true)
+        }
+    };
+    match (a, b) {
+        (JsonValue::Null, _) | (_, JsonValue::Null) => None,
+        (JsonValue::Number(_), JsonValue::Number(_)) => compare(a, b).ok()?.map(|o| o.is_eq()),
+        (JsonValue::Array(x), JsonValue::Array(y)) => {
+            if x.len() != y.len() {
+                return Some(false);
+            }
+            all(x.iter().zip(y).map(|(x, y)| equal(x, y)).collect())
+        }
+        (JsonValue::Object(x), JsonValue::Object(y)) => {
+            if x.len() != y.len() || x.keys().any(|k| !y.contains_key(k)) {
+                return Some(false);
+            }
+            all(x.iter().map(|(k, v)| equal(v, &y[k])).collect())
+        }
+        _ => Some(a == b),
+    }
+}
+
+/// Cypher ordering of two values: NULL (`None`) if either is NULL or they
+/// are of different types; lists and maps are refused.
+fn compare(a: &JsonValue, b: &JsonValue) -> Result<Option<Ordering>, String> {
+    Ok(match (a, b) {
+        (JsonValue::Number(x), JsonValue::Number(y)) => match (x.as_i64(), y.as_i64()) {
+            (Some(x), Some(y)) => Some(x.cmp(&y)),
+            _ => match (x.as_f64(), y.as_f64()) {
+                (Some(x), Some(y)) => x.partial_cmp(&y),
+                _ => None,
+            },
+        },
+        (JsonValue::String(x), JsonValue::String(y)) => Some(x.cmp(y)),
+        (JsonValue::Bool(x), JsonValue::Bool(y)) => Some(x.cmp(y)),
+        (
+            JsonValue::Array(_) | JsonValue::Object(_),
+            JsonValue::Array(_) | JsonValue::Object(_),
+        ) => {
+            return Err("Not supported: ordering lists or maps after a procedure call".to_string())
+        }
+        _ => None,
+    })
 }
 
 /// Evaluate a literal expression
