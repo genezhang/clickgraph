@@ -1643,7 +1643,7 @@ impl<'s> Lowerer<'s> {
     /// for the drive, and a `collect()` in another order, a float sum
     /// added in another order, would join no match; a list of maps cannot
     /// be joined on at all. Nothing when a key cannot be carried (a graph
-    /// value).
+    /// value) or joined on (a map).
     fn grouped_drive(
         &self,
         shared: &[VarId],
@@ -1657,11 +1657,24 @@ impl<'s> Lowerer<'s> {
         if !at_with || self.emitted.first() != Some(alias) || !aggregated.iter().any(read) {
             return (Vec::new(), Vec::new());
         }
+        // A map (a `Dynamic`'s) is no join key.
+        fn joinable(k: &unwind::Kind) -> bool {
+            match k {
+                unwind::Kind::Map(_) => false,
+                unwind::Kind::List(k) => joinable(k),
+                _ => true,
+            }
+        }
         let mut carried = Vec::new();
         for k in keys.iter().filter(|k| !read(k)) {
             match self.values.get(k) {
                 Some(e) if is_constant(e) => continue,
-                Some(_) if !self.graph_values.contains_key(k) => carried.push(*k),
+                Some(_)
+                    if !self.graph_values.contains_key(k)
+                        && self.var_kind(*k).is_some_and(|kind| joinable(&kind)) =>
+                {
+                    carried.push(*k)
+                }
                 None if self.scans.contains_key(k) => carried.push(*k),
                 _ => return (Vec::new(), Vec::new()),
             }

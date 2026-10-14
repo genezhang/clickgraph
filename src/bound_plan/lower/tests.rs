@@ -1247,6 +1247,12 @@ fn a_drive_after_an_aggregation_joins_on_its_keys() {
          OPTIONAL MATCH (b:User) WHERE b.user_id = 5 AND size(ms) > 0 RETURN g, count(b) AS m",
     );
     assert!(!got.contains("w1.v2 = o3.v2"), "{got}");
+    // A map key is no join key: joined on the aggregated value, as before.
+    has(
+        "MATCH (a:User) WITH {c: a.country} AS k, count(*) AS c \
+         OPTIONAL MATCH (x:User) WHERE x.user_id = c RETURN k, c, count(x) AS m",
+        &["ON w1.v2 = o3.v2"],
+    );
 }
 
 /// #1395 on Databricks: a list of values of any type (a map is not
@@ -1274,7 +1280,8 @@ fn databricks_sorts_a_list_read_twice_by_its_keys() {
     assert!(
         got.contains(
             "array_sort(coalesce(collect_list(v0.user_id), array()), (__cg_sl, __cg_sr) -> \
-             CASE WHEN concat(typeof(__cg_sl), ':', to_json(named_struct('v', __cg_sl)))"
+             CASE WHEN concat(typeof(__cg_sl), ':', to_json(named_struct('v', __cg_sl), \
+             map('timestampFormat', 'yyyy-MM-dd HH:mm:ss.SSSSSSXXX'"
         ),
         "{got}"
     );

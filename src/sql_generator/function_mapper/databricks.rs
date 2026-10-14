@@ -84,12 +84,19 @@ fn variant_key(x: &str, depth: usize) -> String {
     )
 }
 
-/// The Databricks `CypherUnion::order_key`: the value's type and JSON text.
+/// The Databricks `CypherUnion::order_key`: the value's type and JSON text,
+/// timestamps to the microsecond (`to_json`'s default keeps milliseconds).
 /// A STRUCT (a node's or relationship's tuple) casts to no VARIANT, so not
-/// `variant_key`; the type tells apart values of one text (a date and its
-/// string).
+/// `variant_key`; the type tells apart values of one text in a typed column
+/// (a date and its string). Inside a VARIANT (`typeof` is `variant`) a date
+/// and its string still share a key: their order among themselves is not
+/// fixed.
 fn order_key(v: &str) -> String {
-    format!("concat(typeof({v}), ':', to_json(named_struct('v', {v})))")
+    format!(
+        "concat(typeof({v}), ':', to_json(named_struct('v', {v}), \
+         map('timestampFormat', 'yyyy-MM-dd HH:mm:ss.SSSSSSXXX', \
+         'timestampNTZFormat', 'yyyy-MM-dd HH:mm:ss.SSSSSS')))"
+    )
 }
 
 pub(crate) struct DatabricksFunctionMapper;
