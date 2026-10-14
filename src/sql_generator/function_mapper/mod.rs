@@ -450,6 +450,11 @@ pub(crate) struct CypherUnion {
     /// for two values exactly when Cypher's DISTINCT takes them as equal:
     /// `1` and `1.0` are, `1` and `true` or `'1'` are not.
     pub distinct_key: fn(&str) -> String,
+    /// A key of the value `{0}` of any type (a node's or relationship's
+    /// tuple too) that sorts: rows tied on such keys of all their columns
+    /// are alike, so which a SKIP / LIMIT takes, or how they are numbered,
+    /// is the same on every evaluation (#1395).
+    pub order_key: fn(&str) -> String,
     /// An aggregate: any one of a group's values of `{0}`.
     pub any: fn(&str) -> String,
     /// The number of a row in the order of the keys `{0}` (`ORDER BY` text).

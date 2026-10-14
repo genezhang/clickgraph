@@ -1223,8 +1223,35 @@ fn an_order_dependent_cte_read_twice_is_lowered_stable() {
     assert!(!once.contains("ORDER BY"), "{once}");
 }
 
+/// #1395: a drive right after an aggregating WITH whose aggregated value it
+/// reads joins back on the WITH's grouping keys (carried when it does not
+/// read them), not on the value: a float sum added in another order on the
+/// second read would join no match, a list of maps none at all.
+#[test]
+fn a_drive_after_an_aggregation_joins_on_its_keys() {
+    has(
+        "MATCH (a:User) WITH a.country AS g, sum(a.age * 1.5) AS s \
+         OPTIONAL MATCH (b:User) WHERE b.user_id = 5 AND s > 0 RETURN g, count(b) AS m",
+        &[
+            r#"SELECT DISTINCT w1.v1 AS "v1", w1.v2 AS "v2" FROM with_w1 AS w1"#,
+            "ON w1.v1 = o3.v1 OR (w1.v1 IS NULL AND o3.v1 IS NULL)",
+        ],
+    );
+    has(
+        "MATCH (a:User) WITH a.country AS g, avg(a.age) AS s \
+         WHERE EXISTS { MATCH (b:User) WHERE b.user_id = 5 AND s > 0 } RETURN g",
+        &["ON isNotDistinctFrom(w1.v1, s3.v1) AND true"],
+    );
+    let got = sql(
+        "MATCH (a:User) WITH a.country AS g, collect({n: a.name}) AS ms \
+         OPTIONAL MATCH (b:User) WHERE b.user_id = 5 AND size(ms) > 0 RETURN g, count(b) AS m",
+    );
+    assert!(!got.contains("w1.v2 = o3.v2"), "{got}");
+}
+
 /// #1395 on Databricks: a list of values of any type (a map is not
-/// orderable) sorted by their DISTINCT keys.
+/// orderable, a node's STRUCT casts to no VARIANT) sorted by their type and
+/// JSON text.
 #[test]
 fn databricks_sorts_a_list_read_twice_by_its_keys() {
     use crate::server::query_context::{set_current_schema, with_query_context_sync, QueryContext};
@@ -1246,7 +1273,8 @@ fn databricks_sorts_a_list_read_twice_by_its_keys() {
     let got = squash(&got);
     assert!(
         got.contains(
-            "array_sort(coalesce(collect_list(v0.user_id), array()), (__cg_sl, __cg_sr) ->"
+            "array_sort(coalesce(collect_list(v0.user_id), array()), (__cg_sl, __cg_sr) -> \
+             CASE WHEN concat(typeof(__cg_sl), ':', to_json(named_struct('v', __cg_sl)))"
         ),
         "{got}"
     );

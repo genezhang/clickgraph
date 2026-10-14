@@ -1634,6 +1634,41 @@ impl<'s> Lowerer<'s> {
         Ok(correlation)
     }
 
+    /// A drive's rows read right after an aggregating WITH (`at_with`, the
+    /// segment reads its CTE) whose aggregated values it reads: those
+    /// values, determined by the WITH's grouping keys, and the keys the
+    /// drive does not read (carried, and joined on NULL-safely, a key's
+    /// group can be NULL's). The rows are joined on the keys, not on the
+    /// aggregated values (#1395): ClickHouse evaluates the WITH's CTE again
+    /// for the drive, and a `collect()` in another order, a float sum
+    /// added in another order, would join no match; a list of maps cannot
+    /// be joined on at all. Nothing when a key cannot be carried (a graph
+    /// value).
+    fn grouped_drive(
+        &self,
+        shared: &[VarId],
+        where_only: &[VarId],
+        at_with: bool,
+    ) -> (Vec<VarId>, Vec<VarId>) {
+        let Some((alias, keys, aggregated)) = &self.grouped_with else {
+            return (Vec::new(), Vec::new());
+        };
+        let read = |v: &VarId| shared.contains(v) || where_only.contains(v);
+        if !at_with || self.emitted.first() != Some(alias) || !aggregated.iter().any(read) {
+            return (Vec::new(), Vec::new());
+        }
+        let mut carried = Vec::new();
+        for k in keys.iter().filter(|k| !read(k)) {
+            match self.values.get(k) {
+                Some(e) if is_constant(e) => continue,
+                Some(_) if !self.graph_values.contains_key(k) => carried.push(*k),
+                None if self.scans.contains_key(k) => carried.push(*k),
+                _ => return (Vec::new(), Vec::new()),
+            }
+        }
+        (aggregated.clone(), carried)
+    }
+
     /// The first relationship of `pattern` at node `v`, and its endpoint
     /// columns at `v` (stored orientation), when the relationship is a
     /// fixed-length scan of one table.
@@ -1707,22 +1742,9 @@ impl<'s> Lowerer<'s> {
         }
         let w = self.emitted[0].clone();
         let d = format!("d{}", self.ctes.len() + 1);
-        // Right after an aggregating WITH whose keys are all correlated, its
-        // aggregated values are determined by them: the rows are not joined
-        // on those too. (ClickHouse evaluates the WITH's CTE again for `D`:
-        // a `collect()` in another order would join no match.)
-        let determined: Vec<VarId> = match &self.grouped_with {
-            Some((alias, keys, aggregated))
-                if only_a_cte
-                    && *alias == w
-                    && keys
-                        .iter()
-                        .all(|k| shared.contains(k) || where_only.contains(k)) =>
-            {
-                aggregated.clone()
-            }
-            _ => Vec::new(),
-        };
+        let (determined, keys) = self.grouped_drive(shared, where_only, only_a_cte);
+        let where_only: Vec<VarId> = where_only.iter().chain(&keys).copied().collect();
+        let where_only = where_only.as_slice();
         let mut columns: Vec<String> = Vec::new();
         let mut correlation = Vec::new();
         for v in shared.iter().chain(where_only) {
@@ -6572,8 +6594,7 @@ impl<'s> Lowerer<'s> {
     /// (#1395): rows that tie on them are alike. A node, or a relationship
     /// with `edge_id`, exported (`exports`) by its identity columns as they
     /// are (its other columns follow from them); another column by its
-    /// DISTINCT key (`CypherUnion::distinct_key`: of a value of any type,
-    /// equal exactly for equal values). By the columns' names when
+    /// `CypherUnion::order_key` (of a value of any type). By the columns' names when
     /// `by_name` (an ORDER BY reads the SELECT's, an aggregate's too), else
     /// their expressions (a window's ORDER BY).
     fn tie_breaks(
@@ -6640,7 +6661,7 @@ impl<'s> Lowerer<'s> {
             let expression = match name {
                 Some(a) if identity.contains(a) => RenderExpr::Raw(value),
                 Some(a) if determined.contains(a) => continue,
-                _ => RenderExpr::Raw((union.distinct_key)(&value)),
+                _ => RenderExpr::Raw((union.order_key)(&value)),
             };
             ties.push(OrderByItem {
                 expression,

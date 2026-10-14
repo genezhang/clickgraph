@@ -475,20 +475,27 @@ impl<'s> Lowerer<'s> {
             ..Body::default()
         };
         let mut correlation = Vec::new();
-        for v in shared.iter().chain(where_only) {
+        // Right after an aggregating WITH: joined on its keys, not on its
+        // aggregated values (`Lowerer::grouped_drive`, #1395).
+        let at_with = self.joins.is_empty() && self.emitted.len() == 1;
+        let (determined, keys) = self.grouped_drive(shared, where_only, at_with);
+        for v in shared.iter().chain(where_only).chain(&keys) {
             if self.graph_values.contains_key(v) {
                 return unsupported("a path's or list's elements read by a subquery");
             }
+            let joined = !determined.contains(v);
             if let Some(e) = self.values.get(v).cloned() {
                 let column = v.name();
                 body.select.push(select(e.clone(), &column));
                 q.values.insert(*v, col_at(&d, &column));
-                correlation.push(Correlated {
-                    inner: col_at(&d, &column),
-                    outer: e,
-                    column,
-                    null_safe: true,
-                });
+                if joined {
+                    correlation.push(Correlated {
+                        inner: col_at(&d, &column),
+                        outer: e,
+                        column,
+                        null_safe: true,
+                    });
+                }
                 // When a list is NULL (`null_list.rs`): its column too, and
                 // joined on (a NULL list and `[]` are held alike).
                 match self.list_nulls.get(v).cloned() {
@@ -499,12 +506,14 @@ impl<'s> Lowerer<'s> {
                             }
                             let column = format!("{}__{suffix}", v.name());
                             body.select.push(select(e.clone(), &column));
-                            correlation.push(Correlated {
-                                inner: col_at(&d, &column),
-                                outer: e,
-                                column: column.clone(),
-                                null_safe: true,
-                            });
+                            if joined {
+                                correlation.push(Correlated {
+                                    inner: col_at(&d, &column),
+                                    outer: e,
+                                    column: column.clone(),
+                                    null_safe: true,
+                                });
+                            }
                             col_at(&d, &column)
                         };
                         let flag = import(n.flag, "null");
@@ -534,6 +543,7 @@ impl<'s> Lowerer<'s> {
             // A union's key past its definition's arity is NULL (label and
             // type unions); a node's or relationship's of its own table is not.
             let exact = (shared.contains(v) || !self.binding(*v).nullable)
+                && !keys.contains(v)
                 && matches!(scan, Scan::Node { .. } | Scan::Rel { .. });
             for item in exported.select {
                 let Some(column) = item.col_alias.as_ref().map(|a| a.0.clone()) else {
