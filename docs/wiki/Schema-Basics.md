@@ -173,6 +173,13 @@ edge_id: follow_id    # ✅ Unique column for each edge
 - Dedicated edge ID column: `follow_id`, `purchase_id`
 - Composite key: Use any unique column (often `to_id` or `from_id` if guaranteed unique)
 
+**Without `edge_id`, a relationship is its two ends.** When `edge_id` is omitted, a relationship is identified by its stored ends (`from_id`, `to_id`). Several rows with the same two ends are then **one** relationship wherever identity matters:
+- relationship uniqueness within a pattern and along a variable-length path;
+- `r <> s`, `count(DISTINCT r)` and `DISTINCT r`;
+- element ids.
+
+For example, two `FOLLOWS` rows 20→21 count once in `MATCH (a)-[:FOLLOWS*1..3]->(b)`, where Neo4j, which has a relationship per row, counts both. Declare `edge_id` when parallel rows are separate relationships.
+
 👉 **For detailed edge ID guidance, see [Edge ID Best Practices](Edge-ID-Best-Practices.md)**
 
 ### Edge Directions

@@ -12,6 +12,8 @@ Edge uniqueness in variable-length paths requires tracking which edges have been
 | **Composite Key** | `edge_id: [col1, col2, ...]` | `tuple(rel.col1, rel.col2, ...)` | ⚠️ Slower | Complex edge identities |
 | **Default Tuple** | `edge_id: null` (omitted) | `tuple(rel.from_id, rel.to_id)` | ⚠️ Slower | Legacy/fallback |
 
+With the default tuple, rows with the same two ends are **one relationship**: they are not told apart by relationship uniqueness, `r <> s`, `DISTINCT r` or element ids. Declare an `edge_id` when parallel rows are separate relationships (see [Schema Basics](Schema-Basics.md#understanding-edge-ids)).
+
 ## Recommended Schema Design
 
 ### ✅ Best Practice: Add Dedicated edge_id Column
