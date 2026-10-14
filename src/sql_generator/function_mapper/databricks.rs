@@ -317,6 +317,16 @@ impl FunctionMapper for DatabricksFunctionMapper {
             collect_all: |v| {
                 format!("transform(collect_list(named_struct('v', {v})), __cg_t -> __cg_t.v)")
             },
+            // By the values' keys (`variant_key`): a value need not be
+            // orderable (a map is not).
+            fixed_order: |l| {
+                let key = |x: &str| variant_key(&format!("CAST({x} AS VARIANT)"), 0);
+                let (l_key, r_key) = (key("__cg_sl"), key("__cg_sr"));
+                format!(
+                    "array_sort({l}, (__cg_sl, __cg_sr) -> CASE WHEN {l_key} < {r_key} THEN -1 \
+                     WHEN {l_key} > {r_key} THEN 1 ELSE 0 END)"
+                )
+            },
             or_empty: Some(|l| format!("coalesce({l}, array())")),
             // `struct(a.x, …)` names its fields after their columns: the
             // fields are named by position to be read by it.

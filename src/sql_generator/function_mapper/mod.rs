@@ -472,6 +472,10 @@ pub(crate) struct Lists {
     /// An aggregate: every one of the group's values of `{0}`, NULL
     /// included (a pattern comprehension's list).
     pub collect_all: fn(&str) -> String,
+    /// The elements of the list `{0}` (of any values) in an order fixed by
+    /// their values: a list collected over rows in no order, the same on
+    /// every evaluation (#1395).
+    pub fixed_order: fn(&str) -> String,
     /// The list column `{0}` of a LEFT JOIN, empty on a row that joined no
     /// row (a pattern comprehension that matches nothing); `None` when the
     /// column already is.

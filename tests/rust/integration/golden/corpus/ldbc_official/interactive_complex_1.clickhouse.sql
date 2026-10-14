@@ -84,7 +84,7 @@ SELECT
 FROM vlp_v4_path AS v4
 JOIN with_w1 AS w1 ON v4.start_id = w1.v2__id AND v4.end_id = w1.v3__id
 GROUP BY w1.v3__id, w1.p2_v3_birthday, w1.p2_v3_browserUsed, w1.p2_v3_creationDate, w1.p2_v3_email, w1.p2_v3_gender, w1.p2_v3_id, w1.p2_v3_lastName, w1.p2_v3_locationIP, w1.p2_v3_speaks
-ORDER BY minOrNull(v4.hop_count) ASC, w1.p2_v3_lastName ASC, toInt64(w1.p2_v3_id) ASC
+ORDER BY minOrNull(v4.hop_count) ASC, w1.p2_v3_lastName ASC, toInt64(w1.p2_v3_id) ASC, tuple(multiIf(replaceRegexpOne(dynamicType(CAST("v6", 'Dynamic')), '^LowCardinality\\((.*)\\)$', '\\1') = 'None', '', replaceRegexpOne(dynamicType(CAST("v6", 'Dynamic')), '^LowCardinality\\((.*)\\)$', '\\1') = 'Bool', 'b', match(replaceRegexpOne(dynamicType(CAST("v6", 'Dynamic')), '^LowCardinality\\((.*)\\)$', '\\1'), '^(U?Int[0-9]|Float|BFloat|Decimal)'), 'n', match(replaceRegexpOne(dynamicType(CAST("v6", 'Dynamic')), '^LowCardinality\\((.*)\\)$', '\\1'), '^(Array|Map|Tuple)'), 'c', match(replaceRegexpOne(dynamicType(CAST("v6", 'Dynamic')), '^LowCardinality\\((.*)\\)$', '\\1'), '^(String|FixedString|Enum|UUID|IPv|LowCardinality)'), 's', replaceRegexpOne(dynamicType(CAST("v6", 'Dynamic')), '^LowCardinality\\((.*)\\)$', '\\1') = 'Date32', 'Date', startsWith(replaceRegexpOne(dynamicType(CAST("v6", 'Dynamic')), '^LowCardinality\\((.*)\\)$', '\\1'), 'DateTime'), concat('DateTime ', if(extract(replaceRegexpOne(dynamicType(CAST("v6", 'Dynamic')), '^LowCardinality\\((.*)\\)$', '\\1'), '''([^'']*)''') = '', timezone(), extract(replaceRegexpOne(dynamicType(CAST("v6", 'Dynamic')), '^LowCardinality\\((.*)\\)$', '\\1'), '''([^'']*)'''))), startsWith(replaceRegexpOne(dynamicType(CAST("v6", 'Dynamic')), '^LowCardinality\\((.*)\\)$', '\\1'), 'Time'), 'Time', replaceRegexpOne(dynamicType(CAST("v6", 'Dynamic')), '^LowCardinality\\((.*)\\)$', '\\1')), multiIf(match(replaceRegexpOne(dynamicType(CAST("v6", 'Dynamic')), '^LowCardinality\\((.*)\\)$', '\\1'), '^(U?Int[0-9]|Float|BFloat|Decimal)') AND toString("v6") = '-0', '0', startsWith(replaceRegexpOne(dynamicType(CAST("v6", 'Dynamic')), '^LowCardinality\\((.*)\\)$', '\\1'), 'FixedString'), rightPad(toString("v6"), toUInt64OrZero(extract(replaceRegexpOne(dynamicType(CAST("v6", 'Dynamic')), '^LowCardinality\\((.*)\\)$', '\\1'), '[0-9]+')), '\0'), startsWith(replaceRegexpOne(dynamicType(CAST("v6", 'Dynamic')), '^LowCardinality\\((.*)\\)$', '\\1'), 'DateTime'), concat(replaceRegexpOne(replaceRegexpOne(toString("v6"), '(\\.[0-9]*[1-9])0+$', '\\1'), '\\.0+$', ''), ' ', ifNull(toString(toUnixTimestamp64Micro(accurateCastOrNull(if(startsWith(replaceRegexpOne(dynamicType(CAST("v6", 'Dynamic')), '^LowCardinality\\((.*)\\)$', '\\1'), 'DateTime'), CAST("v6", 'Dynamic'), NULL), 'DateTime64(6, ''UTC'')'))), '')), startsWith(replaceRegexpOne(dynamicType(CAST("v6", 'Dynamic')), '^LowCardinality\\((.*)\\)$', '\\1'), 'Time'), replaceRegexpOne(replaceRegexpOne(toString("v6"), '(\\.[0-9]*[1-9])0+$', '\\1'), '\\.0+$', ''), toString("v6"))) ASC, "v7__id" ASC
 LIMIT 20), 
 with_w6 AS (
 SELECT 
@@ -140,7 +140,7 @@ SELECT
       w6.p2_v7_lastName AS "p3_v14_lastName", 
       w6.p2_v7_locationIP AS "p3_v14_locationIP", 
       w6.p2_v7_speaks AS "p3_v14_speaks", 
-      coalesce(groupArrayIf(CASE WHEN o8.v11__id IS NULL THEN [o8.p3_v11_name, o8.p3_v10_classYear, o8.p3_v13_name] ELSE [o8.p3_v11_name, o8.p3_v10_classYear, o8.p3_v13_name] END, CASE WHEN o8.v11__id IS NULL THEN false ELSE true END), []) AS "v15", 
+      arraySort(coalesce(groupArrayIf(CASE WHEN o8.v11__id IS NULL THEN [o8.p3_v11_name, o8.p3_v10_classYear, o8.p3_v13_name] ELSE [o8.p3_v11_name, o8.p3_v10_classYear, o8.p3_v13_name] END, CASE WHEN o8.v11__id IS NULL THEN false ELSE true END), [])) AS "v15", 
       w6.v9__id AS "v16__id", 
       w6.p2_v9_name AS "p3_v16_name", 
       w6.v6 AS "v17"
@@ -182,7 +182,7 @@ SELECT
       w9.p3_v14_lastName AS "p3_v22_lastName", 
       w9.p3_v14_locationIP AS "p3_v22_locationIP", 
       w9.p3_v14_speaks AS "p3_v22_speaks", 
-      coalesce(groupArrayIf(CASE WHEN o11.v19__id IS NULL THEN [o11.p3_v19_name, o11.p3_v18_workFrom, o11.p3_v21_name] ELSE [o11.p3_v19_name, o11.p3_v18_workFrom, o11.p3_v21_name] END, CASE WHEN o11.v19__id IS NULL THEN false ELSE true END), []) AS "v23", 
+      arraySort(coalesce(groupArrayIf(CASE WHEN o11.v19__id IS NULL THEN [o11.p3_v19_name, o11.p3_v18_workFrom, o11.p3_v21_name] ELSE [o11.p3_v19_name, o11.p3_v18_workFrom, o11.p3_v21_name] END, CASE WHEN o11.v19__id IS NULL THEN false ELSE true END), [])) AS "v23", 
       any(w9.v15) AS "v24", 
       w9.v16__id AS "v25__id", 
       w9.p3_v16_name AS "p3_v25_name", 

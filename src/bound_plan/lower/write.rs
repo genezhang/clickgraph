@@ -64,6 +64,7 @@ fn identities_over(
         demand: &demand,
         as_values: std::collections::BTreeSet::new(),
         unstable: &unstable,
+        stable: false,
     };
     let mut ctes = Vec::new();
     let mut l = query.lowerer(&mut ctes);
@@ -130,6 +131,7 @@ fn records_over(
         demand: &demand,
         as_values: std::collections::BTreeSet::new(),
         unstable: &unstable,
+        stable: false,
     };
     let mut ctes = Vec::new();
     let mut l = query.lowerer(&mut ctes);
@@ -246,6 +248,7 @@ pub fn lower_write_value(
         demand: &no_demand,
         as_values: std::collections::BTreeSet::new(),
         unstable: &unstable,
+        stable: false,
     };
     let mut ctes = Vec::new();
     let mut l = query.lowerer(&mut ctes);

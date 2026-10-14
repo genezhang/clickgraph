@@ -654,7 +654,9 @@ impl<'s> Lowerer<'s> {
                 // Every match's value, NULL included (unlike collect()).
                 let e = self.element(p, &HashMap::new())?;
                 (
-                    RenderExpr::Raw((spelling.collect_all)(&render_expr_to_sql_plain(&e))),
+                    self.in_fixed_order(RenderExpr::Raw((spelling.collect_all)(
+                        &render_expr_to_sql_plain(&e),
+                    )))?,
                     Some(kind),
                 )
             }

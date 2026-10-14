@@ -13,6 +13,7 @@ FROM ldbc.Place AS v0
 CROSS JOIN ldbc.Place AS v1
 CROSS JOIN ldbc.Person AS v2
 WHERE (((v0.type = 'Country')) AND ((v1.type = 'Country')) AND v0.name = 'India' AND v1.name = 'China' AND v2.id = 14)
+ORDER BY "v3__id" ASC, "v4__id" ASC, "v5__id" ASC
 LIMIT 1), 
 with_w2 AS (
 SELECT 
@@ -25,7 +26,7 @@ SELECT
       w1.p2_v5_id AS "p3_v11_id", 
       w1.p2_v5_name AS "p3_v11_name", 
       w1.p2_v5_url AS "p3_v11_url", 
-      groupArrayIf(tuple(v6.id, v6.id, v6.name, v6.url), NOT isNull(v6.id)) AS "v12"
+      arraySort(groupArrayIf(tuple(v6.id, v6.id, v6.name, v6.url), NOT isNull(v6.id))) AS "v12"
 FROM with_w1 AS w1
 CROSS JOIN ldbc.Place AS v6
 JOIN ldbc.Place_isPartOf_Place AS v7 ON v7.Place1Id = v6.id

@@ -22,7 +22,7 @@ WHERE v0.name = 'Hamid_Karzai'
 with_w2 AS (
 SELECT 
       v0.id AS "v3__id", 
-      groupArrayIf(tuple(o1.v2__id, o1.p2_v2_birthday, o1.p2_v2_browserUsed, o1.p2_v2_creationDate, o1.p2_v2_email, o1.p2_v2_firstName, o1.p2_v2_gender, o1.p2_v2_id, o1.p2_v2_lastName, o1.p2_v2_locationIP, o1.p2_v2_speaks), NOT isNull(o1.v2__id)) AS "v4"
+      arraySort(groupArrayIf(tuple(o1.v2__id, o1.p2_v2_birthday, o1.p2_v2_browserUsed, o1.p2_v2_creationDate, o1.p2_v2_email, o1.p2_v2_firstName, o1.p2_v2_gender, o1.p2_v2_id, o1.p2_v2_lastName, o1.p2_v2_locationIP, o1.p2_v2_speaks), NOT isNull(o1.v2__id))) AS "v4"
 FROM ldbc.Tag AS v0
 LEFT JOIN optional_o1 AS o1 ON v0.id = o1.v0__id
 WHERE v0.name = 'Hamid_Karzai'
@@ -141,7 +141,7 @@ with_w8 AS (
 SELECT 
       w2.v3__id AS "v9__id", 
       w2.v4 AS "v10", 
-      arrayConcat(w2.v4, groupArrayIf(tuple(o4.v8__id, o4.p2_v8_birthday, o4.p2_v8_browserUsed, o4.p2_v8_creationDate, o4.p2_v8_email, o4.p2_v8_firstName, o4.p2_v8_gender, o4.p2_v8_id, o4.p2_v8_lastName, o4.p2_v8_locationIP, o4.p2_v8_speaks), NOT isNull(o4.v8__id))) AS "v11"
+      arrayConcat(w2.v4, arraySort(groupArrayIf(tuple(o4.v8__id, o4.p2_v8_birthday, o4.p2_v8_browserUsed, o4.p2_v8_creationDate, o4.p2_v8_email, o4.p2_v8_firstName, o4.p2_v8_gender, o4.p2_v8_id, o4.p2_v8_lastName, o4.p2_v8_locationIP, o4.p2_v8_speaks), NOT isNull(o4.v8__id)))) AS "v11"
 FROM with_w2 AS w2
 LEFT JOIN optional_o4 AS o4 ON w2.v3__id = o4.v3__id
 GROUP BY w2.v3__id, w2.v4

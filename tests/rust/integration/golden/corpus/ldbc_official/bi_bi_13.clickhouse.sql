@@ -119,7 +119,7 @@ WHERE w5.v11 / (12 * (toYear(fromUnixTimestamp64Milli(1354157106851)) - toYear(f
 with_w7 AS (
 SELECT 
       w6.v12__id AS "v16__id", 
-      groupArrayIf(tuple(w6.v13__id, w6.p3_v13_birthday, w6.p3_v13_browserUsed, w6.p3_v13_creationDate, w6.p3_v13_email, w6.p3_v13_firstName, w6.p3_v13_gender, w6.p3_v13_id, w6.p3_v13_lastName, w6.p3_v13_locationIP, w6.p3_v13_speaks), NOT isNull(w6.v13__id)) AS "v17"
+      arraySort(groupArrayIf(tuple(w6.v13__id, w6.p3_v13_birthday, w6.p3_v13_browserUsed, w6.p3_v13_creationDate, w6.p3_v13_email, w6.p3_v13_firstName, w6.p3_v13_gender, w6.p3_v13_id, w6.p3_v13_lastName, w6.p3_v13_locationIP, w6.p3_v13_speaks), NOT isNull(w6.v13__id))) AS "v17"
 FROM with_w6 AS w6
 GROUP BY w6.v12__id
 ), 

@@ -303,6 +303,8 @@ impl FunctionMapper for ClickhouseFunctionMapper {
             // `groupArray` skips NULLs; a one-element tuple of one is not
             // NULL.
             collect_all: |v| format!("arrayMap(t -> t.1, groupArray(tuple({v})))"),
+            // Every type compares (a `Map`, a `Dynamic` by its type first).
+            fixed_order: |l| format!("arraySort({l})"),
             // An unmatched row's `Array` column is its default, `[]`, also
             // under `join_use_nulls = 1`.
             or_empty: None,

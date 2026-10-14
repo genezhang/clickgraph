@@ -695,18 +695,31 @@ impl<'s> Lowerer<'s> {
         let Some(spelling) = current_function_mapper().unwind() else {
             return unsupported("UNWIND in this SQL dialect");
         };
-        let (number, unordered) = match &self.order {
-            RowOrder::Keys(keys) => (
-                (spelling.row_number)(&order_keys_to_sql_plain(keys)),
-                keys.iter().any(|k| self.is_unordered_number(k)),
-            ),
-            RowOrder::Unordered => (spelling.any_row_number.to_string(), true),
-            RowOrder::Lost => return unsupported("internal: numbering rows of a lost order"),
-        };
         let alias = self.next_cte_alias();
         let mut body = Body::default();
         let mut exports = Exports::default();
         self.export_scope(&alias, &mut body, &mut exports)?;
+        // Lowered stable, ties are broken by every column (#1395): rows
+        // that still tie are alike, so their numbers are interchangeable.
+        let ties = match self.stable {
+            true => self.tie_breaks(&body.select, &exports, false)?,
+            false => Vec::new(),
+        };
+        let (number, unordered) = match &self.order {
+            RowOrder::Keys(keys) => {
+                let keys: Vec<OrderByItem> = keys.iter().cloned().chain(ties).collect();
+                (
+                    (spelling.row_number)(&order_keys_to_sql_plain(&keys)),
+                    keys.iter().any(|k| self.is_unordered_number(k)),
+                )
+            }
+            RowOrder::Unordered if self.stable && !ties.is_empty() => (
+                (spelling.row_number)(&order_keys_to_sql_plain(&ties)),
+                false,
+            ),
+            RowOrder::Unordered => (spelling.any_row_number.to_string(), !self.stable),
+            RowOrder::Lost => return unsupported("internal: numbering rows of a lost order"),
+        };
         body.select
             .push(select(RenderExpr::Raw(number), ROW_NUMBER));
         self.close_segment(body, exports, alias.clone())?;
@@ -724,30 +737,36 @@ impl<'s> Lowerer<'s> {
 }
 
 /// Refuse a plan that reads more than once rows that depend on how rows in
-/// no order were numbered.
-///
-/// ClickHouse evaluates a CTE once per read, and rows in no order are
-/// numbered (`Unwind::any_row_number`) in whatever order an evaluation
-/// produces them. Rows taken by SKIP / LIMIT in that order, or a `collect()`
-/// listing values in it (`unstable`, by CTE name), can then differ between
-/// two reads, and a join of the reads (an OPTIONAL MATCH's or a subquery's
-/// drive, a path's seed) matches the wrong rows. Rows that only carry the
-/// number are the same rows on every read. They are read once when each CTE
-/// that reads them, directly or through others, is itself named once in the
-/// rest of the SQL.
+/// no order were numbered (`unstable`, by CTE name): numbers the stable
+/// lowering could not fix ([`rereads`]).
 pub(super) fn reject_rereads_of_numbered_rows(
     plan: &RenderPlan,
     unstable: &BTreeSet<String>,
 ) -> Result<(), LowerError> {
-    if unstable.is_empty() {
-        return Ok(());
+    if rereads(plan, unstable) {
+        return unsupported(
+            "rows numbered in no order (SKIP / LIMIT or collect() after an UNWIND) \
+             read more than once",
+        );
     }
-    let marked: Vec<bool> = plan
-        .ctes
-        .0
-        .iter()
-        .map(|c| unstable.contains(&c.cte_name))
-        .collect();
+    Ok(())
+}
+
+/// Whether the plan reads more than once a CTE of `marked` (by name), or
+/// one reading such a CTE.
+///
+/// ClickHouse evaluates a CTE once per read, and rows in no order are
+/// numbered (`Unwind::any_row_number`), grouped (`collect()`) or taken by
+/// SKIP / LIMIT in whatever order an evaluation produces them: two reads can
+/// differ, and a join of the reads (an OPTIONAL MATCH's or a subquery's
+/// drive, a path's seed) matches the wrong rows. Rows that only carry such
+/// a CTE's values are the same rows on every read. They are read once when
+/// each CTE that reads them, directly or through others, is itself named
+/// once in the rest of the SQL.
+pub(super) fn rereads(plan: &RenderPlan, marked: &BTreeSet<String>) -> bool {
+    if marked.is_empty() {
+        return false;
+    }
     let (ctes, select) = render_plan_parts_plain(plan.clone());
     // The names each CTE defines: its own, and a path relation's helpers.
     let names: Vec<Vec<&str>> = ctes
@@ -770,22 +789,41 @@ pub(super) fn reject_rereads_of_numbered_rows(
             .map(|text| names[i].iter().map(|n| word_count(text, n)).sum::<usize>())
             .sum()
     };
-    // The numbered CTEs and those reading them; CTEs are in dependency
+    // The marked CTEs and those reading them; CTEs are in dependency
     // order, so one pass finds every reader.
-    let mut tainted = marked;
+    let mut tainted: Vec<bool> = ctes.iter().map(|c| marked.contains(&c.name)).collect();
     for i in 0..ctes.len() {
         if !tainted[i] {
             tainted[i] = (0..i)
                 .any(|j| tainted[j] && names[j].iter().any(|n| word_count(&ctes[i].text, n) > 0));
         }
     }
-    if (0..ctes.len()).any(|i| tainted[i] && reads(i) > 1) {
-        return unsupported(
-            "rows numbered in no order (SKIP / LIMIT or collect() after an UNWIND) \
-             read more than once",
-        );
-    }
-    Ok(())
+    (0..ctes.len()).any(|i| tainted[i] && reads(i) > 1)
+}
+
+/// The names of the plan's CTEs.
+pub(super) fn cte_names(plan: &RenderPlan) -> BTreeSet<String> {
+    plan.ctes.0.iter().map(|c| c.cte_name.clone()).collect()
+}
+
+/// The CTEs of `plan` (by name) that `other`, a lowering of the same query,
+/// spells otherwise: all of them when the two do not have the same CTEs.
+pub(super) fn changed_ctes(plan: &RenderPlan, other: &RenderPlan) -> BTreeSet<String> {
+    let (ctes, _) = render_plan_parts_plain(plan.clone());
+    let (others, _) = render_plan_parts_plain(other.clone());
+    let same_names =
+        ctes.len() == others.len() && ctes.iter().zip(&others).all(|(a, b)| a.name == b.name);
+    ctes.iter()
+        .zip(&others)
+        .filter(|(a, b)| !same_names || a.text != b.text)
+        .map(|(a, _)| a.name.clone())
+        .chain(
+            (!same_names)
+                .then(|| ctes.iter().map(|c| c.name.clone()))
+                .into_iter()
+                .flatten(),
+        )
+        .collect()
 }
 
 /// The CTE names `text` defines (`name AS (`).

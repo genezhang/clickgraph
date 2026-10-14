@@ -82,6 +82,7 @@ pub(super) fn lower(
             demand: q.demand,
             as_values: as_values.clone(),
             unstable: q.unstable,
+            stable: q.stable,
         };
         // Only the last pass's CTEs are the plan's.
         q.unstable.borrow_mut().clear();
