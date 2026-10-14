@@ -3,6 +3,48 @@
 
 use super::FunctionMapper;
 
+/// The ClickHouse `CypherUnion::distinct_key`: the value's kind and text.
+fn distinct_key(v: &str) -> String {
+    // A `LowCardinality` value is its inner type's (`Float64`
+    // 1.5 and `LowCardinality(Float64)` 1.5 are one value).
+    let ty = format!(
+        "replaceRegexpOne(dynamicType(CAST({v}, 'Dynamic')), \
+         '^LowCardinality\\\\((.*)\\\\)$', '\\\\1')"
+    );
+    // `Int[0-9]`: not an `Interval…`.
+    let number = format!("match({ty}, '^(U?Int[0-9]|Float|BFloat|Decimal)')");
+    let string = format!("match({ty}, '^(String|FixedString|Enum|UUID|IPv|LowCardinality)')");
+    let zone = format!("extract({ty}, '''([^'']*)''')");
+    let clock = format!(
+        "replaceRegexpOne(replaceRegexpOne(toString({v}), \
+         '(\\\\.[0-9]*[1-9])0+$', '\\\\1'), '\\\\.0+$', '')"
+    );
+    // NULL of a value of another type, not an error: only a
+    // DateTime is cast (`accurateCastOrNull` of a NaN or an
+    // infinite Float throws, and a `multiIf` branch is computed
+    // for every row).
+    let instant = format!(
+        "ifNull(toString(toUnixTimestamp64Micro(accurateCastOrNull(\
+         if(startsWith({ty}, 'DateTime'), CAST({v}, 'Dynamic'), NULL), \
+         'DateTime64(6, ''UTC'')'))), '')"
+    );
+    // `toString` drops a FixedString's trailing zero bytes,
+    // which the output prints: padded back to its width.
+    format!(
+        "tuple(multiIf({ty} = 'None', '', {ty} = 'Bool', 'b', {number}, 'n', \
+         match({ty}, '^(Array|Map|Tuple)'), 'c', {string}, 's', \
+         {ty} = 'Date32', 'Date', startsWith({ty}, 'DateTime'), \
+         concat('DateTime ', if({zone} = '', timezone(), {zone})), \
+         startsWith({ty}, 'Time'), 'Time', {ty}), \
+         multiIf({number} AND toString({v}) = '-0', '0', \
+         startsWith({ty}, 'FixedString'), \
+         rightPad(toString({v}), toUInt64OrZero(extract({ty}, '[0-9]+')), '\\0'), \
+         startsWith({ty}, 'DateTime'), concat({clock}, ' ', {instant}), \
+         startsWith({ty}, 'Time'), {clock}, \
+         toString({v})))"
+    )
+}
+
 pub(crate) struct ClickhouseFunctionMapper;
 
 impl FunctionMapper for ClickhouseFunctionMapper {
@@ -242,47 +284,10 @@ impl FunctionMapper for ClickhouseFunctionMapper {
             // fall-back hour print alike; the text has the rest). Not JSON:
             // `toJSONString` quotes a 64-bit integer as a string under
             // `output_format_json_quote_64bit_integers`. NULL is one group.
-            distinct_key: |v| {
-                // A `LowCardinality` value is its inner type's (`Float64`
-                // 1.5 and `LowCardinality(Float64)` 1.5 are one value).
-                let ty = format!(
-                    "replaceRegexpOne(dynamicType(CAST({v}, 'Dynamic')), \
-                     '^LowCardinality\\\\((.*)\\\\)$', '\\\\1')"
-                );
-                // `Int[0-9]`: not an `Interval…`.
-                let number = format!("match({ty}, '^(U?Int[0-9]|Float|BFloat|Decimal)')");
-                let string =
-                    format!("match({ty}, '^(String|FixedString|Enum|UUID|IPv|LowCardinality)')");
-                let zone = format!("extract({ty}, '''([^'']*)''')");
-                let clock = format!(
-                    "replaceRegexpOne(replaceRegexpOne(toString({v}), \
-                     '(\\\\.[0-9]*[1-9])0+$', '\\\\1'), '\\\\.0+$', '')"
-                );
-                // NULL of a value of another type, not an error: only a
-                // DateTime is cast (`accurateCastOrNull` of a NaN or an
-                // infinite Float throws, and a `multiIf` branch is computed
-                // for every row).
-                let instant = format!(
-                    "ifNull(toString(toUnixTimestamp64Micro(accurateCastOrNull(\
-                     if(startsWith({ty}, 'DateTime'), CAST({v}, 'Dynamic'), NULL), \
-                     'DateTime64(6, ''UTC'')'))), '')"
-                );
-                // `toString` drops a FixedString's trailing zero bytes,
-                // which the output prints: padded back to its width.
-                format!(
-                    "tuple(multiIf({ty} = 'None', '', {ty} = 'Bool', 'b', {number}, 'n', \
-                     match({ty}, '^(Array|Map|Tuple)'), 'c', {string}, 's', \
-                     {ty} = 'Date32', 'Date', startsWith({ty}, 'DateTime'), \
-                     concat('DateTime ', if({zone} = '', timezone(), {zone})), \
-                     startsWith({ty}, 'Time'), 'Time', {ty}), \
-                     multiIf({number} AND toString({v}) = '-0', '0', \
-                     startsWith({ty}, 'FixedString'), \
-                     rightPad(toString({v}), toUInt64OrZero(extract({ty}, '[0-9]+')), '\\0'), \
-                     startsWith({ty}, 'DateTime'), concat({clock}, ' ', {instant}), \
-                     startsWith({ty}, 'Time'), {clock}, \
-                     toString({v})))"
-                )
-            },
+            distinct_key,
+            // Sortable as it is (a tuple of strings), and equal only for
+            // values DISTINCT takes as one.
+            order_key: distinct_key,
             any: |v| format!("any({v})"),
             row_number: |keys| format!("row_number() OVER (ORDER BY {keys})"),
         })
@@ -303,6 +308,8 @@ impl FunctionMapper for ClickhouseFunctionMapper {
             // `groupArray` skips NULLs; a one-element tuple of one is not
             // NULL.
             collect_all: |v| format!("arrayMap(t -> t.1, groupArray(tuple({v})))"),
+            // Every type compares (a `Map`, a `Dynamic` by its type first).
+            fixed_order: |l| format!("arraySort({l})"),
             // An unmatched row's `Array` column is its default, `[]`, also
             // under `join_use_nulls = 1`.
             or_empty: None,

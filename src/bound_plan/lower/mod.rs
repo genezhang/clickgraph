@@ -221,46 +221,64 @@ fn lower_over(
 ) -> Result<Lowered, LowerError> {
     let constraints = constraint_reads(stmt, schema);
     let demand = demand(stmt, &constraints);
+    let (lowered, unstable) = lower_pass(stmt, schema, options, &demand, false)?;
+    // ClickHouse evaluates a CTE once per read (#1395): two reads of rows
+    // that depend on the order an evaluation produces rows in (a SKIP /
+    // LIMIT over ties, a `collect()` listing values in it) can disagree,
+    // and a join of the reads (an OPTIONAL MATCH's or a subquery's drive, a
+    // path's seed) then matches the wrong rows. Such CTEs are those the
+    // stable lowering spells otherwise; when one is read more than once,
+    // directly or through others, the stable lowering is the plan.
+    if !unwind::rereads(&lowered.plan, &unwind::cte_names(&lowered.plan)) {
+        return Ok(lowered);
+    }
+    let (stable, stable_unstable) = lower_pass(stmt, schema, options, &demand, true)?;
+    let mut order_dependent = unwind::changed_ctes(&lowered.plan, &stable.plan);
+    order_dependent.extend(unstable);
+    if !unwind::rereads(&lowered.plan, &order_dependent) {
+        return Ok(lowered);
+    }
+    unwind::reject_rereads_of_numbered_rows(&stable.plan, &stable_unstable)?;
+    Ok(stable)
+}
+
+/// One lowering of the statement ([`Lowerer::stable`] when `stable`), and
+/// the CTEs whose rows depend on how rows in no order were numbered.
+fn lower_pass(
+    stmt: &BoundStatement,
+    schema: &GraphSchema,
+    options: &LowerOptions,
+    demand: &HashMap<VarId, BTreeSet<String>>,
+    stable: bool,
+) -> Result<(Lowered, BTreeSet<String>), LowerError> {
     let unstable = RefCell::new(BTreeSet::new());
+    let query = Query {
+        stmt,
+        schema,
+        options,
+        demand,
+        as_values: BTreeSet::new(),
+        unstable: &unstable,
+        stable,
+    };
     if let BoundOp::Union {
         arms,
         arm_columns,
         all,
     } = &stmt.plan
     {
-        let lowered = union::lower(
-            &Query {
-                stmt,
-                schema,
-                options,
-                demand: &demand,
-                as_values: BTreeSet::new(),
-                unstable: &unstable,
-            },
-            arms,
-            arm_columns,
-            *all,
-        )?;
-        unwind::reject_rereads_of_numbered_rows(&lowered.plan, &unstable.borrow())?;
-        return Ok(lowered);
+        let lowered = union::lower(&query, arms, arm_columns, *all)?;
+        return Ok((lowered, unstable.take()));
     }
     let mut ctes = Vec::new();
-    let arm = Query {
-        stmt,
-        schema,
-        options,
-        demand: &demand,
-        as_values: BTreeSet::new(),
-        unstable: &unstable,
-    }
-    .lower(&stmt.plan, &mut ctes)?;
+    let arm = query.lower(&stmt.plan, &mut ctes)?;
     let mut plan = arm.plan;
     plan.ctes = CteItems(ctes);
-    unwind::reject_rereads_of_numbered_rows(&plan, &unstable.borrow())?;
-    Ok(Lowered {
+    let lowered = Lowered {
         plan,
         shape: arm.shape,
-    })
+    };
+    Ok((lowered, unstable.take()))
 }
 
 /// What lowering one query (the statement, or an arm of a UNION) reads.
@@ -276,6 +294,9 @@ struct Query<'a> {
     /// The CTEs, by name, whose rows depend on how rows in no order were
     /// numbered ([`Lowerer::unstable`]), of every query lowered.
     unstable: &'a RefCell<BTreeSet<String>>,
+    /// Lower what depends on the order an evaluation produces rows in to
+    /// the same rows and values on every evaluation ([`Lowerer::stable`]).
+    stable: bool,
 }
 
 /// A lowered query ending in RETURN ([`Query::lower`]).
@@ -354,6 +375,8 @@ impl Query<'_> {
             rel_id_vars: HashSet::new(),
             unordered_numbers: HashSet::new(),
             unstable: BTreeSet::new(),
+            stable: self.stable,
+            final_items: false,
             collect_by_any: false,
             grouped_with: None,
         }
@@ -693,6 +716,16 @@ struct Lowerer<'s> {
     /// LIMIT by it, a `collect()` in its order. Read more than once, their
     /// reads can disagree (`unwind::reject_rereads_of_numbered_rows`).
     unstable: BTreeSet<String>,
+    /// Lower what depends on the order an evaluation produces rows in to
+    /// the same rows and values on every evaluation (#1395): ClickHouse
+    /// evaluates a CTE once per read, and two reads joined must agree. A
+    /// `collect()` over rows in no order lists its values sorted; rows
+    /// numbered, or taken by SKIP / LIMIT, are ordered by every column
+    /// after their own keys (ties broken). Set for a second lowering when
+    /// the first reads such a CTE more than once ([`lower_over`]).
+    stable: bool,
+    /// The final SELECT's items are being lowered.
+    final_items: bool,
     /// The projection being lowered collects in the order of such a number.
     collect_by_any: bool,
     /// The last WITH, when it aggregates: its CTE's alias, its grouping
@@ -1601,6 +1634,54 @@ impl<'s> Lowerer<'s> {
         Ok(correlation)
     }
 
+    /// A drive's rows read right after an aggregating WITH (`at_with`, the
+    /// segment reads its CTE) whose aggregated values it reads: those
+    /// values, determined by the WITH's grouping keys, and the keys the
+    /// drive does not read (carried, and joined on NULL-safely, a key's
+    /// group can be NULL's). The rows are joined on the keys, not on the
+    /// aggregated values (#1395): ClickHouse evaluates the WITH's CTE again
+    /// for the drive, and a `collect()` in another order, a float sum
+    /// added in another order, would join no match; a list of maps cannot
+    /// be joined on at all. Nothing when a key cannot be carried (a graph
+    /// value) or joined on (a map).
+    fn grouped_drive(
+        &self,
+        shared: &[VarId],
+        where_only: &[VarId],
+        at_with: bool,
+    ) -> (Vec<VarId>, Vec<VarId>) {
+        let Some((alias, keys, aggregated)) = &self.grouped_with else {
+            return (Vec::new(), Vec::new());
+        };
+        let read = |v: &VarId| shared.contains(v) || where_only.contains(v);
+        if !at_with || self.emitted.first() != Some(alias) || !aggregated.iter().any(read) {
+            return (Vec::new(), Vec::new());
+        }
+        // A map (a `Dynamic`'s) is no join key.
+        fn joinable(k: &unwind::Kind) -> bool {
+            match k {
+                unwind::Kind::Map(_) => false,
+                unwind::Kind::List(k) => joinable(k),
+                _ => true,
+            }
+        }
+        let mut carried = Vec::new();
+        for k in keys.iter().filter(|k| !read(k)) {
+            match self.values.get(k) {
+                Some(e) if is_constant(e) => continue,
+                Some(_)
+                    if !self.graph_values.contains_key(k)
+                        && self.var_kind(*k).is_some_and(|kind| joinable(&kind)) =>
+                {
+                    carried.push(*k)
+                }
+                None if self.scans.contains_key(k) => carried.push(*k),
+                _ => return (Vec::new(), Vec::new()),
+            }
+        }
+        (aggregated.clone(), carried)
+    }
+
     /// The first relationship of `pattern` at node `v`, and its endpoint
     /// columns at `v` (stored orientation), when the relationship is a
     /// fixed-length scan of one table.
@@ -1674,22 +1755,9 @@ impl<'s> Lowerer<'s> {
         }
         let w = self.emitted[0].clone();
         let d = format!("d{}", self.ctes.len() + 1);
-        // Right after an aggregating WITH whose keys are all correlated, its
-        // aggregated values are determined by them: the rows are not joined
-        // on those too. (ClickHouse evaluates the WITH's CTE again for `D`:
-        // a `collect()` in another order would join no match.)
-        let determined: Vec<VarId> = match &self.grouped_with {
-            Some((alias, keys, aggregated))
-                if only_a_cte
-                    && *alias == w
-                    && keys
-                        .iter()
-                        .all(|k| shared.contains(k) || where_only.contains(k)) =>
-            {
-                aggregated.clone()
-            }
-            _ => Vec::new(),
-        };
+        let (determined, keys) = self.grouped_drive(shared, where_only, only_a_cte);
+        let where_only: Vec<VarId> = where_only.iter().chain(&keys).copied().collect();
+        let where_only = where_only.as_slice();
         let mut columns: Vec<String> = Vec::new();
         let mut correlation = Vec::new();
         for v in shared.iter().chain(where_only) {
@@ -4789,62 +4857,7 @@ impl<'s> Lowerer<'s> {
     /// The physical identity columns of a node, or of a relationship: its
     /// `edge_id`, else its stored (from, to) endpoint columns (#887 policy).
     fn identity_physical(&self, v: VarId) -> Option<Vec<String>> {
-        match self.scans.get(&v)? {
-            Scan::Node { schema, .. } => Some(schema.id_physical_columns()),
-            // Its label first: NULL exactly when an OPTIONAL MATCH left it
-            // NULL, as a table's first identity column is.
-            Scan::Labels { arms, .. } => {
-                let arity = arms[0].1.id_physical_columns().len();
-                Some(
-                    std::iter::once(LABEL_COLUMN.to_string())
-                        .chain(indexed_columns(LABEL_ID, arity))
-                        .collect(),
-                )
-            }
-            Scan::Rel { schema, .. } => Some(match &schema.edge_id {
-                Some(id) => id.columns().iter().map(|c| c.to_string()).collect(),
-                None => schema
-                    .from_id
-                    .columns()
-                    .iter()
-                    .chain(schema.to_id.columns().iter())
-                    .map(|c| c.to_string())
-                    .collect(),
-            }),
-            // Its definition first (its type, NULL exactly when an OPTIONAL
-            // MATCH left it NULL), then its identity.
-            Scan::Rels { arms, .. } => {
-                let identity = rel_union_shape(arms).ok()?.identity;
-                Some(
-                    [REL_TYPE, REL_FROM_LABEL, REL_TO_LABEL]
-                        .iter()
-                        .map(|c| c.to_string())
-                        .chain(indexed_columns(REL_ID, identity))
-                        .collect(),
-                )
-            }
-            // The walk's first node and relationships: the path relation's
-            // rows differ in them (a path of none has no relationship). Its
-            // id first, which a shortest path's search relations have too
-            // (as a text): a condition there reads it for NULL.
-            Scan::Path {
-                walked: Walked::Union { .. },
-                edges,
-                ..
-            } => Some(
-                ["start_id", path::START_LABEL, "path_edges"][..if *edges { 3 } else { 2 }]
-                    .iter()
-                    .map(|c| c.to_string())
-                    .collect(),
-            ),
-            Scan::Path { edges, .. } => Some(
-                ["start_id", "path_edges"][..if *edges { 2 } else { 1 }]
-                    .iter()
-                    .map(|c| c.to_string())
-                    .collect(),
-            ),
-            Scan::Impossible => None,
-        }
+        scan_identity(self.scans.get(&v)?)
     }
 
     /// Whether walk `r` carries its nodes (`NODE_TUPLES`) or relationships
@@ -6265,7 +6278,9 @@ impl<'s> Lowerer<'s> {
         let tuple = (spelling.tuple)(&values);
         let list = match &self.collect_order {
             Some(key) => (spelling.ordered_collect)(&tuple, &render_expr_to_sql_plain(key), "true"),
-            None => (spelling.collect_all)(&tuple),
+            None => render_expr_to_sql_plain(
+                &self.in_fixed_order(RenderExpr::Raw((spelling.collect_all)(&tuple)))?,
+            ),
         };
         let row = m.array_element_or_null(&list, &(index + 1).to_string());
         // The row may be missing (an index past the list's end, `head` of
@@ -6588,6 +6603,87 @@ impl<'s> Lowerer<'s> {
         Ok(())
     }
 
+    /// Sort keys ordering rows by every column of `select` but constants
+    /// (#1395): rows that tie on them are alike. A node, or a relationship
+    /// with `edge_id`, exported (`exports`) by its identity columns as they
+    /// are (its other columns follow from them); another column by its
+    /// `CypherUnion::order_key` (of a value of any type). By the columns' names when
+    /// `by_name` (an ORDER BY reads the SELECT's, an aggregate's too), else
+    /// their expressions (a window's ORDER BY).
+    fn tie_breaks(
+        &self,
+        select: &[SelectItem],
+        exports: &Exports<'_>,
+        by_name: bool,
+    ) -> Result<Vec<OrderByItem>, LowerError> {
+        let Some(union) = current_function_mapper().cypher_union() else {
+            return unsupported("rows read more than once in this SQL dialect");
+        };
+        // Identity columns as they are; those of a node of several labels
+        // keyed (their type may be a `Dynamic`, which does not sort).
+        let mut identity: HashSet<&str> = HashSet::new();
+        let mut determined: HashSet<String> = HashSet::new();
+        for (_, scan) in &exports.scans {
+            let raw = match scan {
+                Scan::Node { .. } => true,
+                Scan::Rel { schema, .. } => {
+                    if schema.edge_id.is_none() {
+                        continue;
+                    }
+                    true
+                }
+                Scan::Labels { .. } => false,
+                _ => continue,
+            };
+            let Some(ids) = scan_identity(scan) else {
+                continue;
+            };
+            let Some(At::Exported {
+                alias,
+                physical,
+                props,
+            }) = scan.at()
+            else {
+                continue;
+            };
+            if !ids.iter().all(|c| physical.contains_key(c)) {
+                continue;
+            }
+            if raw {
+                identity.extend(ids.iter().map(|c| physical[c].as_str()));
+            }
+            // Its other columns follow from those.
+            determined.extend(
+                physical
+                    .iter()
+                    .filter(|(c, _)| !ids.contains(c))
+                    .map(|(_, e)| e.clone()),
+            );
+            for e in props.values().filter(|e| !is_constant(e)) {
+                determined.insert(column_of(e, alias)?);
+            }
+        }
+        let m = current_function_mapper();
+        let mut ties = Vec::new();
+        for i in select.iter().filter(|i| !is_constant(&i.expression)) {
+            let name = i.col_alias.as_ref().map(|a| a.0.as_str());
+            let value = match (name, by_name) {
+                (Some(a), true) => m.quote_alias(a),
+                _ => render_expr_to_sql_plain(&i.expression),
+            };
+            let expression = match name {
+                Some(a) if identity.contains(a) => RenderExpr::Raw(value),
+                Some(a) if determined.contains(a) => continue,
+                _ => RenderExpr::Raw((union.order_key)(&value)),
+            };
+            ties.push(OrderByItem {
+                expression,
+                order: OrderByOrder::Asc,
+            });
+        }
+        Ok(ties)
+    }
+
     fn next_cte_alias(&self) -> String {
         format!("w{}", self.ctes.len() + 1)
     }
@@ -6606,6 +6702,12 @@ impl<'s> Lowerer<'s> {
         if paged && body.order_by.iter().any(|k| self.is_unordered_number(k)) {
             self.unstable.insert(format!("with_{alias}"));
         }
+        // Lowered stable: the rows taken are those first by every column
+        // after the keys (#1395), by name (an aggregate's too).
+        let ties = match self.stable && paged {
+            true => self.tie_breaks(&body.select, &exports, true)?,
+            false => Vec::new(),
+        };
         let mut keys = Vec::new();
         for (i, k) in body.order_by.iter().enumerate() {
             let name = format!("__o{i}");
@@ -6625,6 +6727,7 @@ impl<'s> Lowerer<'s> {
         if body.skip.is_none() && body.limit.is_none() {
             body.order_by.clear();
         }
+        body.order_by.extend(ties);
         let order = if !keys.is_empty() {
             RowOrder::Keys(keys)
         } else if body.order_lost {
@@ -6693,7 +6796,11 @@ impl<'s> Lowerer<'s> {
         }
         self.order_collect(p)?;
         self.projection_subqueries(p)?;
-        let (body, _, shape) = self.projection_body(p, None)?;
+        // The final SELECT is read once: its lists keep their order.
+        self.final_items = true;
+        let projected = self.projection_body(p, None);
+        self.final_items = false;
+        let (body, _, shape) = projected?;
         Ok((self.render(body), shape))
     }
 
@@ -7841,4 +7948,65 @@ pub(crate) fn or_all(mut exprs: Vec<RenderExpr>) -> RenderExpr {
         operator: Operator::Or,
         operands: exprs,
     })
+}
+
+/// The physical identity columns of an element read by `scan`
+/// ([`Lowerer::identity_physical`]).
+fn scan_identity(scan: &Scan<'_>) -> Option<Vec<String>> {
+    match scan {
+        Scan::Node { schema, .. } => Some(schema.id_physical_columns()),
+        // Its label first: NULL exactly when an OPTIONAL MATCH left it
+        // NULL, as a table's first identity column is.
+        Scan::Labels { arms, .. } => {
+            let arity = arms[0].1.id_physical_columns().len();
+            Some(
+                std::iter::once(LABEL_COLUMN.to_string())
+                    .chain(indexed_columns(LABEL_ID, arity))
+                    .collect(),
+            )
+        }
+        Scan::Rel { schema, .. } => Some(match &schema.edge_id {
+            Some(id) => id.columns().iter().map(|c| c.to_string()).collect(),
+            None => schema
+                .from_id
+                .columns()
+                .iter()
+                .chain(schema.to_id.columns().iter())
+                .map(|c| c.to_string())
+                .collect(),
+        }),
+        // Its definition first (its type, NULL exactly when an OPTIONAL
+        // MATCH left it NULL), then its identity.
+        Scan::Rels { arms, .. } => {
+            let identity = rel_union_shape(arms).ok()?.identity;
+            Some(
+                [REL_TYPE, REL_FROM_LABEL, REL_TO_LABEL]
+                    .iter()
+                    .map(|c| c.to_string())
+                    .chain(indexed_columns(REL_ID, identity))
+                    .collect(),
+            )
+        }
+        // The walk's first node and relationships: the path relation's
+        // rows differ in them (a path of none has no relationship). Its
+        // id first, which a shortest path's search relations have too
+        // (as a text): a condition there reads it for NULL.
+        Scan::Path {
+            walked: Walked::Union { .. },
+            edges,
+            ..
+        } => Some(
+            ["start_id", path::START_LABEL, "path_edges"][..if *edges { 3 } else { 2 }]
+                .iter()
+                .map(|c| c.to_string())
+                .collect(),
+        ),
+        Scan::Path { edges, .. } => Some(
+            ["start_id", "path_edges"][..if *edges { 2 } else { 1 }]
+                .iter()
+                .map(|c| c.to_string())
+                .collect(),
+        ),
+        Scan::Impossible => None,
+    }
 }

@@ -22,7 +22,7 @@ WHERE v0.name = 'Hamid_Karzai'
 with_w2 AS (
 SELECT 
       v0.id AS `v3__id`, 
-      collect_list(CASE WHEN NOT isnull(o1.v2__id) THEN named_struct('_1', o1.v2__id, '_2', o1.p2_v2_birthday, '_3', o1.p2_v2_browserUsed, '_4', o1.p2_v2_creationDate, '_5', o1.p2_v2_email, '_6', o1.p2_v2_firstName, '_7', o1.p2_v2_gender, '_8', o1.p2_v2_id, '_9', o1.p2_v2_lastName, '_10', o1.p2_v2_locationIP, '_11', o1.p2_v2_speaks) END) AS `v4`
+      array_sort(collect_list(CASE WHEN NOT isnull(o1.v2__id) THEN named_struct('_1', o1.v2__id, '_2', o1.p2_v2_birthday, '_3', o1.p2_v2_browserUsed, '_4', o1.p2_v2_creationDate, '_5', o1.p2_v2_email, '_6', o1.p2_v2_firstName, '_7', o1.p2_v2_gender, '_8', o1.p2_v2_id, '_9', o1.p2_v2_lastName, '_10', o1.p2_v2_locationIP, '_11', o1.p2_v2_speaks) END), (__cg_sl, __cg_sr) -> CASE WHEN concat(typeof(__cg_sl), ':', to_json(named_struct('v', __cg_sl), map('timestampFormat', 'yyyy-MM-dd HH:mm:ss.SSSSSSXXX', 'timestampNTZFormat', 'yyyy-MM-dd HH:mm:ss.SSSSSS'))) < concat(typeof(__cg_sr), ':', to_json(named_struct('v', __cg_sr), map('timestampFormat', 'yyyy-MM-dd HH:mm:ss.SSSSSSXXX', 'timestampNTZFormat', 'yyyy-MM-dd HH:mm:ss.SSSSSS'))) THEN -1 WHEN concat(typeof(__cg_sl), ':', to_json(named_struct('v', __cg_sl), map('timestampFormat', 'yyyy-MM-dd HH:mm:ss.SSSSSSXXX', 'timestampNTZFormat', 'yyyy-MM-dd HH:mm:ss.SSSSSS'))) > concat(typeof(__cg_sr), ':', to_json(named_struct('v', __cg_sr), map('timestampFormat', 'yyyy-MM-dd HH:mm:ss.SSSSSSXXX', 'timestampNTZFormat', 'yyyy-MM-dd HH:mm:ss.SSSSSS'))) THEN 1 ELSE 0 END) AS `v4`
 FROM ldbc.Tag AS v0
 LEFT JOIN optional_o1 AS o1 ON v0.id = o1.v0__id
 WHERE v0.name = 'Hamid_Karzai'
@@ -141,7 +141,7 @@ with_w8 AS (
 SELECT 
       w2.v3__id AS `v9__id`, 
       w2.v4 AS `v10`, 
-      concat(w2.v4, collect_list(CASE WHEN NOT isnull(o4.v8__id) THEN named_struct('_1', o4.v8__id, '_2', o4.p2_v8_birthday, '_3', o4.p2_v8_browserUsed, '_4', o4.p2_v8_creationDate, '_5', o4.p2_v8_email, '_6', o4.p2_v8_firstName, '_7', o4.p2_v8_gender, '_8', o4.p2_v8_id, '_9', o4.p2_v8_lastName, '_10', o4.p2_v8_locationIP, '_11', o4.p2_v8_speaks) END)) AS `v11`
+      concat(w2.v4, array_sort(collect_list(CASE WHEN NOT isnull(o4.v8__id) THEN named_struct('_1', o4.v8__id, '_2', o4.p2_v8_birthday, '_3', o4.p2_v8_browserUsed, '_4', o4.p2_v8_creationDate, '_5', o4.p2_v8_email, '_6', o4.p2_v8_firstName, '_7', o4.p2_v8_gender, '_8', o4.p2_v8_id, '_9', o4.p2_v8_lastName, '_10', o4.p2_v8_locationIP, '_11', o4.p2_v8_speaks) END), (__cg_sl, __cg_sr) -> CASE WHEN concat(typeof(__cg_sl), ':', to_json(named_struct('v', __cg_sl), map('timestampFormat', 'yyyy-MM-dd HH:mm:ss.SSSSSSXXX', 'timestampNTZFormat', 'yyyy-MM-dd HH:mm:ss.SSSSSS'))) < concat(typeof(__cg_sr), ':', to_json(named_struct('v', __cg_sr), map('timestampFormat', 'yyyy-MM-dd HH:mm:ss.SSSSSSXXX', 'timestampNTZFormat', 'yyyy-MM-dd HH:mm:ss.SSSSSS'))) THEN -1 WHEN concat(typeof(__cg_sl), ':', to_json(named_struct('v', __cg_sl), map('timestampFormat', 'yyyy-MM-dd HH:mm:ss.SSSSSSXXX', 'timestampNTZFormat', 'yyyy-MM-dd HH:mm:ss.SSSSSS'))) > concat(typeof(__cg_sr), ':', to_json(named_struct('v', __cg_sr), map('timestampFormat', 'yyyy-MM-dd HH:mm:ss.SSSSSSXXX', 'timestampNTZFormat', 'yyyy-MM-dd HH:mm:ss.SSSSSS'))) THEN 1 ELSE 0 END)) AS `v11`
 FROM with_w2 AS w2
 LEFT JOIN optional_o4 AS o4 ON w2.v3__id = o4.v3__id
 GROUP BY w2.v3__id, w2.v4

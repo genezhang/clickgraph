@@ -66,7 +66,7 @@ SELECT
       v5.id AS "v6__id", 
       v5.id AS "p2_v6_id", 
       v5.title AS "p2_v6_title", 
-      groupArrayIf(tuple(w3.v3__id, w3.p2_v3_birthday, w3.p2_v3_browserUsed, w3.p2_v3_creationDate, w3.p2_v3_email, w3.p2_v3_firstName, w3.p2_v3_gender, w3.p2_v3_id, w3.p2_v3_lastName, w3.p2_v3_locationIP, w3.p2_v3_speaks), NOT isNull(w3.v3__id)) AS "v7"
+      arraySort(groupArrayIf(tuple(w3.v3__id, w3.p2_v3_birthday, w3.p2_v3_browserUsed, w3.p2_v3_creationDate, w3.p2_v3_email, w3.p2_v3_firstName, w3.p2_v3_gender, w3.p2_v3_id, w3.p2_v3_lastName, w3.p2_v3_locationIP, w3.p2_v3_speaks), NOT isNull(w3.v3__id))) AS "v7"
 FROM with_w3 AS w3
 JOIN ldbc.Forum_hasMember_Person AS v4 ON v4.PersonId = w3.v3__id
 JOIN ldbc.Forum AS v5 ON v4.ForumId = v5.id

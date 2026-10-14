@@ -66,7 +66,7 @@ SELECT
       v5.id AS `v6__id`, 
       v5.id AS `p2_v6_id`, 
       v5.title AS `p2_v6_title`, 
-      collect_list(CASE WHEN NOT isnull(w3.v3__id) THEN named_struct('_1', w3.v3__id, '_2', w3.p2_v3_birthday, '_3', w3.p2_v3_browserUsed, '_4', w3.p2_v3_creationDate, '_5', w3.p2_v3_email, '_6', w3.p2_v3_firstName, '_7', w3.p2_v3_gender, '_8', w3.p2_v3_id, '_9', w3.p2_v3_lastName, '_10', w3.p2_v3_locationIP, '_11', w3.p2_v3_speaks) END) AS `v7`
+      array_sort(collect_list(CASE WHEN NOT isnull(w3.v3__id) THEN named_struct('_1', w3.v3__id, '_2', w3.p2_v3_birthday, '_3', w3.p2_v3_browserUsed, '_4', w3.p2_v3_creationDate, '_5', w3.p2_v3_email, '_6', w3.p2_v3_firstName, '_7', w3.p2_v3_gender, '_8', w3.p2_v3_id, '_9', w3.p2_v3_lastName, '_10', w3.p2_v3_locationIP, '_11', w3.p2_v3_speaks) END), (__cg_sl, __cg_sr) -> CASE WHEN concat(typeof(__cg_sl), ':', to_json(named_struct('v', __cg_sl), map('timestampFormat', 'yyyy-MM-dd HH:mm:ss.SSSSSSXXX', 'timestampNTZFormat', 'yyyy-MM-dd HH:mm:ss.SSSSSS'))) < concat(typeof(__cg_sr), ':', to_json(named_struct('v', __cg_sr), map('timestampFormat', 'yyyy-MM-dd HH:mm:ss.SSSSSSXXX', 'timestampNTZFormat', 'yyyy-MM-dd HH:mm:ss.SSSSSS'))) THEN -1 WHEN concat(typeof(__cg_sl), ':', to_json(named_struct('v', __cg_sl), map('timestampFormat', 'yyyy-MM-dd HH:mm:ss.SSSSSSXXX', 'timestampNTZFormat', 'yyyy-MM-dd HH:mm:ss.SSSSSS'))) > concat(typeof(__cg_sr), ':', to_json(named_struct('v', __cg_sr), map('timestampFormat', 'yyyy-MM-dd HH:mm:ss.SSSSSSXXX', 'timestampNTZFormat', 'yyyy-MM-dd HH:mm:ss.SSSSSS'))) THEN 1 ELSE 0 END) AS `v7`
 FROM with_w3 AS w3
 JOIN ldbc.Forum_hasMember_Person AS v4 ON v4.PersonId = w3.v3__id
 JOIN ldbc.Forum AS v5 ON v4.ForumId = v5.id

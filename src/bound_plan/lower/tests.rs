@@ -1177,6 +1177,116 @@ fn databricks_size_of_a_carried_list() {
     assert!(got.contains("length(w2.v3) AS `n`"), "{got}");
 }
 
+/// #1395: ClickHouse evaluates a CTE once per read. A CTE whose rows or
+/// values depend on the order an evaluation produces rows in, read twice
+/// (an OPTIONAL MATCH's drive and the rows it joins back), is lowered stable:
+/// a `collect()` lists its values sorted, a SKIP / LIMIT breaks its ties by
+/// every column (a node by its identity).
+#[test]
+fn an_order_dependent_cte_read_twice_is_lowered_stable() {
+    // The drive joins back on the collected list.
+    has(
+        "MATCH (a:User) WITH a.country AS g, collect(a.user_id) AS c \
+         OPTIONAL MATCH (b:User) WHERE b.user_id = 5 AND size(c) > 0 RETURN g, count(b) AS m",
+        &[r#"arraySort(coalesce(groupArray(v0.user_id), [])) AS "v2""#],
+    );
+    // The rows a LIMIT takes, read by the drive and joined back; the
+    // final SELECT's list, read once, keeps its order.
+    has(
+        "MATCH (a:User) WITH a LIMIT 3 \
+         OPTIONAL MATCH (a)-[:FOLLOWS]->(x:User)-[:FOLLOWS]->(b:User) \
+         RETURN a.name AS n, collect(b.name) AS bs",
+        &[
+            r#"ORDER BY "v1__user_id" ASC LIMIT 3"#,
+            r#"coalesce(groupArray(o3.p2_v5_name), []) AS "bs""#,
+        ],
+    );
+    // Ties of the sort keys broken.
+    has(
+        "MATCH (a:User) WITH a ORDER BY a.country LIMIT 3 \
+         OPTIONAL MATCH (a)-[:FOLLOWS]->(x:User)-[:FOLLOWS]->(b:User) RETURN a.name, count(b)",
+        &[r#"ORDER BY v0.country ASC, "v1__user_id" ASC LIMIT 3"#],
+    );
+    // A value by its DISTINCT key.
+    has(
+        "MATCH (a:User) WITH a.country AS g, count(*) AS k ORDER BY k LIMIT 2 \
+         OPTIONAL MATCH (b:User) WHERE b.country = g AND b.user_id > k RETURN g, count(b)",
+        &[
+            r#"ORDER BY count(*) ASC, tuple(multiIf(replaceRegexpOne(dynamicType(CAST("v1", 'Dynamic'))"#,
+        ],
+    );
+    // Read once: as listed, no ties broken.
+    let once = sql("MATCH (a:User) WITH a.country AS g, collect(a.user_id) AS c RETURN g, c");
+    assert!(!once.contains("arraySort"), "{once}");
+    let once =
+        sql("MATCH (a:User) WITH a LIMIT 3 MATCH (a)-[:FOLLOWS]->(b:User) RETURN a.name, b.name");
+    assert!(!once.contains("ORDER BY"), "{once}");
+}
+
+/// #1395: a drive right after an aggregating WITH whose aggregated value it
+/// reads joins back on the WITH's grouping keys (carried when it does not
+/// read them), not on the value: a float sum added in another order on the
+/// second read would join no match, a list of maps none at all.
+#[test]
+fn a_drive_after_an_aggregation_joins_on_its_keys() {
+    has(
+        "MATCH (a:User) WITH a.country AS g, sum(a.age * 1.5) AS s \
+         OPTIONAL MATCH (b:User) WHERE b.user_id = 5 AND s > 0 RETURN g, count(b) AS m",
+        &[
+            r#"SELECT DISTINCT w1.v1 AS "v1", w1.v2 AS "v2" FROM with_w1 AS w1"#,
+            "ON w1.v1 = o3.v1 OR (w1.v1 IS NULL AND o3.v1 IS NULL)",
+        ],
+    );
+    has(
+        "MATCH (a:User) WITH a.country AS g, avg(a.age) AS s \
+         WHERE EXISTS { MATCH (b:User) WHERE b.user_id = 5 AND s > 0 } RETURN g",
+        &["ON isNotDistinctFrom(w1.v1, s3.v1) AND true"],
+    );
+    let got = sql(
+        "MATCH (a:User) WITH a.country AS g, collect({n: a.name}) AS ms \
+         OPTIONAL MATCH (b:User) WHERE b.user_id = 5 AND size(ms) > 0 RETURN g, count(b) AS m",
+    );
+    assert!(!got.contains("w1.v2 = o3.v2"), "{got}");
+    // A map key is no join key: joined on the aggregated value, as before.
+    has(
+        "MATCH (a:User) WITH {c: a.country} AS k, count(*) AS c \
+         OPTIONAL MATCH (x:User) WHERE x.user_id = c RETURN k, c, count(x) AS m",
+        &["ON w1.v2 = o3.v2"],
+    );
+}
+
+/// #1395 on Databricks: a list of values of any type (a map is not
+/// orderable, a node's STRUCT casts to no VARIANT) sorted by their type and
+/// JSON text.
+#[test]
+fn databricks_sorts_a_list_read_twice_by_its_keys() {
+    use crate::server::query_context::{set_current_schema, with_query_context_sync, QueryContext};
+    let ctx = QueryContext {
+        dialect: crate::sql_generator::SqlDialect::Databricks,
+        ..QueryContext::default()
+    };
+    let got = with_query_context_sync(ctx, || {
+        set_current_schema(std::sync::Arc::new(social()));
+        translate_bound_plan(
+            "MATCH (a:User) WITH a.country AS g, collect(a.user_id) AS c \
+             OPTIONAL MATCH (b:User) WHERE b.user_id = 5 AND size(c) > 0 RETURN g, count(b) AS m",
+            &social(),
+            &ReadOptions::default(),
+        )
+        .unwrap()
+        .sql
+    });
+    let got = squash(&got);
+    assert!(
+        got.contains(
+            "array_sort(coalesce(collect_list(v0.user_id), array()), (__cg_sl, __cg_sr) -> \
+             CASE WHEN concat(typeof(__cg_sl), ':', to_json(named_struct('v', __cg_sl), \
+             map('timestampFormat', 'yyyy-MM-dd HH:mm:ss.SSSSSSXXX'"
+        ),
+        "{got}"
+    );
+}
+
 // ------------------------------------------------------------------ S4c
 
 /// The SQL and the result shape of `q` over `schema`.
@@ -4012,7 +4122,8 @@ fn an_unwind_repeats_each_row_per_element() {
     }
     // The numbered rows read twice (an OPTIONAL MATCH's or a subquery's
     // drive, a path's seed, a collected list joined back): ClickHouse
-    // numbers them anew on each read, and the reads would disagree.
+    // numbers them anew on each read, and the reads would disagree in no
+    // order. Lowered stable (#1395): numbered in the order of every column.
     for q in [
         "MATCH (a:User) UNWIND [1, 2] AS x WITH a, x LIMIT 3 \
          OPTIONAL MATCH (a)-[:FOLLOWS]->(b:User) WHERE b.user_id > x RETURN x, b.name",
@@ -4025,14 +4136,19 @@ fn an_unwind_repeats_each_row_per_element() {
         "MATCH (a:User) UNWIND [1, 2] AS x WITH a, x LIMIT 3 \
          RETURN x, [(a)-[:FOLLOWS]->(b:User) WHERE b.user_id > x | b.name] AS ns",
     ] {
-        not_lowered(q, "read more than once");
+        let got = sql(q);
+        assert!(
+            got.contains("row_number() OVER (ORDER BY v0.user_id ASC)") && !got.contains("OVER ()"),
+            "{q}\n{got}"
+        );
     }
     // Read twice before the paging, which is the final SELECT's: the rows
-    // are the same on each read, only their numbers differ.
+    // are the same on each read, only their numbers differ; numbered
+    // stable all the same (a CTE that numbers rows is read twice).
     has(
         "MATCH (a:User) UNWIND [1, 2] AS x \
          RETURN x, [(a)-[:FOLLOWS]->(b:User) WHERE b.user_id > x | b.name] AS ns LIMIT 3",
-        &["row_number() OVER ()", "LIMIT 3"],
+        &["row_number() OVER (ORDER BY v0.user_id ASC)", "LIMIT 3"],
     );
     // Read once, after the paging: lowered.
     has(

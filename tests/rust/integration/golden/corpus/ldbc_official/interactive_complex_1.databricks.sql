@@ -79,7 +79,7 @@ SELECT
 FROM vlp_v4_path AS v4
 JOIN with_w1 AS w1 ON v4.start_id = w1.v2__id AND v4.end_id = w1.v3__id
 GROUP BY w1.v3__id, w1.p2_v3_birthday, w1.p2_v3_browserUsed, w1.p2_v3_creationDate, w1.p2_v3_email, w1.p2_v3_gender, w1.p2_v3_id, w1.p2_v3_lastName, w1.p2_v3_locationIP, w1.p2_v3_speaks
-ORDER BY min(v4.hop_count) ASC NULLS LAST, w1.p2_v3_lastName ASC NULLS LAST, bigint(w1.p2_v3_id) ASC NULLS LAST
+ORDER BY min(v4.hop_count) ASC NULLS LAST, w1.p2_v3_lastName ASC NULLS LAST, bigint(w1.p2_v3_id) ASC NULLS LAST, concat(typeof(`v6`), ':', to_json(named_struct('v', `v6`), map('timestampFormat', 'yyyy-MM-dd HH:mm:ss.SSSSSSXXX', 'timestampNTZFormat', 'yyyy-MM-dd HH:mm:ss.SSSSSS'))) ASC NULLS LAST, `v7__id` ASC NULLS LAST
 LIMIT 20), 
 with_w6 AS (
 SELECT 
@@ -135,7 +135,7 @@ SELECT
       w6.p2_v7_lastName AS `p3_v14_lastName`, 
       w6.p2_v7_locationIP AS `p3_v14_locationIP`, 
       w6.p2_v7_speaks AS `p3_v14_speaks`, 
-      coalesce(collect_list(CASE WHEN CASE WHEN o8.v11__id IS NULL THEN false ELSE true END THEN CASE WHEN o8.v11__id IS NULL THEN array(o8.p3_v11_name, o8.p3_v10_classYear, o8.p3_v13_name) ELSE array(o8.p3_v11_name, o8.p3_v10_classYear, o8.p3_v13_name) END END), array()) AS `v15`, 
+      array_sort(coalesce(collect_list(CASE WHEN CASE WHEN o8.v11__id IS NULL THEN false ELSE true END THEN CASE WHEN o8.v11__id IS NULL THEN array(o8.p3_v11_name, o8.p3_v10_classYear, o8.p3_v13_name) ELSE array(o8.p3_v11_name, o8.p3_v10_classYear, o8.p3_v13_name) END END), array()), (__cg_sl, __cg_sr) -> CASE WHEN concat(typeof(__cg_sl), ':', to_json(named_struct('v', __cg_sl), map('timestampFormat', 'yyyy-MM-dd HH:mm:ss.SSSSSSXXX', 'timestampNTZFormat', 'yyyy-MM-dd HH:mm:ss.SSSSSS'))) < concat(typeof(__cg_sr), ':', to_json(named_struct('v', __cg_sr), map('timestampFormat', 'yyyy-MM-dd HH:mm:ss.SSSSSSXXX', 'timestampNTZFormat', 'yyyy-MM-dd HH:mm:ss.SSSSSS'))) THEN -1 WHEN concat(typeof(__cg_sl), ':', to_json(named_struct('v', __cg_sl), map('timestampFormat', 'yyyy-MM-dd HH:mm:ss.SSSSSSXXX', 'timestampNTZFormat', 'yyyy-MM-dd HH:mm:ss.SSSSSS'))) > concat(typeof(__cg_sr), ':', to_json(named_struct('v', __cg_sr), map('timestampFormat', 'yyyy-MM-dd HH:mm:ss.SSSSSSXXX', 'timestampNTZFormat', 'yyyy-MM-dd HH:mm:ss.SSSSSS'))) THEN 1 ELSE 0 END) AS `v15`, 
       w6.v9__id AS `v16__id`, 
       w6.p2_v9_name AS `p3_v16_name`, 
       w6.v6 AS `v17`
@@ -177,7 +177,7 @@ SELECT
       w9.p3_v14_lastName AS `p3_v22_lastName`, 
       w9.p3_v14_locationIP AS `p3_v22_locationIP`, 
       w9.p3_v14_speaks AS `p3_v22_speaks`, 
-      coalesce(collect_list(CASE WHEN CASE WHEN o11.v19__id IS NULL THEN false ELSE true END THEN CASE WHEN o11.v19__id IS NULL THEN array(o11.p3_v19_name, o11.p3_v18_workFrom, o11.p3_v21_name) ELSE array(o11.p3_v19_name, o11.p3_v18_workFrom, o11.p3_v21_name) END END), array()) AS `v23`, 
+      array_sort(coalesce(collect_list(CASE WHEN CASE WHEN o11.v19__id IS NULL THEN false ELSE true END THEN CASE WHEN o11.v19__id IS NULL THEN array(o11.p3_v19_name, o11.p3_v18_workFrom, o11.p3_v21_name) ELSE array(o11.p3_v19_name, o11.p3_v18_workFrom, o11.p3_v21_name) END END), array()), (__cg_sl, __cg_sr) -> CASE WHEN concat(typeof(__cg_sl), ':', to_json(named_struct('v', __cg_sl), map('timestampFormat', 'yyyy-MM-dd HH:mm:ss.SSSSSSXXX', 'timestampNTZFormat', 'yyyy-MM-dd HH:mm:ss.SSSSSS'))) < concat(typeof(__cg_sr), ':', to_json(named_struct('v', __cg_sr), map('timestampFormat', 'yyyy-MM-dd HH:mm:ss.SSSSSSXXX', 'timestampNTZFormat', 'yyyy-MM-dd HH:mm:ss.SSSSSS'))) THEN -1 WHEN concat(typeof(__cg_sl), ':', to_json(named_struct('v', __cg_sl), map('timestampFormat', 'yyyy-MM-dd HH:mm:ss.SSSSSSXXX', 'timestampNTZFormat', 'yyyy-MM-dd HH:mm:ss.SSSSSS'))) > concat(typeof(__cg_sr), ':', to_json(named_struct('v', __cg_sr), map('timestampFormat', 'yyyy-MM-dd HH:mm:ss.SSSSSSXXX', 'timestampNTZFormat', 'yyyy-MM-dd HH:mm:ss.SSSSSS'))) THEN 1 ELSE 0 END) AS `v23`, 
       any_value(w9.v15, true) AS `v24`, 
       w9.v16__id AS `v25__id`, 
       w9.p3_v16_name AS `p3_v25_name`, 

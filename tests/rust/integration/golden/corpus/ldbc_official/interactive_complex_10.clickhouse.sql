@@ -131,7 +131,7 @@ SELECT
       w6.p3_v11_lastName AS "p3_v16_lastName", 
       w6.v12__id AS "v17__id", 
       w6.p3_v12_name AS "p3_v17_name", 
-      groupArrayIf(tuple(o7.v15__id, o7.p3_v15_browserUsed, o7.p3_v15_content, o7.p3_v15_creationDate, o7.p3_v15_id, o7.p3_v15_imageFile, o7.p3_v15_language, o7.p3_v15_length, o7.p3_v15_locationIP), NOT isNull(o7.v15__id)) AS "v18", 
+      arraySort(groupArrayIf(tuple(o7.v15__id, o7.p3_v15_browserUsed, o7.p3_v15_content, o7.p3_v15_creationDate, o7.p3_v15_id, o7.p3_v15_imageFile, o7.p3_v15_language, o7.p3_v15_length, o7.p3_v15_locationIP), NOT isNull(o7.v15__id))) AS "v18", 
       w6.v13__id AS "v19__id"
 FROM with_w6 AS w6
 LEFT JOIN optional_o7 AS o7 ON w6.v11__id = o7.v11__id

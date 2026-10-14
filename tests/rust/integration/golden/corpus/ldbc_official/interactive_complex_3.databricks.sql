@@ -13,6 +13,7 @@ FROM ldbc.Place AS v0
 CROSS JOIN ldbc.Place AS v1
 CROSS JOIN ldbc.Person AS v2
 WHERE (((v0.type = 'Country')) AND ((v1.type = 'Country')) AND v0.name = 'India' AND v1.name = 'China' AND v2.id = 14)
+ORDER BY `v3__id` ASC NULLS LAST, `v4__id` ASC NULLS LAST, `v5__id` ASC NULLS LAST
 LIMIT 1), 
 with_w2 AS (
 SELECT 
@@ -25,7 +26,7 @@ SELECT
       w1.p2_v5_id AS `p3_v11_id`, 
       w1.p2_v5_name AS `p3_v11_name`, 
       w1.p2_v5_url AS `p3_v11_url`, 
-      collect_list(CASE WHEN NOT isnull(v6.id) THEN named_struct('_1', v6.id, '_2', v6.id, '_3', v6.name, '_4', v6.url) END) AS `v12`
+      array_sort(collect_list(CASE WHEN NOT isnull(v6.id) THEN named_struct('_1', v6.id, '_2', v6.id, '_3', v6.name, '_4', v6.url) END), (__cg_sl, __cg_sr) -> CASE WHEN concat(typeof(__cg_sl), ':', to_json(named_struct('v', __cg_sl), map('timestampFormat', 'yyyy-MM-dd HH:mm:ss.SSSSSSXXX', 'timestampNTZFormat', 'yyyy-MM-dd HH:mm:ss.SSSSSS'))) < concat(typeof(__cg_sr), ':', to_json(named_struct('v', __cg_sr), map('timestampFormat', 'yyyy-MM-dd HH:mm:ss.SSSSSSXXX', 'timestampNTZFormat', 'yyyy-MM-dd HH:mm:ss.SSSSSS'))) THEN -1 WHEN concat(typeof(__cg_sl), ':', to_json(named_struct('v', __cg_sl), map('timestampFormat', 'yyyy-MM-dd HH:mm:ss.SSSSSSXXX', 'timestampNTZFormat', 'yyyy-MM-dd HH:mm:ss.SSSSSS'))) > concat(typeof(__cg_sr), ':', to_json(named_struct('v', __cg_sr), map('timestampFormat', 'yyyy-MM-dd HH:mm:ss.SSSSSSXXX', 'timestampNTZFormat', 'yyyy-MM-dd HH:mm:ss.SSSSSS'))) THEN 1 ELSE 0 END) AS `v12`
 FROM with_w1 AS w1
 CROSS JOIN ldbc.Place AS v6
 JOIN ldbc.Place_isPartOf_Place AS v7 ON v7.Place1Id = v6.id

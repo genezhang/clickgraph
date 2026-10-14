@@ -84,6 +84,21 @@ fn variant_key(x: &str, depth: usize) -> String {
     )
 }
 
+/// The Databricks `CypherUnion::order_key`: the value's type and JSON text,
+/// timestamps to the microsecond (`to_json`'s default keeps milliseconds).
+/// A STRUCT (a node's or relationship's tuple) casts to no VARIANT, so not
+/// `variant_key`; the type tells apart values of one text in a typed column
+/// (a date and its string). Inside a VARIANT (`typeof` is `variant`) a date
+/// and its string still share a key: their order among themselves is not
+/// fixed.
+fn order_key(v: &str) -> String {
+    format!(
+        "concat(typeof({v}), ':', to_json(named_struct('v', {v}), \
+         map('timestampFormat', 'yyyy-MM-dd HH:mm:ss.SSSSSSXXX', \
+         'timestampNTZFormat', 'yyyy-MM-dd HH:mm:ss.SSSSSS')))"
+    )
+}
+
 pub(crate) struct DatabricksFunctionMapper;
 
 impl FunctionMapper for DatabricksFunctionMapper {
@@ -291,6 +306,7 @@ impl FunctionMapper for DatabricksFunctionMapper {
             // A text of the value's kind and value (Spark groups no VARIANT):
             // `variant_key`.
             distinct_key: |v| variant_key(&format!("CAST({v} AS VARIANT)"), 0),
+            order_key,
             any: |v| format!("any_value({v})"),
             row_number: |keys| format!("row_number() OVER (ORDER BY {keys})"),
         })
@@ -316,6 +332,15 @@ impl FunctionMapper for DatabricksFunctionMapper {
             // A struct of one NULL is not NULL.
             collect_all: |v| {
                 format!("transform(collect_list(named_struct('v', {v})), __cg_t -> __cg_t.v)")
+            },
+            // By the values' keys (`order_key`): a value need not be
+            // orderable (a map is not).
+            fixed_order: |l| {
+                let (l_key, r_key) = (order_key("__cg_sl"), order_key("__cg_sr"));
+                format!(
+                    "array_sort({l}, (__cg_sl, __cg_sr) -> CASE WHEN {l_key} < {r_key} THEN -1 \
+                     WHEN {l_key} > {r_key} THEN 1 ELSE 0 END)"
+                )
             },
             or_empty: Some(|l| format!("coalesce({l}, array())")),
             // `struct(a.x, …)` names its fields after their columns: the

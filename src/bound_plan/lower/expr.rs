@@ -2320,6 +2320,31 @@ impl Lowerer<'_> {
     }
 
     fn aggregate_fn(&self, f: &LAgg, items: &Items) -> Result<RenderExpr, LowerError> {
+        let value = self.aggregate_value(f, items)?;
+        // A `collect()` over rows in no order, lowered stable: its values
+        // in an order of their own (#1395).
+        if f.name.eq_ignore_ascii_case("collect") && self.collect_order.is_none() {
+            return self.in_fixed_order(value);
+        }
+        Ok(value)
+    }
+
+    /// The list `l`, collected over rows in no order: in an order fixed by
+    /// its values when lowering stable ([`Lowerer::stable`]) a CTE's, as
+    /// listed otherwise (the final SELECT is read once).
+    pub(super) fn in_fixed_order(&self, l: RenderExpr) -> Result<RenderExpr, LowerError> {
+        if !self.stable || self.final_items {
+            return Ok(l);
+        }
+        let Some(spelling) = current_function_mapper().lists() else {
+            return unsupported("collect() read more than once in this SQL dialect");
+        };
+        Ok(RenderExpr::Raw((spelling.fixed_order)(
+            &render_expr_to_sql_plain(&l),
+        )))
+    }
+
+    fn aggregate_value(&self, f: &LAgg, items: &Items) -> Result<RenderExpr, LowerError> {
         let name = f.name.to_ascii_lowercase();
         // The argument, and whether it is `DISTINCT x`.
         let (arg, distinct) = match f.args.as_slice() {
