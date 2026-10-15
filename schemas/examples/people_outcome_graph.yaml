@@ -1,0 +1,98 @@
+# People-outcome graph: the runnable example for the outcome-learning loop.
+#
+# Purpose: hyperpersonalized recommendations with measured outcomes.
+# A Person HAS_SKILL / WANTS_SKILL; the agent writes RECOMMENDED edges with a
+# logged propensity; downstream results arrive as OUTCOME edges (weight 0..1)
+# and FEEDBACK edges. A nightly job compiles per-(cohort, skill) effectiveness
+# into a narrow score table; serving reads one row, never walks the graph live.
+#
+# See docs/design/OUTCOME_LOOP.md (pattern) and OUTCOME_RECIPES.md (copy-paste
+# recipes for commerce / support / ops on the same edge taxonomy).
+#
+# Tables backing this example (create to run it live):
+#   outcome.people(id, cohort, name)
+#   outcome.skills(skill_id, title, track)
+#   outcome.person_skills(person_id, skill_id, level, confidence, assessed_at)
+#   outcome.recommendations(rec_id, person_id, skill_id, cohort, propensity,
+#                           policy_version, created_at)
+#   outcome.outcomes(rec_id, person_id, skill_id, weight, resolved_at)
+#   outcome.feedback(person_id, skill_id, signal, created_at)  -- +1 / -1
+
+name: people_outcome_graph
+version: "1.0"
+
+graph_schema:
+  nodes:
+    - label: Person
+      database: outcome
+      table: people
+      node_id: id
+      property_mappings:
+        person_id: id
+        name: name
+        cohort: cohort
+
+    - label: Skill
+      database: outcome
+      table: skills
+      node_id: skill_id
+      property_mappings:
+        skill_id: skill_id
+        title: title
+        track: track
+
+  edges:
+    # Assessed proficiency: person -> skill, weighted by level.
+    - type: HAS_SKILL
+      database: outcome
+      table: person_skills
+      from_node: Person
+      to_node: Skill
+      from_id: person_id
+      to_id: skill_id
+      property_mappings:
+        level: level
+        confidence: confidence
+        assessed_at: assessed_at
+
+    # Agent decision log: person -> skill, propensity logged for off-policy
+    # evaluation (without it, IPS/DR estimators are impossible).
+    - type: RECOMMENDED
+      database: outcome
+      table: recommendations
+      from_node: Person
+      to_node: Skill
+      from_id: person_id
+      to_id: skill_id
+      property_mappings:
+        rec_id: rec_id
+        propensity: propensity
+        policy_version: policy_version
+        cohort: cohort
+        created_at: created_at
+
+    # Measured result: person -> skill, weight 0..1 (assessment gain,
+    # completion, conversion). Arrives days/weeks after RECOMMENDED.
+    - type: OUTCOME
+      database: outcome
+      table: outcomes
+      from_node: Person
+      to_node: Skill
+      from_id: person_id
+      to_id: skill_id
+      property_mappings:
+        rec_id: rec_id
+        weight: weight
+        resolved_at: resolved_at
+
+    # Explicit signal: person -> skill, +1 / -1.
+    - type: FEEDBACK
+      database: outcome
+      table: feedback
+      from_node: Person
+      to_node: Skill
+      from_id: person_id
+      to_id: skill_id
+      property_mappings:
+        signal: signal
+        created_at: created_at

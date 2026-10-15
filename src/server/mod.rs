@@ -35,6 +35,7 @@ pub mod connection_pool;
 pub mod graph_catalog;
 pub mod graph_output;
 pub mod handlers;
+pub mod langfuse;
 pub mod metrics;
 pub mod models;
 mod parameter_substitution;
