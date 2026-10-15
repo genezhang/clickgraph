@@ -7169,21 +7169,16 @@ fn paren_comparison_equal_not_chained_1355() {
     );
 }
 
-/// #1355 review: VLP pattern with a parenthesized comparison against a
-/// boolean must render without panicking (single-node + VLP walk through
-/// the bound-plan printer, which parenthesizes nested comparisons via
-/// `operand_sql` in `to_sql_query.rs`).
+/// #1355: over a variable-length walk, a parenthesized comparison compared
+/// with a boolean stays one comparison (main read it as
+/// `a.age > 20 AND 20 = false`).
 #[test]
 fn paren_comparison_in_vlp_where_renders_1355() {
     let q =
         "MATCH (a:User)-[:FOLLOWS*1..2]->(b:User) WHERE (a.age > 20) = false RETURN count(*) AS c";
     let got = squash(&sql(q));
     assert!(
-        got.contains("count(*)") || got.contains("count"),
-        "#1355: renders an aggregate query:\n{got}"
-    );
-    assert!(
-        got.contains("age > 20"),
-        "#1355: comparison survives in VLP filter:\n{got}"
+        got.contains("age > 20) = false") && !got.contains("20 = false"),
+        "#1355: the comparison is compared, not chained:\n{got}"
     );
 }
