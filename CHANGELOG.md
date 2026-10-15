@@ -17,6 +17,8 @@
 
 ### 🧹 Infrastructure
 
+- **rustls 0.23.45 → 0.23.46** for RUSTSEC-2026-0346, -0347, -0348 and -0349 (TLS secrets in `Debug` output, data sent after an ECH rejection, Brotli certificate decompression allocating up to 1 GiB, a ServerHello downgrading later key exchanges). `Cargo.lock` only.
+
 - **The variable-length walk generator keeps only what the bound plan uses** (P-4c S14c8, ~9k lines): the standard layout's walk, without the denormalized, mixed, FK-edge, weighted, BFS, polymorphic and doubled-edge arms the legacy planner drove, and `pattern_schema` keeps only the layout classification. The corpus SQL goldens are byte-identical.
 
 - **The legacy `id()` rewrites are deleted** (P-4c S14c7): the AST rewrite (`transform_id_functions`, whose output only classified the statement) and the regex `id_rewriter.rs`; the bound plan reads `id()` values itself. The developer docs describe the bound plan.
