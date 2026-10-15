@@ -1,0 +1,5 @@
+{
+  "name": "task_completion",
+  "dataType": "BOOLEAN",
+  "description": "Observation-level judge on the run root: did the agent achieve the user's goal (1) or not (0). Sampled 5% in production; 100% on experiments."
+}

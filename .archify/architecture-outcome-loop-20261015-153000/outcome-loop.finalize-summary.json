@@ -1,0 +1,66 @@
+{
+  "schemaVersion": 1,
+  "ok": false,
+  "command": "finalize",
+  "status": "fail",
+  "type": "architecture",
+  "quality": "showcase",
+  "specification": {
+    "path": "C:\\Users\\haris\\source\\repos\\clickgraph\\.archify\\architecture-outcome-loop-20261015-153000\\candidate.json",
+    "sha256": "d1d577d3f79564e8b288c8e09d1ae5a139186fa4f6f147676c7e70e5b7dd306e",
+    "bytes": 4476
+  },
+  "artifact": {
+    "path": "C:\\Users\\haris\\source\\repos\\clickgraph\\.archify\\architecture-outcome-loop-20261015-153000\\outcome-loop.html",
+    "sha256": "a3c638cfca7c746211202675cc0ff26c5df8aef43af1dac146121d61105390d7",
+    "bytes": 824962
+  },
+  "gates": {
+    "validate": "pass",
+    "deliver": "pass",
+    "check": "pass",
+    "browser-check": "fail"
+  },
+  "failedStage": "browser-check",
+  "diagnostics": [
+    {
+      "code": "viewer/evidence-path-conflict",
+      "severity": "error",
+      "message": "browser-check will not replace the existing unowned evidence path \"C:\\Users\\haris\\source\\repos\\clickgraph\\.archify\\architecture-outcome-loop-20261015-153000\\outcome-loop.browser-check.json\".",
+      "subject": {
+        "artifact": "C:\\Users\\haris\\source\\repos\\clickgraph\\.archify\\architecture-outcome-loop-20261015-153000\\outcome-loop.html",
+        "evidencePath": "C:\\Users\\haris\\source\\repos\\clickgraph\\.archify\\architecture-outcome-loop-20261015-153000\\outcome-loop.browser-check.json"
+      },
+      "evidence": {
+        "reason": {
+          "code": "ownership-artifact-mismatch"
+        }
+      },
+      "supportedFixes": [
+        "move the conflicting file aside, or choose a separate --out-dir, then rerun browser-check"
+      ]
+    }
+  ],
+  "diagnosticSummary": {
+    "total": 1,
+    "shown": 1,
+    "truncated": false
+  },
+  "evidence": {
+    "receipt": "C:\\Users\\haris\\source\\repos\\clickgraph\\.archify\\architecture-outcome-loop-20261015-153000\\outcome-loop.finalize.json",
+    "summaryReceipt": "C:\\Users\\haris\\source\\repos\\clickgraph\\.archify\\architecture-outcome-loop-20261015-153000\\outcome-loop.finalize-summary.json",
+    "browserCheckReceipt": "C:\\Users\\haris\\source\\repos\\clickgraph\\.archify\\architecture-outcome-loop-20261015-153000\\outcome-loop.browser-check.json"
+  },
+  "update": {
+    "status": "current",
+    "installedVersion": "3.1.0",
+    "availableVersion": "3.1.0",
+    "releaseNotes": null,
+    "checkedAt": "2026-10-15T17:01:22.530Z",
+    "source": "cache",
+    "noticeRequired": false,
+    "noticeText": null
+  },
+  "visualReview": "not-requested",
+  "durationMs": 3598
+}

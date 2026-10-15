@@ -1,0 +1,5 @@
+{
+  "name": "user_feedback",
+  "dataType": "BOOLEAN",
+  "description": "Explicit human signal: thumbs up/down mapped from feedback-event.v1 (+1 -> 1.0, -1 -> 0.0). Ingested via SDK by the feedback consumer."
+}

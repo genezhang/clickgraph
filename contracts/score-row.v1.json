@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/genezhang/clickgraph/blob/main/contracts/score-row.v1.json",
+  "title": "Outcome-loop score row v1",
+  "description": "Serving contract: one row per (cohort, action). Columns are append-only across versions; readers ignore unknown fields, never reject.",
+  "type": "object",
+  "required": ["cohort_id", "action_id", "score", "n", "updated_at"],
+  "properties": {
+    "cohort_id": { "type": "string", "minLength": 1 },
+    "action_id": { "type": "string", "minLength": 1 },
+    "score": { "type": "number", "minimum": 0, "maximum": 1 },
+    "ci_low": { "type": "number", "minimum": 0, "maximum": 1 },
+    "ci_high": { "type": "number", "minimum": 0, "maximum": 1 },
+    "n": { "type": "integer", "minimum": 0 },
+    "policy_version": { "type": "string" },
+    "updated_at": { "type": "string", "format": "date-time" }
+  },
+  "additionalProperties": true
+}

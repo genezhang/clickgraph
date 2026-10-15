@@ -1,0 +1,66 @@
+{
+  "schemaVersion": 1,
+  "ok": false,
+  "command": "finalize",
+  "status": "fail",
+  "type": "dataflow",
+  "quality": "showcase",
+  "specification": {
+    "path": "C:\\Users\\haris\\source\\repos\\clickgraph\\.archify\\dataflow-outcome-evidence-20261015-153000\\candidate.json",
+    "sha256": "b60ffb9f6ada1e364399b3a5b4fe67ae6173a68c67f0dfe3de5da86cd85e75a2",
+    "bytes": 4253
+  },
+  "artifact": {
+    "path": "C:\\Users\\haris\\source\\repos\\clickgraph\\.archify\\dataflow-outcome-evidence-20261015-153000\\outcome-evidence.html",
+    "sha256": "dba36144f69baf516d661394f21365c5cd9091d2bce200433b02382aeba9e5a4",
+    "bytes": 825600
+  },
+  "gates": {
+    "validate": "pass",
+    "deliver": "pass",
+    "check": "pass",
+    "browser-check": "fail"
+  },
+  "failedStage": "browser-check",
+  "diagnostics": [
+    {
+      "code": "viewer/evidence-path-conflict",
+      "severity": "error",
+      "message": "browser-check will not replace the existing unowned evidence path \"C:\\Users\\haris\\source\\repos\\clickgraph\\.archify\\dataflow-outcome-evidence-20261015-153000\\outcome-evidence.browser-check.json\".",
+      "subject": {
+        "artifact": "C:\\Users\\haris\\source\\repos\\clickgraph\\.archify\\dataflow-outcome-evidence-20261015-153000\\outcome-evidence.html",
+        "evidencePath": "C:\\Users\\haris\\source\\repos\\clickgraph\\.archify\\dataflow-outcome-evidence-20261015-153000\\outcome-evidence.browser-check.json"
+      },
+      "evidence": {
+        "reason": {
+          "code": "ownership-artifact-mismatch"
+        }
+      },
+      "supportedFixes": [
+        "move the conflicting file aside, or choose a separate --out-dir, then rerun browser-check"
+      ]
+    }
+  ],
+  "diagnosticSummary": {
+    "total": 1,
+    "shown": 1,
+    "truncated": false
+  },
+  "evidence": {
+    "receipt": "C:\\Users\\haris\\source\\repos\\clickgraph\\.archify\\dataflow-outcome-evidence-20261015-153000\\outcome-evidence.finalize.json",
+    "summaryReceipt": "C:\\Users\\haris\\source\\repos\\clickgraph\\.archify\\dataflow-outcome-evidence-20261015-153000\\outcome-evidence.finalize-summary.json",
+    "browserCheckReceipt": "C:\\Users\\haris\\source\\repos\\clickgraph\\.archify\\dataflow-outcome-evidence-20261015-153000\\outcome-evidence.browser-check.json"
+  },
+  "update": {
+    "status": "current",
+    "installedVersion": "3.1.0",
+    "availableVersion": "3.1.0",
+    "releaseNotes": null,
+    "checkedAt": "2026-10-15T17:01:22.530Z",
+    "source": "network",
+    "noticeRequired": false,
+    "noticeText": null
+  },
+  "visualReview": "not-requested",
+  "durationMs": 3902
+}

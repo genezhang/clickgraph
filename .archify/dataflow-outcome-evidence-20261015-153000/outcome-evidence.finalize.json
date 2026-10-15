@@ -1,0 +1,375 @@
+{
+  "schemaVersion": 1,
+  "ok": false,
+  "command": "finalize",
+  "status": "fail",
+  "type": "dataflow",
+  "quality": "showcase",
+  "startedAt": "2026-10-15T17:01:21.627Z",
+  "specification": {
+    "path": "C:\\Users\\haris\\source\\repos\\clickgraph\\.archify\\dataflow-outcome-evidence-20261015-153000\\candidate.json",
+    "sha256": "b60ffb9f6ada1e364399b3a5b4fe67ae6173a68c67f0dfe3de5da86cd85e75a2",
+    "bytes": 4253
+  },
+  "artifact": {
+    "path": "C:\\Users\\haris\\source\\repos\\clickgraph\\.archify\\dataflow-outcome-evidence-20261015-153000\\outcome-evidence.html",
+    "sha256": "dba36144f69baf516d661394f21365c5cd9091d2bce200433b02382aeba9e5a4",
+    "bytes": 825600
+  },
+  "stages": {
+    "validate": {
+      "status": "pass",
+      "exitCode": 0,
+      "durationMs": null,
+      "execution": "embedded-in-deliver",
+      "command": [
+        "C:\\Program Files\\nodejs\\node.exe",
+        "C:\\Users\\haris\\.agents\\skills\\archify\\bin\\archify.mjs",
+        "deliver",
+        "dataflow",
+        "C:\\Users\\haris\\source\\repos\\clickgraph\\.archify\\dataflow-outcome-evidence-20261015-153000\\candidate.json",
+        "C:\\Users\\haris\\source\\repos\\clickgraph\\.archify\\dataflow-outcome-evidence-20261015-153000\\outcome-evidence.html",
+        "--quality",
+        "showcase",
+        "--repo-root",
+        "C:\\Users\\haris\\source\\repos\\clickgraph",
+        "--json"
+      ],
+      "receipt": {
+        "schemaVersion": 1,
+        "ok": true,
+        "command": "validate",
+        "specification": {
+          "sha256": "b60ffb9f6ada1e364399b3a5b4fe67ae6173a68c67f0dfe3de5da86cd85e75a2",
+          "bytes": 4253
+        },
+        "validation": {
+          "checksPassed": 9,
+          "checkCount": 9,
+          "compositionProfile": "showcase",
+          "compositionStatus": "pass",
+          "errors": 0,
+          "warnings": 0
+        }
+      }
+    },
+    "deliver": {
+      "status": "pass",
+      "exitCode": 0,
+      "durationMs": 1777,
+      "command": [
+        "C:\\Program Files\\nodejs\\node.exe",
+        "C:\\Users\\haris\\.agents\\skills\\archify\\bin\\archify.mjs",
+        "deliver",
+        "dataflow",
+        "C:\\Users\\haris\\source\\repos\\clickgraph\\.archify\\dataflow-outcome-evidence-20261015-153000\\candidate.json",
+        "C:\\Users\\haris\\source\\repos\\clickgraph\\.archify\\dataflow-outcome-evidence-20261015-153000\\outcome-evidence.html",
+        "--quality",
+        "showcase",
+        "--repo-root",
+        "C:\\Users\\haris\\source\\repos\\clickgraph",
+        "--json"
+      ],
+      "receipt": {
+        "schemaVersion": 1,
+        "receiptId": "8f5c42b7-4e82-47ee-b717-10c1d7ab03f5",
+        "ok": true,
+        "command": "deliver",
+        "type": "dataflow",
+        "input": "C:\\Users\\haris\\source\\repos\\clickgraph\\.archify\\dataflow-outcome-evidence-20261015-153000\\candidate.json",
+        "output": "C:\\Users\\haris\\source\\repos\\clickgraph\\.archify\\dataflow-outcome-evidence-20261015-153000\\outcome-evidence.html",
+        "specification": {
+          "sha256": "b60ffb9f6ada1e364399b3a5b4fe67ae6173a68c67f0dfe3de5da86cd85e75a2",
+          "bytes": 4253
+        },
+        "artifact": {
+          "sha256": "dba36144f69baf516d661394f21365c5cd9091d2bce200433b02382aeba9e5a4",
+          "bytes": 825600
+        },
+        "validation": {
+          "checksPassed": 9,
+          "checkCount": 9,
+          "compositionProfile": "showcase",
+          "compositionStatus": "pass",
+          "errors": 0,
+          "warnings": 0
+        },
+        "evidence": {
+          "verified": true,
+          "repository": "https://github.com/hari2353/clickgraph",
+          "revision": "e5d852966d721d9d6f26b64c36671e9970e20281",
+          "references": 3
+        },
+        "update": {
+          "status": "unavailable",
+          "installedVersion": null,
+          "availableVersion": null,
+          "releaseNotes": null,
+          "checkedAt": null,
+          "source": null,
+          "noticeRequired": false,
+          "noticeText": null,
+          "reason": "disabled"
+        }
+      }
+    },
+    "check": {
+      "status": "pass",
+      "exitCode": 0,
+      "durationMs": 341,
+      "command": [
+        "C:\\Program Files\\nodejs\\node.exe",
+        "C:\\Users\\haris\\.agents\\skills\\archify\\bin\\archify.mjs",
+        "check",
+        "C:\\Users\\haris\\source\\repos\\clickgraph\\.archify\\dataflow-outcome-evidence-20261015-153000\\outcome-evidence.html",
+        "--require-provenance"
+      ],
+      "receipt": {
+        "ok": true,
+        "file": "C:\\Users\\haris\\source\\repos\\clickgraph\\.archify\\dataflow-outcome-evidence-20261015-153000\\outcome-evidence.html",
+        "artifact": {
+          "sha256": "dba36144f69baf516d661394f21365c5cd9091d2bce200433b02382aeba9e5a4",
+          "bytes": 825600
+        },
+        "checks": [
+          {
+            "name": "single_svg",
+            "ok": true,
+            "details": [
+              "found 1 <svg> block(s)"
+            ]
+          },
+          {
+            "name": "finite_svg",
+            "ok": true,
+            "details": []
+          },
+          {
+            "name": "orthogonal_arrows",
+            "ok": true,
+            "details": []
+          },
+          {
+            "name": "label_route_clearance",
+            "ok": true,
+            "details": []
+          },
+          {
+            "name": "relationship_crossings",
+            "ok": true,
+            "details": []
+          },
+          {
+            "name": "relationship_corridors",
+            "ok": true,
+            "details": []
+          },
+          {
+            "name": "container_border_runs",
+            "ok": true,
+            "details": []
+          },
+          {
+            "name": "route_rhythm",
+            "ok": true,
+            "details": []
+          },
+          {
+            "name": "legend_clearance",
+            "ok": true,
+            "details": []
+          }
+        ],
+        "composition": {
+          "schemaVersion": 1,
+          "profile": "showcase",
+          "status": "pass",
+          "summary": {
+            "errors": 0,
+            "warnings": 0
+          },
+          "metrics": {
+            "properCrossings": 0,
+            "resolvedCrossovers": 0,
+            "ambiguousCorridors": 0,
+            "arrowheadCollisions": 0,
+            "containerBorderRuns": 0,
+            "labelRouteClearanceIssues": 0,
+            "labelCanvasOverflowIssues": 0,
+            "minLabelRouteClearance": 33,
+            "desktopReadabilityIssues": 0,
+            "viewportHeightIssues": 0,
+            "minProjectedNodeTextPx": 6,
+            "maxBends": 2,
+            "routesOverSuggestedBends": 0,
+            "maxStretch": 1,
+            "routesOverSuggestedStretch": 0,
+            "minSegmentPx": 51.5,
+            "minInteriorSegmentPx": 114,
+            "shortSegmentCount": 0,
+            "shortEndpointSegmentCount": 0,
+            "shortInteriorSegmentCount": 0,
+            "microSegmentCount": 0
+          },
+          "suggestedLimits": {
+            "bendsPerRelationship": 2,
+            "stretch": 1.35,
+            "segmentPx": 16,
+            "microSegmentPx": 8
+          },
+          "routeReview": {
+            "crossings": [],
+            "detours": []
+          },
+          "leadingSpace": {
+            "measured": false,
+            "reviewSuggested": false
+          },
+          "desktopReadability": {
+            "budgetBasis": "legacy-930",
+            "readerContract": "declared-wide-v1",
+            "availableDiagramWidth": 930,
+            "actualBudgetPx": 930,
+            "limit": "legacy",
+            "requestedTargetPx": null,
+            "requestedTargetMet": null,
+            "hardFloorPx": 6,
+            "hardFloorMet": true,
+            "minimumOwner": {
+              "kind": "node",
+              "id": "decision"
+            },
+            "minimumSourceTextPx": 7,
+            "minimumProjectedTextPx": 6,
+            "semanticTextCount": 38
+          },
+          "issues": []
+        },
+        "provenance": "current",
+        "deliveryReceiptId": "8f5c42b7-4e82-47ee-b717-10c1d7ab03f5"
+      }
+    },
+    "browser-check": {
+      "status": "fail",
+      "exitCode": 1,
+      "durationMs": 87,
+      "command": [
+        "C:\\Program Files\\nodejs\\node.exe",
+        "C:\\Users\\haris\\.agents\\skills\\archify\\bin\\archify.mjs",
+        "browser-check",
+        "C:\\Users\\haris\\source\\repos\\clickgraph\\.archify\\dataflow-outcome-evidence-20261015-153000\\outcome-evidence.html",
+        "--json",
+        "--require-provenance"
+      ],
+      "execution": "in-process",
+      "receipt": {
+        "schemaVersion": 1,
+        "ok": false,
+        "command": "browser-check",
+        "evidenceKind": "automated-browser",
+        "status": "fail",
+        "visualReview": "not-requested",
+        "provenance": "current",
+        "deliveryReceiptId": "8f5c42b7-4e82-47ee-b717-10c1d7ab03f5",
+        "artifact": {
+          "path": "C:\\Users\\haris\\source\\repos\\clickgraph\\.archify\\dataflow-outcome-evidence-20261015-153000\\outcome-evidence.html",
+          "sha256": "dba36144f69baf516d661394f21365c5cd9091d2bce200433b02382aeba9e5a4",
+          "bytes": 825600
+        },
+        "state": {
+          "detail": "read",
+          "motion": "still"
+        },
+        "chrome": {
+          "status": "not-checked",
+          "executable": null
+        },
+        "diagnostics": [
+          {
+            "code": "viewer/evidence-path-conflict",
+            "severity": "error",
+            "message": "browser-check will not replace the existing unowned evidence path \"C:\\Users\\haris\\source\\repos\\clickgraph\\.archify\\dataflow-outcome-evidence-20261015-153000\\outcome-evidence.browser-check.json\".",
+            "subject": {
+              "artifact": "C:\\Users\\haris\\source\\repos\\clickgraph\\.archify\\dataflow-outcome-evidence-20261015-153000\\outcome-evidence.html",
+              "evidencePath": "C:\\Users\\haris\\source\\repos\\clickgraph\\.archify\\dataflow-outcome-evidence-20261015-153000\\outcome-evidence.browser-check.json"
+            },
+            "evidence": {
+              "reason": {
+                "code": "ownership-artifact-mismatch"
+              }
+            },
+            "supportedFixes": [
+              "move the conflicting file aside, or choose a separate --out-dir, then rerun browser-check"
+            ]
+          }
+        ],
+        "containment": {
+          "status": "fail",
+          "policy": "fit-or-reader-declared-readable-vertical-scroll",
+          "viewports": []
+        },
+        "themeStates": {
+          "status": "fail",
+          "viewports": []
+        },
+        "readability": {
+          "status": "fail",
+          "minimumProjectedNodeTextPx": 6,
+          "viewports": []
+        },
+        "viewerChrome": {
+          "status": "fail",
+          "viewports": []
+        },
+        "captures": {
+          "status": "not-requested",
+          "screenshots": [],
+          "contactSheet": null
+        },
+        "sidecars": {
+          "receipt": "outcome-evidence.browser-check.json",
+          "files": []
+        },
+        "error": "browser-check will not replace the existing unowned evidence path \"C:\\Users\\haris\\source\\repos\\clickgraph\\.archify\\dataflow-outcome-evidence-20261015-153000\\outcome-evidence.browser-check.json\"."
+      }
+    }
+  },
+  "diagnostics": [
+    {
+      "code": "viewer/evidence-path-conflict",
+      "severity": "error",
+      "message": "browser-check will not replace the existing unowned evidence path \"C:\\Users\\haris\\source\\repos\\clickgraph\\.archify\\dataflow-outcome-evidence-20261015-153000\\outcome-evidence.browser-check.json\".",
+      "subject": {
+        "artifact": "C:\\Users\\haris\\source\\repos\\clickgraph\\.archify\\dataflow-outcome-evidence-20261015-153000\\outcome-evidence.html",
+        "evidencePath": "C:\\Users\\haris\\source\\repos\\clickgraph\\.archify\\dataflow-outcome-evidence-20261015-153000\\outcome-evidence.browser-check.json"
+      },
+      "evidence": {
+        "reason": {
+          "code": "ownership-artifact-mismatch"
+        }
+      },
+      "supportedFixes": [
+        "move the conflicting file aside, or choose a separate --out-dir, then rerun browser-check"
+      ]
+    }
+  ],
+  "evidence": {
+    "receipt": "C:\\Users\\haris\\source\\repos\\clickgraph\\.archify\\dataflow-outcome-evidence-20261015-153000\\outcome-evidence.finalize.json",
+    "summaryReceipt": "C:\\Users\\haris\\source\\repos\\clickgraph\\.archify\\dataflow-outcome-evidence-20261015-153000\\outcome-evidence.finalize-summary.json",
+    "browserCheckReceipt": "C:\\Users\\haris\\source\\repos\\clickgraph\\.archify\\dataflow-outcome-evidence-20261015-153000\\outcome-evidence.browser-check.json"
+  },
+  "visualReview": "not-requested",
+  "failedStage": "browser-check",
+  "finishedAt": "2026-10-15T17:01:25.530Z",
+  "durationMs": 3902,
+  "update": {
+    "status": "current",
+    "installedVersion": "3.1.0",
+    "availableVersion": "3.1.0",
+    "releaseNotes": null,
+    "checkedAt": "2026-10-15T17:01:22.530Z",
+    "source": "network",
+    "noticeRequired": false,
+    "noticeText": null
+  }
+}

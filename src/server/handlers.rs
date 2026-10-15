@@ -1585,6 +1585,23 @@ async fn query_handler_inner(
             metrics.planning_time = translation.timings.planning.as_secs_f64();
             metrics.render_time = translation.timings.render.as_secs_f64();
             metrics.sql_generation_time = translation.timings.sql_generation.as_secs_f64();
+            // Langfuse trace hook: detached and zero-cost unless configured.
+            let trace_dialect = match crate::server::query_context::get_current_dialect() {
+                crate::server::models::SqlDialect::Databricks => "databricks",
+                _ => "clickhouse",
+            };
+            crate::server::langfuse::trace_translation(
+                crate::server::langfuse::new_trace_id(),
+                clean_query.clone(),
+                trace_dialect.to_string(),
+                schema_name.clone(),
+                (
+                    metrics.planning_time,
+                    metrics.render_time,
+                    metrics.sql_generation_time,
+                ),
+                None,
+            );
             let ch_query = translation.sql.clone();
             crate::debug_println!("\n ch_query \n {} \n", ch_query);
             id_number_columns = translation

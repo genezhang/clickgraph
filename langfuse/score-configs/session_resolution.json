@@ -1,0 +1,6 @@
+{
+  "name": "session_resolution",
+  "dataType": "CATEGORICAL",
+  "categories": ["resolved", "escalated", "abandoned"],
+  "description": "Session-level outcome for multi-turn conversations. Filterable: unresolved sessions feed annotation queues, then datasets."
+}

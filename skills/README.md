@@ -10,6 +10,19 @@ Agent skills for querying ClickGraph databases using natural language. Built on 
 | `/graph-schema` | `graph-schema.md` | Show graph schema (nodes, relationships, properties) |
 | `/schema-discover` | `schema-discover.md` | Generate a schema YAML from ClickHouse metadata using LLM |
 
+## Contributor skills (outcome loop)
+
+Open Agent Skills standard (`SKILL.md` + frontmatter, progressive disclosure).
+They work in any harness that reads `SKILL.md` — Claude Code, OpenCode,
+Cursor, and the plugin-shaped setups from ECC / deepseek-harness practice.
+
+| Skill | Directory | What it does |
+|-------|-----------|--------------|
+| verify loop | `outcome-loop-verify/` | Full E2E gate before pushing: `scripts/verify.sh` runs fmt/tests/examples; `references/` holds known-failures + the live-ClickHouse evidence protocol |
+| spec loop | `spec-loop/` | Spec → review → implement → verify workflow with review checklist + SOLID contract |
+
+Trigger phrases live in each `SKILL.md` frontmatter description.
+
 ## Prerequisites
 
 1. **`cg` binary** — download from [GitHub Releases](https://github.com/genezhang/clickgraph/releases/latest) or build:

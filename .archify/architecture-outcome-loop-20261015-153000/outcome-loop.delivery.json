@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "receiptId": "cb4858b4-3c79-40c5-93ff-9a0249ce9462",
+  "status": "current",
+  "command": "deliver",
+  "type": "architecture",
+  "input": "C:\\Users\\haris\\source\\repos\\clickgraph\\.archify\\architecture-outcome-loop-20261015-153000\\candidate.json",
+  "output": "C:\\Users\\haris\\source\\repos\\clickgraph\\.archify\\architecture-outcome-loop-20261015-153000\\outcome-loop.html",
+  "specification": {
+    "sha256": "d1d577d3f79564e8b288c8e09d1ae5a139186fa4f6f147676c7e70e5b7dd306e",
+    "bytes": 4476
+  },
+  "artifact": {
+    "sha256": "a3c638cfca7c746211202675cc0ff26c5df8aef43af1dac146121d61105390d7",
+    "bytes": 824962
+  }
+}
