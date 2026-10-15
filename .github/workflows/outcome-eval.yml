@@ -55,7 +55,7 @@ jobs:
       # push the dataset and run judges; RegressionError fails the PR.
       # Without keys this step is skipped — local tests above still gate.
       - name: Langfuse experiment gate (optional)
-        if: ${{ env.LANGFUSE_PUBLIC_KEY != '' }}
+        if: ${{ secrets.LANGFUSE_PUBLIC_KEY != '' }}
         run: echo "Langfuse project keys present — run dataset experiment here (see docs/design/OUTCOME_LOOP.md section 5)"
         env:
           LANGFUSE_PUBLIC_KEY: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
