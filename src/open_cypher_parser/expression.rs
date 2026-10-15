@@ -822,6 +822,11 @@ fn parse_comparison_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_
 
     let mut remaining_input = input;
     let mut final_expression = lhs;
+    // #1355: only comparisons built by THIS loop are bare and chainable.
+    // A comparison-shaped operand from parse_additive_expression necessarily
+    // came through a parenthesized sub-expression (no lower level parses
+    // comparison ops), so it must not participate in chain desugaring.
+    let mut prev_is_bare_comparison = false;
 
     loop {
         // Try to parse a comparison operator
@@ -872,7 +877,12 @@ fn parse_comparison_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_
                             | Operator::Equal
                     )
                 };
-                if is_comparison(&op) {
+                // #1355 (review): only a parenthesized LEFT operand stops a
+                // chain. `x op1 y op2 (z)` still chains even when `(z)` is a
+                // comparison: `prev_is_bare_comparison` alone gives the fix
+                // (a comparison-shaped lhs from parse_additive_expression
+                // necessarily came through parens); no rhs veto.
+                if is_comparison(&op) && prev_is_bare_comparison {
                     if let Expression::OperatorApplicationExp(ref prev_op) = final_expression {
                         if is_comparison(&prev_op.operator) && prev_op.operands.len() == 2 {
                             // prev: (a op1 b), current op2 with rhs c
@@ -888,6 +898,7 @@ fn parse_comparison_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_
                                     operator: Operator::And,
                                     operands: vec![final_expression, new_comp],
                                 });
+                            prev_is_bare_comparison = false; // result is AND, not chainable
                             remaining_input = new_input;
                             continue;
                         }
@@ -898,6 +909,7 @@ fn parse_comparison_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_
                     operator: op,
                     operands: vec![final_expression, rhs],
                 });
+                prev_is_bare_comparison = is_comparison(&op);
                 remaining_input = new_input;
             }
             Err(nom::Err::Error(_)) => break,
@@ -2222,6 +2234,113 @@ mod tests {
             assert_eq!(op.operator, Operator::NotEqual);
         } else {
             panic!("Expected NotEqual expression, got {:?}", expr);
+        }
+    }
+
+    #[test]
+    fn test_1355_parenthesized_comparison_equal_not_chained() {
+        // #1355: `(a.age > 20) = (a.age > 28)` must parse as Equal(GT, GT),
+        // not as chained `(a.age>20) AND (20 = (a.age>28))`.
+        let input = "(a.age > 20) = (a.age > 28)";
+        let (remaining, expr) = parse_expression(input).unwrap();
+        assert_eq!(remaining, "");
+        if let Expression::OperatorApplicationExp(op) = &expr {
+            assert_eq!(op.operator, Operator::Equal);
+            assert_eq!(op.operands.len(), 2);
+            for side in &op.operands {
+                if let Expression::OperatorApplicationExp(cmp) = side {
+                    assert_eq!(cmp.operator, Operator::GreaterThan);
+                } else {
+                    panic!("Expected GreaterThan operand, got {:?}", side);
+                }
+            }
+        } else {
+            panic!("Expected Equal expression, got {:?}", expr);
+        }
+    }
+
+    #[test]
+    fn test_1355_parenthesized_lhs_scalar_rhs_not_chained() {
+        // `(a > b) >= c` stays a plain comparison (LHS parenthesized).
+        let input = "(a > b) >= c";
+        let (remaining, expr) = parse_expression(input).unwrap();
+        assert_eq!(remaining, "");
+        if let Expression::OperatorApplicationExp(op) = &expr {
+            assert_eq!(op.operator, Operator::GreaterThanEqual);
+            if let Expression::OperatorApplicationExp(lhs) = &op.operands[0] {
+                assert_eq!(lhs.operator, Operator::GreaterThan);
+            } else {
+                panic!("Expected GreaterThan LHS, got {:?}", expr);
+            }
+        } else {
+            panic!("Expected GreaterThanEqual expression, got {:?}", expr);
+        }
+    }
+
+    #[test]
+    fn test_1355_bare_chain_parenthesized_rhs_still_chains() {
+        // Review correction: in Cypher only a parenthesized LEFT operand
+        // stops a chain. `a > b = (c > d)` chains to `a > b AND b = (c > d)`.
+        let input = "a > b = (c > d)";
+        let (remaining, expr) = parse_expression(input).unwrap();
+        assert_eq!(remaining, "");
+        if let Expression::OperatorApplicationExp(op) = &expr {
+            assert_eq!(op.operator, Operator::And);
+            assert_eq!(op.operands.len(), 2);
+            // LHS: a > b
+            if let Expression::OperatorApplicationExp(lhs) = &op.operands[0] {
+                assert_eq!(lhs.operator, Operator::GreaterThan);
+            } else {
+                panic!("Expected GreaterThan LHS, got {:?}", expr);
+            }
+            // RHS: b = (c > d)
+            if let Expression::OperatorApplicationExp(rhs) = &op.operands[1] {
+                assert_eq!(rhs.operator, Operator::Equal);
+                if let Expression::OperatorApplicationExp(inner) = &rhs.operands[1] {
+                    assert_eq!(inner.operator, Operator::GreaterThan);
+                } else {
+                    panic!("Expected GreaterThan inner RHS, got {:?}", expr);
+                }
+            } else {
+                panic!("Expected Equal RHS, got {:?}", expr);
+            }
+        } else {
+            panic!("Expected And expression, got {:?}", expr);
+        }
+    }
+
+    #[test]
+    fn test_1355_oracle_chains_with_paren_rhs() {
+        // Review oracle rows: these chain (bare lhs), evaluating to false.
+        for input in ["3 > 2 = (1 > 0)", "2 = 2 = (1 = 1)"] {
+            let (remaining, expr) = parse_expression(input).unwrap();
+            assert_eq!(remaining, "", "input: {input}");
+            assert!(
+                matches!(
+                    &expr,
+                    Expression::OperatorApplicationExp(op) if op.operator == Operator::And
+                ),
+                "input {input} must chain to AND, got {:?}",
+                expr
+            );
+        }
+    }
+
+    #[test]
+    fn test_1355_boolean_literal_compared_to_paren_comparison() {
+        // `true = (a.age > 28)` pins current-correct behavior.
+        let input = "true = (a.age > 28)";
+        let (remaining, expr) = parse_expression(input).unwrap();
+        assert_eq!(remaining, "");
+        if let Expression::OperatorApplicationExp(op) = &expr {
+            assert_eq!(op.operator, Operator::Equal);
+            if let Expression::OperatorApplicationExp(rhs) = &op.operands[1] {
+                assert_eq!(rhs.operator, Operator::GreaterThan);
+            } else {
+                panic!("Expected GreaterThan RHS, got {:?}", expr);
+            }
+        } else {
+            panic!("Expected Equal expression, got {:?}", expr);
         }
     }
 

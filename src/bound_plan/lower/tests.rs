@@ -7146,3 +7146,39 @@ fn a_comparison_operand_of_a_comparison_is_parenthesized() {
         &["((w1.v0 AND true) IS NULL) = ((true AND w1.v0) IS NULL)"],
     );
 }
+
+/// #1355: a parenthesized comparison on either side of '=' must render as a
+/// plain boolean equality, NOT as a chained-comparison desugar. The old parser
+/// produced '(u.age > 20) AND (20 = u.age > 28)'. Renders through the bound
+/// plan (both dialects print from the same `needs_comparison_parens` rule).
+#[test]
+fn paren_comparison_equal_not_chained_1355() {
+    let q = "MATCH (u:User) RETURN (u.age > 20) = (u.age > 28) AS x";
+    let got = squash(&sql(q));
+    assert!(
+        got.contains("age > 20") && got.contains("age > 28"),
+        "#1355: both comparisons must render:\n{got}"
+    );
+    assert!(
+        !got.contains(" AND "),
+        "#1355: no chain desugar allowed:\n{got}"
+    );
+    assert!(
+        got.contains(") = ("),
+        "#1355: nested comparisons keep parens:\n{got}"
+    );
+}
+
+/// #1355: over a variable-length walk, a parenthesized comparison compared
+/// with a boolean stays one comparison (main read it as
+/// `a.age > 20 AND 20 = false`).
+#[test]
+fn paren_comparison_in_vlp_where_renders_1355() {
+    let q =
+        "MATCH (a:User)-[:FOLLOWS*1..2]->(b:User) WHERE (a.age > 20) = false RETURN count(*) AS c";
+    let got = squash(&sql(q));
+    assert!(
+        got.contains("age > 20) = false") && !got.contains("20 = false"),
+        "#1355: the comparison is compared, not chained:\n{got}"
+    );
+}
