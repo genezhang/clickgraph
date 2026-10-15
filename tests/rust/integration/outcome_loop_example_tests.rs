@@ -34,6 +34,34 @@ fn example_schema_loads_with_people_and_skills() {
 }
 
 #[test]
+fn contracts_are_valid_json_with_versioned_ids() {
+    // Dep-free gate: every contract parses and carries its versioned $id.
+    // Full JSON-Schema validation happens in each producer's language
+    // (see contracts/README.md snippets); this keeps the repo green.
+    for name in [
+        "decision-event.v1.json",
+        "outcome-event.v1.json",
+        "feedback-event.v1.json",
+        "score-row.v1.json",
+        "strategy-experiment.v1.json",
+    ] {
+        let text = std::fs::read_to_string(format!("contracts/{name}"))
+            .unwrap_or_else(|e| panic!("read {name}: {e}"));
+        let v: serde_json::Value =
+            serde_json::from_str(&text).unwrap_or_else(|e| panic!("parse {name}: {e}"));
+        let id = v.get("$id").and_then(|s| s.as_str()).unwrap_or_default();
+        assert!(
+            id.ends_with(&format!("/{name}")),
+            "{name}: $id must be versioned ({id})"
+        );
+        assert!(
+            v.get("type").is_some() && v.get("properties").is_some(),
+            "{name}: must be an object schema"
+        );
+    }
+}
+
+#[test]
 fn enrichment_recent_recommendations_translate() {
     let schema = example_schema();
     let got = sql(
@@ -43,7 +71,10 @@ fn enrichment_recent_recommendations_translate() {
     );
     assert!(got.contains("outcome.recommendations"), "{got}");
     assert!(got.contains("WHERE"), "{got}");
-    assert!(!got.contains("PREWHERE"), "flag off, stays on WHERE:\n{got}");
+    assert!(
+        !got.contains("PREWHERE"),
+        "flag off, stays on WHERE:\n{got}"
+    );
 }
 
 #[test]

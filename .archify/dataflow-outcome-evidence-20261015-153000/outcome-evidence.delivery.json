@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "receiptId": "8b032f86-371f-45ba-93f8-f6762ce2a329",
+  "status": "current",
+  "command": "deliver",
+  "type": "dataflow",
+  "input": "C:\\Users\\haris\\source\\repos\\clickgraph\\.archify\\dataflow-outcome-evidence-20261015-153000\\candidate.json",
+  "output": "C:\\Users\\haris\\source\\repos\\clickgraph\\.archify\\dataflow-outcome-evidence-20261015-153000\\outcome-evidence.html",
+  "specification": {
+    "sha256": "b60ffb9f6ada1e364399b3a5b4fe67ae6173a68c67f0dfe3de5da86cd85e75a2",
+    "bytes": 4253
+  },
+  "artifact": {
+    "sha256": "d7cce5201b08c03fc94a8f5d3df3378fcfb52350a7d5c5d645d6a5c5adb0ab40",
+    "bytes": 767929
+  }
+}

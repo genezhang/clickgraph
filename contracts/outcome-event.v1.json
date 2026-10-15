@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/genezhang/clickgraph/blob/main/contracts/outcome-event.v1.json",
+  "title": "Outcome-loop outcome event v1",
+  "description": "A measured result resolving an earlier decision. Joins to decision-event on rec_id (the decision's trace_id or action id).",
+  "type": "object",
+  "required": ["event", "ts", "user_id", "action_id", "weight", "resolved_at"],
+  "properties": {
+    "event": { "const": "outcome" },
+    "ts": { "type": "string", "format": "date-time" },
+    "user_id": { "type": "string", "minLength": 1 },
+    "action_id": { "type": "string", "minLength": 1 },
+    "rec_id": { "type": "string", "description": "Links to the originating decision (trace_id). Absent for unattributed outcomes." },
+    "weight": { "type": "number", "minimum": 0, "maximum": 1 },
+    "resolved_at": { "type": "string", "format": "date-time" }
+  },
+  "additionalProperties": true
+}

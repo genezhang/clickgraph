@@ -108,7 +108,8 @@ any second agent (Karpathy autoresearch mechanics).
 ## 8. What ships in this repo (and what does not)
 
 Ships: this doc, `OUTCOME_RECIPES.md`, `people_outcome_graph.yaml`,
-`src/server/langfuse.rs` (+ tests), `skills/` (verify + spec-loop),
+`contracts/` (versioned JSON Schemas + MCP tool definitions + OTEL span
+mapping), `src/server/langfuse.rs` (+ tests), `skills/` (verify + spec-loop),
 archify diagrams (below), README + CHANGELOG entries, translation tests for
 the example and recipes.
 
@@ -118,8 +119,8 @@ allowlists, hot-path graph walks.
 
 ## 9. Diagrams
 
-- `.archify/architecture-outcome-loop-*/outcome-loop.html` — system map.
-- `.archify/dataflow-outcome-evidence-*/outcome-evidence.html` — decision →
+- `.archify/architecture-outcome-loop-20261015-153000/outcome-loop.html` — system map.
+- `.archify/dataflow-outcome-evidence-20261015-153000/outcome-evidence.html` — decision →
   outcome → score → serve lineage.
 
 ## 10. Completion gates (push only when ALL green)

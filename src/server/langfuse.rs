@@ -153,7 +153,11 @@ fn ingestion_url() -> Option<(String, String, String)> {
     if host.is_empty() || public.is_empty() {
         return None;
     }
-    Some((format!("{}/api/public/ingestion", host.trim_end_matches('/')), public, secret))
+    Some((
+        format!("{}/api/public/ingestion", host.trim_end_matches('/')),
+        public,
+        secret,
+    ))
 }
 
 async fn post_events(events: Vec<Value>) {
@@ -257,7 +261,14 @@ mod tests {
 
     #[test]
     fn trace_event_shape() {
-        let e = build_trace_event("t1", "MATCH (n) RETURN n", "clickhouse", "default", (0.1, 0.2, 0.05), Some(7));
+        let e = build_trace_event(
+            "t1",
+            "MATCH (n) RETURN n",
+            "clickhouse",
+            "default",
+            (0.1, 0.2, 0.05),
+            Some(7),
+        );
         assert_eq!(e["type"], "trace-create");
         assert_eq!(e["body"]["name"], "clickgraph.query");
         assert_eq!(e["body"]["metadata"]["rows"], 7);
@@ -282,7 +293,14 @@ mod tests {
         if enabled() {
             return;
         }
-        trace_translation("t".into(), "q".into(), "d".into(), "s".into(), (0.0, 0.0, 0.0), None);
+        trace_translation(
+            "t".into(),
+            "q".into(),
+            "d".into(),
+            "s".into(),
+            (0.0, 0.0, 0.0),
+            None,
+        );
         send_score("t".into(), true);
     }
 }

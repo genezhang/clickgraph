@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/genezhang/clickgraph/blob/main/contracts/feedback-event.v1.json",
+  "title": "Outcome-loop feedback event v1",
+  "description": "Explicit human signal on an action. Maps to a Langfuse boolean score (user_feedback 1.0/0.0).",
+  "type": "object",
+  "required": ["event", "ts", "user_id", "action_id", "signal"],
+  "properties": {
+    "event": { "const": "feedback" },
+    "ts": { "type": "string", "format": "date-time" },
+    "user_id": { "type": "string", "minLength": 1 },
+    "action_id": { "type": "string", "minLength": 1 },
+    "signal": { "type": "integer", "enum": [1, -1] },
+    "trace_id": { "type": "string" }
+  },
+  "additionalProperties": true
+}

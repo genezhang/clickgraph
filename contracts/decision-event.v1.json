@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/genezhang/clickgraph/blob/main/contracts/decision-event.v1.json",
+  "title": "Outcome-loop decision event v1",
+  "description": "One agent decision with its logged propensity. Propensity is REQUIRED: without it, off-policy evaluation (IPS/DR) is impossible.",
+  "type": "object",
+  "required": ["event", "ts", "user_id", "cohort_id", "action_id", "propensity", "policy_version", "trace_id"],
+  "properties": {
+    "event": { "const": "decided" },
+    "ts": { "type": "string", "format": "date-time" },
+    "user_id": { "type": "string", "minLength": 1 },
+    "cohort_id": { "type": "string", "minLength": 1 },
+    "context_hash": { "type": "string", "description": "Hash of the decision context (keeps raw context out of the log)" },
+    "action_id": { "type": "string", "minLength": 1 },
+    "propensity": { "type": "number", "exclusiveMinimum": 0, "maximum": 1 },
+    "policy_version": { "type": "string", "minLength": 1 },
+    "trace_id": { "type": "string", "minLength": 1 }
+  },
+  "additionalProperties": true
+}

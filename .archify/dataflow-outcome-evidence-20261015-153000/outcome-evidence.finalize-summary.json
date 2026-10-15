@@ -1,0 +1,49 @@
+{
+  "schemaVersion": 1,
+  "ok": true,
+  "command": "finalize",
+  "status": "pass",
+  "type": "dataflow",
+  "quality": "showcase",
+  "specification": {
+    "path": "C:\\Users\\haris\\source\\repos\\clickgraph\\.archify\\dataflow-outcome-evidence-20261015-153000\\candidate.json",
+    "sha256": "b60ffb9f6ada1e364399b3a5b4fe67ae6173a68c67f0dfe3de5da86cd85e75a2",
+    "bytes": 4253
+  },
+  "artifact": {
+    "path": "C:\\Users\\haris\\source\\repos\\clickgraph\\.archify\\dataflow-outcome-evidence-20261015-153000\\outcome-evidence.html",
+    "sha256": "d7cce5201b08c03fc94a8f5d3df3378fcfb52350a7d5c5d645d6a5c5adb0ab40",
+    "bytes": 767929
+  },
+  "gates": {
+    "validate": "pass",
+    "deliver": "pass",
+    "check": "pass",
+    "browser-check": "pass"
+  },
+  "diagnostics": [],
+  "diagnosticSummary": {
+    "total": 0,
+    "shown": 0,
+    "truncated": false
+  },
+  "evidence": {
+    "receipt": "C:\\Users\\haris\\source\\repos\\clickgraph\\.archify\\dataflow-outcome-evidence-20261015-153000\\outcome-evidence.finalize.json",
+    "summaryReceipt": "C:\\Users\\haris\\source\\repos\\clickgraph\\.archify\\dataflow-outcome-evidence-20261015-153000\\outcome-evidence.finalize-summary.json",
+    "browserCheckReceipt": "C:\\Users\\haris\\source\\repos\\clickgraph\\.archify\\dataflow-outcome-evidence-20261015-153000\\outcome-evidence.browser-check.json"
+  },
+  "update": {
+    "status": "update_available",
+    "installedVersion": "3.0.1",
+    "availableVersion": "3.1.0",
+    "releaseNotes": "https://github.com/tt-a1i/archify/releases/tag/v3.1.0",
+    "severity": "normal",
+    "checkedAt": "2026-10-15T16:19:18.000Z",
+    "source": "cache",
+    "noticeRequired": true,
+    "noticeText": "Archify update: 3.0.1 → 3.1.0. A previous check at 2026-10-15T16:19:18.000Z found a newer release. Release notes: https://github.com/tt-a1i/archify/releases/tag/v3.1.0. The installed Skill has not changed; ask to snooze or ignore this reminder.",
+    "eventKey": "archify@sha256:ffedc53390c9da6e859f41e432c5d2d0615a23cf00a503181f07efbba88a7ce8"
+  },
+  "visualReview": "not-requested",
+  "durationMs": 7122
+}

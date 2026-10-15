@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/genezhang/clickgraph/blob/main/contracts/strategy-experiment.v1.json",
+  "title": "Outcome-loop strategy experiment v1",
+  "description": "One strategy-variant evaluation window. Promotion requires lower-bound lift plus a human merge (agents never self-merge).",
+  "type": "object",
+  "required": ["experiment_id", "variant_id", "cohort_id", "window_start", "window_end", "metrics", "verdict"],
+  "properties": {
+    "experiment_id": { "type": "string", "minLength": 1 },
+    "variant_id": { "type": "string", "minLength": 1 },
+    "cohort_id": { "type": "string", "minLength": 1 },
+    "strategy_text_hash": { "type": "string" },
+    "window_start": { "type": "string", "format": "date-time" },
+    "window_end": { "type": "string", "format": "date-time" },
+    "traffic_share": { "type": "number", "exclusiveMinimum": 0, "maximum": 0.05 },
+    "metrics": {
+      "type": "object",
+      "required": ["outcome_rate", "lower_bound", "baseline_rate"],
+      "properties": {
+        "outcome_rate": { "type": "number" },
+        "lower_bound": { "type": "number" },
+        "baseline_rate": { "type": "number" }
+      },
+      "additionalProperties": true
+    },
+    "verdict": { "type": "string", "enum": ["promote", "discard", "inconclusive"] },
+    "approved_by": { "type": "string", "description": "Human approver for promote verdicts. Required when verdict is promote." }
+  },
+  "additionalProperties": true
+}
