@@ -1,0 +1,5 @@
+{
+  "name": "personalization_lift",
+  "dataType": "NUMERIC",
+  "description": "Offline-computed outcome rate of personalized serving minus cohort-default rate over the same window. Positive means the blend earns its complexity."
+}

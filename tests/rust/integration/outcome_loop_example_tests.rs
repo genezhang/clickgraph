@@ -100,3 +100,75 @@ fn high_weight_outcomes_translate() {
     assert!(got.contains("outcome.outcomes"), "{got}");
     assert!(!got.contains("PREWHERE"), "flag off:\n{got}");
 }
+
+#[test]
+fn langfuse_score_configs_are_valid() {
+    // Every score config parses and names a Langfuse data type. These files
+    // are the importable source for score-config creation (UI or API).
+    for name in [
+        "user_feedback",
+        "task_completion",
+        "trajectory_steps",
+        "session_resolution",
+        "personalization_lift",
+    ] {
+        let path = format!("langfuse/score-configs/{name}.json");
+        let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {path}: {e}"));
+        let v: serde_json::Value =
+            serde_json::from_str(&text).unwrap_or_else(|e| panic!("parse {path}: {e}"));
+        assert_eq!(v.get("name").and_then(|s| s.as_str()), Some(name));
+        let dt = v
+            .get("dataType")
+            .and_then(|s| s.as_str())
+            .unwrap_or_default();
+        assert!(
+            ["NUMERIC", "BOOLEAN", "CATEGORICAL"].contains(&dt),
+            "{path}: bad dataType {dt}"
+        );
+    }
+}
+
+#[test]
+fn regression_dataset_translates_clean() {
+    // langfuse/datasets/outcome-regression.jsonl is executable: every item
+    // translates against the example schema and meets its fragment gates.
+    // Failing production traces land here as new items (permanent regressions).
+    let schema = example_schema();
+    let text = std::fs::read_to_string("langfuse/datasets/outcome-regression.jsonl")
+        .expect("read dataset");
+    let mut count = 0;
+    for (n, line) in text.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let item: serde_json::Value =
+            serde_json::from_str(line).unwrap_or_else(|e| panic!("line {n}: {e}"));
+        let id = item.get("id").and_then(|s| s.as_str()).unwrap_or("?");
+        let input = item
+            .get("input")
+            .and_then(|s| s.as_str())
+            .unwrap_or_else(|| panic!("{id}: no input"));
+        let got = sql(&schema, input);
+        for frag in item
+            .get("must_contain")
+            .and_then(|v| v.as_array())
+            .into_iter()
+            .flatten()
+            .filter_map(|v| v.as_str())
+        {
+            assert!(got.contains(frag), "{id}: missing `{frag}`:\n{got}");
+        }
+        for frag in item
+            .get("must_not_contain")
+            .and_then(|v| v.as_array())
+            .into_iter()
+            .flatten()
+            .filter_map(|v| v.as_str())
+        {
+            assert!(!got.contains(frag), "{id}: forbidden `{frag}`:\n{got}");
+        }
+        count += 1;
+    }
+    assert!(count >= 6, "dataset must hold the regression items");
+}

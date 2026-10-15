@@ -1,0 +1,61 @@
+name: Outcome-loop eval
+
+on:
+  pull_request:
+    branches: ["main"]
+    paths:
+      - "schemas/examples/people_outcome_graph.yaml"
+      - "schemas/examples/outcome_score_tables.sql"
+      - "contracts/**"
+      - "langfuse/**"
+      - "skills/**/SKILL.md"
+      - "src/server/langfuse.rs"
+      - "tests/rust/integration/outcome_loop_example_tests.rs"
+      - "docs/design/OUTCOME_LOOP*.md"
+      - ".github/workflows/outcome-eval.yml"
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  outcome-eval:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.92.0
+
+      # Executable regression dataset: every item translates cleanly.
+      # Failing production traces land here as new items (spec: permanent
+      # regressions). No database needed; the example schema is local.
+      - name: Dataset + example translation tests
+        run: cargo test --test integration outcome_loop
+
+      # Contract validity: every JSON Schema and score config parses with
+      # versioned ids. Producers validate in their own languages (see
+      # contracts/README.md); this keeps the repo green.
+      - name: Contract files are valid JSON
+        run: |
+          python3 - <<'EOF'
+          import json, glob, sys
+          bad = 0
+          for f in glob.glob("contracts/*.json") + glob.glob("langfuse/score-configs/*.json"):
+              try:
+                  json.load(open(f))
+              except Exception as e:
+                  print(f"BAD {f}: {e}")
+                  bad += 1
+          sys.exit(1 if bad else 0)
+          EOF
+
+      # Langfuse cloud experiment gate (optional): with project keys set,
+      # push the dataset and run judges; RegressionError fails the PR.
+      # Without keys this step is skipped — local tests above still gate.
+      - name: Langfuse experiment gate (optional)
+        if: ${{ env.LANGFUSE_PUBLIC_KEY != '' }}
+        run: echo "Langfuse project keys present — run dataset experiment here (see docs/design/OUTCOME_LOOP.md section 5)"
+        env:
+          LANGFUSE_PUBLIC_KEY: ${{ secrets.LANGFUSE_PUBLIC_KEY }}

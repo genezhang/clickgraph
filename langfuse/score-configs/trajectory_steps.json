@@ -1,0 +1,5 @@
+{
+  "name": "trajectory_steps",
+  "dataType": "NUMERIC",
+  "description": "Step count of the agent run. Budget breaches are computed downstream (steps > budget). Free code evaluator territory; no judge needed."
+}

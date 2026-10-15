@@ -83,7 +83,7 @@ See [CHANGELOG.md](CHANGELOG.md) for complete release history.
 
 ### Agentic & AI Integration
 - **Agent skills** - `/cypher`, `/graph-schema`, `/schema-discover` for Claude Code, LangChain, AutoGen, CrewAI, and OpenAI function calling (see [skills/README.md](skills/README.md))
-- **Outcome-learning loop** - compounding personalization substrate: decisions logged with propensity, outcomes flow back as edges, nightly scoring into a serving table. Runnable example (`schemas/examples/people_outcome_graph.yaml`), copy-paste recipes (`docs/design/OUTCOME_RECIPES.md`), open contracts (`contracts/`), trace hook (`CLICKGRAPH_LANGFUSE_*`, default off). See [docs/design/OUTCOME_LOOP.md](docs/design/OUTCOME_LOOP.md)
+- **Outcome-learning loop** - compounding personalization substrate: decisions logged with propensity, outcomes flow back as edges, nightly scoring into a serving table. Runnable example (`schemas/examples/people_outcome_graph.yaml` + live-proven `outcome_score_tables.sql`), copy-paste recipes (`docs/design/OUTCOME_RECIPES.md`, runbook at `OUTCOME_LOOP_RUNBOOK.md`), open contracts (`contracts/`), executable eval dataset + score configs (`langfuse/`), trace hook (`CLICKGRAPH_LANGFUSE_*`, default off). See [docs/design/OUTCOME_LOOP.md](docs/design/OUTCOME_LOOP.md)
 - **`cg` CLI** - Subprocess-friendly CLI for agentic callers; outputs clean text/JSON, no interactive prompts
 - **MCP compatibility** - `apoc.meta.schema()` and Neo4j schema procedures for MCP-based AI assistants
 - **DataFrame output** - `get_as_df()` (Pandas), `get_as_arrow()` (PyArrow), `get_as_pl()` (Polars) for Python data science

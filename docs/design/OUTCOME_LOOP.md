@@ -71,7 +71,11 @@ cohort-default, enrichment latency, cold-start coverage.
 
 One metric per dimension to start; expand only after a metric catches a real
 regression. Trace hook: `src/server/langfuse.rs` (env-gated, default off,
-fire-and-forget, PII redaction default-on).
+fire-and-forget, PII redaction default-on). Importable score definitions
+live in `langfuse/score-configs/`; the executable regression dataset in
+`langfuse/datasets/outcome-regression.jsonl` (run by
+`outcome_loop_example_tests.rs`; failing production traces land there as new
+items). Operator procedures in `OUTCOME_LOOP_RUNBOOK.md`.
 
 | Dimension | Metric | Langfuse mechanism |
 |---|---|---|
@@ -107,11 +111,15 @@ any second agent (Karpathy autoresearch mechanics).
 
 ## 8. What ships in this repo (and what does not)
 
-Ships: this doc, `OUTCOME_RECIPES.md`, `people_outcome_graph.yaml`,
-`contracts/` (versioned JSON Schemas + MCP tool definitions + OTEL span
-mapping), `src/server/langfuse.rs` (+ tests), `skills/` (verify + spec-loop),
-archify diagrams (below), README + CHANGELOG entries, translation tests for
-the example and recipes.
+Ships: this doc, `OUTCOME_RECIPES.md`, `OUTCOME_LOOP_RUNBOOK.md`,
+`people_outcome_graph.yaml`, `outcome_score_tables.sql` (backing-table DDL
+plus the nightly/serving/decay queries, proven live against ClickHouse
+25.8), `contracts/` (versioned JSON Schemas + MCP tool definitions + OTEL
+span mapping), `langfuse/` (score configs + executable regression dataset),
+`src/server/langfuse.rs` (+ tests), `.github/workflows/outcome-eval.yml`
+(dataset + contract gates; Langfuse cloud step optional),
+`skills/` (verify + spec-loop), archify diagrams (below), README +
+CHANGELOG entries, translation tests for the example and recipes.
 
 Does not ship here: consumers, MCP serving, bandit services, Langfuse
 server itself, per-request toggles (cache-key hazard), non-MergeTree
