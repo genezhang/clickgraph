@@ -34,6 +34,38 @@ Judge cost dominates: a typical assessment costs $0.01–0.10. Code
 evaluators (trajectory budgets, tool-call checks) run at 100% because they
 are free and deterministic.
 
+## Measured scenario (ClickHouse 25.8, self-hosted)
+
+30-day learning-platform fixture with known ground truth (matched
+cohort-skill 0.8, neutral 0.5, mismatched 0.3, uniform 0.25 exploration
+policy, 300K decisions / 210K outcomes / 30K feedback):
+
+- Nightly aggregation recovered the truth exactly: eng-mid→skill-A 0.798,
+  eng-senior→skill-B 0.799, mgr→skill-C 0.798; global top skill-D 0.498.
+- 7-day holdout: cohort-top policy 0.7995 (n=12,544) vs global-top policy
+  0.5000 (n=12,637) → **personalization lift +0.30**.
+- Calibration gap (predicted score vs realized holdout rate) ≤ 0.0032 per
+  cohort — far under the 10% gate.
+
+Reproduce: apply `schemas/examples/outcome_score_tables.sql`, seed as in
+`skills/outcome-loop-verify/references/evidence-protocol.md`, run the
+nightly aggregation, then the holdout queries above.
+
+## Langfuse self-host notes (verified on v4.59)
+
+- ClickHouse needs embedded Keeper + `{cluster, shard, replica}` macros or
+  the `ON CLUSTER` migrations fail (single-node stock config has neither).
+- S3 (Minio) uploads need a real region (`us-east-1`, not `auto`) and a
+  pre-created bucket, or ingestion 500s on "Failed to upload JSON to S3".
+- Seeding needs `LANGFUSE_INIT_ORG_ID` alongside the project/user vars, or
+  everything init-related is silently ignored.
+- v4 events-only servers accept only score events on `/api/public/ingestion`;
+  traces go through OTLP (`/api/public/otel/v1/traces`). Readable stores are
+  `events_full`/`scores`, not the legacy `traces` projection (whose
+  dual-write cursor is a known stall point upstream).
+- Container clock skew breaks time-partitioned pipelines silently: keep the
+  Docker VM clock synced or backdate test spans.
+
 ## Incident table
 
 | Signal | Meaning | First action |

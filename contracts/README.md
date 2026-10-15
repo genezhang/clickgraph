@@ -79,10 +79,13 @@ old files are never edited in place.
 }
 ```
 
-## OTEL span mapping (for OTEL-native harnesses)
+## OTEL span mapping (implemented, not aspirational)
 
-No ClickGraph code needed: emit spans with these attributes and any
-OTEL→Langfuse pipeline picks them up.
+`src/server/langfuse.rs` emits exactly this shape natively (no SDK, no new
+dependencies) and it is verified live against self-hosted Langfuse v4
+(`clickgraph.query` spans queryable with attributes intact). Any
+OTEL-native harness gets traces without ClickGraph code by emitting the
+same mapping:
 
 | Span | Attributes |
 |---|---|

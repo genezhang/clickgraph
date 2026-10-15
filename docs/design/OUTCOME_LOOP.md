@@ -71,7 +71,14 @@ cohort-default, enrichment latency, cold-start coverage.
 
 One metric per dimension to start; expand only after a metric catches a real
 regression. Trace hook: `src/server/langfuse.rs` (env-gated, default off,
-fire-and-forget, PII redaction default-on). Importable score definitions
+fire-and-forget, PII redaction default-on). It speaks OTLP/HTTP+JSON by
+default (`CLICKGRAPH_LANGFUSE_PROTOCOL=ingestion` selects the legacy API);
+scores always use the ingestion API, which v4 accepts. Verified live
+against self-hosted Langfuse v4: spans land queryable with attributes
+intact. Two interop lessons baked in: every event carries an explicit
+`timestamp` (v4 rejects timestamp-less scores), and OTLP trace/span ids
+are strict 32/16-hex (the hook mints them; `trace_translation` returns the
+trace id so later feedback correlates via `send_score`). Importable score definitions
 live in `langfuse/score-configs/`; the executable regression dataset in
 `langfuse/datasets/outcome-regression.jsonl` (run by
 `outcome_loop_example_tests.rs`; failing production traces land there as new

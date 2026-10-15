@@ -29,6 +29,7 @@ use crate::graph_catalog::graph_schema::GraphSchema;
 use bolt_protocol::{BoltConfig, BoltServer};
 use connection_pool::RoleConnectionPool;
 
+pub mod agent_metrics;
 pub mod bolt_protocol;
 mod clickhouse_client;
 pub mod connection_pool;
