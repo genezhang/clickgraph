@@ -3575,12 +3575,6 @@ fn a_relationship_read_both_ways_beside_a_path_joins_after_its_orientation() {
     assert!(turns < first_read, "{select}");
 }
 
-/// S7b3: a variable-length relationship of several types walks their union
-/// from the restricted end, its nodes keyed by label and id. The first
-/// node is restricted by its own conjuncts (a node of several labels too),
-/// the relationship's property map holds inside the walk, and its nodes and
-/// relationships are values when the path is.
-#[test]
 /// #1360: union-walk end keys CAST edge parts to the node column type.
 /// Day(Date) nodes; E1 ends DateTime, E2 ends Date (fed by discovery, as in
 /// production). The BOTH_START/END key columns must wrap the DateTime side
@@ -3747,6 +3741,12 @@ graph_schema:
     );
 }
 
+/// S7b3: a variable-length relationship of several types walks their union
+/// from the restricted end, its nodes keyed by label and id. The first
+/// node is restricted by its own conjuncts (a node of several labels too),
+/// the relationship's property map holds inside the walk, and its nodes and
+/// relationships are values when the path is.
+#[test]
 fn a_variable_length_relationship_of_several_types_walks_their_union() {
     let got = rels_sql(
         "MATCH p = (a:Person)-[:KNOWS|LIKES*1..3 {since: 2015}]->(b) WHERE a.id = 1 RETURN p",
