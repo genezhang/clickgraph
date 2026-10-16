@@ -33,6 +33,14 @@ pub struct MetricsConfig {
     pub slow_query_threshold_ms: u64,
     /// Whether to retain a truncated Cypher preview in the ring buffer.
     pub query_preview: bool,
+    /// OTLP/HTTP base URL for opt-in per-query tracing (`None` = off).
+    /// Read once at startup (`CLICKGRAPH_OTLP_ENDPOINT`).
+    pub otlp_endpoint: Option<String>,
+    /// Include the literals-stripped Cypher text in OTLP spans.
+    pub otlp_include_query: bool,
+    /// Static auth/tenant headers for OTLP exports, comma-separated
+    /// `key=value` (OTEL's `OTEL_EXPORTER_OTLP_HEADERS` form).
+    pub otlp_headers: String,
 }
 
 impl Default for MetricsConfig {
@@ -42,6 +50,9 @@ impl Default for MetricsConfig {
             slow_query_capacity: 128,
             slow_query_threshold_ms: 0,
             query_preview: false,
+            otlp_endpoint: None,
+            otlp_include_query: false,
+            otlp_headers: String::new(),
         }
     }
 }
@@ -328,6 +339,8 @@ pub struct QuerySample<'a> {
     pub has_phase_breakdown: bool,
     /// Raw Cypher, used only for the (config-gated, truncated) ring preview.
     pub query_text: Option<&'a str>,
+    /// Resolved schema name, surfaced to OTLP spans (never a metric label).
+    pub schema: Option<&'a str>,
     pub ch: Option<ChExecStats>,
 }
 
@@ -360,11 +373,22 @@ pub struct ServerMetrics {
     ch_read_bytes: AtomicU64,
 
     slow_queries: Mutex<SlowQueryRing>,
+
+    /// Opt-in OTLP exporter (None unless an endpoint is configured).
+    otel: Option<super::otel::OtelExporter>,
 }
 
 impl ServerMetrics {
     pub fn new(cfg: MetricsConfig) -> Self {
         let cap = cfg.slow_query_capacity;
+        let otel = cfg.otlp_endpoint.as_deref().map(|endpoint| {
+            super::otel::OtelExporter::new(
+                endpoint,
+                cfg.otlp_include_query,
+                crate::server::query_context::get_current_dialect().as_str(),
+                super::otel::parse_headers(&cfg.otlp_headers),
+            )
+        });
         Self {
             start_time: Instant::now(),
             cfg,
@@ -379,6 +403,7 @@ impl ServerMetrics {
             ch_read_rows: AtomicU64::new(0),
             ch_read_bytes: AtomicU64::new(0),
             slow_queries: Mutex::new(SlowQueryRing::new(cap)),
+            otel,
         }
     }
 
@@ -467,6 +492,23 @@ impl ServerMetrics {
             if let Ok(mut ring) = self.slow_queries.lock() {
                 ring.push(rec);
             }
+        }
+
+        // Opt-in OTLP span: the single export point for HTTP and Bolt.
+        // No-op unless an endpoint is configured; never blocks (drop-when-full).
+        if let Some(exp) = &self.otel {
+            let outcome_label: &str = match sample.outcome {
+                Outcome::Ok => "ok",
+                Outcome::Err(c) => ERROR_CLASSES[c.index()],
+            };
+            exp.export_sample(
+                sample.metrics,
+                matches!(sample.outcome, Outcome::Ok),
+                outcome_label,
+                sample.schema,
+                sample.query_text,
+                sample.has_phase_breakdown,
+            );
         }
     }
 
@@ -739,8 +781,25 @@ mod tests {
             outcome,
             has_phase_breakdown: true,
             query_text: None,
+            schema: Some("social"),
             ch: None,
         }
+    }
+
+    #[test]
+    fn default_config_builds_no_exporter() {
+        let sm = ServerMetrics::new(MetricsConfig::default());
+        assert!(sm.otel.is_none(), "no endpoint means no exporter at all");
+        // An endpoint is the only thing that turns tracing on; the query-text
+        // flag alone must not resurrect it.
+        let flag_only = ServerMetrics::new(MetricsConfig {
+            otlp_include_query: true,
+            ..MetricsConfig::default()
+        });
+        assert!(
+            flag_only.otel.is_none(),
+            "include-query without an endpoint stays off"
+        );
     }
 
     #[test]
@@ -843,6 +902,7 @@ mod tests {
             outcome: Outcome::Ok,
             has_phase_breakdown: false,
             query_text: None,
+            schema: Some("social"),
             ch: None,
         });
         let snap = sm.snapshot();

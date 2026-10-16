@@ -28,13 +28,19 @@ use super::{
 
 /// Record a completed query into the global registry (no-op if metrics are off
 /// or uninitialized). Pulls any ClickHouse-side stats captured for this query.
-fn record_query(metrics: &QueryPerformanceMetrics, query_text: &str, outcome: Outcome) {
+fn record_query(
+    metrics: &QueryPerformanceMetrics,
+    query_text: &str,
+    outcome: Outcome,
+    schema: Option<&str>,
+) {
     if let Some(reg) = GLOBAL_SERVER_METRICS.get() {
         reg.record_query(&QuerySample {
             metrics,
             outcome,
             has_phase_breakdown: true,
             query_text: Some(query_text),
+            schema,
             ch: metrics::current_ch_stats(),
         });
     }
@@ -1182,6 +1188,8 @@ pub async fn query_handler(
                 outcome: Outcome::Err(ErrorClass::from_status(status.as_u16())),
                 has_phase_breakdown: false,
                 query_text: Some(&query_string),
+                // Error before schema resolution: unknown.
+                schema: None,
                 ch: metrics::current_ch_stats(),
             });
         }
@@ -1673,7 +1681,7 @@ async fn query_handler_inner(
             stats: metrics.to_stats(),
         };
 
-        record_query(&metrics, &payload.query, Outcome::Ok);
+        record_query(&metrics, &payload.query, Outcome::Ok, Some(&schema_name));
 
         let mut resp = Json(response).into_response();
         if let Ok(cache_header) = axum::http::HeaderValue::try_from(cache_status) {
@@ -1739,7 +1747,7 @@ async fn query_handler_inner(
                     .insert("X-Query-Cache-Status", cache_header);
             }
 
-            record_query(&metrics, &payload.query, Outcome::Ok);
+            record_query(&metrics, &payload.query, Outcome::Ok, Some(&schema_name));
             Ok(resp)
         }
         Err(e) => Err(e),

@@ -2014,11 +2014,15 @@ impl BoltHandler {
                 query_type: "bolt".to_string(),
                 ..QueryPerformanceMetrics::default()
             };
+            // Session schema (the USE-resolved schema lives inside the
+            // executor call below).
+            let schema_name = lock_context!(self.context).schema_name.clone();
             reg.record_query(&QuerySample {
                 metrics: &m,
                 outcome,
                 has_phase_breakdown: false,
                 query_text: Some(&query),
+                schema: schema_name.as_deref(),
                 ch: metrics::current_ch_stats(),
             });
         }
