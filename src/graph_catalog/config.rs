@@ -1373,6 +1373,28 @@ fn build_node_schema(
 }
 
 /// Build a RelationshipSchema from a legacy RelationshipDefinition
+/// #1360: derive an edge end's id dtype from auto-discovery (column
+/// ClickHouse type mapped to SchemaType). All parts must map to the same
+/// dtype, else (or undiscovered) Integer -- today's default, byte-identical
+/// without discovery.
+fn edge_end_id_dtype(discovery: &TableDiscovery, id: &Identifier) -> SchemaType {
+    let mut dtype: Option<SchemaType> = None;
+    for col in id.columns() {
+        let t = discovery
+            .column_info
+            .as_ref()
+            .and_then(|info| info.get(col))
+            .map(|ch| crate::graph_catalog::schema_types::map_clickhouse_type(ch))
+            .unwrap_or(SchemaType::Integer);
+        match &dtype {
+            None => dtype = Some(t),
+            Some(d) if *d == t => {}
+            _ => return SchemaType::Integer,
+        }
+    }
+    dtype.unwrap_or(SchemaType::Integer)
+}
+
 fn build_relationship_schema(
     rel_def: &RelationshipDefinition,
     default_node_type: &str,
@@ -1511,8 +1533,8 @@ fn build_relationship_schema(
         to_node_table,   // 🔵 RELATIONAL: Resolved table name
         from_id: rel_def.from_id.clone(),
         to_id: rel_def.to_id.clone(),
-        from_node_id_dtype: SchemaType::Integer,
-        to_node_id_dtype: SchemaType::Integer,
+        from_node_id_dtype: edge_end_id_dtype(discovery, &rel_def.from_id),
+        to_node_id_dtype: edge_end_id_dtype(discovery, &rel_def.to_id),
         property_mappings,
         view_parameters: rel_def.view_parameters.clone(),
         engine: discovery.engine.clone(),
@@ -1724,8 +1746,8 @@ fn build_standard_edge_schema(
         to_node_table: resolved_to_node,       // 🔵 RELATIONAL: Resolved table name
         from_id: std_edge.from_id.clone(),
         to_id: std_edge.to_id.clone(),
-        from_node_id_dtype: SchemaType::Integer,
-        to_node_id_dtype: SchemaType::Integer,
+        from_node_id_dtype: edge_end_id_dtype(discovery, &std_edge.from_id),
+        to_node_id_dtype: edge_end_id_dtype(discovery, &std_edge.to_id),
         property_mappings,
         view_parameters: std_edge.view_parameters.clone(),
         engine: discovery.engine.clone(),
@@ -1805,8 +1827,8 @@ fn build_polymorphic_edge_schemas(
             to_node_table: to_node.clone(), // 🔵 RELATIONAL: Same as label for polymorphic
             from_id: poly_edge.from_id.clone(),
             to_id: poly_edge.to_id.clone(),
-            from_node_id_dtype: SchemaType::Integer,
-            to_node_id_dtype: SchemaType::Integer,
+            from_node_id_dtype: edge_end_id_dtype(discovery, &poly_edge.from_id),
+            to_node_id_dtype: edge_end_id_dtype(discovery, &poly_edge.to_id),
             property_mappings: property_mappings.clone(),
             view_parameters: poly_edge.view_parameters.clone(),
             engine: discovery.engine.clone(),

@@ -3581,6 +3581,172 @@ fn a_relationship_read_both_ways_beside_a_path_joins_after_its_orientation() {
 /// the relationship's property map holds inside the walk, and its nodes and
 /// relationships are values when the path is.
 #[test]
+/// #1360: union-walk end keys CAST edge parts to the node column type.
+/// Day(Date) nodes; E1 ends DateTime, E2 ends Date (fed by discovery, as in
+/// production). The BOTH_START/END key columns must wrap the DateTime side
+/// in CAST(... AS Date); node-side keys stay bare.
+#[test]
+fn union_walk_casts_mixed_type_end_keys_1360() {
+    use crate::graph_catalog::column_info::{ColumnInfo, DiscoveredColumns};
+    let config = crate::graph_catalog::config::GraphSchemaConfig::from_yaml_str(
+        r#"
+name: lower_mixed_keys
+graph_schema:
+  nodes:
+    - label: Day
+      database: db
+      table: days
+      node_id: d
+      auto_discover_columns: true
+      property_mappings: {}
+  edges:
+    - type: E1
+      database: db
+      table: e1
+      from_id: d1
+      to_id: d2
+      from_node: Day
+      to_node: Day
+      auto_discover_columns: true
+      property_mappings: {}
+    - type: E2
+      database: db
+      table: e2
+      from_id: d1
+      to_id: d2
+      from_node: Day
+      to_node: Day
+      auto_discover_columns: true
+      property_mappings: {}
+"#,
+    )
+    .unwrap();
+    let mut columns = DiscoveredColumns::default();
+    columns.insert(
+        "db",
+        "days",
+        vec![
+            ColumnInfo::new("d".to_string(), "Date".to_string()),
+            ColumnInfo::new("nm".to_string(), "String".to_string()),
+        ],
+    );
+    columns.insert(
+        "db",
+        "e1",
+        vec![
+            ColumnInfo::new("d1".to_string(), "DateTime".to_string()),
+            ColumnInfo::new("d2".to_string(), "DateTime".to_string()),
+        ],
+    );
+    columns.insert(
+        "db",
+        "e2",
+        vec![
+            ColumnInfo::new("d1".to_string(), "Date".to_string()),
+            ColumnInfo::new("d2".to_string(), "Date".to_string()),
+        ],
+    );
+    let schema = config.to_graph_schema_with_columns(&columns).unwrap();
+    let got = lowered(
+        "MATCH p = shortestPath((a:Day)-[:E1|E2*1..]->(b:Day)) RETURN count(*)",
+        &schema,
+        &crate::bound_plan::lower::LowerOptions::default(),
+    );
+    // E1 (DateTime) ends CAST to the node Date; E2 (Date) ends bare.
+    assert!(
+        got.contains("CAST(e.d1 AS Date)"),
+        "DateTime end casts to node Date:\n{got}"
+    );
+    assert!(
+        got.contains("CAST(e.d2 AS Date)"),
+        "DateTime end casts to node Date:\n{got}"
+    );
+    assert!(
+        !got.contains("CAST(e.d AS Date)"),
+        "node-side keys stay bare:\n{got}"
+    );
+
+    // Documented limitation: Bool/UInt8 mixes never CAST (0/1-domain vs
+    // id-domain indistinguishable statically -- a wrong CAST would
+    // false-positive). Same fixture shape, Bool node + UInt8 ends.
+    let bool_config = crate::graph_catalog::config::GraphSchemaConfig::from_yaml_str(
+        r#"
+name: lower_mixed_keys_bool
+graph_schema:
+  nodes:
+    - label: Flag
+      database: db
+      table: flags
+      node_id: b
+      auto_discover_columns: true
+      property_mappings: {}
+  edges:
+    - type: BE1
+      database: db
+      table: be1
+      from_id: u1
+      to_id: u2
+      from_node: Flag
+      to_node: Flag
+      auto_discover_columns: true
+      property_mappings: {}
+    - type: BE2
+      database: db
+      table: be2
+      from_id: u1
+      to_id: u2
+      from_node: Flag
+      to_node: Flag
+      auto_discover_columns: true
+      property_mappings: {}
+"#,
+    )
+    .unwrap();
+    let mut bool_columns = crate::graph_catalog::column_info::DiscoveredColumns::default();
+    bool_columns.insert(
+        "db",
+        "flags",
+        vec![crate::graph_catalog::column_info::ColumnInfo::new(
+            "b".to_string(),
+            "Bool".to_string(),
+        )],
+    );
+    for t in ["be1", "be2"] {
+        bool_columns.insert(
+            "db",
+            t,
+            vec![
+                crate::graph_catalog::column_info::ColumnInfo::new(
+                    "u1".to_string(),
+                    "UInt8".to_string(),
+                ),
+                crate::graph_catalog::column_info::ColumnInfo::new(
+                    "u2".to_string(),
+                    "UInt8".to_string(),
+                ),
+            ],
+        );
+    }
+    let bool_schema = bool_config
+        .to_graph_schema_with_columns(&bool_columns)
+        .unwrap();
+    let bool_got = lowered(
+        "MATCH p = shortestPath((a:Flag)-[:BE1|BE2*1..]->(b:Flag)) RETURN count(*)",
+        &bool_schema,
+        &crate::bound_plan::lower::LowerOptions::default(),
+    );
+    assert!(
+        bool_got.contains("__cg_start_key"),
+        "union keys are built for the two-type walk:\n{bool_got}"
+    );
+    assert!(
+        !bool_got.contains("CAST(e.")
+            && !bool_got.contains("CAST(u1")
+            && !bool_got.contains("CAST(u2"),
+        "Bool/UInt8 mixes never CAST keys (documented limitation):\n{bool_got}"
+    );
+}
+
 fn a_variable_length_relationship_of_several_types_walks_their_union() {
     let got = rels_sql(
         "MATCH p = (a:Person)-[:KNOWS|LIKES*1..3 {since: 2015}]->(b) WHERE a.id = 1 RETURN p",

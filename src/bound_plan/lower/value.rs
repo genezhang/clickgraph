@@ -206,6 +206,34 @@ pub(super) fn node_key_text(g: &GraphValues, label: &str, id: &str) -> String {
     (g.text)(&[label.to_string(), string(":"), (g.to_text)(id)])
 }
 
+/// #1360: CAST an edge-side walk-key part to the node column
+/// ClickHouse type so both sides spell identically. Minimal allowlist
+/// (every arm proven safe on ClickHouse 25.8; everything else keeps
+/// today behavior exactly -- no new throws, no false joins possible):
+/// - (String, String): CAST AS String (never throws; trims FixedString
+///   tuple padding -- the only String case observably broken);
+/// - (Date, DateTime): CAST AS Date; (DateTime, Date): CAST AS DateTime
+///   (midnight data joins; sub-second edge values join at day granularity);
+/// - everything else unchanged, notably (Boolean, *) (0/1-domain vs
+///   id-domain indistinguishable statically) and (Float, *)/Integer mixes.
+pub(super) fn cast_key_part(
+    col_sql: &str,
+    node_dt: &crate::graph_catalog::schema_types::SchemaType,
+    edge_dt: &crate::graph_catalog::schema_types::SchemaType,
+) -> String {
+    use crate::graph_catalog::schema_types::SchemaType::*;
+    let target = match (node_dt, edge_dt) {
+        (String, String) => Some("String"),
+        (Date, DateTime) => Some("Date"),
+        (DateTime, Date) => Some("DateTime"),
+        _ => None,
+    };
+    match target {
+        Some(t) => format!("CAST({col_sql} AS {t})"),
+        None => col_sql.to_string(),
+    }
+}
+
 /// A node's id parts (SQL) as its element id spells them
 /// (`graph_catalog::element_id`): the one id, or the parts' texts joined by
 /// `|` (the element id's contract; a value's identity is its key, which no
@@ -1206,4 +1234,63 @@ enum Part {
     Whole,
     Nodes,
     Rels,
+}
+
+#[cfg(test)]
+mod key_cast_tests {
+    use super::cast_key_part;
+    use crate::graph_catalog::schema_types::SchemaType::*;
+
+    #[test]
+    fn identical_canonical_dtypes_unchanged() {
+        // Identical pairs are canonical already — except Boolean (a
+        // Boolean-typed node id may face UInt8 edge ends; indistinguishable
+        // at SchemaType granularity, so it normalizes).
+        for dt in [Integer, Date, DateTime, Uuid] {
+            assert_eq!(cast_key_part("e.d", &dt, &dt), "e.d");
+        }
+    }
+
+    #[test]
+    fn string_string_casts_only() {
+        // Only (String, String) moves (FixedString trim). Every other
+        // String-involving pair stays exactly as today.
+        assert_eq!(
+            cast_key_part("e.s", &String, &String),
+            "CAST(e.s AS String)"
+        );
+        assert_eq!(cast_key_part("e.s", &String, &Integer), "e.s");
+        assert_eq!(cast_key_part("e.s", &String, &Date), "e.s");
+        assert_eq!(cast_key_part("e.s", &Date, &String), "e.s");
+        assert_eq!(cast_key_part("e.s", &Integer, &String), "e.s");
+    }
+
+    #[test]
+    fn date_datetime_cross_casts_to_node_type() {
+        assert_eq!(cast_key_part("e.d", &Date, &DateTime), "CAST(e.d AS Date)");
+        assert_eq!(
+            cast_key_part("e.d", &DateTime, &Date),
+            "CAST(e.d AS DateTime)"
+        );
+    }
+
+    #[test]
+    fn bool_float_uuid_pairs_unchanged() {
+        // Domain-indistinguishable (Boolean) or canonical/throw-risky:
+        // today's behavior preserved exactly.
+        assert_eq!(cast_key_part("e.b", &Boolean, &Boolean), "e.b");
+        assert_eq!(cast_key_part("e.b", &Boolean, &Integer), "e.b");
+        assert_eq!(cast_key_part("e.b", &Integer, &Boolean), "e.b");
+        assert_eq!(cast_key_part("e.f", &Float, &Float), "e.f");
+        assert_eq!(cast_key_part("e.u", &Uuid, &Uuid), "e.u");
+    }
+
+    #[test]
+    fn cross_family_pairs_unchanged() {
+        // Today's empty preserved: no new throws, no false joins.
+        assert_eq!(cast_key_part("e.a", &Integer, &Float), "e.a");
+        assert_eq!(cast_key_part("e.a", &Float, &Integer), "e.a");
+        assert_eq!(cast_key_part("e.a", &Date, &Integer), "e.a");
+        assert_eq!(cast_key_part("e.a", &Boolean, &Date), "e.a");
+    }
 }

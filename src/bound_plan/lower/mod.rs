@@ -85,6 +85,7 @@ use std::sync::Arc;
 use crate::graph_catalog::config::Identifier;
 use crate::graph_catalog::expression_parser::PropertyValue;
 use crate::graph_catalog::graph_schema::{GraphSchema, NodeSchema, RelationshipSchema};
+use crate::graph_catalog::schema_types::SchemaType;
 use crate::render_plan::render_expr::{
     visit_render_expr_mut, ColumnAlias, Literal, MutVisit, Operator, OperatorApplication,
     PropertyAccess, RenderCase, RenderExpr, TableAlias,
@@ -2858,12 +2859,41 @@ impl<'s> Lowerer<'s> {
                     items.push(select(col_at(ROW, c), &indexed_column(side, i)));
                 }
             }
+            // #1360: node id dtype per end label; edge end dtype follows
+            // the arm orientation (starts = from-columns unless reversed).
+            // Edge-side key parts CAST to the node column type when the pair
+            // needs it (Date/DateTime, Bool, String, Float mixes); node-side
+            // keys and identical canonical pairs are untouched.
+            let node_dtype = |label: &str| {
+                self.schema
+                    .node_schema_opt(label)
+                    .map(|ns| ns.node_id.dtype.clone())
+            };
+            let (start_edge_dt, end_edge_dt) = if arm.reversed {
+                (
+                    arm.schema.to_node_id_dtype.clone(),
+                    arm.schema.from_node_id_dtype.clone(),
+                )
+            } else {
+                (
+                    arm.schema.from_node_id_dtype.clone(),
+                    arm.schema.to_node_id_dtype.clone(),
+                )
+            };
             let end_key = |g: &crate::sql_generator::function_mapper::GraphValues,
                            label: &str,
+                           node_dt: Option<SchemaType>,
+                           edge_dt: &SchemaType,
                            cols: &[&str]| {
                 let ids: Vec<String> = cols
                     .iter()
-                    .map(|c| render_expr_to_sql_plain(&col_at(ROW, c)))
+                    .map(|c| {
+                        let sql = render_expr_to_sql_plain(&col_at(ROW, c));
+                        match &node_dt {
+                            Some(ndt) => value::cast_key_part(&sql, ndt, edge_dt),
+                            None => sql,
+                        }
+                    })
                     .collect();
                 walk_key_sql(g, &value::string(label), &ids)
             };
@@ -2873,9 +2903,24 @@ impl<'s> Lowerer<'s> {
                         "a variable-length relationship between composite ids in this SQL dialect",
                     );
                 };
-                for (label, cols, side) in [(left, starts, BOTH_START), (right, ends, BOTH_END)] {
+                for (label, node_dt, edge_dt, cols, side) in [
+                    (
+                        left,
+                        node_dtype(left),
+                        start_edge_dt.clone(),
+                        starts,
+                        BOTH_START,
+                    ),
+                    (
+                        right,
+                        node_dtype(right),
+                        end_edge_dt.clone(),
+                        ends,
+                        BOTH_END,
+                    ),
+                ] {
                     items.push(select(
-                        RenderExpr::Raw(end_key(g, label, cols)),
+                        RenderExpr::Raw(end_key(g, label, node_dt, &edge_dt, cols)),
                         &indexed_column(side, 0),
                     ));
                 }
@@ -2904,10 +2949,26 @@ impl<'s> Lowerer<'s> {
                     ));
                 }
                 if node_keys {
-                    for (label, cols, column) in
-                        [(left, starts, REL_START_KEY), (right, ends, REL_END_KEY)]
-                    {
-                        items.push(select(RenderExpr::Raw(end_key(g, label, cols)), column));
+                    for (label, node_dt, edge_dt, cols, column) in [
+                        (
+                            left,
+                            node_dtype(left),
+                            start_edge_dt.clone(),
+                            starts,
+                            REL_START_KEY,
+                        ),
+                        (
+                            right,
+                            node_dtype(right),
+                            end_edge_dt.clone(),
+                            ends,
+                            REL_END_KEY,
+                        ),
+                    ] {
+                        items.push(select(
+                            RenderExpr::Raw(end_key(g, label, node_dt, &edge_dt, cols)),
+                            column,
+                        ));
                     }
                 }
             } else if node_keys {
