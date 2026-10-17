@@ -1111,6 +1111,23 @@ types, definitions or labels; `Lowerer::build_union_path`, `path::Search`,
   and the pick are the same SQL as a table's. The texts are those a path's
   identity spells, so `path_nodes` and `path_edges` are a union walk's as
   they are.
+  - **Key parts are cast to a common type (#1360).** Those texts are
+    compared as text, so two columns of different types spell differently and
+    never join: `toString(Date)` is `2020-01-01` against a `DateTime`'s
+    `2020-01-01 12:00:00`, `toString(DateTime64(3))` always carries `.000`,
+    and `toString(Bool)` is `true` against a `UInt8`'s `1`. Each key part is
+    therefore cast on **both** sides to the least common type of that part's
+    (node, edge) pair, folded across every relationship type in the walk —
+    the node key is one CTE shared by all of them, so the arms cannot each
+    pick their own target. The target is always the **wider** type: casting a
+    `DateTime` end down to a `Date` node would widen the Date to midnight and
+    match rows that `=` correctly refuses. Nullable on either side keeps the
+    `Nullable(..)` wrapper, since casting one to a non-nullable type raises
+    `Code: 349`. `SchemaType` is not enough to decide this (it collapses
+    `DateTime64` scales and knows nothing of nullability), so the discovered
+    spelling is kept; the target's *spelling* is the dialect axis's
+    (`SqlDialect::cast_target`). Only the pairs above are reconciled — every
+    other combination keeps the SQL it had.
 - **Ends.** The last node is restricted as the first is (by label and id
   `IN` the rows so far or its own conjuncts, §4.8 d), and the search stops
   once it has reached every value the last node can have. A label condition

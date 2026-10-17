@@ -220,13 +220,13 @@ fn infer_property_type(alias: &str, column: &PropertyValue) -> Option<RenderType
                    mappings: &HashMap<String, PV>|
      -> Option<SchemaType> {
         if let Some(t) = types.get(name) {
-            return Some(t.clone());
+            return Some(*t);
         }
         for (cypher_prop, mapped) in mappings.iter() {
             if let PV::Column(col) = mapped {
                 if col == name {
                     if let Some(t) = types.get(cypher_prop) {
-                        return Some(t.clone());
+                        return Some(*t);
                     }
                 }
             }

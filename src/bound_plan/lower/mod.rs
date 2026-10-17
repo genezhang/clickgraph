@@ -85,7 +85,7 @@ use std::sync::Arc;
 use crate::graph_catalog::config::Identifier;
 use crate::graph_catalog::expression_parser::PropertyValue;
 use crate::graph_catalog::graph_schema::{GraphSchema, NodeSchema, RelationshipSchema};
-use crate::graph_catalog::schema_types::SchemaType;
+use crate::graph_catalog::schema_types::KeyPartType;
 use crate::render_plan::render_expr::{
     visit_render_expr_mut, ColumnAlias, Literal, MutVisit, Operator, OperatorApplication,
     PropertyAccess, RenderCase, RenderExpr, TableAlias,
@@ -136,6 +136,12 @@ pub struct LowerOptions {
     /// Nodes a write statement deleted (its RETURN, S13d): returned whole
     /// without properties (Neo4j's deleted node: its identity alone).
     pub deleted: BTreeSet<VarId>,
+    /// The dialect this query renders in. Supplied by the caller rather than
+    /// read from the query context: `bound_plan` must not reach into
+    /// `server` (see the boundary test), and a type name inside a CAST is
+    /// dialect-specific, so it has to come in the same way as every other
+    /// rendering input.
+    pub dialect: crate::sql_generator::SqlDialect,
 }
 
 /// The node an integer `id()` value names on the server: its label and key
@@ -355,6 +361,7 @@ impl Query<'_> {
             order: RowOrder::Unordered,
             elided: HashMap::new(),
             paths: HashMap::new(),
+            key_targets: HashMap::new(),
             grouped_paths: HashSet::new(),
             graph_values: HashMap::new(),
             map_keys: HashMap::new(),
@@ -498,6 +505,75 @@ impl RelArm<'_> {
         } else {
             (f, t)
         }
+    }
+
+    /// This arm's discovered types for the end `end` (0 = the row's start,
+    /// 1 = its end), oriented as the arm walks: from-columns unless reversed.
+    fn end_part_types(&self, end: usize) -> &[KeyPartType] {
+        let (from, to) = if self.reversed {
+            (
+                &self.schema.to_node_id_part_types,
+                &self.schema.from_node_id_part_types,
+            )
+        } else {
+            (
+                &self.schema.from_node_id_part_types,
+                &self.schema.to_node_id_part_types,
+            )
+        };
+        if end == 0 {
+            from
+        } else {
+            to
+        }
+    }
+
+    /// The label at `end` (0 = start, 1 = end), matching [`RelArm::end_part_types`].
+    fn end_label(&self, end: usize) -> &str {
+        let (f, t) = self.ends();
+        if end == 0 {
+            f
+        } else {
+            t
+        }
+    }
+}
+
+impl Lowerer<'_> {
+    /// #1360: the CAST target for each part of `label`'s walk key, folded
+    /// across every arm of this walk.
+    ///
+    /// A walk's node key is a single CTE shared by all its relationship types,
+    /// so the sides cannot each choose their own target: if one arm widened a
+    /// `Date` to `DateTime64(3)`, the arms whose ends are `Date` would stop
+    /// joining it. Folding the whole set makes that agreement structural.
+    ///
+    /// An empty entry means "no cast": the types already agree, or the mix is
+    /// outside the table, in which case the SQL is exactly what it was before.
+    fn walk_key_targets(&self, label: &str, arms: &[RelArm]) -> Vec<Option<String>> {
+        let Some(ns) = self.schema.node_schema_opt(label) else {
+            return Vec::new();
+        };
+        let arity = ns
+            .id_physical_columns()
+            .len()
+            .max(ns.node_id.part_types.len());
+        (0..arity)
+            .map(|i| {
+                let mut sides: Vec<KeyPartType> =
+                    ns.node_id.part_types.get(i).cloned().into_iter().collect();
+                for arm in arms {
+                    if arm.end_label(0) == label {
+                        sides.extend(arm.end_part_types(0).get(i).cloned());
+                    }
+                    if arm.end_label(1) == label {
+                        sides.extend(arm.end_part_types(1).get(i).cloned());
+                    }
+                }
+                crate::graph_catalog::schema_types::fold_common(&sides)
+                    .map(|t| self.options.dialect.cast_target(&t))
+            })
+            .collect()
     }
 }
 
@@ -650,6 +726,18 @@ struct Lowerer<'s> {
     elided: HashMap<VarId, VarId>,
     /// Path variables (`p = …`) and their elements, of every clause.
     paths: HashMap<VarId, PathElements>,
+    /// #1360: the CAST target of each key part of a walked node's identity,
+    /// recorded by [`Lowerer::walk_nodes`] under the walked variable.
+    ///
+    /// The shortest-path tie-back spells the same identity again, from the
+    /// node's own table rather than from that CTE, and it has to use the same
+    /// target: a `Date` read raw stringifies as `2020-01-01` against the
+    /// widened key's `2020-01-01 00:00:00.000`, and the two never join.
+    /// Recorded rather than re-derived, because folding needs the walk's arms
+    /// and that site has only the `Walk`. Keyed by the variable rather than the
+    /// label so that two walks over one label, with different arms and so
+    /// different targets, cannot overwrite each other.
+    key_targets: HashMap<VarId, Vec<Option<String>>>,
     /// Paths a grouping RETURN (DISTINCT, an aggregation) returns: its
     /// ORDER BY reads their lengths as any of a group's, which the path
     /// (the group's key) determines.
@@ -2859,40 +2947,22 @@ impl<'s> Lowerer<'s> {
                     items.push(select(col_at(ROW, c), &indexed_column(side, i)));
                 }
             }
-            // #1360: node id dtype per end label; edge end dtype follows
-            // the arm orientation (starts = from-columns unless reversed).
-            // Edge-side key parts CAST to the node column type when the pair
-            // needs it (Date/DateTime, Bool, String, Float mixes); node-side
-            // keys and identical canonical pairs are untouched.
-            let node_dtype = |label: &str| {
-                self.schema
-                    .node_schema_opt(label)
-                    .map(|ns| ns.node_id.dtype.clone())
-            };
-            let (start_edge_dt, end_edge_dt) = if arm.reversed {
-                (
-                    arm.schema.to_node_id_dtype.clone(),
-                    arm.schema.from_node_id_dtype.clone(),
-                )
-            } else {
-                (
-                    arm.schema.from_node_id_dtype.clone(),
-                    arm.schema.to_node_id_dtype.clone(),
-                )
-            };
+            // #1360: a walk key is compared as TEXT, so both sides must
+            // stringify identically. The target for each part is folded across
+            // every arm of this walk (`walk_key_targets`) so the shared node
+            // key and every arm's ends agree; each side is cast to it, or left
+            // alone when the types already agree.
+            let node_targets = |label: &str| self.walk_key_targets(label, arms);
             let end_key = |g: &crate::sql_generator::function_mapper::GraphValues,
                            label: &str,
-                           node_dt: Option<SchemaType>,
-                           edge_dt: &SchemaType,
+                           targets: &[Option<String>],
                            cols: &[&str]| {
                 let ids: Vec<String> = cols
                     .iter()
-                    .map(|c| {
+                    .enumerate()
+                    .map(|(i, c)| {
                         let sql = render_expr_to_sql_plain(&col_at(ROW, c));
-                        match &node_dt {
-                            Some(ndt) => value::cast_key_part(&sql, ndt, edge_dt),
-                            None => sql,
-                        }
+                        value::cast_key_part(&sql, targets.get(i).and_then(|t| t.as_deref()))
                     })
                     .collect();
                 walk_key_sql(g, &value::string(label), &ids)
@@ -2903,24 +2973,12 @@ impl<'s> Lowerer<'s> {
                         "a variable-length relationship between composite ids in this SQL dialect",
                     );
                 };
-                for (label, node_dt, edge_dt, cols, side) in [
-                    (
-                        left,
-                        node_dtype(left),
-                        start_edge_dt.clone(),
-                        starts,
-                        BOTH_START,
-                    ),
-                    (
-                        right,
-                        node_dtype(right),
-                        end_edge_dt.clone(),
-                        ends,
-                        BOTH_END,
-                    ),
+                for (label, targets, cols, side) in [
+                    (left, node_targets(left), starts, BOTH_START),
+                    (right, node_targets(right), ends, BOTH_END),
                 ] {
                     items.push(select(
-                        RenderExpr::Raw(end_key(g, label, node_dt, &edge_dt, cols)),
+                        RenderExpr::Raw(end_key(g, label, &targets, cols)),
                         &indexed_column(side, 0),
                     ));
                 }
@@ -2949,24 +3007,12 @@ impl<'s> Lowerer<'s> {
                     ));
                 }
                 if node_keys {
-                    for (label, node_dt, edge_dt, cols, column) in [
-                        (
-                            left,
-                            node_dtype(left),
-                            start_edge_dt.clone(),
-                            starts,
-                            REL_START_KEY,
-                        ),
-                        (
-                            right,
-                            node_dtype(right),
-                            end_edge_dt.clone(),
-                            ends,
-                            REL_END_KEY,
-                        ),
+                    for (label, targets, cols, column) in [
+                        (left, node_targets(left), starts, REL_START_KEY),
+                        (right, node_targets(right), ends, REL_END_KEY),
                     ] {
                         items.push(select(
-                            RenderExpr::Raw(end_key(g, label, node_dt, &edge_dt, cols)),
+                            RenderExpr::Raw(end_key(g, label, &targets, cols)),
                             column,
                         ));
                     }
@@ -3746,7 +3792,7 @@ impl<'s> Lowerer<'s> {
         // identity is read.
         let walked = node_values || rel_values || wants(PATH_KEY);
         let by_keys = self.walks_by_keys(&labels);
-        let nodes = self.walk_nodes(r.var, &labels, node_values)?;
+        let nodes = self.walk_nodes(r.var, &labels, node_values, &arms)?;
         let props: BTreeSet<String> = r.props.iter().map(|(p, _)| p.clone()).collect();
         let rels = match arms.is_empty() {
             true => None,
@@ -3977,7 +4023,20 @@ impl<'s> Lowerer<'s> {
             (Some(Scan::Node { label, .. }), _) => (value::string(label), ids),
             _ => return unsupported(format!("internal: {v} is not a node")),
         };
-        let ids: Vec<String> = ids.iter().map(render_expr_to_sql_plain).collect();
+        // #1360: spell each part as the walk's node CTE does, or this key
+        // joins `toString(<raw Date>)` against the widened one and matches
+        // nothing. The targets are the ones `walk_nodes` recorded.
+        let targets = self.key_targets.get(&v).cloned().unwrap_or_default();
+        let ids: Vec<String> = ids
+            .iter()
+            .enumerate()
+            .map(|(i, id)| {
+                value::cast_key_part(
+                    &render_expr_to_sql_plain(id),
+                    targets.get(i).and_then(|t| t.as_deref()),
+                )
+            })
+            .collect();
         Ok(Some(RenderExpr::Raw(walk_key_sql(&g, &label, &ids))))
     }
 
@@ -3986,6 +4045,7 @@ impl<'s> Lowerer<'s> {
         v: VarId,
         labels: &[String],
         values: bool,
+        arms: &[RelArm],
     ) -> Result<String, LowerError> {
         let by_keys = self.walks_by_keys(labels);
         let g = value::spelling()?;
@@ -3999,10 +4059,22 @@ impl<'s> Lowerer<'s> {
             if !ns.is_standard_own_table() {
                 return unsupported(format!("label {label} is not the standard layout (S8)"));
             }
+            // #1360: this CTE is shared by every relationship type in the
+            // walk, so its key has to be cast to the same target as all of
+            // their ends -- otherwise an arm that widens leaves the others
+            // unable to join it.
+            let targets = self.walk_key_targets(label, arms);
+            // The shortest-path tie-back spells this key again from the node's
+            // own table; record the target so it spells it the same way.
+            self.key_targets.insert(v, targets.clone());
             let ids: Vec<String> = ns
                 .id_physical_columns()
                 .iter()
-                .map(|c| render_expr_to_sql_plain(&col_at(ROW, c)))
+                .enumerate()
+                .map(|(i, c)| {
+                    let sql = render_expr_to_sql_plain(&col_at(ROW, c));
+                    value::cast_key_part(&sql, targets.get(i).and_then(|t| t.as_deref()))
+                })
                 .collect();
             let key = RenderExpr::Raw(walk_key_sql(&g, &value::string(label), &ids));
             // By keys, its id is its key (S8d2b); otherwise its one column.
@@ -4421,7 +4493,7 @@ impl<'s> Lowerer<'s> {
         for (end, column) in [(first, "start_id"), (last, "end_id")] {
             // Its relation, label and id, joined by its identity as the
             // search spells a node: a union's search by label and id.
-            let (table, label, id, a) = match self.scans.get(&end) {
+            let (table, label, id, a, key_var) = match self.scans.get(&end) {
                 Some(Scan::Node {
                     schema,
                     label,
@@ -4432,6 +4504,7 @@ impl<'s> Lowerer<'s> {
                     value::string(label),
                     format!("{a}.{}", schema.id_physical_columns()[0]),
                     a,
+                    Some(end),
                 ),
                 Some(Scan::Labels {
                     cte,
@@ -4442,13 +4515,30 @@ impl<'s> Lowerer<'s> {
                     format!("{a}.{LABEL_COLUMN}"),
                     format!("{a}.{}", indexed_column(LABEL_ID, 0)),
                     a,
+                    None,
                 ),
                 _ => continue,
             };
             if !self.elided.contains_key(&end) && read.contains(a) {
                 let key = match (&walk, &composite) {
                     (path::Walk::One(_), Some(cols)) => {
-                        let at: Vec<String> = cols.iter().map(|c| format!("{a}.{c}")).collect();
+                        // #1360: spell each part as the walk's keys do, or
+                        // this tie-back joins `toString(<raw Date>)` against
+                        // the walk's widened key and matches nothing.
+                        let targets = key_var
+                            .and_then(|v| self.key_targets.get(&v))
+                            .cloned()
+                            .unwrap_or_default();
+                        let at: Vec<String> = cols
+                            .iter()
+                            .enumerate()
+                            .map(|(i, c)| {
+                                value::cast_key_part(
+                                    &format!("{a}.{c}"),
+                                    targets.get(i).and_then(|t| t.as_deref()),
+                                )
+                            })
+                            .collect();
                         match path::composite_key(&at) {
                             Some(key) => key,
                             None => {

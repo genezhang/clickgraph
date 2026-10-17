@@ -63,6 +63,28 @@ impl SqlDialect {
         matches!(self, SqlDialect::ClickHouse)
     }
 
+    /// #1360: the type name a walk-key part is cast to, spelled for this
+    /// dialect.
+    ///
+    /// Lives here rather than in `graph_catalog::schema_types` because how a
+    /// type is spelled is the dialect axis, and this module is its canonical
+    /// dispatch point (`SchemaType::sql_type_name` answers the same question
+    /// for a type with no arguments; a column whose discovered spelling carries
+    /// them — `DateTime64(3)`, whose scale `SchemaType` drops — needs the raw
+    /// form kept).
+    ///
+    /// `Nullable(..)` is ClickHouse-only: Spark types are implicitly nullable.
+    pub fn cast_target(&self, kp: &crate::graph_catalog::schema_types::KeyPartType) -> String {
+        if kp.raw.contains('(') {
+            return match self {
+                SqlDialect::Databricks => kp.schema.to_spark_type().to_string(),
+                _ if kp.nullable => format!("Nullable({})", kp.raw),
+                _ => kp.raw.clone(),
+            };
+        }
+        kp.schema.sql_type_name(*self, kp.nullable)
+    }
+
     /// Whether this dialect supports the `FINAL` table modifier. `FINAL` is a
     /// ClickHouse MergeTree-family read-time dedup hint; it is invalid SQL on
     /// other backends (notably Databricks/Spark, which has no such storage
@@ -120,5 +142,52 @@ mod portable_sql_tests {
     fn databricks_sql_is_unchanged() {
         let sql = "SELECT a.x FROM t AS a";
         assert_eq!(portable_sql(sql, SqlDialect::Databricks), sql);
+    }
+}
+
+/// #1360: a walk-key CAST target keeps the discovered spelling's arguments
+/// (a `DateTime64`'s scale, which `SchemaType` drops), and `Nullable(..)` is
+/// ClickHouse-only because Spark types are implicitly nullable.
+#[cfg(test)]
+mod walk_key_cast_target_tests {
+    use super::SqlDialect;
+    use crate::graph_catalog::schema_types::KeyPartType;
+
+    fn kp(raw: &str) -> KeyPartType {
+        KeyPartType::parse(raw)
+    }
+
+    #[test]
+    fn spelling_keeps_arguments_and_nullable_is_clickhouse_only() {
+        assert_eq!(
+            SqlDialect::ClickHouse.cast_target(&kp("DateTime64(6)")),
+            "DateTime64(6)"
+        );
+        assert_eq!(
+            SqlDialect::ClickHouse.cast_target(&kp("Nullable(DateTime64(3))")),
+            "Nullable(DateTime64(3))"
+        );
+        // Spark has neither a wrapper nor scale-carrying names.
+        assert_eq!(
+            SqlDialect::Databricks.cast_target(&kp("Nullable(DateTime64(3))")),
+            "TIMESTAMP"
+        );
+        assert_eq!(
+            SqlDialect::Databricks.cast_target(&kp("DateTime64(6)")),
+            "TIMESTAMP"
+        );
+    }
+
+    /// A target with no arguments goes through the enum's own mapping, so the
+    /// dialect owns that spelling too.
+    #[test]
+    fn spelling_without_arguments_uses_the_enum_mapping() {
+        assert_eq!(SqlDialect::ClickHouse.cast_target(&kp("Int64")), "Int64");
+        assert_eq!(SqlDialect::Databricks.cast_target(&kp("Int64")), "BIGINT");
+        assert_eq!(SqlDialect::Databricks.cast_target(&kp("String")), "STRING");
+        assert_eq!(
+            SqlDialect::ClickHouse.cast_target(&kp("Nullable(String)")),
+            "Nullable(String)"
+        );
     }
 }
