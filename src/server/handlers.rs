@@ -326,7 +326,48 @@ pub async fn stats_queries_handler(
 pub async fn query_handler(
     State(app_state): State<Arc<AppState>>,
     Json(payload): Json<QueryRequest>,
-) -> Result<impl IntoResponse, impl IntoResponse> {
+) -> Result<Response, (StatusCode, String)> {
+    let start_time = Instant::now();
+    //Owned here: the body consumes the payload, and the record below wants the
+    // raw text the client sent even when the failure happens before it is
+    // parsed.
+    let raw_query = payload.query.clone();
+    let result = query_handler_body(app_state, payload, start_time).await;
+
+    // Successful queries are recorded with full phase breakdown at the inner
+    // finalization sites; here we capture the error outcomes. Every `Err` this
+    // route can return — parse-error 400s, schema errors, and the inner
+    // handler's failures alike — carries an HTTP status we can classify, and
+    // we still know the total wall time, so failures land in the slow-query
+    // ring with latency too, just without a per-phase breakdown. One record
+    // per query: this catch is the only one.
+    if let Err((status, _)) = &result {
+        if let Some(reg) = GLOBAL_SERVER_METRICS.get() {
+            let m = QueryPerformanceMetrics {
+                total_time: start_time.elapsed().as_secs_f64(),
+                query_type: "other".to_string(),
+                ..QueryPerformanceMetrics::default()
+            };
+            reg.record_query(&QuerySample {
+                metrics: &m,
+                outcome: Outcome::Err(ErrorClass::from_status(status.as_u16())),
+                has_phase_breakdown: false,
+                query_text: Some(&raw_query),
+                // Errors can occur before or after schema resolution; the
+                // honest label for both here is "unknown".
+                schema: None,
+                ch: metrics::current_ch_stats(),
+            });
+        }
+    }
+    result
+}
+
+async fn query_handler_body(
+    app_state: Arc<AppState>,
+    payload: QueryRequest,
+    start_time: Instant,
+) -> Result<Response, (StatusCode, String)> {
     // Acquire concurrency permit if semaphore is configured
     let _permit = if let Some(sem) = app_state.query_semaphore.clone() {
         match sem.try_acquire_owned() {
@@ -358,7 +399,6 @@ pub async fn query_handler(
     // panics) in this handler.
     let _inflight = GLOBAL_SERVER_METRICS.get().map(|reg| reg.in_flight_guard());
 
-    let start_time = Instant::now();
     let metrics = QueryPerformanceMetrics::new();
 
     log::debug!("Query handler called with query: {}", payload.query);
@@ -1171,29 +1211,6 @@ pub async fn query_handler(
     }))
     .await;
 
-    // Successful queries are recorded with full phase breakdown at the inner
-    // finalization sites; here we capture the error outcomes. Every `Err` from
-    // the inner handler carries an HTTP status we can classify, and we still
-    // know the total wall time (`start_time` is `Copy`) — so failures land in
-    // the slow-query ring with latency too, just without a per-phase breakdown.
-    if let Err((status, _)) = &result {
-        if let Some(reg) = GLOBAL_SERVER_METRICS.get() {
-            let m = QueryPerformanceMetrics {
-                total_time: start_time.elapsed().as_secs_f64(),
-                query_type: "other".to_string(),
-                ..QueryPerformanceMetrics::default()
-            };
-            reg.record_query(&QuerySample {
-                metrics: &m,
-                outcome: Outcome::Err(ErrorClass::from_status(status.as_u16())),
-                has_phase_breakdown: false,
-                query_text: Some(&query_string),
-                // Error before schema resolution: unknown.
-                schema: None,
-                ch: metrics::current_ch_stats(),
-            });
-        }
-    }
     result
 }
 
