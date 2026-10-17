@@ -212,9 +212,10 @@ pub(super) fn node_key_text(g: &GraphValues, label: &str, id: &str) -> String {
 /// Walk keys are compared as *text* (`identity_text`), which is why a cast is
 /// needed at all: `toString(Date)` and `toString(DateTime)` differ, so a Date
 /// node and a DateTime edge can never join without one. `target` is the
-/// least-common type for this part's (node, edge) pair, computed by
-/// [`KeyPartType::common_with`]; `None` means the two sides already agree and
-/// the column is emitted untouched.
+/// least-common type for this part's (node, edge) pair: `KeyPartType::widen_to`
+/// folds a pair, and `graph_catalog::schema_types::fold_common` folds a whole
+/// walk's set of sides. `None` means the two sides already agree and the
+/// column is emitted untouched.
 ///
 /// Both sides are cast, to the same target. Casting only one side is what
 /// this function's first version did, and it was wrong: casting a DateTime

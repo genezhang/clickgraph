@@ -822,7 +822,7 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
   - Review: 2 findings fixed (NULL id parts related nodes; MATERIALIZED / ALIAS columns through `SELECT *`). Known gap: parts spelled differently by node and edge column types (FixedString vs String). Filed #1358 (undirected walks over columns of other signedness) and #1360 (text keys vs differently typed columns).
   - Not lowered (S8d2c): a composite shortest path read as a path (`RETURN p`, `nodes(p)`, `DISTINCT p`).
 
-- **#1360 partly addressed (PR #1498; `Refs`, not `Fixes`).** A by-keys walk compares
+- **#1360 addressed (PR #1498).** A by-keys walk compares
   its keys as *text*, so two columns of different types spell differently and never join
   (`toString(Date)` vs a `DateTime`'s; `toString(Bool)` `'true'` vs a `UInt8`'s `'1'`).
   Each key part is now cast on **both** sides to the least common type of that part's
@@ -832,15 +832,19 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
   to midnight and matched rows `=` correctly refuses (review finding). Nullable on either
   side keeps the `Nullable(..)` wrapper (`Code: 349` otherwise). Covered: single and
   composite ids, per part; `Date`/`DateTime`/`DateTime64(scale)`; `FixedString`/`String`;
-  `Bool`/`UInt8`; declared-`property_mappings` schemas (their column types are now
-  discovered too, without exposing any new property); the union walk's node CTE, its
-  relationship ends, and the tie-back that recovers a shortest path's ends — three
-  places spell that key, and all three have to agree. **Still open:** the
-  *single-definition* composite `shortestPath` search (`path::Search::node_key`, item 6
-  of the review). It keys through a different builder that holds column names rather than
-  types, so folding needs the node and relationship schemas plumbed into it; measured on
-  the composite fixture it still returns 0 where 1 is right. #1358 (other signedness)
-  and the walk-constraints text gap (#1402) remain.
+  `Bool`/`UInt8`; `Float32`/`Float64` (both cast to `Float64`, the type `=` compares
+  them in — equal texts, unequal values, was the table's reverse row); declared
+  `property_mappings` schemas (their column types are now discovered too, without
+  exposing any new property); and all three key spellings of a walk — the union walk's
+  node CTE, its relationship ends, and the tie-back that recovers a shortest path's ends —
+  plus, of the review's item 6, the *single-definition* composite `shortestPath`: its BFS
+  keys (`path::Search`), the search's keyed trails, and the search's pair tie-backs now
+  spell the same fold the union walks do (the fold is computed once per walk from the
+  node's and the edge's ends' part types, `Lowerer::path_key_targets`). A single-column
+  id's BFS joins its columns typed `=`, which already compares in ClickHouse's common
+  type: its SQL is unchanged. Two walks over one label order their folds (each ties its
+  ends before the next walk is lowered; tested). #1358 (other signedness) and the
+  walk-constraints text gap (#1402) remain.
 
 - 2026-10-11: **P-4c S9: subquery expressions** (#1357, `src/bound_plan/expr.rs` `hoist_subqueries`, `binder.rs` `bind_subquery`, `src/bound_plan/lower/subquery.rs`, `FunctionMapper::null_safe_equal` / `Lists::collect_all`, behind `CLICKGRAPH_BOUND_PLAN=on`).
   - `EXISTS { … }`, pattern predicates, `exists(pattern)`, `size(pattern)` (Cypher 4's; Neo4j 5's `COUNT {}`), `size([pattern …])` and pattern comprehensions of values are bound as MATCHes over the expression's scope (an explicit correlation set, carried as the placeholder's arguments) and lowered as a LEFT JOIN of their matches grouped by the correlation: a boolean, count or NULL-keeping list per row. The drive reads a copy of the rows, so subqueries apply mid-MATCH, inside OPTIONAL MATCH and nested. A WITH WHERE reading a subquery of projected names is a filter after the projection.

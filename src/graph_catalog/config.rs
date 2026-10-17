@@ -1373,8 +1373,9 @@ fn build_node_schema(
     Ok(node_schema)
 }
 
-/// Build a RelationshipSchema from a legacy RelationshipDefinition
-/// #1360: each id column's discovered type, per part.
+/// Each id column's discovered type, per part (`RelationshipSchema` ends'
+/// `*_node_id_part_types`, the nodes' `NodeIdSchema.part_types`),
+/// #1360.
 ///
 /// Empty when discovery did not run or the column is invisible, which the walk
 /// key reads as "unknown" and leaves the SQL exactly as it was before. A mixed
@@ -1411,6 +1412,7 @@ fn parts_dtype(types: &[KeyPartType]) -> SchemaType {
     }
 }
 
+/// Build a RelationshipSchema from a legacy RelationshipDefinition.
 fn build_relationship_schema(
     rel_def: &RelationshipDefinition,
     default_node_type: &str,

@@ -373,7 +373,23 @@ impl KeyPartType {
             (String, String) if self.is_fixed_string() || other.is_fixed_string() => {
                 String.to_clickhouse_type().to_string()
             }
+            // This is the review's "Bool against UInt8" row, folded to `Int64`
+            // rather than the narrower direction its review sketched
+            // (casting the node down). The texts come out the same — `true`
+            // spells as Int64's `1`, which is what a UInt8 1 spells as — so
+            // both readings key alike; widening is the lattice's one rule for
+            // every pair, and narrowing's hazard (widening a value to
+            // something the narrow type cannot spell) has no Bool/UInt8 case.
             (Boolean, Integer) | (Integer, Boolean) => Integer.to_clickhouse_type().to_string(),
+            // `=` compares a Float32 with a Float64 in Float64, and that
+            // widening changes the text ("0.3" becomes
+            // '0.30000001192092896'): unequal values whose texts are equal.
+            // Keying both sides in the compared-in type makes the texts tell
+            // the same story the values do (the issue's Float32/Float64
+            // row). A `Decimal` spelling is exact and outside this table.
+            (Float, Float) if float_raw(&self.raw) && float_raw(&other.raw) => {
+                Float.to_clickhouse_type().to_string()
+            }
             _ => return None,
         };
         Some(Self {
@@ -402,6 +418,12 @@ impl KeyPartType {
     fn is_fixed_string(&self) -> bool {
         self.raw.to_ascii_lowercase().contains("fixedstring(")
     }
+}
+
+/// A raw `Float32` / `Float64` spelling (`Decimal` is not: exact, and no
+/// table entry says how `=` sells it against a binary float).
+fn float_raw(raw: &str) -> bool {
+    raw.to_ascii_lowercase().starts_with("float")
 }
 
 /// One type every side of a walk key part is compared in, or `None` when they
@@ -845,6 +867,11 @@ mod walk_key_lct_tests {
             ("String", "FixedString(5)", "String"),
             ("Bool", "UInt8", "Int64"),
             ("UInt8", "Bool", "Int64"),
+            // The issue's Float32/Float64 row: `=` compares them in Float64,
+            // and the widening changes the text of a narrow value (0.3
+            // becomes '0.30000001192092896'), so the text keys have to
+            // compare in that type too.
+            ("Float32", "Float64", "Float64"),
         ] {
             assert_eq!(kp(a).widen_to(&kp(b)).unwrap().raw, want, "{a} with {b}");
             assert_eq!(
@@ -853,6 +880,14 @@ mod walk_key_lct_tests {
                 "{b} with {a} (symmetric)"
             );
         }
+    }
+
+    /// A `Decimal` is exact: no table entry says how `=` compares it with a
+    /// binary float, so the pair keeps today's SQL (no cast either way).
+    #[test]
+    fn decimal_against_a_float_stays_uncast() {
+        assert_eq!(kp("Decimal(10,2)").widen_to(&kp("Float64")), None);
+        assert_eq!(kp("Float64").widen_to(&kp("Decimal(10,2)")), None);
     }
 
     /// No cast when the two already spell the same thing — which also retires

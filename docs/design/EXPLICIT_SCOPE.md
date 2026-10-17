@@ -1395,14 +1395,28 @@ types, definitions or labels; `Lowerer::build_union_path`, `path::Search`,
   node, as the columns' `=` decides (the text of `(NULL, 1)` would equal
   itself and invent relationships: review); a node with a NULL part is
   still its own zero-length path's end.
-- **Known gap:** a part whose node and edge columns spell one value
-  differently (`FixedString` against `String`, `Bool` against `UInt8`,
-  `DateTime`s in other time zones, `-0.`) does not match, where `=` would
-  (and the reverse for `Float32` against `Float64`).
+- **Mixed-type parts (#1360).** A part whose node and edge columns spell one
+  value differently — `Date` against `DateTime`, `DateTime` scales,
+  `FixedString` against `String`, `Bool` against `UInt8`, `Float32` against
+  `Float64` — is compared in the least common type that pair's `=` uses: the
+  search's keys spell each part `CAST` to a target folded across the node's
+  id column and both of the relationship's ends per part
+  (`KeyPartType::widen_to`, `Search::casts`), and the search's keys, its
+  relation's `start_id` / `end_id` and the `vlp_{var}_keyed` trails all spell
+  it alike, so the texts can meet. `=`'s own semantics arbiter the widening:
+  the target is always the wider type (casting a `DateTime` end down to a
+  `Date` node widens the Date to midnight and would manufacture matches), and
+  the fold is symmetric (`Float32`/`Float64` both cast to `Float64`: the
+  Float32 0.3 that widens to '0.30000001192092896' falls apart from a Float64
+  0.3 exactly where `=` does). The parts still agreeing spell no cast. A
+  mix outside the table (`Int64` against `Float64`, a `Decimal` column,
+  `-0.`) is left uncast: its SQL is what it was before.
 - **Conditions the search cannot hold** (§4.8: a length it does not bound,
   a lower bound above 1, a condition on an end): the pick reads the
   generator's trails through `vlp_{var}_keyed`, their ends keyed alike from
-  the `start_<col>` / `end_<col>` the walk carries, restricted to the pairs
+  the `start_<col>` / `end_<col>` the walk carries (casted per part like the
+  search's keys, so a failing pair's two spellings compare), restricted to
+  the pairs
   failing the conditions by that key; an end a condition reads is joined
   by it.
 - A composite shortest path read as a path: S8d2c below.
@@ -1426,10 +1440,16 @@ ids, `Lowerer::walks_by_keys` / `walk_key`, `walk_key_sql`):
   see, so the joins of a relation holding one stay in the order they were
   placed (`Lowerer::path_first` does not move a path first): moved, a tie
   read a node not joined yet (review).
-- **Known gap (#1360, also S7b3b's and S8d2a's searches):** a text key
-  misses equal values of differently typed node and edge columns (`Date`
-  against `DateTime`, `Bool` against `UInt8`, `FixedString` against
-  `String`): the relationship relates nothing, where `=` would match.
+- **Mixed-type keys (#1360, S7b3b and S8d2a included).** A text key set up as
+  above misses equal values of differently typed node and edge columns
+  (`Date` against `DateTime`, `Bool` against `UInt8`, `FixedString` against
+  `String`): fixed the same way — every side of every part is cast to one
+  fold across the node and all the walk's arms' ends (`walk_key_targets`),
+  pre-spelled by the dialect, and a walk's ends tie by the same fold read
+  through their label when the key was spelled elsewhere in the walk. Each
+  walk ties its ends before the next walk is lowered, so a shared label
+  never borrows another walk's fold (tested with two walks whose folds
+  disagree on both parts).
 - A walk's definitions still share one end arity (`rel_union_shape`); a
   union's identity columns of different types fail as before (#1352).
 

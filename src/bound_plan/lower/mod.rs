@@ -548,33 +548,75 @@ impl Lowerer<'_> {
     /// so the sides cannot each choose their own target: if one arm widened a
     /// `Date` to `DateTime64(3)`, the arms whose ends are `Date` would stop
     /// joining it. Folding the whole set makes that agreement structural.
-    ///
-    /// An empty entry means "no cast": the types already agree, or the mix is
-    /// outside the table, in which case the SQL is exactly what it was before.
     fn walk_key_targets(&self, label: &str, arms: &[RelArm]) -> Vec<Option<String>> {
         let Some(ns) = self.schema.node_schema_opt(label) else {
             return Vec::new();
         };
-        let arity = ns
+        let sides: Vec<&[KeyPartType]> = arms
+            .iter()
+            .flat_map(|arm| {
+                let mut out = Vec::new();
+                if arm.end_label(0) == label {
+                    out.push(arm.end_part_types(0));
+                }
+                if arm.end_label(1) == label {
+                    out.push(arm.end_part_types(1));
+                }
+                out
+            })
+            .collect();
+        self.key_part_targets(ns, &sides)
+    }
+
+    /// The per-part CAST target of a key built over `node`'s id, folded
+    /// across every set of part types `sides` (an arm's two ends), spelled by
+    /// the dialect. An empty entry means "no cast": the types already agree,
+    /// or the mix is outside the table, in which case the SQL is exactly what
+    /// it was before.
+    fn key_part_targets(&self, node: &NodeSchema, sides: &[&[KeyPartType]]) -> Vec<Option<String>> {
+        let arity = node
             .id_physical_columns()
             .len()
-            .max(ns.node_id.part_types.len());
+            .max(node.node_id.part_types.len());
         (0..arity)
             .map(|i| {
-                let mut sides: Vec<KeyPartType> =
-                    ns.node_id.part_types.get(i).cloned().into_iter().collect();
-                for arm in arms {
-                    if arm.end_label(0) == label {
-                        sides.extend(arm.end_part_types(0).get(i).cloned());
-                    }
-                    if arm.end_label(1) == label {
-                        sides.extend(arm.end_part_types(1).get(i).cloned());
-                    }
+                let mut set: Vec<KeyPartType> = node
+                    .node_id
+                    .part_types
+                    .get(i)
+                    .cloned()
+                    .into_iter()
+                    .collect();
+                for side in sides {
+                    set.extend(side.get(i).cloned());
                 }
-                crate::graph_catalog::schema_types::fold_common(&sides)
+                crate::graph_catalog::schema_types::fold_common(&set)
                     .map(|t| self.options.dialect.cast_target(&t))
             })
             .collect()
+    }
+
+    /// #1360 (item 6, S8d2a): the CAST target for each part of a
+    /// single-definition walk's BFS key, folded across the node and the
+    /// edge's both ends.
+    ///
+    /// Same fold a union walk's node CTE makes (`walk_key_targets`), so a
+    /// walk's every key is one type per part: the BFS builds several of them
+    /// (the node's, and each relationship end's) and compares them as texts.
+    /// A single-column id's BFS joins those columns typed, so it needs none —
+    /// its SQL stays exactly what it was.
+    fn path_key_targets(
+        &self,
+        node: &NodeSchema,
+        edge: &RelationshipSchema,
+    ) -> Vec<Option<String>> {
+        if node.id_physical_columns().len() <= 1 {
+            return Vec::new();
+        }
+        self.key_part_targets(
+            node,
+            &[&edge.from_node_id_part_types, &edge.to_node_id_part_types],
+        )
     }
 }
 
@@ -3620,6 +3662,10 @@ impl<'s> Lowerer<'s> {
             false => None,
         };
         self.node_table(node)?;
+        // #1360 (item 6): the walk's BFS keys are texts (S8d2a) and need the
+        // fold of the node and both of the edge's ends, spelled now (single-
+        // column ids walk typed joins and get none).
+        let key_casts = self.path_key_targets(node, edge);
         let call = path::PathCall {
             var: &var,
             rel_type: &rel_type,
@@ -3637,6 +3683,7 @@ impl<'s> Lowerer<'s> {
             rel_values,
             node_tuples,
             rel_tuples,
+            key_casts: key_casts.clone(),
         };
         let (ctes, cte, edges) = match shortest {
             None => {
@@ -3702,7 +3749,20 @@ impl<'s> Lowerer<'s> {
             let eqs = match (ids.as_slice(), id_columns.as_slice()) {
                 ([id], [_]) => vec![(col_at(&r.var.name(), column), id.clone())],
                 (ids, cols) if ids.len() == cols.len() && shortest.is_some() => {
-                    let rendered: Vec<String> = ids.iter().map(render_expr_to_sql_plain).collect();
+                    // #1360 (item 6): the search keys a node by its folded,
+                    // casted tuple, so this tie spells the same — or the tie
+                    // compares the raw text against the casted one and drops
+                    // the path the search found.
+                    let rendered: Vec<String> = ids
+                        .iter()
+                        .enumerate()
+                        .map(|(i, id)| {
+                            value::cast_key_part(
+                                &render_expr_to_sql_plain(id),
+                                key_casts.get(i).and_then(|t| t.as_deref()),
+                            )
+                        })
+                        .collect();
                     let Some(key) = path::composite_key(&rendered) else {
                         return unsupported(
                             "a shortestPath between composite ids in this SQL dialect",
@@ -4525,7 +4585,7 @@ impl<'s> Lowerer<'s> {
         for (end, column) in [(first, "start_id"), (last, "end_id")] {
             // Its relation, label and id, joined by its identity as the
             // search spells a node: a union's search by label and id.
-            let (table, label, id, a, key_var) = match self.scans.get(&end) {
+            let (table, label, id, a) = match self.scans.get(&end) {
                 Some(Scan::Node {
                     schema,
                     label,
@@ -4536,7 +4596,6 @@ impl<'s> Lowerer<'s> {
                     value::string(label),
                     format!("{a}.{}", schema.id_physical_columns()[0]),
                     a,
-                    Some(end),
                 ),
                 Some(Scan::Labels {
                     cte,
@@ -4547,28 +4606,25 @@ impl<'s> Lowerer<'s> {
                     format!("{a}.{LABEL_COLUMN}"),
                     format!("{a}.{}", indexed_column(LABEL_ID, 0)),
                     a,
-                    None,
                 ),
                 _ => continue,
             };
             if !self.elided.contains_key(&end) && read.contains(a) {
                 let key = match (&walk, &composite) {
                     (path::Walk::One(_), Some(cols)) => {
-                        // #1360: spell each part as the walk's keys do, or
-                        // this tie-back joins `toString(<raw Date>)` against
-                        // the walk's widened key and matches nothing.
-                        let targets = key_var
-                            .and_then(|v| self.key_targets.get(&v))
-                            .cloned()
-                            .unwrap_or_default();
+                        // #1360 (item 6): spell each part as the search's BFS
+                        // keys do -- the same folded targets (`walk`'s node
+                        // and edge ends) the BFS's keys were pre-spelled
+                        // with, so this tie-back joins text for text. It
+                        // read `key_targets` by an endpoint variable that no
+                        // single-definition walk records and spelled the raw
+                        // tuple, which the searched keys then never matched.
                         let at: Vec<String> = cols
                             .iter()
                             .enumerate()
                             .map(|(i, c)| {
-                                value::cast_key_part(
-                                    &format!("{a}.{c}"),
-                                    targets.get(i).and_then(|t| t.as_deref()),
-                                )
+                                let target = search.casts().get(i).and_then(|t| t.as_deref());
+                                value::cast_key_part(&format!("{a}.{c}"), target)
                             })
                             .collect();
                         match path::composite_key(&at) {

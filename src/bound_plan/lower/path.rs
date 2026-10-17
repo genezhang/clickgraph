@@ -121,6 +121,13 @@ pub(super) struct PathCall<'a> {
     /// `path_rel_tuples`, `elements.rs`).
     pub node_tuples: bool,
     pub rel_tuples: bool,
+    /// #1360 (single-definition BFS, S8d2a): each id part's CAST target,
+    /// folded across the node and both of the edge's ends and pre-spelled by
+    /// the dialect ([`Lowerer::path_key_targets`]; empty: no cast, the types
+    /// already agree). A composite id's BFS keys are texts, so only they
+    /// need one; a single-column id's BFS joins the columns typed, which
+    /// compares in ClickHouse's common type already.
+    pub key_casts: Vec<Option<String>>,
 }
 
 impl PathCall<'_> {
@@ -350,6 +357,9 @@ pub(super) struct Search {
     /// keyed by [`composite_key`], S8d2).
     node_table: String,
     id: Vec<String>,
+    /// Each id part's CAST target (`PathCall::key_casts`; empty: spell the
+    /// columns as they are — the unions' own keys arrive casted).
+    casts: Vec<Option<String>>,
     /// The relationships, from the node in `from_id` to the node in `to_id`
     /// (none: only the path of none can match).
     edge_table: Option<String>,
@@ -376,14 +386,19 @@ pub(super) struct Search {
 }
 
 impl Search {
-    /// The key of columns `cols` over `alias` (none: unqualified): the column,
-    /// or the [`composite_key`] of several.
-    fn key(cols: &[String], alias: &str) -> String {
+    /// The key of columns `cols` over `alias` (none: unqualified): each part
+    /// cast to its own target ([`value::cast_key_part`], none for a part
+    /// without), then the column, or the [`composite_key`] of several.
+    fn key(cols: &[String], alias: &str, casts: &[Option<String>]) -> String {
         let at: Vec<String> = cols
             .iter()
-            .map(|c| match alias {
-                "" => c.clone(),
-                a => format!("{a}.{c}"),
+            .enumerate()
+            .map(|(i, c)| {
+                let part = match alias {
+                    "" => c.clone(),
+                    a => format!("{a}.{c}"),
+                };
+                super::value::cast_key_part(&part, casts.get(i).and_then(|t| t.as_deref()))
             })
             .collect();
         match at.as_slice() {
@@ -394,16 +409,22 @@ impl Search {
 
     /// A node's key over `alias`, as the search identifies a node.
     pub(super) fn node_key(&self, alias: &str) -> String {
-        Self::key(&self.id, alias)
+        Self::key(&self.id, alias, &self.casts)
+    }
+
+    /// The id parts' CAST targets (`PathCall::key_casts`), for a tie-back
+    /// spelling a node's key as the search does.
+    pub(super) fn casts(&self) -> &[Option<String>] {
+        &self.casts
     }
 
     /// The keys of a relationship's `from` / `to` node over `alias`.
     fn rel_start_key(&self, alias: &str) -> String {
-        Self::key(&self.from_id, alias)
+        Self::key(&self.from_id, alias, &self.casts)
     }
 
     fn rel_end_key(&self, alias: &str) -> String {
-        Self::key(&self.to_id, alias)
+        Self::key(&self.to_id, alias, &self.casts)
     }
 
     /// The columns of a walked relation (`walk_ctes`) after `start_id`,
@@ -535,6 +556,9 @@ impl PathCall<'_> {
             var: self.var.to_string(),
             node_table: node_table.clone(),
             id,
+            // Pre-spelled by the caller (`Lowerer::path_key_targets`); the
+            // empty default spells what the columns are.
+            casts: self.key_casts.clone(),
             edge_table: Some(edge_table.to_string()),
             from_id: from,
             to_id: to,
@@ -1431,6 +1455,8 @@ impl UnionWalk<'_> {
             var: self.var.to_string(),
             node_table: self.nodes.to_string(),
             id: vec![super::KEY.to_string()],
+            // The CTE's keys are the walks' own, already casted.
+            casts: Vec::new(),
             edge_table: self.rels.map(str::to_string),
             from_id: vec![super::REL_START_KEY.to_string()],
             to_id: vec![super::REL_END_KEY.to_string()],
@@ -1651,9 +1677,32 @@ impl Walk<'_> {
             Walk::One(c) => {
                 let var = c.var.to_string();
                 let id = c.node.id_physical_columns();
+                // The casts the search's BFS keys were spelled with: the
+                // keyed relation's pair ids have to compare equal to those
+                // (a failing pair is searched only for the pairs it holds),
+                // and between composite ids `keyed` is what a condition
+                // reads, spelled as the search spells a node (`composite_key`
+                // of the walk's `start_<col>` / `end_<col>`, S8d2c).
+                let arity = edge_arity(c.edge);
+                let side = |s: &str| -> Vec<String> {
+                    id.iter()
+                        .enumerate()
+                        .map(|(i, col)| {
+                            let part = format!("{s}_{col}");
+                            super::value::cast_key_part(
+                                &part,
+                                c.key_casts.get(i).and_then(|t| t.as_deref()),
+                            )
+                        })
+                        .collect()
+                };
+                let (Some(start), Some(end)) =
+                    (composite_key(&side("start")), composite_key(&side("end")))
+                else {
+                    return unsupported("a shortestPath between composite ids in this SQL dialect");
+                };
                 // The columns a recovered path reads (its nodes as the search
-                // keys them: the generator's composite text is the same,
-                // S8d2c).
+                // keys them).
                 let mut carried = vec!["path_nodes"];
                 for (wanted, column) in [
                     (c.node_values, VALUE_COLUMNS[0]),
@@ -1665,7 +1714,6 @@ impl Walk<'_> {
                         carried.push(column);
                     }
                 }
-                let arity = edge_arity(c.edge);
                 let built = path_cte(schema, c)?;
                 let edges = match built.edges {
                     true => TrailEdges::Typed(arity),
@@ -1675,14 +1723,6 @@ impl Walk<'_> {
                 if id.len() == 1 {
                     return Ok((vec![built.cte], edges, path));
                 }
-                let side = |s: &str| -> Vec<String> {
-                    id.iter().map(|col| format!("{s}_{col}")).collect()
-                };
-                let (Some(start), Some(end)) =
-                    (composite_key(&side("start")), composite_key(&side("end")))
-                else {
-                    return unsupported("a shortestPath between composite ids in this SQL dialect");
-                };
                 let keyed = format!("vlp_{var}_keyed");
                 if edges != TrailEdges::None {
                     carried.insert(0, "path_edges");
