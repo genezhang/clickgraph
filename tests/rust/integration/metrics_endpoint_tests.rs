@@ -77,6 +77,7 @@ async fn metrics_endpoint_serves_prometheus() {
         outcome: Outcome::Ok,
         has_phase_breakdown: true,
         query_text: Some("MATCH (n) RETURN n"),
+        schema: Some("test"),
         ch: None,
     });
 
@@ -153,6 +154,7 @@ async fn stats_queries_endpoint_serves_ring() {
         outcome: Outcome::Err(ErrorClass::Exec),
         has_phase_breakdown: true,
         query_text: None,
+        schema: Some("test"),
         ch: None,
     });
 

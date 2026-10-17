@@ -28,16 +28,35 @@ use super::{
 
 /// Record a completed query into the global registry (no-op if metrics are off
 /// or uninitialized). Pulls any ClickHouse-side stats captured for this query.
-fn record_query(metrics: &QueryPerformanceMetrics, query_text: &str, outcome: Outcome) {
+fn record_query(
+    metrics: &QueryPerformanceMetrics,
+    query_text: &str,
+    outcome: Outcome,
+    schema: Option<&str>,
+) {
     if let Some(reg) = GLOBAL_SERVER_METRICS.get() {
         reg.record_query(&QuerySample {
             metrics,
             outcome,
             has_phase_breakdown: true,
             query_text: Some(query_text),
+            schema,
             ch: metrics::current_ch_stats(),
         });
     }
+}
+
+/// A cache hit is still a query: record it, so tracing keeps one span per
+/// query instead of covering only the queries that missed the cache.
+///
+/// The phase times are the caller's (a sql-only hit has none, an executed
+/// hit keeps its read-only phase); the type is filled here as `other`,
+/// because the template cache holds SQL, not the classification, and
+/// `query_type_index` would label anything outside its bounded set `other`
+/// in the metrics — so the span and the counter agree.
+fn record_cache_hit(metrics: &mut QueryPerformanceMetrics, query_text: &str, schema: Option<&str>) {
+    metrics.query_type = "other".to_string();
+    record_query(metrics, query_text, Outcome::Ok, schema);
 }
 
 /// Merge view_parameters and query parameters into a single HashMap
@@ -320,7 +339,50 @@ pub async fn stats_queries_handler(
 pub async fn query_handler(
     State(app_state): State<Arc<AppState>>,
     Json(payload): Json<QueryRequest>,
-) -> Result<impl IntoResponse, impl IntoResponse> {
+) -> Result<Response, (StatusCode, String)> {
+    let start_time = Instant::now();
+    //Owned here: the body consumes the payload, and the record below wants the
+    // raw text the client sent even when the failure happens before it is
+    // parsed.
+    let raw_query = payload.query.clone();
+    let result = query_handler_body(app_state, payload, start_time).await;
+
+    // Successful queries are recorded with full phase breakdown at the inner
+    // finalization sites; here we capture the error outcomes. Every `Err` this
+    // handler returns — parse-error 400s, schema errors, and the inner
+    // handler's failures alike — carries an HTTP status we can classify, and
+    // we still know the total wall time, so failures land in the slow-query
+    // ring with latency too, just without a per-phase breakdown. One record
+    // per query: this catch is the only one. (Axum extractor rejections —
+    // malformed JSON, the body cap — fail before this handler runs, so they
+    // sit outside the one-span-per-query promise.)
+    if let Err((status, _)) = &result {
+        if let Some(reg) = GLOBAL_SERVER_METRICS.get() {
+            let m = QueryPerformanceMetrics {
+                total_time: start_time.elapsed().as_secs_f64(),
+                query_type: "other".to_string(),
+                ..QueryPerformanceMetrics::default()
+            };
+            reg.record_query(&QuerySample {
+                metrics: &m,
+                outcome: Outcome::Err(ErrorClass::from_status(status.as_u16())),
+                has_phase_breakdown: false,
+                query_text: Some(&raw_query),
+                // Errors can occur before or after schema resolution; the
+                // honest label for both here is "unknown".
+                schema: None,
+                ch: metrics::current_ch_stats(),
+            });
+        }
+    }
+    result
+}
+
+async fn query_handler_body(
+    app_state: Arc<AppState>,
+    payload: QueryRequest,
+    start_time: Instant,
+) -> Result<Response, (StatusCode, String)> {
     // Acquire concurrency permit if semaphore is configured
     let _permit = if let Some(sem) = app_state.query_semaphore.clone() {
         match sem.try_acquire_owned() {
@@ -352,7 +414,6 @@ pub async fn query_handler(
     // panics) in this handler.
     let _inflight = GLOBAL_SERVER_METRICS.get().map(|reg| reg.in_flight_guard());
 
-    let start_time = Instant::now();
     let metrics = QueryPerformanceMetrics::new();
 
     log::debug!("Query handler called with query: {}", payload.query);
@@ -1165,27 +1226,6 @@ pub async fn query_handler(
     }))
     .await;
 
-    // Successful queries are recorded with full phase breakdown at the inner
-    // finalization sites; here we capture the error outcomes. Every `Err` from
-    // the inner handler carries an HTTP status we can classify, and we still
-    // know the total wall time (`start_time` is `Copy`) — so failures land in
-    // the slow-query ring with latency too, just without a per-phase breakdown.
-    if let Err((status, _)) = &result {
-        if let Some(reg) = GLOBAL_SERVER_METRICS.get() {
-            let m = QueryPerformanceMetrics {
-                total_time: start_time.elapsed().as_secs_f64(),
-                query_type: "other".to_string(),
-                ..QueryPerformanceMetrics::default()
-            };
-            reg.record_query(&QuerySample {
-                metrics: &m,
-                outcome: Outcome::Err(ErrorClass::from_status(status.as_u16())),
-                has_phase_breakdown: false,
-                query_text: Some(&query_string),
-                ch: metrics::current_ch_stats(),
-            });
-        }
-    }
     result
 }
 
@@ -1300,6 +1340,13 @@ async fn query_handler_inner(
                     .headers_mut()
                     .insert("X-Query-Cache-Status", cache_header);
             }
+            // A cache hit is still a query: record it so tracing covers every
+            // query, not only the ones that happened to miss. Nothing was
+            // planned or executed for this response, so the phase times are
+            // the single sql_only elapsed time.
+            metrics.total_time = start_time.elapsed().as_secs_f64();
+            metrics.execution_time = metrics.total_time;
+            record_cache_hit(&mut metrics, &payload.query, Some(&schema_name));
             return Ok(response);
         }
 
@@ -1329,8 +1376,15 @@ async fn query_handler_inner(
                 let headers = resp.headers_mut();
                 headers.insert("X-Query-Cache-Status", HeaderValue::from_static("HIT"));
 
+                // Recorded like the sql-only hit above (the read's phase
+                // times were set before this match); the type is `other`
+                // for the reason in `record_cache_hit`'s doc.
+                record_cache_hit(&mut metrics, &payload.query, Some(&schema_name));
                 return Ok(resp);
             }
+            // Not recorded here: `query_handler` records every `Err` the inner
+            // handler returns, so recording it here as well counted a failing
+            // cache hit twice — once in `queries_failed` and once as a span.
             Err(e) => return Err(e),
         }
     }
@@ -1673,7 +1727,7 @@ async fn query_handler_inner(
             stats: metrics.to_stats(),
         };
 
-        record_query(&metrics, &payload.query, Outcome::Ok);
+        record_query(&metrics, &payload.query, Outcome::Ok, Some(&schema_name));
 
         let mut resp = Json(response).into_response();
         if let Ok(cache_header) = axum::http::HeaderValue::try_from(cache_status) {
@@ -1739,7 +1793,7 @@ async fn query_handler_inner(
                     .insert("X-Query-Cache-Status", cache_header);
             }
 
-            record_query(&metrics, &payload.query, Outcome::Ok);
+            record_query(&metrics, &payload.query, Outcome::Ok, Some(&schema_name));
             Ok(resp)
         }
         Err(e) => Err(e),
