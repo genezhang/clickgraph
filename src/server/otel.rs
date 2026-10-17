@@ -305,13 +305,16 @@ fn percent_decode(value: &str) -> String {
 pub fn parse_headers(spec: &str) -> reqwest::header::HeaderMap {
     use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
     let mut map = HeaderMap::new();
-    for pair in spec.split(',') {
+    for (n, pair) in spec.split(',').enumerate() {
         let pair = pair.trim();
         if pair.is_empty() {
             continue;
         }
         let Some((k, v)) = pair.split_once('=') else {
-            log::warn!("OTLP: ignoring header entry without '=': {pair:?}");
+            // Log the entry's position, never its content: an entry without
+            // '=' has no header name, so the content could be a bare
+            // credential pasted without its key.
+            log::warn!("OTLP: header entry {} has no '=' and is ignored", n + 1);
             continue;
         };
         let k = k.trim();

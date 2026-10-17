@@ -144,6 +144,8 @@ pub struct ServerConfig {
     /// OTLP/HTTP base URL for opt-in per-query tracing
     /// (`CLICKGRAPH_OTLP_ENDPOINT`, traces go to `{endpoint}/v1/traces`).
     /// Unset = tracing off (default): no traffic, no per-query cost.
+    /// Tracing rides on the observability registry, so it is also off when
+    /// `CLICKGRAPH_METRICS_ENABLED=false`.
     #[serde(default)]
     pub otlp_endpoint: Option<String>,
 
