@@ -46,6 +46,19 @@ fn record_query(
     }
 }
 
+/// A cache hit is still a query: record it, so tracing keeps one span per
+/// query instead of covering only the queries that missed the cache.
+///
+/// The phase times are the caller's (a sql-only hit has none, an executed
+/// hit keeps its read-only phase); the type is filled here as `other`,
+/// because the template cache holds SQL, not the classification, and
+/// `query_type_index` would label anything outside its bounded set `other`
+/// in the metrics — so the span and the counter agree.
+fn record_cache_hit(metrics: &mut QueryPerformanceMetrics, query_text: &str, schema: Option<&str>) {
+    metrics.query_type = "other".to_string();
+    record_query(metrics, query_text, Outcome::Ok, schema);
+}
+
 /// Merge view_parameters and query parameters into a single HashMap
 ///
 /// Both view_parameters and parameters can contain values that need to be substituted
@@ -336,11 +349,13 @@ pub async fn query_handler(
 
     // Successful queries are recorded with full phase breakdown at the inner
     // finalization sites; here we capture the error outcomes. Every `Err` this
-    // route can return — parse-error 400s, schema errors, and the inner
+    // handler returns — parse-error 400s, schema errors, and the inner
     // handler's failures alike — carries an HTTP status we can classify, and
     // we still know the total wall time, so failures land in the slow-query
     // ring with latency too, just without a per-phase breakdown. One record
-    // per query: this catch is the only one.
+    // per query: this catch is the only one. (Axum extractor rejections —
+    // malformed JSON, the body cap — fail before this handler runs, so they
+    // sit outside the one-span-per-query promise.)
     if let Err((status, _)) = &result {
         if let Some(reg) = GLOBAL_SERVER_METRICS.get() {
             let m = QueryPerformanceMetrics {
@@ -1326,18 +1341,12 @@ async fn query_handler_inner(
                     .insert("X-Query-Cache-Status", cache_header);
             }
             // A cache hit is still a query: record it so tracing covers every
-            // query, not only the ones that happened to miss.
+            // query, not only the ones that happened to miss. Nothing was
+            // planned or executed for this response, so the phase times are
+            // the single sql_only elapsed time.
             metrics.total_time = start_time.elapsed().as_secs_f64();
             metrics.execution_time = metrics.total_time;
-            metrics.query_type = "cached".to_string();
-            metrics.total_time = start_time.elapsed().as_secs_f64();
-            metrics.execution_time = metrics.total_time;
-            // The planned type is not known on a cache hit (the template cache
-            // holds SQL, not the classification), and `query_type_index` would
-            // label anything outside its bounded set `other` in the metrics —
-            // so say `other` here too, and the span and the counter agree.
-            metrics.query_type = "other".to_string();
-            record_query(&metrics, &payload.query, Outcome::Ok, Some(&schema_name));
+            record_cache_hit(&mut metrics, &payload.query, Some(&schema_name));
             return Ok(response);
         }
 
@@ -1367,12 +1376,10 @@ async fn query_handler_inner(
                 let headers = resp.headers_mut();
                 headers.insert("X-Query-Cache-Status", HeaderValue::from_static("HIT"));
 
-                // Record the hit too: tracing promises one span per query, and
-                // a repeated query is still a query. No phase breakdown, since
-                // nothing was planned or rendered this time. `other` for the
-                // reason above.
-                metrics.query_type = "other".to_string();
-                record_query(&metrics, &payload.query, Outcome::Ok, Some(&schema_name));
+                // Recorded like the sql-only hit above (the read's phase
+                // times were set before this match); the type is `other`
+                // for the reason in `record_cache_hit`'s doc.
+                record_cache_hit(&mut metrics, &payload.query, Some(&schema_name));
                 return Ok(resp);
             }
             // Not recorded here: `query_handler` records every `Err` the inner
