@@ -362,6 +362,7 @@ impl Query<'_> {
             elided: HashMap::new(),
             paths: HashMap::new(),
             key_targets: HashMap::new(),
+            key_targets_by_label: HashMap::new(),
             grouped_paths: HashSet::new(),
             graph_values: HashMap::new(),
             map_keys: HashMap::new(),
@@ -738,6 +739,13 @@ struct Lowerer<'s> {
     /// label so that two walks over one label, with different arms and so
     /// different targets, cannot overwrite each other.
     key_targets: HashMap<VarId, Vec<Option<String>>>,
+    /// The same folds, by label — the fallback [`Self::walk_key`] reads when
+    /// the key it spells belongs to an endpoint variable of the walk, which
+    /// never carries an entry of [`Self::key_targets`]. Deterministic per
+    /// (label, arms), like any walk: walk construction ties its own ends
+    /// before lowering the next walk, so even when two walks share a label,
+    /// each reads the fold of its own arms.
+    key_targets_by_label: HashMap<String, Vec<Option<String>>>,
     /// Paths a grouping RETURN (DISTINCT, an aggregation) returns: its
     /// ORDER BY reads their lengths as any of a group's, which the path
     /// (the group's key) determines.
@@ -4025,8 +4033,25 @@ impl<'s> Lowerer<'s> {
         };
         // #1360: spell each part as the walk's node CTE does, or this key
         // joins `toString(<raw Date>)` against the widened one and matches
-        // nothing. The targets are the ones `walk_nodes` recorded.
-        let targets = self.key_targets.get(&v).cloned().unwrap_or_default();
+        // nothing. The targets are the ones `walk_nodes` recorded -- keyed by
+        // the walked variable, whose entry a walk's endpoint variable does
+        // not have: the CTE is built under the walk's variable, and the
+        // shortest-path search ties `first`/`last` back to their own tables
+        // after it. Those fall back to the label's fold, the same (label,
+        // arms) fold the CTE spelled; an endpoint read through its label CTE
+        // (`Scan::Labels`) needs no fold, since the CTE exports its identity
+        // already cast.
+        let targets = match self.key_targets.get(&v).cloned() {
+            Some(targets) => targets,
+            None => match self.scans.get(&v) {
+                Some(Scan::Node { label, .. }) => self
+                    .key_targets_by_label
+                    .get(label)
+                    .cloned()
+                    .unwrap_or_default(),
+                _ => Vec::new(),
+            },
+        };
         let ids: Vec<String> = ids
             .iter()
             .enumerate()
@@ -4067,6 +4092,13 @@ impl<'s> Lowerer<'s> {
             // The shortest-path tie-back spells this key again from the node's
             // own table; record the target so it spells it the same way.
             self.key_targets.insert(v, targets.clone());
+            // The search ties its ends by variable (`tie_end_by_key` ->
+            // `walk_key`), and an endpoint carries no entry under the walk
+            // itself; label keys this fold for those, deterministically per
+            // (label, arms). Walk construction ties its own ends before the
+            // next walk is built, so a shared label never crosses walks.
+            self.key_targets_by_label
+                .insert(label.clone(), targets.clone());
             let ids: Vec<String> = ns
                 .id_physical_columns()
                 .iter()

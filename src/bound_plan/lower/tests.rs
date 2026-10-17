@@ -4006,6 +4006,19 @@ graph_schema:
             && !got.contains("CAST(e.vv2 AS Date)"),
         "never narrow to the node's own type:\n{got}"
     );
+    // And the shortestPath search ties its ends back to their own tables
+    // (`v0`/`v2`), so *those* keys have to spell the same folded targets the
+    // CTE does -- or the whole walk finds the path and the tie-back drops it.
+    // E2E caught this on the union composite walk: the endpoints tied on the
+    // raw tuple while every inside key was cast, and the count fell to 0.
+    assert!(
+        got.contains("CAST(v0.k AS String)") && got.contains("CAST(v0.v AS DateTime64(3))"),
+        "the first tie-back spells the folded parts:\n{got}"
+    );
+    assert!(
+        got.contains("CAST(v2.k AS String)") && got.contains("CAST(v2.v AS DateTime64(3))"),
+        "the last tie-back spells the folded parts:\n{got}"
+    );
 }
 
 /// S7b3: a variable-length relationship of several types walks their union
