@@ -1308,6 +1308,12 @@ async fn query_handler_inner(
                     .headers_mut()
                     .insert("X-Query-Cache-Status", cache_header);
             }
+            // A cache hit is still a query: record it so tracing covers every
+            // query, not only the ones that happened to miss.
+            metrics.total_time = start_time.elapsed().as_secs_f64();
+            metrics.execution_time = metrics.total_time;
+            metrics.query_type = "cached".to_string();
+            record_query(&metrics, &payload.query, Outcome::Ok, Some(&schema_name));
             return Ok(response);
         }
 
@@ -1337,9 +1343,23 @@ async fn query_handler_inner(
                 let headers = resp.headers_mut();
                 headers.insert("X-Query-Cache-Status", HeaderValue::from_static("HIT"));
 
+                // Record the hit too: tracing promises one span per query, and
+                // a repeated query is still a query. No phase breakdown, since
+                // nothing was planned or rendered this time.
+                record_query(&metrics, &payload.query, Outcome::Ok, Some(&schema_name));
                 return Ok(resp);
             }
-            Err(e) => return Err(e),
+            Err(e) => {
+                record_query(
+                    &metrics,
+                    &payload.query,
+                    Outcome::Err(ErrorClass::from_status(
+                        StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
+                    )),
+                    Some(&schema_name),
+                );
+                return Err(e);
+            }
         }
     }
 

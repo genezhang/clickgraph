@@ -223,7 +223,7 @@ impl ServerConfig {
                 .ok()
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty()),
-            otlp_include_query: parse_env_var("CLICKGRAPH_OTLP_INCLUDE_QUERY", "false")?,
+            otlp_include_query: parse_env_flag("CLICKGRAPH_OTLP_INCLUDE_QUERY", false)?,
             otlp_headers: env::var("CLICKGRAPH_OTLP_HEADERS").unwrap_or_default(),
         };
 
@@ -265,7 +265,7 @@ impl ServerConfig {
                 .ok()
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty()),
-            otlp_include_query: parse_env_var("CLICKGRAPH_OTLP_INCLUDE_QUERY", "false")?,
+            otlp_include_query: parse_env_flag("CLICKGRAPH_OTLP_INCLUDE_QUERY", false)?,
             otlp_headers: env::var("CLICKGRAPH_OTLP_HEADERS").unwrap_or_default(),
         };
 
@@ -355,6 +355,27 @@ where
     })
 }
 
+/// Parse a boolean flag leniently: `true`/`false` plus `1`/`0`, `yes`/`no`,
+/// `on`/`off`, case-insensitively. Used for opt-in observability knobs, where
+/// `str::parse::<bool>` would reject `1` and — because these are read during
+/// startup — take the whole server down over a tracing flag.
+fn parse_env_flag(key: &str, default: bool) -> Result<bool, ConfigError> {
+    let raw = env::var(key).unwrap_or_else(|_| default.to_string());
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "" => Ok(default),
+        "1" | "true" | "yes" | "on" => Ok(true),
+        "0" | "false" | "no" | "off" => Ok(false),
+        other => Err(ConfigError::Parse {
+            field: key.to_string(),
+            value: other.to_string(),
+            source: Box::new(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "expected one of: true/false, 1/0, yes/no, on/off",
+            )),
+        }),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -366,6 +387,32 @@ mod tests {
         assert_eq!(config.http_port, 7475);
         assert_eq!(config.bolt_port, 7687);
         assert!(config.bolt_enabled);
+    }
+
+    #[test]
+    fn otlp_include_query_accepts_numeric_and_wordy_flags() {
+        // Read at startup, so an unparseable value must not be a reason to
+        // refuse to boot.
+        for truthy in ["1", "true", "TRUE", "yes", "on"] {
+            unsafe { env::set_var("CLICKGRAPH_OTLP_INCLUDE_QUERY", truthy) };
+            assert!(
+                ServerConfig::from_env().expect("starts").otlp_include_query,
+                "{truthy} should enable"
+            );
+        }
+        for falsy in ["0", "false", "no", "off", ""] {
+            unsafe { env::set_var("CLICKGRAPH_OTLP_INCLUDE_QUERY", falsy) };
+            assert!(
+                !ServerConfig::from_env().expect("starts").otlp_include_query,
+                "{falsy:?} should disable"
+            );
+        }
+        unsafe { env::set_var("CLICKGRAPH_OTLP_INCLUDE_QUERY", "maybe") };
+        assert!(
+            ServerConfig::from_env().is_err(),
+            "nonsense is reported rather than silently ignored"
+        );
+        unsafe { env::remove_var("CLICKGRAPH_OTLP_INCLUDE_QUERY") };
     }
 
     #[test]

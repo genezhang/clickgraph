@@ -41,6 +41,11 @@ pub struct MetricsConfig {
     /// Static auth/tenant headers for OTLP exports, comma-separated
     /// `key=value` (OTEL's `OTEL_EXPORTER_OTLP_HEADERS` form).
     pub otlp_headers: String,
+    /// Backend dialect recorded as `db.system` on every span. Supplied from
+    /// [`crate::server::query_context::get_server_dialect`] at startup: reading
+    /// the per-query dialect here would always answer ClickHouse, because
+    /// registry construction happens outside any query context.
+    pub dialect: String,
 }
 
 impl Default for MetricsConfig {
@@ -53,6 +58,9 @@ impl Default for MetricsConfig {
             otlp_endpoint: None,
             otlp_include_query: false,
             otlp_headers: String::new(),
+            // ClickHouse is the default backend. `run_server` overwrites this
+            // with the real server dialect before the registry is built.
+            dialect: "clickhouse".to_string(),
         }
     }
 }
@@ -381,11 +389,11 @@ pub struct ServerMetrics {
 impl ServerMetrics {
     pub fn new(cfg: MetricsConfig) -> Self {
         let cap = cfg.slow_query_capacity;
-        let otel = cfg.otlp_endpoint.as_deref().map(|endpoint| {
-            super::otel::OtelExporter::new(
+        let otel = cfg.otlp_endpoint.as_deref().and_then(|endpoint| {
+            super::otel::OtelExporter::try_new(
                 endpoint,
                 cfg.otlp_include_query,
-                crate::server::query_context::get_current_dialect().as_str(),
+                &cfg.dialect,
                 super::otel::parse_headers(&cfg.otlp_headers),
             )
         });
@@ -409,6 +417,12 @@ impl ServerMetrics {
 
     pub fn enabled(&self) -> bool {
         self.cfg.enabled
+    }
+
+    /// Whether an OTLP exporter is configured. Callers use this to skip work
+    /// that only exists to build a span, so a tracing-off server pays nothing.
+    pub fn tracing_enabled(&self) -> bool {
+        self.otel.is_some()
     }
 
     /// Increment in-flight; the returned guard decrements on drop.
@@ -577,6 +591,7 @@ impl ServerMetrics {
                 read_rows: self.ch_read_rows.load(Ordering::Relaxed),
                 read_bytes: self.ch_read_bytes.load(Ordering::Relaxed),
             },
+            otlp: self.otel.as_ref().map(super::otel::OtelExporter::stats),
         }
     }
 
@@ -755,6 +770,8 @@ pub struct StatsSnapshot {
     pub errors_by_class: std::collections::BTreeMap<String, u64>,
     pub latency: Vec<PhaseLatency>,
     pub clickhouse: ChStatsSnapshot,
+    /// Present only when OTLP tracing is configured.
+    pub otlp: Option<super::otel::OtelStats>,
 }
 
 #[cfg(test)]

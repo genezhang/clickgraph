@@ -2014,15 +2014,21 @@ impl BoltHandler {
                 query_type: "bolt".to_string(),
                 ..QueryPerformanceMetrics::default()
             };
-            // Session schema (the USE-resolved schema lives inside the
-            // executor call below).
-            let schema_name = lock_context!(self.context).schema_name.clone();
+            // Read the session schema only to label a span, and only when
+            // tracing is on. `lock_context!` would turn a poisoned mutex into a
+            // failed query, which is not an acceptable price for a metric
+            // attribute, so this degrades to "no schema attribute" instead.
+            let schema = if reg.tracing_enabled() {
+                self.context.lock().ok().and_then(|c| c.schema_name.clone())
+            } else {
+                None
+            };
             reg.record_query(&QuerySample {
                 metrics: &m,
                 outcome,
                 has_phase_breakdown: false,
                 query_text: Some(&query),
-                schema: schema_name.as_deref(),
+                schema: schema.as_deref(),
                 ch: metrics::current_ch_stats(),
             });
         }

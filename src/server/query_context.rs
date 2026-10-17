@@ -114,7 +114,10 @@ pub fn set_server_dialect(dialect: SqlDialect) {
 }
 
 /// The process-wide server dialect, or [`SqlDialect::ClickHouse`] if unset.
-fn server_dialect() -> SqlDialect {
+/// Read this — not `get_current_dialect` — from server-startup code, which runs
+/// outside any query context: a task-local read there always answers the
+/// default backend and would mislabel any other deployment.
+pub fn get_server_dialect() -> SqlDialect {
     SERVER_DIALECT.get().copied().unwrap_or_default()
 }
 
@@ -166,7 +169,7 @@ impl QueryContext {
     pub fn new(schema_name: Option<String>) -> Self {
         Self {
             schema_name,
-            dialect: server_dialect(),
+            dialect: get_server_dialect(),
             ..Default::default()
         }
     }

@@ -466,6 +466,7 @@ async fn run_server(app_state: AppState, config: ServerConfig) {
         otlp_endpoint: config.otlp_endpoint.clone(),
         otlp_include_query: config.otlp_include_query,
         otlp_headers: config.otlp_headers.clone(),
+        dialect: query_context::get_server_dialect().as_str().to_string(),
     };
     let _ = GLOBAL_SERVER_METRICS.set(Arc::new(metrics::ServerMetrics::new(metrics_cfg)));
 
