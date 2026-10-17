@@ -1313,6 +1313,13 @@ async fn query_handler_inner(
             metrics.total_time = start_time.elapsed().as_secs_f64();
             metrics.execution_time = metrics.total_time;
             metrics.query_type = "cached".to_string();
+            metrics.total_time = start_time.elapsed().as_secs_f64();
+            metrics.execution_time = metrics.total_time;
+            // The planned type is not known on a cache hit (the template cache
+            // holds SQL, not the classification), and `query_type_index` would
+            // label anything outside its bounded set `other` in the metrics —
+            // so say `other` here too, and the span and the counter agree.
+            metrics.query_type = "other".to_string();
             record_query(&metrics, &payload.query, Outcome::Ok, Some(&schema_name));
             return Ok(response);
         }
@@ -1345,21 +1352,16 @@ async fn query_handler_inner(
 
                 // Record the hit too: tracing promises one span per query, and
                 // a repeated query is still a query. No phase breakdown, since
-                // nothing was planned or rendered this time.
+                // nothing was planned or rendered this time. `other` for the
+                // reason above.
+                metrics.query_type = "other".to_string();
                 record_query(&metrics, &payload.query, Outcome::Ok, Some(&schema_name));
                 return Ok(resp);
             }
-            Err(e) => {
-                record_query(
-                    &metrics,
-                    &payload.query,
-                    Outcome::Err(ErrorClass::from_status(
-                        StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
-                    )),
-                    Some(&schema_name),
-                );
-                return Err(e);
-            }
+            // Not recorded here: `query_handler` records every `Err` the inner
+            // handler returns, so recording it here as well counted a failing
+            // cache hit twice — once in `queries_failed` and once as a span.
+            Err(e) => return Err(e),
         }
     }
 
