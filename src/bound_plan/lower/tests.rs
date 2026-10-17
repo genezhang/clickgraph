@@ -3575,6 +3575,795 @@ fn a_relationship_read_both_ways_beside_a_path_joins_after_its_orientation() {
     assert!(turns < first_read, "{select}");
 }
 
+/// #1360: union-walk end keys CAST edge parts to the node column type.
+/// Day(Date) nodes; E1 ends DateTime, E2 ends Date (fed by discovery, as in
+/// production). The BOTH_START/END key columns must wrap the DateTime side
+/// in CAST(... AS Date); node-side keys stay bare.
+#[test]
+fn union_walk_casts_mixed_type_end_keys_1360() {
+    let config = crate::graph_catalog::config::GraphSchemaConfig::from_yaml_str(
+        r#"
+name: lower_mixed_keys
+graph_schema:
+  nodes:
+    - label: Day
+      database: db
+      table: days
+      node_id: d
+      auto_discover_columns: true
+      property_mappings: {}
+  edges:
+    - type: E1
+      database: db
+      table: e1
+      from_id: d1
+      to_id: d2
+      from_node: Day
+      to_node: Day
+      auto_discover_columns: true
+      property_mappings: {}
+    - type: E2
+      database: db
+      table: e2
+      from_id: d1
+      to_id: d2
+      from_node: Day
+      to_node: Day
+      auto_discover_columns: true
+      property_mappings: {}
+"#,
+    )
+    .unwrap();
+    let mut columns = crate::graph_catalog::column_info::DiscoveredColumns::default();
+    columns.insert(
+        "db",
+        "days",
+        vec![
+            crate::graph_catalog::column_info::ColumnInfo::new("d".to_string(), "Date".to_string()),
+            crate::graph_catalog::column_info::ColumnInfo::new(
+                "nm".to_string(),
+                "String".to_string(),
+            ),
+        ],
+    );
+    columns.insert(
+        "db",
+        "e1",
+        vec![
+            crate::graph_catalog::column_info::ColumnInfo::new(
+                "d1".to_string(),
+                "DateTime".to_string(),
+            ),
+            crate::graph_catalog::column_info::ColumnInfo::new(
+                "d2".to_string(),
+                "DateTime".to_string(),
+            ),
+        ],
+    );
+    columns.insert(
+        "db",
+        "e2",
+        vec![
+            crate::graph_catalog::column_info::ColumnInfo::new(
+                "d1".to_string(),
+                "Date".to_string(),
+            ),
+            crate::graph_catalog::column_info::ColumnInfo::new(
+                "d2".to_string(),
+                "Date".to_string(),
+            ),
+        ],
+    );
+    let schema = config.to_graph_schema_with_columns(&columns).unwrap();
+    let got = lowered(
+        "MATCH p = shortestPath((a:Day)-[:E1|E2*1..]->(b:Day)) RETURN count(*)",
+        &schema,
+        &crate::bound_plan::lower::LowerOptions::default(),
+    );
+    // #1360: a walk key is compared as TEXT, so both sides are cast to the
+    // part's least common type. Day is Date; E1 ends are DateTime and E2 ends
+    // are Date, so E1's ends widen to the common DateTime — on BOTH sides.
+    //
+    // The previous version cast only the edge, down to the node's Date. That
+    // widened the Date to midnight and manufactured matches that `=` refuses:
+    // `toDate('2020-01-01') = toDateTime('2020-01-01 12:00:00')` is 0, while
+    // `toDate(toDateTime(...)) = toDate(...)` is 1.
+    assert!(
+        got.contains("CAST(e.d1 AS DateTime64(3))"),
+        "the DateTime end widens to the common type:\n{got}"
+    );
+    assert!(
+        got.contains("CAST(e.d2 AS DateTime64(3))"),
+        "the DateTime end widens to the common type:\n{got}"
+    );
+    // The node side is cast too, which is what makes the two texts agree.
+    assert!(
+        got.contains("CAST(e.d AS DateTime64(3))"),
+        "the node side casts to the same common type:\n{got}"
+    );
+    // Never down to the narrower type — that is the bug this fixes.
+    assert!(
+        !got.contains("CAST(e.d1 AS Date)") && !got.contains("CAST(e.d AS Date)"),
+        "nothing is cast down to the node's narrower type:\n{got}"
+    );
+
+    // E2's ends are Date against a Date node: the two already agree, so no cast
+    // is emitted at all (this retires the blanket `CAST(... AS String)` the
+    // first version added to every discovered String/String key).
+    let e2_only = lowered(
+        "MATCH p = shortestPath((a:Day)-[:E2*1..]->(b:Day)) RETURN count(*)",
+        &schema,
+        &crate::bound_plan::lower::LowerOptions::default(),
+    );
+    assert!(
+        !e2_only.contains("CAST(e.d"),
+        "Date against Date needs no cast:\n{e2_only}"
+    );
+
+    // #1360: Bool node against UInt8 ends. These now DO cast, to the enum's
+    // canonical integer: `toString(Bool)` is 'true' and `toString(UInt8)` is
+    // '1', so the two could never match before.
+    let bool_config = crate::graph_catalog::config::GraphSchemaConfig::from_yaml_str(
+        r#"
+name: lower_mixed_keys_bool
+graph_schema:
+  nodes:
+    - label: Flag
+      database: db
+      table: flags
+      node_id: b
+      auto_discover_columns: true
+      property_mappings: {}
+  edges:
+    - type: BE1
+      database: db
+      table: be1
+      from_id: u1
+      to_id: u2
+      from_node: Flag
+      to_node: Flag
+      auto_discover_columns: true
+      property_mappings: {}
+    - type: BE2
+      database: db
+      table: be2
+      from_id: u1
+      to_id: u2
+      from_node: Flag
+      to_node: Flag
+      auto_discover_columns: true
+      property_mappings: {}
+"#,
+    )
+    .unwrap();
+    let mut bool_columns = crate::graph_catalog::column_info::DiscoveredColumns::default();
+    bool_columns.insert(
+        "db",
+        "flags",
+        vec![crate::graph_catalog::column_info::ColumnInfo::new(
+            "b".to_string(),
+            "Bool".to_string(),
+        )],
+    );
+    for t in ["be1", "be2"] {
+        bool_columns.insert(
+            "db",
+            t,
+            vec![
+                crate::graph_catalog::column_info::ColumnInfo::new(
+                    "u1".to_string(),
+                    "UInt8".to_string(),
+                ),
+                crate::graph_catalog::column_info::ColumnInfo::new(
+                    "u2".to_string(),
+                    "UInt8".to_string(),
+                ),
+            ],
+        );
+    }
+    let bool_schema = bool_config
+        .to_graph_schema_with_columns(&bool_columns)
+        .unwrap();
+    let bool_got = lowered(
+        "MATCH p = shortestPath((a:Flag)-[:BE1|BE2*1..]->(b:Flag)) RETURN count(*)",
+        &bool_schema,
+        &crate::bound_plan::lower::LowerOptions::default(),
+    );
+    assert!(
+        bool_got.contains("__cg_start_key"),
+        "union keys are built for the two-type walk:\n{bool_got}"
+    );
+    // Bool/UInt8 now casts on both sides, to the enum's canonical integer.
+    assert!(
+        bool_got.contains("CAST(e.b AS Int64)"),
+        "the Bool node casts to the common integer:\n{bool_got}"
+    );
+    assert!(
+        bool_got.contains("CAST(e.u1 AS Int64)") && bool_got.contains("CAST(e.u2 AS Int64)"),
+        "the UInt8 ends cast to the same common integer:\n{bool_got}"
+    );
+}
+
+/// #1360: a Nullable key column must not be cast to a non-nullable type —
+/// that is `Code: 349 Cannot convert NULL value to non-Nullable type`, the
+/// regression the first version introduced.
+#[test]
+fn union_walk_casts_nullable_key_parts_to_nullable_1360() {
+    let config = crate::graph_catalog::config::GraphSchemaConfig::from_yaml_str(
+        r#"
+name: lower_nullable_keys
+graph_schema:
+  nodes:
+    - label: Day
+      database: db
+      table: days
+      node_id: d
+      auto_discover_columns: true
+      property_mappings: {}
+  edges:
+    - type: E1
+      database: db
+      table: e1
+      from_id: d1
+      to_id: d2
+      from_node: Day
+      to_node: Day
+      auto_discover_columns: true
+      property_mappings: {}
+    - type: E2
+      database: db
+      table: e2
+      from_id: d1
+      to_id: d2
+      from_node: Day
+      to_node: Day
+      auto_discover_columns: true
+      property_mappings: {}
+"#,
+    )
+    .unwrap();
+    let mut columns = crate::graph_catalog::column_info::DiscoveredColumns::default();
+    columns.insert(
+        "db",
+        "days",
+        vec![crate::graph_catalog::column_info::ColumnInfo::new(
+            "d".to_string(),
+            "Date".to_string(),
+        )],
+    );
+    // Two types, so the walk goes by keys: a single-type walk joins the
+    // columns directly and ClickHouse's own type promotion already agrees
+    // with `=`, so there is nothing to fix there.
+    // A dangling edge: its end can be NULL.
+    for t in ["e1", "e2"] {
+        columns.insert(
+            "db",
+            t,
+            vec![
+                crate::graph_catalog::column_info::ColumnInfo::new(
+                    "d1".to_string(),
+                    "Nullable(DateTime)".to_string(),
+                ),
+                crate::graph_catalog::column_info::ColumnInfo::new(
+                    "d2".to_string(),
+                    "Nullable(DateTime)".to_string(),
+                ),
+            ],
+        );
+    }
+    let schema = config.to_graph_schema_with_columns(&columns).unwrap();
+    let got = lowered(
+        "MATCH p = shortestPath((a:Day)-[:E1|E2*1..]->(b:Day)) RETURN count(*)",
+        &schema,
+        &crate::bound_plan::lower::LowerOptions::default(),
+    );
+    assert!(
+        got.contains("CAST(e.d1 AS Nullable(DateTime64(3)))"),
+        "a Nullable end keeps the wrapper:\n{got}"
+    );
+    assert!(
+        got.contains("CAST(e.d AS Nullable(DateTime64(3)))"),
+        "both sides share the Nullable target:\n{got}"
+    );
+    assert!(
+        !got.contains("CAST(e.d1 AS DateTime64(3))"),
+        "never cast Nullable into non-Nullable (Code 349):\n{got}"
+    );
+}
+
+/// #1360: a composite id is described per PART, not by one dtype. `[k String,
+/// v Date]` against mixed edge parts must cast each part on its own terms.
+#[test]
+fn union_walk_casts_composite_id_parts_independently_1360() {
+    let config = crate::graph_catalog::config::GraphSchemaConfig::from_yaml_str(
+        r#"
+name: lower_composite_keys
+graph_schema:
+  nodes:
+    - label: Pair
+      database: db
+      table: pairs
+      node_id: [k, v]
+      auto_discover_columns: true
+      property_mappings: {}
+  edges:
+    - type: CE1
+      database: db
+      table: ce1
+      from_id: [kk, vv]
+      to_id: [kk2, vv2]
+      from_node: Pair
+      to_node: Pair
+      auto_discover_columns: true
+      property_mappings: {}
+    - type: CE2
+      database: db
+      table: ce2
+      from_id: [kk, vv]
+      to_id: [kk2, vv2]
+      from_node: Pair
+      to_node: Pair
+      auto_discover_columns: true
+      property_mappings: {}
+"#,
+    )
+    .unwrap();
+    let mut columns = crate::graph_catalog::column_info::DiscoveredColumns::default();
+    columns.insert(
+        "db",
+        "pairs",
+        vec![
+            crate::graph_catalog::column_info::ColumnInfo::new(
+                "k".to_string(),
+                "String".to_string(),
+            ),
+            crate::graph_catalog::column_info::ColumnInfo::new("v".to_string(), "Date".to_string()),
+        ],
+    );
+    // Two arms, so the walk goes by keys. Part 0 is String against String on
+    // one end and FixedString against String on the other; part 1 is Date
+    // against DateTime on one end and Date against Date on the other.
+    columns.insert(
+        "db",
+        "ce1",
+        vec![
+            crate::graph_catalog::column_info::ColumnInfo::new(
+                "kk".to_string(),
+                "String".to_string(),
+            ),
+            crate::graph_catalog::column_info::ColumnInfo::new(
+                "vv".to_string(),
+                "DateTime".to_string(),
+            ),
+            crate::graph_catalog::column_info::ColumnInfo::new(
+                "kk2".to_string(),
+                "FixedString(8)".to_string(),
+            ),
+            crate::graph_catalog::column_info::ColumnInfo::new(
+                "vv2".to_string(),
+                "Date".to_string(),
+            ),
+        ],
+    );
+    columns.insert(
+        "db",
+        "ce2",
+        vec![
+            crate::graph_catalog::column_info::ColumnInfo::new(
+                "kk".to_string(),
+                "String".to_string(),
+            ),
+            crate::graph_catalog::column_info::ColumnInfo::new(
+                "vv".to_string(),
+                "Date".to_string(),
+            ),
+            crate::graph_catalog::column_info::ColumnInfo::new(
+                "kk2".to_string(),
+                "FixedString(8)".to_string(),
+            ),
+            crate::graph_catalog::column_info::ColumnInfo::new(
+                "vv2".to_string(),
+                "Date".to_string(),
+            ),
+        ],
+    );
+    let schema = config.to_graph_schema_with_columns(&columns).unwrap();
+    let got = lowered(
+        "MATCH p = shortestPath((a:Pair)-[:CE1|CE2*1..]->(b:Pair)) RETURN count(*)",
+        &schema,
+        &crate::bound_plan::lower::LowerOptions::default(),
+    );
+    // Part 0 folds to String because one end is a FixedString. The other ends are
+    // already String, so their cast is a no-op -- but it is still emitted,
+    // because the node key is one CTE used for both the start and the end
+    // side, and every side has to spell it identically.
+    assert!(
+        got.contains("CAST(e.k AS String)")
+            && got.contains("CAST(e.kk AS String)")
+            && got.contains("CAST(e.kk2 AS String)"),
+        "part 0 agrees on String everywhere:\n{got}"
+    );
+    // Part 1 is cast: the shared node key and BOTH arms' ends, because the
+    // node CTE is shared and one arm widened it (Date against DateTime).
+    assert!(
+        got.contains("CAST(e.v AS DateTime64(3))"),
+        "the node side casts to the folded target:\n{got}"
+    );
+    assert!(
+        got.contains("CAST(e.vv AS DateTime64(3))"),
+        "the DateTime end casts:\n{got}"
+    );
+    // ...including the Date against Date end of the other arm, which must
+    // widen too or it could no longer join the widened node key.
+    assert!(
+        got.contains("CAST(e.vv2 AS DateTime64(3))"),
+        "every arm agrees with the shared node key:\n{got}"
+    );
+    // Nothing is cast down to the narrower Date.
+    assert!(
+        !got.contains("CAST(e.vv AS Date)")
+            && !got.contains("CAST(e.v AS Date)")
+            && !got.contains("CAST(e.vv2 AS Date)"),
+        "never narrow to the node's own type:\n{got}"
+    );
+    // And the shortestPath search ties its ends back to their own tables
+    // (`v0`/`v2`), so *those* keys have to spell the same folded targets the
+    // CTE does -- or the whole walk finds the path and the tie-back drops it.
+    // E2E caught this on the union composite walk: the endpoints tied on the
+    // raw tuple while every inside key was cast, and the count fell to 0.
+    assert!(
+        got.contains("CAST(v0.k AS String)") && got.contains("CAST(v0.v AS DateTime64(3))"),
+        "the first tie-back spells the folded parts:\n{got}"
+    );
+    assert!(
+        got.contains("CAST(v2.k AS String)") && got.contains("CAST(v2.v AS DateTime64(3))"),
+        "the last tie-back spells the folded parts:\n{got}"
+    );
+}
+
+/// #1360 item 6 (S8d2a): the single-definition composite shortestPath holds
+/// the same rule the union walk does — every BFS key one type per part,
+/// folded across the node and both of the edge's ends. Before, its keys were
+/// raw texts built straight on the tables (`toString(tuple(start_node.k,
+/// start_node.v))`), so a DateTime end compared '2020-01-01 00:00:00' against
+/// a Date node's '2020-01-01' and the search matched nothing.
+#[test]
+fn single_definition_bfs_casts_composite_id_parts_1360() {
+    let config = crate::graph_catalog::config::GraphSchemaConfig::from_yaml_str(
+        r#"
+name: lower_composite_keys
+graph_schema:
+  nodes:
+    - label: Pair
+      database: db
+      table: pairs
+      node_id: [k, v]
+      auto_discover_columns: true
+      property_mappings: {}
+  edges:
+    - type: CE
+      database: db
+      table: ce1
+      from_id: [kk, vv]
+      to_id: [kk2, vv2]
+      from_node: Pair
+      to_node: Pair
+      auto_discover_columns: true
+      property_mappings: {}
+"#,
+    )
+    .unwrap();
+    let mut columns = crate::graph_catalog::column_info::DiscoveredColumns::default();
+    columns.insert(
+        "db",
+        "pairs",
+        vec![
+            crate::graph_catalog::column_info::ColumnInfo::new(
+                "k".to_string(),
+                "String".to_string(),
+            ),
+            crate::graph_catalog::column_info::ColumnInfo::new("v".to_string(), "Date".to_string()),
+        ],
+    );
+    columns.insert(
+        "db",
+        "ce1",
+        vec![
+            crate::graph_catalog::column_info::ColumnInfo::new(
+                "kk".to_string(),
+                "String".to_string(),
+            ),
+            crate::graph_catalog::column_info::ColumnInfo::new(
+                "vv".to_string(),
+                "DateTime".to_string(),
+            ),
+            crate::graph_catalog::column_info::ColumnInfo::new(
+                "kk2".to_string(),
+                "String".to_string(),
+            ),
+            crate::graph_catalog::column_info::ColumnInfo::new(
+                "vv2".to_string(),
+                "Date".to_string(),
+            ),
+        ],
+    );
+    let schema = config.to_graph_schema_with_columns(&columns).unwrap();
+    let got = lowered(
+        "MATCH p = shortestPath((a:Pair)-[:CE*1..]->(b:Pair)) RETURN count(*)",
+        &schema,
+        &crate::bound_plan::lower::LowerOptions::default(),
+    );
+    // Part 0 is String on both sides: no cast (the parts already agree).
+    assert!(
+        !got.contains("CAST(start_node.k AS") && !got.contains("CAST(rel.kk AS"),
+        "an agreeing part is not cast:\n{got}"
+    );
+    // Part 1 folds the node's Date with the edge's DateTime and the other
+    // end's Date to one target, and every key spells it -- the seed, the
+    // relationship's both ends, and the reached join.
+    assert!(
+        got.contains("toString(tuple(start_node.k, CAST(start_node.v AS DateTime64(3))))"),
+        "the seed spells the folded part:\n{got}"
+    );
+    assert!(
+        got.contains(
+            "JOIN db.ce1 AS rel ON \
+                      toString(tuple(rel.kk, CAST(rel.vv AS DateTime64(3)))) = f.node"
+        ),
+        "the step joins the relationship's casted from key:\n{got}"
+    );
+    assert!(
+        got.contains(
+            "JOIN db.pairs AS end_node ON \
+             toString(tuple(end_node.k, CAST(end_node.v AS DateTime64(3)))) = \
+             toString(tuple(rel.kk2, CAST(rel.vv2 AS DateTime64(3))))"
+        ),
+        "the reached join casts both its sides:\n{got}"
+    );
+    // Never narrowed to the node's own Date.
+    assert!(
+        !got.contains("CAST(start_node.v AS Date)") && !got.contains("CAST(rel.vv AS Date)"),
+        "never narrow to the node's own type:\n{got}"
+    );
+}
+
+/// #1360 item 6 (S8d2a), the tie-back: with a condition over the path, the
+/// pick joins the ends to their tables as the search spells a node -- the
+/// same folded targets the BFS's keys were pre-spelled with, read from the
+/// search itself rather than a walk's variable record (which an endpoint of
+/// a single-definition walk never had, so this formerly spelled the raw
+/// tuple and dropped the found path).
+#[test]
+fn single_definition_composite_tie_spells_the_folded_parts_1360() {
+    let config = crate::graph_catalog::config::GraphSchemaConfig::from_yaml_str(
+        r#"
+name: lower_composite_keys
+graph_schema:
+  nodes:
+    - label: Pair
+      database: db
+      table: pairs
+      node_id: [k, v]
+      auto_discover_columns: true
+      property_mappings: {}
+  edges:
+    - type: CE
+      database: db
+      table: ce1
+      from_id: [kk, vv]
+      to_id: [kk2, vv2]
+      from_node: Pair
+      to_node: Pair
+      auto_discover_columns: true
+      property_mappings: {}
+"#,
+    )
+    .unwrap();
+    let mut columns = crate::graph_catalog::column_info::DiscoveredColumns::default();
+    columns.insert(
+        "db",
+        "pairs",
+        vec![
+            crate::graph_catalog::column_info::ColumnInfo::new(
+                "k".to_string(),
+                "String".to_string(),
+            ),
+            crate::graph_catalog::column_info::ColumnInfo::new("v".to_string(), "Date".to_string()),
+        ],
+    );
+    columns.insert(
+        "db",
+        "ce1",
+        vec![
+            crate::graph_catalog::column_info::ColumnInfo::new(
+                "kk".to_string(),
+                "String".to_string(),
+            ),
+            crate::graph_catalog::column_info::ColumnInfo::new(
+                "vv".to_string(),
+                "DateTime".to_string(),
+            ),
+            crate::graph_catalog::column_info::ColumnInfo::new(
+                "kk2".to_string(),
+                "String".to_string(),
+            ),
+            crate::graph_catalog::column_info::ColumnInfo::new(
+                "vv2".to_string(),
+                "Date".to_string(),
+            ),
+        ],
+    );
+    let schema = config.to_graph_schema_with_columns(&columns).unwrap();
+    let got = lowered(
+        "MATCH p = shortestPath((a:Pair)-[:CE*1..]->(b:Pair)) \
+         WHERE a <> b AND length(p) > 1 RETURN length(p) AS l",
+        &schema,
+        &crate::bound_plan::lower::LowerOptions::default(),
+    );
+    // The ends tie as the search keys a node: per part, folded. (The join is
+    // spelled the relation's way around: `v1` joins its ends by their keys.)
+    assert!(
+        got.contains(
+            "JOIN vlp_v1_shortest AS v1 ON v1.start_id = \
+             toString(tuple(v0.k, CAST(v0.v AS DateTime64(3))))"
+        ),
+        "the first tie-back spells the folded parts:\n{got}"
+    );
+    assert!(
+        got.contains(
+            "JOIN db.pairs AS v2 ON v1.end_id = \
+             toString(tuple(v2.k, CAST(v2.v AS DateTime64(3))))"
+        ),
+        "the last tie-back spells the folded parts:\n{got}"
+    );
+    // Never the raw tuple, which the searched keys could never match.
+    assert!(
+        !got.contains("= toString(tuple(v0.k, v0.v))")
+            && !got.contains("= toString(tuple(v2.k, v2.v))"),
+        "the tie-back never spells the raw tuple:\n{got}"
+    );
+}
+
+/// The label fold is overwritten walk by walk (`walk_nodes`), so a walk has
+/// to tie its own ends before the next walk is built — or a later walk's
+/// different fold would spell an earlier walk's ties. Nothing tested that
+/// ordering; this does, with two walks (each a union of two types) over the
+/// same label whose folds disagree on both parts: the first's part 1 widens
+/// to `DateTime64(3)` (part 0 needs none), the second's part 0 to `String`
+/// (part 1 needs none).
+///
+/// The walks share the `e` row alias, so an assertion binds to its walk by
+/// reading that walk's own segment of the flattened query.
+#[test]
+fn two_walks_sharing_a_label_spell_their_own_folds_1360() {
+    let config = crate::graph_catalog::config::GraphSchemaConfig::from_yaml_str(
+        r#"
+name: lower_composite_keys
+graph_schema:
+  nodes:
+    - label: Pair
+      database: db
+      table: pairs
+      node_id: [k, v]
+      auto_discover_columns: true
+      property_mappings: {}
+  edges:
+    - type: CE1
+      database: db
+      table: ce1
+      from_id: [kk, vv]
+      to_id: [kk2, vv2]
+      from_node: Pair
+      to_node: Pair
+      auto_discover_columns: true
+      property_mappings: {}
+    - type: CE2
+      database: db
+      table: ce2
+      from_id: [kk, vv]
+      to_id: [kk2, vv2]
+      from_node: Pair
+      to_node: Pair
+      auto_discover_columns: true
+      property_mappings: {}
+    - type: CE4
+      database: db
+      table: ce4
+      from_id: [kk, vv]
+      to_id: [kk2, vv2]
+      from_node: Pair
+      to_node: Pair
+      auto_discover_columns: true
+      property_mappings: {}
+    - type: CE5
+      database: db
+      table: ce5
+      from_id: [kk, vv]
+      to_id: [kk2, vv2]
+      from_node: Pair
+      to_node: Pair
+      auto_discover_columns: true
+      property_mappings: {}
+"#,
+    )
+    .unwrap();
+    let mut columns = crate::graph_catalog::column_info::DiscoveredColumns::default();
+    let col = |name: &str, ty: &str| {
+        crate::graph_catalog::column_info::ColumnInfo::new(name.to_string(), ty.to_string())
+    };
+    columns.insert("db", "pairs", vec![col("k", "String"), col("v", "Date")]);
+    // Walk one (CE1|CE2): part 1 folds Date/DateTime to DateTime64(3); part 0
+    // is String everywhere.
+    columns.insert(
+        "db",
+        "ce1",
+        vec![
+            col("kk", "String"),
+            col("vv", "DateTime"),
+            col("kk2", "String"),
+            col("vv2", "Date"),
+        ],
+    );
+    columns.insert(
+        "db",
+        "ce2",
+        vec![
+            col("kk", "String"),
+            col("vv", "Date"),
+            col("kk2", "String"),
+            col("vv2", "Date"),
+        ],
+    );
+    // Walk two (CE4|CE5): part 0 folds to String through the FixedString ends;
+    // part 1 is Date everywhere.
+    columns.insert(
+        "db",
+        "ce4",
+        vec![
+            col("kk", "FixedString(8)"),
+            col("vv", "Date"),
+            col("kk2", "String"),
+            col("vv2", "Date"),
+        ],
+    );
+    columns.insert(
+        "db",
+        "ce5",
+        vec![
+            col("kk", "String"),
+            col("vv", "Date"),
+            col("kk2", "FixedString(8)"),
+            col("vv2", "Date"),
+        ],
+    );
+    let schema = config.to_graph_schema_with_columns(&columns).unwrap();
+    let got = lowered(
+        "MATCH p1=(a:Pair)-[:CE1|CE2*1..2]->(b:Pair) WITH count(p1) AS c1 \
+         MATCH p2=(d:Pair)-[:CE4|CE5*1..2]->(e:Pair) RETURN count(p2)",
+        &schema,
+        &crate::bound_plan::lower::LowerOptions::default(),
+    );
+    // Each walk's own fold, read from its own segment: the first walk runs
+    // until the second's node CTE, and the second from there on (they share
+    // the `e` row alias, so a fragment alone cannot tell them apart).
+    let walk1 = match got.find("vlp_v6_nodes") {
+        Some(to) => &got[..to],
+        None => panic!("the second walk is not in\n{got}"),
+    };
+    let walk2 = match got.find("vlp_v6_nodes AS (") {
+        Some(at) => &got[at..],
+        None => panic!("the second walk's CTE is not in\n{got}"),
+    };
+    assert!(
+        walk1.contains("CAST(e.v AS DateTime64(3))") && !walk1.contains("CAST(e.k AS String)"),
+        "the first walk folds its part 1 only:\n{got}"
+    );
+    assert!(
+        walk2.contains("CAST(e.k AS String)") && !walk2.contains("CAST(e.v AS"),
+        "the second walk folds its part 0 only:\n{got}"
+    );
+}
+
 /// S7b3: a variable-length relationship of several types walks their union
 /// from the restricted end, its nodes keyed by label and id. The first
 /// node is restricted by its own conjuncts (a node of several labels too),

@@ -323,6 +323,15 @@ pub struct RelationshipSchema {
     pub to_id: Identifier, // FK column(s) for target node ID (e.g., "user2_id" or ["to_bank_id", "to_account_number"])
     pub from_node_id_dtype: SchemaType,
     pub to_node_id_dtype: SchemaType,
+    /// #1360: each end column's discovered type, per part of a composite id.
+    /// The `*_dtype` fields above can hold only one type, which is why a
+    /// `[k String, v Date]` key could never be cast correctly. Empty when
+    /// discovery did not run or could not see the table, which the walk key
+    /// reads as "unknown" and leaves the SQL exactly as it was before.
+    #[serde(default)]
+    pub from_node_id_part_types: Vec<crate::graph_catalog::schema_types::KeyPartType>,
+    #[serde(default)]
+    pub to_node_id_part_types: Vec<crate::graph_catalog::schema_types::KeyPartType>,
     pub property_mappings: HashMap<String, PropertyValue>,
     /// Optional: List of view parameters for parameterized views
     pub view_parameters: Option<Vec<String>>,
@@ -933,11 +942,12 @@ impl GraphSchema {
             column_names: properties.clone(),
             primary_keys: id.join(", "),
             node_id: NodeIdSchema {
+                part_types: Vec::new(),
                 id: match id.as_slice() {
                     [one] => Identifier::Single(one.clone()),
                     _ => Identifier::Composite(id.clone()),
                 },
-                dtype: first.node_id.dtype.clone(),
+                dtype: first.node_id.dtype,
             },
             property_mappings: properties
                 .iter()
@@ -1347,6 +1357,12 @@ pub struct NodeIdSchema {
     pub id: Identifier,
     /// Generic data type (Integer, String, etc.) - used for validation
     pub dtype: crate::graph_catalog::schema_types::SchemaType,
+    /// #1360: each part's discovered type, in `id`'s column order. `dtype` can
+    /// describe only one type, so a composite id like `[k String, v Date]`
+    /// cannot be described by it; this can. Empty when discovery did not run,
+    /// which means "unknown" and leaves the SQL as it was before.
+    #[serde(default)]
+    pub part_types: Vec<crate::graph_catalog::schema_types::KeyPartType>,
 }
 
 impl NodeIdSchema {
@@ -1355,6 +1371,7 @@ impl NodeIdSchema {
         NodeIdSchema {
             id: Identifier::Single(column),
             dtype,
+            part_types: Vec::new(),
         }
     }
 
@@ -1366,7 +1383,27 @@ impl NodeIdSchema {
         NodeIdSchema {
             id: Identifier::Composite(columns),
             dtype,
+            part_types: Vec::new(),
         }
+    }
+
+    /// #1360: attach the discovered per-part types (see
+    /// [`NodeIdSchema::part_types`]).
+    pub fn with_part_types(
+        mut self,
+        part_types: Vec<crate::graph_catalog::schema_types::KeyPartType>,
+    ) -> Self {
+        self.part_types = part_types;
+        self
+    }
+
+    /// #1360: the discovered type of part `index`, or `None` when unknown. The
+    /// walk key leaves a column alone when this is `None`.
+    pub fn part_type(
+        &self,
+        index: usize,
+    ) -> Option<&crate::graph_catalog::schema_types::KeyPartType> {
+        self.part_types.get(index)
     }
 
     /// Get the column name for single-column identifiers.
@@ -2584,6 +2621,8 @@ mod tests {
         to_props.insert("state".to_string(), "DestState".to_string());
 
         let flight_rel = RelationshipSchema {
+            from_node_id_part_types: Vec::new(),
+            to_node_id_part_types: Vec::new(),
             closed_properties: false,
             database: "default".to_string(),
             table_name: "ontime".to_string(),
@@ -2668,6 +2707,8 @@ mod tests {
     fn test_rel_type_index_survives_serde_roundtrip() {
         let mut relationships = HashMap::new();
         let related_to = RelationshipSchema {
+            from_node_id_part_types: Vec::new(),
+            to_node_id_part_types: Vec::new(),
             closed_properties: false,
             database: "default".to_string(),
             table_name: "topic_related_to".to_string(),
@@ -2735,6 +2776,8 @@ mod tests {
         user_props.insert("name".to_string(), "author_name".to_string());
 
         let authored_rel = RelationshipSchema {
+            from_node_id_part_types: Vec::new(),
+            to_node_id_part_types: Vec::new(),
             closed_properties: false,
             database: "default".to_string(),
             table_name: "posts".to_string(),
@@ -2792,6 +2835,8 @@ mod tests {
                     to_tbl: &str,
                     from_np: Option<HashMap<String, String>>,
                     to_np: Option<HashMap<String, String>>| RelationshipSchema {
+            from_node_id_part_types: Vec::new(),
+            to_node_id_part_types: Vec::new(),
             closed_properties: false,
             database: "default".to_string(),
             table_name: from_tbl.to_string(),
@@ -2892,6 +2937,8 @@ mod tests {
         };
 
         let flight_edge = RelationshipSchema {
+            from_node_id_part_types: Vec::new(),
+            to_node_id_part_types: Vec::new(),
             closed_properties: false,
             database: "test".to_string(),
             table_name: "flights".to_string(), // Same table
@@ -2976,6 +3023,8 @@ mod tests {
         };
 
         let flight_edge = RelationshipSchema {
+            from_node_id_part_types: Vec::new(),
+            to_node_id_part_types: Vec::new(),
             closed_properties: false,
             database: "test".to_string(),
             table_name: "flights".to_string(), // Different table
@@ -3092,6 +3141,8 @@ mod tests {
         from_props.insert("city".to_string(), "origin_city".to_string());
 
         let booked_edge = RelationshipSchema {
+            from_node_id_part_types: Vec::new(),
+            to_node_id_part_types: Vec::new(),
             closed_properties: false,
             database: "test".to_string(),
             table_name: "flights".to_string(),
@@ -3210,6 +3261,8 @@ mod tests {
         to_props.insert("title".to_string(), "post_title".to_string());
 
         let authored_edge = RelationshipSchema {
+            from_node_id_part_types: Vec::new(),
+            to_node_id_part_types: Vec::new(),
             closed_properties: false,
             database: "test".to_string(),
             table_name: "posts".to_string(),
@@ -3307,6 +3360,8 @@ mod tests {
         to_props.insert("code".to_string(), "dest_code".to_string());
 
         let flight_edge = RelationshipSchema {
+            from_node_id_part_types: Vec::new(),
+            to_node_id_part_types: Vec::new(),
             closed_properties: false,
             database: "test".to_string(),
             table_name: "flights".to_string(),
@@ -3377,6 +3432,8 @@ mod tests {
         };
 
         let flight_edge = RelationshipSchema {
+            from_node_id_part_types: Vec::new(),
+            to_node_id_part_types: Vec::new(),
             closed_properties: false,
             database: "test".to_string(),
             table_name: "flights".to_string(), // Same table
@@ -3454,6 +3511,8 @@ mod tests {
         from_props.insert("code".to_string(), "origin_code".to_string());
 
         let flight_edge = RelationshipSchema {
+            from_node_id_part_types: Vec::new(),
+            to_node_id_part_types: Vec::new(),
             closed_properties: false,
             database: "db2".to_string(), // Different database!
             table_name: "flights".to_string(),
@@ -3541,6 +3600,8 @@ mod tests {
         from_props.insert("code".to_string(), "origin_code".to_string());
 
         let flight_edge = RelationshipSchema {
+            from_node_id_part_types: Vec::new(),
+            to_node_id_part_types: Vec::new(),
             closed_properties: false,
             database: "test".to_string(),
             table_name: "flights".to_string(),
@@ -3589,6 +3650,7 @@ mod tests {
             vec![],
             "id".to_string(),
             NodeIdSchema {
+                part_types: Vec::new(),
                 id: Identifier::from("id"),
                 dtype: SchemaType::Integer,
             },
@@ -3608,6 +3670,7 @@ mod tests {
                 vec![],
                 "id".to_string(),
                 NodeIdSchema {
+                    part_types: Vec::new(),
                     id: Identifier::from("id"),
                     dtype: SchemaType::Integer,
                 },
@@ -3620,6 +3683,8 @@ mod tests {
 
         let mut relationships = HashMap::new();
         let base_rel = || RelationshipSchema {
+            from_node_id_part_types: Vec::new(),
+            to_node_id_part_types: Vec::new(),
             closed_properties: false,
             database: "db".to_string(),
             table_name: String::new(),
@@ -3705,6 +3770,7 @@ mod tests {
                     vec![],
                     "id".to_string(),
                     NodeIdSchema {
+                        part_types: Vec::new(),
                         id: Identifier::from("id"),
                         dtype: SchemaType::Integer,
                     },

@@ -85,6 +85,7 @@ use std::sync::Arc;
 use crate::graph_catalog::config::Identifier;
 use crate::graph_catalog::expression_parser::PropertyValue;
 use crate::graph_catalog::graph_schema::{GraphSchema, NodeSchema, RelationshipSchema};
+use crate::graph_catalog::schema_types::KeyPartType;
 use crate::render_plan::render_expr::{
     visit_render_expr_mut, ColumnAlias, Literal, MutVisit, Operator, OperatorApplication,
     PropertyAccess, RenderCase, RenderExpr, TableAlias,
@@ -135,6 +136,12 @@ pub struct LowerOptions {
     /// Nodes a write statement deleted (its RETURN, S13d): returned whole
     /// without properties (Neo4j's deleted node: its identity alone).
     pub deleted: BTreeSet<VarId>,
+    /// The dialect this query renders in. Supplied by the caller rather than
+    /// read from the query context: `bound_plan` must not reach into
+    /// `server` (see the boundary test), and a type name inside a CAST is
+    /// dialect-specific, so it has to come in the same way as every other
+    /// rendering input.
+    pub dialect: crate::sql_generator::SqlDialect,
 }
 
 /// The node an integer `id()` value names on the server: its label and key
@@ -354,6 +361,8 @@ impl Query<'_> {
             order: RowOrder::Unordered,
             elided: HashMap::new(),
             paths: HashMap::new(),
+            key_targets: HashMap::new(),
+            key_targets_by_label: HashMap::new(),
             grouped_paths: HashSet::new(),
             graph_values: HashMap::new(),
             map_keys: HashMap::new(),
@@ -497,6 +506,117 @@ impl RelArm<'_> {
         } else {
             (f, t)
         }
+    }
+
+    /// This arm's discovered types for the end `end` (0 = the row's start,
+    /// 1 = its end), oriented as the arm walks: from-columns unless reversed.
+    fn end_part_types(&self, end: usize) -> &[KeyPartType] {
+        let (from, to) = if self.reversed {
+            (
+                &self.schema.to_node_id_part_types,
+                &self.schema.from_node_id_part_types,
+            )
+        } else {
+            (
+                &self.schema.from_node_id_part_types,
+                &self.schema.to_node_id_part_types,
+            )
+        };
+        if end == 0 {
+            from
+        } else {
+            to
+        }
+    }
+
+    /// The label at `end` (0 = start, 1 = end), matching [`RelArm::end_part_types`].
+    fn end_label(&self, end: usize) -> &str {
+        let (f, t) = self.ends();
+        if end == 0 {
+            f
+        } else {
+            t
+        }
+    }
+}
+
+impl Lowerer<'_> {
+    /// #1360: the CAST target for each part of `label`'s walk key, folded
+    /// across every arm of this walk.
+    ///
+    /// A walk's node key is a single CTE shared by all its relationship types,
+    /// so the sides cannot each choose their own target: if one arm widened a
+    /// `Date` to `DateTime64(3)`, the arms whose ends are `Date` would stop
+    /// joining it. Folding the whole set makes that agreement structural.
+    fn walk_key_targets(&self, label: &str, arms: &[RelArm]) -> Vec<Option<String>> {
+        let Some(ns) = self.schema.node_schema_opt(label) else {
+            return Vec::new();
+        };
+        let sides: Vec<&[KeyPartType]> = arms
+            .iter()
+            .flat_map(|arm| {
+                let mut out = Vec::new();
+                if arm.end_label(0) == label {
+                    out.push(arm.end_part_types(0));
+                }
+                if arm.end_label(1) == label {
+                    out.push(arm.end_part_types(1));
+                }
+                out
+            })
+            .collect();
+        self.key_part_targets(ns, &sides)
+    }
+
+    /// The per-part CAST target of a key built over `node`'s id, folded
+    /// across every set of part types `sides` (an arm's two ends), spelled by
+    /// the dialect. An empty entry means "no cast": the types already agree,
+    /// or the mix is outside the table, in which case the SQL is exactly what
+    /// it was before.
+    fn key_part_targets(&self, node: &NodeSchema, sides: &[&[KeyPartType]]) -> Vec<Option<String>> {
+        let arity = node
+            .id_physical_columns()
+            .len()
+            .max(node.node_id.part_types.len());
+        (0..arity)
+            .map(|i| {
+                let mut set: Vec<KeyPartType> = node
+                    .node_id
+                    .part_types
+                    .get(i)
+                    .cloned()
+                    .into_iter()
+                    .collect();
+                for side in sides {
+                    set.extend(side.get(i).cloned());
+                }
+                crate::graph_catalog::schema_types::fold_common(&set)
+                    .map(|t| self.options.dialect.cast_target(&t))
+            })
+            .collect()
+    }
+
+    /// #1360 (item 6, S8d2a): the CAST target for each part of a
+    /// single-definition walk's BFS key, folded across the node and the
+    /// edge's both ends.
+    ///
+    /// Same fold a union walk's node CTE makes (`walk_key_targets`), so a
+    /// walk's every key is one type per part: the BFS builds several of them
+    /// (the node's, and each relationship end's) and compares them as texts.
+    /// A single-column id's BFS joins those columns typed, so it needs none —
+    /// its SQL stays exactly what it was.
+    fn path_key_targets(
+        &self,
+        node: &NodeSchema,
+        edge: &RelationshipSchema,
+    ) -> Vec<Option<String>> {
+        if node.id_physical_columns().len() <= 1 {
+            return Vec::new();
+        }
+        self.key_part_targets(
+            node,
+            &[&edge.from_node_id_part_types, &edge.to_node_id_part_types],
+        )
     }
 }
 
@@ -649,6 +769,25 @@ struct Lowerer<'s> {
     elided: HashMap<VarId, VarId>,
     /// Path variables (`p = …`) and their elements, of every clause.
     paths: HashMap<VarId, PathElements>,
+    /// #1360: the CAST target of each key part of a walked node's identity,
+    /// recorded by [`Lowerer::walk_nodes`] under the walked variable.
+    ///
+    /// The shortest-path tie-back spells the same identity again, from the
+    /// node's own table rather than from that CTE, and it has to use the same
+    /// target: a `Date` read raw stringifies as `2020-01-01` against the
+    /// widened key's `2020-01-01 00:00:00.000`, and the two never join.
+    /// Recorded rather than re-derived, because folding needs the walk's arms
+    /// and that site has only the `Walk`. Keyed by the variable rather than the
+    /// label so that two walks over one label, with different arms and so
+    /// different targets, cannot overwrite each other.
+    key_targets: HashMap<VarId, Vec<Option<String>>>,
+    /// The same folds, by label — the fallback [`Self::walk_key`] reads when
+    /// the key it spells belongs to an endpoint variable of the walk, which
+    /// never carries an entry of [`Self::key_targets`]. Deterministic per
+    /// (label, arms), like any walk: walk construction ties its own ends
+    /// before lowering the next walk, so even when two walks share a label,
+    /// each reads the fold of its own arms.
+    key_targets_by_label: HashMap<String, Vec<Option<String>>>,
     /// Paths a grouping RETURN (DISTINCT, an aggregation) returns: its
     /// ORDER BY reads their lengths as any of a group's, which the path
     /// (the group's key) determines.
@@ -2858,12 +2997,23 @@ impl<'s> Lowerer<'s> {
                     items.push(select(col_at(ROW, c), &indexed_column(side, i)));
                 }
             }
+            // #1360: a walk key is compared as TEXT, so both sides must
+            // stringify identically. The target for each part is folded across
+            // every arm of this walk (`walk_key_targets`) so the shared node
+            // key and every arm's ends agree; each side is cast to it, or left
+            // alone when the types already agree.
+            let node_targets = |label: &str| self.walk_key_targets(label, arms);
             let end_key = |g: &crate::sql_generator::function_mapper::GraphValues,
                            label: &str,
+                           targets: &[Option<String>],
                            cols: &[&str]| {
                 let ids: Vec<String> = cols
                     .iter()
-                    .map(|c| render_expr_to_sql_plain(&col_at(ROW, c)))
+                    .enumerate()
+                    .map(|(i, c)| {
+                        let sql = render_expr_to_sql_plain(&col_at(ROW, c));
+                        value::cast_key_part(&sql, targets.get(i).and_then(|t| t.as_deref()))
+                    })
                     .collect();
                 walk_key_sql(g, &value::string(label), &ids)
             };
@@ -2873,9 +3023,12 @@ impl<'s> Lowerer<'s> {
                         "a variable-length relationship between composite ids in this SQL dialect",
                     );
                 };
-                for (label, cols, side) in [(left, starts, BOTH_START), (right, ends, BOTH_END)] {
+                for (label, targets, cols, side) in [
+                    (left, node_targets(left), starts, BOTH_START),
+                    (right, node_targets(right), ends, BOTH_END),
+                ] {
                     items.push(select(
-                        RenderExpr::Raw(end_key(g, label, cols)),
+                        RenderExpr::Raw(end_key(g, label, &targets, cols)),
                         &indexed_column(side, 0),
                     ));
                 }
@@ -2904,10 +3057,14 @@ impl<'s> Lowerer<'s> {
                     ));
                 }
                 if node_keys {
-                    for (label, cols, column) in
-                        [(left, starts, REL_START_KEY), (right, ends, REL_END_KEY)]
-                    {
-                        items.push(select(RenderExpr::Raw(end_key(g, label, cols)), column));
+                    for (label, targets, cols, column) in [
+                        (left, node_targets(left), starts, REL_START_KEY),
+                        (right, node_targets(right), ends, REL_END_KEY),
+                    ] {
+                        items.push(select(
+                            RenderExpr::Raw(end_key(g, label, &targets, cols)),
+                            column,
+                        ));
                     }
                 }
             } else if node_keys {
@@ -3505,6 +3662,10 @@ impl<'s> Lowerer<'s> {
             false => None,
         };
         self.node_table(node)?;
+        // #1360 (item 6): the walk's BFS keys are texts (S8d2a) and need the
+        // fold of the node and both of the edge's ends, spelled now (single-
+        // column ids walk typed joins and get none).
+        let key_casts = self.path_key_targets(node, edge);
         let call = path::PathCall {
             var: &var,
             rel_type: &rel_type,
@@ -3522,6 +3683,7 @@ impl<'s> Lowerer<'s> {
             rel_values,
             node_tuples,
             rel_tuples,
+            key_casts: key_casts.clone(),
         };
         let (ctes, cte, edges) = match shortest {
             None => {
@@ -3587,7 +3749,20 @@ impl<'s> Lowerer<'s> {
             let eqs = match (ids.as_slice(), id_columns.as_slice()) {
                 ([id], [_]) => vec![(col_at(&r.var.name(), column), id.clone())],
                 (ids, cols) if ids.len() == cols.len() && shortest.is_some() => {
-                    let rendered: Vec<String> = ids.iter().map(render_expr_to_sql_plain).collect();
+                    // #1360 (item 6): the search keys a node by its folded,
+                    // casted tuple, so this tie spells the same — or the tie
+                    // compares the raw text against the casted one and drops
+                    // the path the search found.
+                    let rendered: Vec<String> = ids
+                        .iter()
+                        .enumerate()
+                        .map(|(i, id)| {
+                            value::cast_key_part(
+                                &render_expr_to_sql_plain(id),
+                                key_casts.get(i).and_then(|t| t.as_deref()),
+                            )
+                        })
+                        .collect();
                     let Some(key) = path::composite_key(&rendered) else {
                         return unsupported(
                             "a shortestPath between composite ids in this SQL dialect",
@@ -3685,7 +3860,7 @@ impl<'s> Lowerer<'s> {
         // identity is read.
         let walked = node_values || rel_values || wants(PATH_KEY);
         let by_keys = self.walks_by_keys(&labels);
-        let nodes = self.walk_nodes(r.var, &labels, node_values)?;
+        let nodes = self.walk_nodes(r.var, &labels, node_values, &arms)?;
         let props: BTreeSet<String> = r.props.iter().map(|(p, _)| p.clone()).collect();
         let rels = match arms.is_empty() {
             true => None,
@@ -3916,7 +4091,37 @@ impl<'s> Lowerer<'s> {
             (Some(Scan::Node { label, .. }), _) => (value::string(label), ids),
             _ => return unsupported(format!("internal: {v} is not a node")),
         };
-        let ids: Vec<String> = ids.iter().map(render_expr_to_sql_plain).collect();
+        // #1360: spell each part as the walk's node CTE does, or this key
+        // joins `toString(<raw Date>)` against the widened one and matches
+        // nothing. The targets are the ones `walk_nodes` recorded -- keyed by
+        // the walked variable, whose entry a walk's endpoint variable does
+        // not have: the CTE is built under the walk's variable, and the
+        // shortest-path search ties `first`/`last` back to their own tables
+        // after it. Those fall back to the label's fold, the same (label,
+        // arms) fold the CTE spelled; an endpoint read through its label CTE
+        // (`Scan::Labels`) needs no fold, since the CTE exports its identity
+        // already cast.
+        let targets = match self.key_targets.get(&v).cloned() {
+            Some(targets) => targets,
+            None => match self.scans.get(&v) {
+                Some(Scan::Node { label, .. }) => self
+                    .key_targets_by_label
+                    .get(label)
+                    .cloned()
+                    .unwrap_or_default(),
+                _ => Vec::new(),
+            },
+        };
+        let ids: Vec<String> = ids
+            .iter()
+            .enumerate()
+            .map(|(i, id)| {
+                value::cast_key_part(
+                    &render_expr_to_sql_plain(id),
+                    targets.get(i).and_then(|t| t.as_deref()),
+                )
+            })
+            .collect();
         Ok(Some(RenderExpr::Raw(walk_key_sql(&g, &label, &ids))))
     }
 
@@ -3925,6 +4130,7 @@ impl<'s> Lowerer<'s> {
         v: VarId,
         labels: &[String],
         values: bool,
+        arms: &[RelArm],
     ) -> Result<String, LowerError> {
         let by_keys = self.walks_by_keys(labels);
         let g = value::spelling()?;
@@ -3938,10 +4144,29 @@ impl<'s> Lowerer<'s> {
             if !ns.is_standard_own_table() {
                 return unsupported(format!("label {label} is not the standard layout (S8)"));
             }
+            // #1360: this CTE is shared by every relationship type in the
+            // walk, so its key has to be cast to the same target as all of
+            // their ends -- otherwise an arm that widens leaves the others
+            // unable to join it.
+            let targets = self.walk_key_targets(label, arms);
+            // The shortest-path tie-back spells this key again from the node's
+            // own table; record the target so it spells it the same way.
+            self.key_targets.insert(v, targets.clone());
+            // The search ties its ends by variable (`tie_end_by_key` ->
+            // `walk_key`), and an endpoint carries no entry under the walk
+            // itself; label keys this fold for those, deterministically per
+            // (label, arms). Walk construction ties its own ends before the
+            // next walk is built, so a shared label never crosses walks.
+            self.key_targets_by_label
+                .insert(label.clone(), targets.clone());
             let ids: Vec<String> = ns
                 .id_physical_columns()
                 .iter()
-                .map(|c| render_expr_to_sql_plain(&col_at(ROW, c)))
+                .enumerate()
+                .map(|(i, c)| {
+                    let sql = render_expr_to_sql_plain(&col_at(ROW, c));
+                    value::cast_key_part(&sql, targets.get(i).and_then(|t| t.as_deref()))
+                })
                 .collect();
             let key = RenderExpr::Raw(walk_key_sql(&g, &value::string(label), &ids));
             // By keys, its id is its key (S8d2b); otherwise its one column.
@@ -4387,7 +4612,21 @@ impl<'s> Lowerer<'s> {
             if !self.elided.contains_key(&end) && read.contains(a) {
                 let key = match (&walk, &composite) {
                     (path::Walk::One(_), Some(cols)) => {
-                        let at: Vec<String> = cols.iter().map(|c| format!("{a}.{c}")).collect();
+                        // #1360 (item 6): spell each part as the search's BFS
+                        // keys do -- the same folded targets (`walk`'s node
+                        // and edge ends) the BFS's keys were pre-spelled
+                        // with, so this tie-back joins text for text. It
+                        // read `key_targets` by an endpoint variable that no
+                        // single-definition walk records and spelled the raw
+                        // tuple, which the searched keys then never matched.
+                        let at: Vec<String> = cols
+                            .iter()
+                            .enumerate()
+                            .map(|(i, c)| {
+                                let target = search.casts().get(i).and_then(|t| t.as_deref());
+                                value::cast_key_part(&format!("{a}.{c}"), target)
+                            })
+                            .collect();
                         match path::composite_key(&at) {
                             Some(key) => key,
                             None => {

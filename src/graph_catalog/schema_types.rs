@@ -33,7 +33,7 @@ use crate::server::models::SqlDialect;
 /// These types are intentionally minimal and map cleanly to equivalent types
 /// across different database systems. This supports ClickGraph's multi-database
 /// vision (ClickHouse, PostgreSQL, DuckDB, MySQL, SQLite).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SchemaType {
     /// Whole numbers (Int8/16/32/64, UInt8/16/32/64, BIGINT, etc.)
@@ -274,6 +274,179 @@ impl fmt::Display for SchemaType {
 /// assert_eq!(map_clickhouse_type("Nullable(String)"), SchemaType::String);
 /// assert_eq!(map_clickhouse_type("DateTime64"), SchemaType::DateTime);
 /// ```
+/// A key column's type in the detail a walk-key comparison needs.
+///
+/// [`SchemaType`] is not enough on its own: it collapses `DateTime` and
+/// `DateTime64(3)` to the same variant, and it has no notion of nullability.
+/// Both matter, because a walk compares its keys as *text* and casts the two
+/// sides to a common type first:
+/// - `toString(Bool)` is `'true'` but `toString(UInt8)` is `'1'`, so those two
+///   can never match without a cast;
+/// - `toString(DateTime64(3))` always carries `.000`, so a `DateTime` column
+///   never matches a `DateTime64(3)` one without a cast;
+/// - casting a `Nullable` column to a non-nullable type raises
+///   `Code: 349 Cannot convert NULL value to non-Nullable type`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KeyPartType {
+    /// The generic type, from [`map_clickhouse_type`].
+    pub schema: SchemaType,
+    /// Whether the column is `Nullable(..)`.
+    pub nullable: bool,
+    /// The ClickHouse spelling as discovered, carrying what `SchemaType`
+    /// drops: `DateTime64`'s scale, `FixedString`'s length, timezones. The
+    /// `Nullable(..)` wrapper is NOT part of it — nullability is the flag
+    /// above, so a target built from this never comes out doubly wrapped.
+    pub raw: String,
+}
+
+impl Default for KeyPartType {
+    /// An undiscovered column, matching `map_clickhouse_type`'s own fallback.
+    fn default() -> Self {
+        Self {
+            schema: SchemaType::Integer,
+            nullable: false,
+            raw: String::new(),
+        }
+    }
+}
+
+impl KeyPartType {
+    /// Parse a discovered ClickHouse column type. An empty or unrecognised
+    /// spelling maps to [`SchemaType::Integer`], which is the no-cast path.
+    pub fn parse(ch_type: &str) -> Self {
+        let trimmed = ch_type.trim();
+        // Detect the wrapper case-insensitively but keep the spelling's own
+        // casing: `DateTime64(3)` has to survive as itself.
+        let nullable = {
+            let lowered = trimmed.to_ascii_lowercase();
+            lowered.starts_with("nullable(") && trimmed.ends_with(')')
+        };
+        let base = if nullable {
+            trimmed["nullable(".len()..trimmed.len() - 1].trim()
+        } else {
+            trimmed
+        };
+        Self {
+            schema: map_clickhouse_type(trimmed),
+            nullable,
+            raw: base.to_string(),
+        }
+    }
+
+    /// The type `self` and `other` must both be compared in, or `None` when
+    /// they already agree or the mix is outside the table (in which case the
+    /// SQL is kept exactly as it was).
+    ///
+    /// Each arm is a pair whose *text* forms disagree today — which is the
+    /// whole problem, since a walk key is compared as text — and each was
+    /// checked against what ClickHouse's `=` does for the same values. The
+    /// target is always the **wider** type: casting a `DateTime` end down to a
+    /// `Date` node widens the Date to midnight and manufactures matches that
+    /// `=` correctly refuses.
+    pub fn widen_to(&self, other: &Self) -> Option<Self> {
+        use SchemaType::*;
+        if self.raw.eq_ignore_ascii_case(&other.raw) {
+            return None;
+        }
+        let nullable = self.nullable || other.nullable;
+        let raw = match (self.schema, other.schema) {
+            // Date and DateTime read as different text ('2020-01-01' vs
+            // '2020-01-01 00:00:00'), so the wider type decides. Widen to a
+            // DateTime64 only when one side already is one, so its scale
+            // survives; otherwise spell through the enum, which owns that.
+            (Date, DateTime) | (DateTime, Date) => {
+                match self.datetime64_scale().or(other.datetime64_scale()) {
+                    Some(s) => format!("DateTime64({s})"),
+                    None => DateTime.to_clickhouse_type().to_string(),
+                }
+            }
+            // DateTime vs DateTime64(scale): `=` compares in the finer type.
+            (DateTime, DateTime) if self.is_datetime64() || other.is_datetime64() => {
+                let scale = self
+                    .datetime64_scale()
+                    .or(other.datetime64_scale())
+                    .unwrap_or(3);
+                format!("DateTime64({scale})")
+            }
+            // `toString(FixedString)` already trims its padding, but cast
+            // anyway so the spelling is explicit rather than incidental.
+            (String, String) if self.is_fixed_string() || other.is_fixed_string() => {
+                String.to_clickhouse_type().to_string()
+            }
+            // This is the review's "Bool against UInt8" row, folded to `Int64`
+            // rather than the narrower direction its review sketched
+            // (casting the node down). The texts come out the same — `true`
+            // spells as Int64's `1`, which is what a UInt8 1 spells as — so
+            // both readings key alike; widening is the lattice's one rule for
+            // every pair, and narrowing's hazard (widening a value to
+            // something the narrow type cannot spell) has no Bool/UInt8 case.
+            (Boolean, Integer) | (Integer, Boolean) => Integer.to_clickhouse_type().to_string(),
+            // `=` compares a Float32 with a Float64 in Float64, and that
+            // widening changes the text ("0.3" becomes
+            // '0.30000001192092896'): unequal values whose texts are equal.
+            // Keying both sides in the compared-in type makes the texts tell
+            // the same story the values do (the issue's Float32/Float64
+            // row). A `Decimal` spelling is exact and outside this table.
+            (Float, Float) if float_raw(&self.raw) && float_raw(&other.raw) => {
+                Float.to_clickhouse_type().to_string()
+            }
+            _ => return None,
+        };
+        Some(Self {
+            schema: map_clickhouse_type(&raw),
+            nullable,
+            raw,
+        })
+    }
+
+    /// The scale of a `DateTime64` column, if that is what this is.
+    fn datetime64_scale(&self) -> Option<u32> {
+        let digits: String = self
+            .raw
+            .to_ascii_lowercase()
+            .strip_prefix("datetime64(")?
+            .chars()
+            .take_while(char::is_ascii_digit)
+            .collect();
+        digits.parse().ok()
+    }
+
+    fn is_datetime64(&self) -> bool {
+        self.datetime64_scale().is_some()
+    }
+
+    fn is_fixed_string(&self) -> bool {
+        self.raw.to_ascii_lowercase().contains("fixedstring(")
+    }
+}
+
+/// A raw `Float32` / `Float64` spelling (`Decimal` is not: exact, and no
+/// table entry says how `=` sells it against a binary float).
+fn float_raw(raw: &str) -> bool {
+    raw.to_ascii_lowercase().starts_with("float")
+}
+
+/// One type every side of a walk key part is compared in, or `None` when they
+/// already agree (or the mix is outside the table, so no cast is emitted).
+///
+/// A walk's node key is one CTE shared by every relationship type in the walk,
+/// so the sides cannot each pick their own target: if one arm widened a `Date`
+/// to `DateTime64(3)`, every other arm's ends have to widen too or that arm
+/// silently stops joining. Folding the whole set makes that agreement
+/// structural instead of something each arm re-derives.
+pub fn fold_common(parts: &[KeyPartType]) -> Option<KeyPartType> {
+    let mut iter = parts.iter();
+    let mut acc = iter.next()?.clone();
+    let mut widened = false;
+    for part in iter {
+        if let Some(next) = acc.widen_to(part) {
+            acc = next;
+            widened = true;
+        }
+    }
+    widened.then_some(acc)
+}
+
 pub fn map_clickhouse_type(ch_type: &str) -> SchemaType {
     // Normalize: lowercase, strip wrapper types
     let normalized = ch_type
@@ -642,5 +815,162 @@ mod tests {
     fn test_display() {
         assert_eq!(format!("{}", SchemaType::Integer), "integer");
         assert_eq!(format!("{}", SchemaType::String), "string");
+    }
+}
+/// #1360: the walk-key common-type table. Every arm below was checked against
+/// ClickHouse 25.8: for each pair, casting both sides to the target makes their
+/// *text* agree exactly when `=` agrees on the values.
+///
+/// These assert the type decision itself. Spelling a target for a given
+/// dialect is the dialect axis's job, so it is tested where that is
+/// dispatched rather than here.
+#[cfg(test)]
+mod walk_key_lct_tests {
+    use super::{fold_common, KeyPartType};
+
+    fn kp(raw: &str) -> KeyPartType {
+        KeyPartType::parse(raw)
+    }
+
+    /// Nullability and the raw spelling are both load-bearing, and
+    /// `SchemaType` carries neither.
+    #[test]
+    fn parses_nullability_and_keeps_the_raw_spelling() {
+        let a = kp("Nullable(DateTime64(3))");
+        assert!(a.nullable, "Nullable( is remembered, not stripped away");
+        assert_eq!(a.datetime64_scale(), Some(3), "the scale survives");
+        // The wrapper is a flag, not part of the spelling, so a target built
+        // from it can never come out as Nullable(Nullable(..)).
+        assert_eq!(a.raw, "DateTime64(3)");
+        assert_eq!(kp("Nullable(String)").raw, "String");
+        assert!(kp("FixedString(5)").is_fixed_string());
+        assert!(!kp("String").nullable);
+        assert_eq!(
+            kp("LowCardinality(String)").schema,
+            super::SchemaType::String
+        );
+    }
+
+    /// The target is always the WIDER type. Casting a DateTime end down to a
+    /// Date node widens the Date to midnight and manufactures matches that `=`
+    /// refuses: `toDate(x) = toDateTime(x 12:00)` is 0, but
+    /// `toDate(toDateTime(x 12:00)) = toDate(x)` is 1.
+    #[test]
+    fn arms_widen_and_never_narrow() {
+        for (a, b, want) in [
+            ("Date", "DateTime", "DateTime64(3)"),
+            ("DateTime", "Date", "DateTime64(3)"),
+            ("DateTime", "DateTime64(6)", "DateTime64(6)"),
+            ("DateTime64(6)", "DateTime", "DateTime64(6)"),
+            ("Date", "DateTime64(6)", "DateTime64(6)"),
+            ("FixedString(5)", "String", "String"),
+            ("String", "FixedString(5)", "String"),
+            ("Bool", "UInt8", "Int64"),
+            ("UInt8", "Bool", "Int64"),
+            // The issue's Float32/Float64 row: `=` compares them in Float64,
+            // and the widening changes the text of a narrow value (0.3
+            // becomes '0.30000001192092896'), so the text keys have to
+            // compare in that type too.
+            ("Float32", "Float64", "Float64"),
+        ] {
+            assert_eq!(kp(a).widen_to(&kp(b)).unwrap().raw, want, "{a} with {b}");
+            assert_eq!(
+                kp(b).widen_to(&kp(a)).unwrap().raw,
+                want,
+                "{b} with {a} (symmetric)"
+            );
+        }
+    }
+
+    /// A `Decimal` is exact: no table entry says how `=` compares it with a
+    /// binary float, so the pair keeps today's SQL (no cast either way).
+    #[test]
+    fn decimal_against_a_float_stays_uncast() {
+        assert_eq!(kp("Decimal(10,2)").widen_to(&kp("Float64")), None);
+        assert_eq!(kp("Float64").widen_to(&kp("Decimal(10,2)")), None);
+    }
+
+    /// No cast when the two already spell the same thing — which also retires
+    /// the blanket `CAST(... AS String)` the first version put on every
+    /// discovered String key.
+    #[test]
+    fn matching_spellings_need_no_cast() {
+        for raw in [
+            "String",
+            "Int64",
+            "UInt64",
+            "Date",
+            "DateTime",
+            "DateTime64(3)",
+        ] {
+            assert_eq!(kp(raw).widen_to(&kp(raw)), None, "{raw} against itself");
+        }
+        // Same generic type, different spellings `=` already agrees on.
+        assert_eq!(kp("Int64").widen_to(&kp("UInt64")), None, "same digits");
+        assert_eq!(kp("String").widen_to(&kp("LowCardinality(String)")), None);
+    }
+
+    /// Every pair outside the table keeps today's SQL.
+    #[test]
+    fn unlisted_pairs_stay_unchanged() {
+        for (a, b) in [
+            ("Int64", "Float64"),
+            ("Float64", "Int64"),
+            ("Decimal(10,2)", "Int64"),
+            ("UUID", "String"),
+            ("String", "UUID"),
+            ("Int64", "Date"),
+            ("Bool", "String"),
+            ("UUID", "Int64"),
+        ] {
+            assert_eq!(kp(a).widen_to(&kp(b)), None, "{a}/{b} is not in the table");
+        }
+    }
+
+    /// Casting a Nullable column to a non-nullable type raises
+    /// `Code: 349`, so the widened target keeps the wrapper.
+    #[test]
+    fn a_nullable_side_keeps_the_wrapper() {
+        for (a, b, want_nullable) in [
+            ("Nullable(DateTime)", "Date", true),
+            ("Date", "Nullable(DateTime)", true),
+            ("Nullable(DateTime)", "DateTime64(6)", true),
+            ("Nullable(UInt8)", "Bool", true),
+            ("Date", "DateTime", false),
+        ] {
+            let got = kp(a).widen_to(&kp(b)).expect("widened");
+            assert_eq!(got.nullable, want_nullable, "{a} with {b}");
+        }
+    }
+
+    /// The node key is one CTE shared by every arm, so all sides must agree.
+    /// Folding is what makes that structural rather than something each arm
+    /// re-derives: a Date node, one arm ending DateTime and another ending Date
+    /// all settle on one target.
+    #[test]
+    fn fold_gives_every_side_one_target() {
+        for parts in [
+            vec![kp("Date"), kp("DateTime"), kp("Date")],
+            vec![kp("DateTime"), kp("Date"), kp("Date")],
+            vec![kp("Date"), kp("Date"), kp("DateTime")],
+        ] {
+            assert_eq!(fold_common(&parts).expect("folded").raw, "DateTime64(3)");
+        }
+        // One type needs no cast; so does an empty or unsupported set.
+        assert_eq!(fold_common(&[]), None);
+        assert_eq!(fold_common(&[kp("String"), kp("String")]), None);
+        assert_eq!(fold_common(&[kp("Date"), kp("Date")]), None);
+        assert_eq!(fold_common(&[kp("Int64"), kp("Float64")]), None);
+        // Bool/UInt8 across a fold.
+        assert_eq!(
+            fold_common(&[kp("Bool"), kp("UInt8"), kp("UInt8")])
+                .expect("folded")
+                .raw,
+            "Int64"
+        );
+        // Nullable anywhere in the fold keeps the wrapper on the target.
+        let f = fold_common(&[kp("Date"), kp("Nullable(DateTime)")]).expect("folded");
+        assert_eq!(f.raw, "DateTime64(3)");
+        assert!(f.nullable, "a dangling end must not raise Code 349");
     }
 }

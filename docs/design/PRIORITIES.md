@@ -819,8 +819,32 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 - 2026-10-11: **P-4c S8d2a: shortest paths between composite ids** (#1359, `src/bound_plan/lower/path.rs` `composite_key` / `Search::node_key`, behind `CLICKGRAPH_BOUND_PLAN=on`).
   - The shortest-path search keys a node by the dialect's text of its id's tuple (`toString(tuple(bank, num))`: no two ids share it, unlike the generator's `|`-joined text), computed where it reads a node or a relationship's end; the relation's ends are tied by the same key. Conditions the search cannot hold pick among the generator's trails keyed alike from their `start_<col>` / `end_<col>` (`vlp_{var}_keyed`). A relationship row with a NULL end part relates no node.
   - Sweeps: 20 composite shortest-path shapes, all equal Neo4j (legacy wrong / erroring on all 20); the review's 49, rerun, equal but older gaps. Oracle unchanged (no corpus query); mutation check 5 of 6 (the sixth a pushdown, pinned). Live suite unchanged.
-  - Review: 2 findings fixed (NULL id parts related nodes; MATERIALIZED / ALIAS columns through `SELECT *`). Known gap: parts spelled differently by node and edge column types (FixedString vs String). Filed #1358 (undirected walks over columns of other signedness).
+  - Review: 2 findings fixed (NULL id parts related nodes; MATERIALIZED / ALIAS columns through `SELECT *`). Known gap: parts spelled differently by node and edge column types (FixedString vs String). Filed #1358 (undirected walks over columns of other signedness) and #1360 (text keys vs differently typed columns).
   - Not lowered (S8d2c): a composite shortest path read as a path (`RETURN p`, `nodes(p)`, `DISTINCT p`).
+
+- **#1360 addressed (PR #1498).** A by-keys walk compares
+  its keys as *text*, so two columns of different types spell differently and never join
+  (`toString(Date)` vs a `DateTime`'s; `toString(Bool)` `'true'` vs a `UInt8`'s `'1'`).
+  Each key part is now cast on **both** sides to the least common type of that part's
+  (node, edge) pair, folded across every relationship type in the walk because the node
+  key is one CTE shared by all of them. The target is always the wider type — an earlier
+  version of this PR cast the edge side *down* to the node's type, which widened a `Date`
+  to midnight and matched rows `=` correctly refuses (review finding). Nullable on either
+  side keeps the `Nullable(..)` wrapper (`Code: 349` otherwise). Covered: single and
+  composite ids, per part; `Date`/`DateTime`/`DateTime64(scale)`; `FixedString`/`String`;
+  `Bool`/`UInt8`; `Float32`/`Float64` (both cast to `Float64`, the type `=` compares
+  them in — equal texts, unequal values, was the table's reverse row); declared
+  `property_mappings` schemas (their column types are now discovered too, without
+  exposing any new property); and all three key spellings of a walk — the union walk's
+  node CTE, its relationship ends, and the tie-back that recovers a shortest path's ends —
+  plus, of the review's item 6, the *single-definition* composite `shortestPath`: its BFS
+  keys (`path::Search`), the search's keyed trails, and the search's pair tie-backs now
+  spell the same fold the union walks do (the fold is computed once per walk from the
+  node's and the edge's ends' part types, `Lowerer::path_key_targets`). A single-column
+  id's BFS joins its columns typed `=`, which already compares in ClickHouse's common
+  type: its SQL is unchanged. Two walks over one label order their folds (each ties its
+  ends before the next walk is lowered; tested). #1358 (other signedness) and the
+  walk-constraints text gap (#1402) remain.
 
 - 2026-10-11: **P-4c S9: subquery expressions** (#1357, `src/bound_plan/expr.rs` `hoist_subqueries`, `binder.rs` `bind_subquery`, `src/bound_plan/lower/subquery.rs`, `FunctionMapper::null_safe_equal` / `Lists::collect_all`, behind `CLICKGRAPH_BOUND_PLAN=on`).
   - `EXISTS { … }`, pattern predicates, `exists(pattern)`, `size(pattern)` (Cypher 4's; Neo4j 5's `COUNT {}`), `size([pattern …])` and pattern comprehensions of values are bound as MATCHes over the expression's scope (an explicit correlation set, carried as the placeholder's arguments) and lowered as a LEFT JOIN of their matches grouped by the correlation: a boolean, count or NULL-keeping list per row. The drive reads a copy of the rows, so subqueries apply mid-MATCH, inside OPTIONAL MATCH and nested. A WITH WHERE reading a subquery of projected names is a filter after the projection.

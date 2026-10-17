@@ -19,8 +19,6 @@ use tower_http::timeout::TimeoutLayer;
 
 use dotenvy::dotenv;
 use tokio::net::TcpListener;
-#[cfg(windows)]
-use tokio::signal;
 use tokio::sync::{OnceCell, RwLock, Semaphore};
 
 use crate::config::ServerConfig;
