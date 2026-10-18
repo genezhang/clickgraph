@@ -783,10 +783,13 @@ struct Lowerer<'s> {
     key_targets: HashMap<VarId, Vec<Option<String>>>,
     /// The same folds, by label — the fallback [`Self::walk_key`] reads when
     /// the key it spells belongs to an endpoint variable of the walk, which
-    /// never carries an entry of [`Self::key_targets`]. Deterministic per
-    /// (label, arms), like any walk: walk construction ties its own ends
-    /// before lowering the next walk, so even when two walks share a label,
-    /// each reads the fold of its own arms.
+    /// never carries an entry of [`Self::key_targets`]. Its entries live only
+    /// WHILE the walk that records them is being built
+    /// ([`Self::build_union_path`]: recorded under that walk's arms before its
+    /// first restriction is spelled, dropped when it returns), so a later walk
+    /// over a shared label never reads another walk's fold — a filtered seed
+    /// must spell this walk's fold, which before was a previous walk's or none
+    /// at all.
     key_targets_by_label: HashMap<String, Vec<Option<String>>>,
     /// Paths a grouping RETURN (DISTINCT, an aggregation) returns: its
     /// ORDER BY reads their lengths as any of a group's, which the path
@@ -3835,7 +3838,23 @@ impl<'s> Lowerer<'s> {
         }
         labels.sort();
         labels.dedup();
+        // #1360, review round 3: a filtered or bound end spells its rows
+        // THROUGH `walk_key`, whose (label, arms) fold is read from this map —
+        // so record every label's fold under THIS walk's arms before the first
+        // restriction is spelled, and drop the entries again when the walk is
+        // built (see the returns below). Recorded `walk_nodes`-time, the seed
+        // read an entry a previous walk had left over a shared label — or none
+        // at all — and spelled a raw (or foreign-widened) key against this
+        // walk's casted node CTE, which matched nothing: the issue's own
+        // filtered query returns rows none, and queries main gets right lose
+        // them. Scoped to the call: what a later walk reads, it computes from
+        // its own (label, arms).
+        for label in &labels {
+            let targets = self.walk_key_targets(label, &arms);
+            self.key_targets_by_label.insert(label.clone(), targets);
+        }
         let Some(start) = self.walk_restriction(first, own, path::START, &labels)? else {
+            self.unrecord_walk_folds(&labels);
             self.scans.insert(r.var, Scan::Impossible);
             return Ok(());
         };
@@ -3845,6 +3864,7 @@ impl<'s> Lowerer<'s> {
             Some(_) => match self.walk_restriction(last, own, path::END, &labels)? {
                 Some(end) => end,
                 None => {
+                    self.unrecord_walk_folds(&labels);
                     self.scans.insert(r.var, Scan::Impossible);
                     return Ok(());
                 }
@@ -3921,6 +3941,7 @@ impl<'s> Lowerer<'s> {
                 )?;
                 let Some((mut ctes, keyed, edges)) = found else {
                     // Its conditions allow no length of its range.
+                    self.unrecord_walk_folds(&labels);
                     self.scans.insert(r.var, Scan::Impossible);
                     return Ok(());
                 };
@@ -3951,7 +3972,7 @@ impl<'s> Lowerer<'s> {
         let column = |c: &str| col_at(&alias, c);
         let ends = [
             (first, first_labels, path::START_LABEL, "start_id"),
-            (last, labels, path::END_LABEL, "end_id"),
+            (last, labels.clone(), path::END_LABEL, "end_id"),
         ];
         for (end, held, label, id) in ends {
             let label = EndLabel::of(held, column(label));
@@ -3961,7 +3982,19 @@ impl<'s> Lowerer<'s> {
                 false => self.tie_end(r.var, end, label, vec![column(id)], false)?,
             }
         }
+        // The walk is built — its ties were spelled while its folds still
+        // held — so a later walk over a shared label spells only ever its own.
+        self.unrecord_walk_folds(&labels);
         Ok(())
+    }
+
+    /// Drop [`Self::key_targets_by_label`]'s entries for `labels`: a walk
+    /// records its folds only while it is being built (`build_union_path`),
+    /// from its own arms, so a later walk never borrows them.
+    fn unrecord_walk_folds(&mut self, labels: &[String]) {
+        for label in labels {
+            self.key_targets_by_label.remove(label);
+        }
     }
 
     /// The arms a walk of a relationship of one of `types` follows
@@ -4152,13 +4185,10 @@ impl<'s> Lowerer<'s> {
             // The shortest-path tie-back spells this key again from the node's
             // own table; record the target so it spells it the same way.
             self.key_targets.insert(v, targets.clone());
-            // The search ties its ends by variable (`tie_end_by_key` ->
-            // `walk_key`), and an endpoint carries no entry under the walk
-            // itself; label keys this fold for those, deterministically per
-            // (label, arms). Walk construction ties its own ends before the
-            // next walk is built, so a shared label never crosses walks.
-            self.key_targets_by_label
-                .insert(label.clone(), targets.clone());
+            // (The label-keyed folds are `build_union_path`'s: recorded under
+            // its own arms before its first restriction is spelled and
+            // dropped when it returns, so `walk_key`'s label fallback never
+            // crosses walks.)
             let ids: Vec<String> = ns
                 .id_physical_columns()
                 .iter()

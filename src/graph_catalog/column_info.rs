@@ -162,7 +162,9 @@ pub async fn query_table_column_info(
     Ok(columns)
 }
 
-/// A table whose columns a schema asks to discover (`auto_discover_columns: true`).
+/// A table whose columns a schema reads. `auto_discover_columns: true` makes
+/// its columns the properties; any table is also read for its id columns'
+/// types alone (#1360).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ColumnDiscoveryTarget {
     /// The schema element that asked, for messages: `node 'User'`, `edge 'FOLLOWS'`.
@@ -171,6 +173,12 @@ pub struct ColumnDiscoveryTarget {
     pub table: String,
     /// The element's `source:` URI (embedded chdb reads data from it).
     pub source: Option<String>,
+    /// Whether loading REQUIRES the read: `true` for `auto_discover_columns`
+    /// (the columns are the properties — an unreadable table is an error),
+    /// `false` for a declared-property table, whose read is for the walk
+    /// key's types alone; a failure there keeps the schema loadable, its keys
+    /// spelling exactly what they did before #1360's casts.
+    pub required: bool,
 }
 
 /// The columns read from the database for each discovery target, keyed by

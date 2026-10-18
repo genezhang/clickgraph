@@ -830,21 +830,34 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
   key is one CTE shared by all of them. The target is always the wider type — an earlier
   version of this PR cast the edge side *down* to the node's type, which widened a `Date`
   to midnight and matched rows `=` correctly refuses (review finding). Nullable on either
-  side keeps the `Nullable(..)` wrapper (`Code: 349` otherwise). Covered: single and
-  composite ids, per part; `Date`/`DateTime`/`DateTime64(scale)`; `FixedString`/`String`;
-  `Bool`/`UInt8`; `Float32`/`Float64` (both cast to `Float64`, the type `=` compares
-  them in — equal texts, unequal values, was the table's reverse row); declared
-  `property_mappings` schemas (their column types are now discovered too, without
-  exposing any new property); and all three key spellings of a walk — the union walk's
-  node CTE, its relationship ends, and the tie-back that recovers a shortest path's ends —
-  plus, of the review's item 6, the *single-definition* composite `shortestPath`: its BFS
+  side keeps the `Nullable(..)` wrapper (`Code: 349` otherwise), at any wrapper depth —
+  a `LowCardinality(Nullable(String))` is a nullable part, whose plain-String fold died
+  `Code: 349` on a NULL one (review round 3) — and a `DateTime64` folds to the **finer**
+  scale, the one `=` compares in (either side's own would truncate the other's digits and
+  match what `=` refuses; review round 3). The fold is a function of the set of sides,
+  not their discovery order (a pair outside the table once made the reach order-dependent;
+  round 3). Covered: single and composite ids, per part; `Date`/`DateTime`/`DateTime64(scale)`;
+  `FixedString`/`String`; `Bool`/`UInt8`; `Float32`/`Float64` (both cast to `Float64`, the
+  type `=` compares them in — equal texts, unequal values, was the table's reverse row).
+  Not covered: a zone-bearing pair of one instant (`DateTime('Asia/Tokyo')` against
+  `DateTime64(3,'UTC')` — a follow-up would spell the target's zone; round 3). The fold is
+  recorded under a walk's own arms before any of its restrictions are spelled, and dropped
+  when the walk returns (round 3; before, a filtered or bound end read a fold a previous
+  walk over a shared label had left — or none — and its seed matched nothing, and queries
+  main gets right lost rows). Column types are read for **every** table's id parts now,
+  a declared `property_mappings` schema's too — without exposing any new property, and
+  without making the schema load depend on that read (a required `auto_discover_columns`
+  read keeps its error; the others warn and spell no casts). The lowerer takes the
+  casting dialect from the query context (round 3; it always used ClickHouse before).
+  Covered spellings: the union walk's node CTE, its relationship ends, its filtered and
+  bound walks' seed rows, and the tie-back that recovers a shortest path's ends — plus,
+  of the review's item 6, the *single-definition* composite `shortestPath`: its BFS
   keys (`path::Search`), the search's keyed trails, and the search's pair tie-backs now
   spell the same fold the union walks do (the fold is computed once per walk from the
   node's and the edge's ends' part types, `Lowerer::path_key_targets`). A single-column
   id's BFS joins its columns typed `=`, which already compares in ClickHouse's common
-  type: its SQL is unchanged. Two walks over one label order their folds (each ties its
-  ends before the next walk is lowered; tested). #1358 (other signedness) and the
-  walk-constraints text gap (#1402) remain.
+  type: its SQL is unchanged. #1358 (other signedness) and the walk-constraints text gap
+  (#1402) remain.
 
 - 2026-10-11: **P-4c S9: subquery expressions** (#1357, `src/bound_plan/expr.rs` `hoist_subqueries`, `binder.rs` `bind_subquery`, `src/bound_plan/lower/subquery.rs`, `FunctionMapper::null_safe_equal` / `Lists::collect_all`, behind `CLICKGRAPH_BOUND_PLAN=on`).
   - `EXISTS { … }`, pattern predicates, `exists(pattern)`, `size(pattern)` (Cypher 4's; Neo4j 5's `COUNT {}`), `size([pattern …])` and pattern comprehensions of values are bound as MATCHes over the expression's scope (an explicit correlation set, carried as the placeholder's arguments) and lowered as a LEFT JOIN of their matches grouped by the correlation: a boolean, count or NULL-keeping list per row. The drive reads a copy of the rows, so subqueries apply mid-MATCH, inside OPTIONAL MATCH and nested. A WITH WHERE reading a subquery of projected names is a filter after the projection.

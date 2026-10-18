@@ -315,17 +315,28 @@ impl KeyPartType {
     /// spelling maps to [`SchemaType::Integer`], which is the no-cast path.
     pub fn parse(ch_type: &str) -> Self {
         let trimmed = ch_type.trim();
-        // Detect the wrapper case-insensitively but keep the spelling's own
-        // casing: `DateTime64(3)` has to survive as itself.
-        let nullable = {
-            let lowered = trimmed.to_ascii_lowercase();
-            lowered.starts_with("nullable(") && trimmed.ends_with(')')
-        };
-        let base = if nullable {
-            trimmed["nullable(".len()..trimmed.len() - 1].trim()
-        } else {
-            trimmed
-        };
+        // Detect the wrappers case-insensitively but keep the spelling's own
+        // casing: `DateTime64(3)` has to survive as itself. A `Nullable` may
+        // sit inside a `LowCardinality` — `LowCardinality(Nullable(String))`
+        // IS a nullable part, and reading it non-nullable folded its key to a
+        // plain `String`, so a NULL row's `CAST(<NULL> AS String)` failed
+        // (ClickHouse Code 349) instead of comparing — and a `Nullable` may
+        // itself wrap another wrapper, or a `LowCardinality` inside it.
+        let mut base = trimmed;
+        let mut nullable = false;
+        loop {
+            let lowered = base.to_ascii_lowercase();
+            if lowered.starts_with("nullable(") && base.ends_with(')') {
+                nullable = true;
+                base = base["nullable(".len()..base.len() - 1].trim();
+                continue;
+            }
+            if lowered.starts_with("lowcardinality(") && base.ends_with(')') {
+                base = base["lowcardinality(".len()..base.len() - 1].trim();
+                continue;
+            }
+            break;
+        }
         Self {
             schema: map_clickhouse_type(trimmed),
             nullable,
@@ -354,19 +365,17 @@ impl KeyPartType {
             // '2020-01-01 00:00:00'), so the wider type decides. Widen to a
             // DateTime64 only when one side already is one, so its scale
             // survives; otherwise spell through the enum, which owns that.
-            (Date, DateTime) | (DateTime, Date) => {
-                match self.datetime64_scale().or(other.datetime64_scale()) {
-                    Some(s) => format!("DateTime64({s})"),
-                    None => DateTime.to_clickhouse_type().to_string(),
-                }
-            }
-            // DateTime vs DateTime64(scale): `=` compares in the finer type.
+            (Date, DateTime) | (DateTime, Date) => match finer_scale(self, other) {
+                Some(s) => format!("DateTime64({s})"),
+                None => DateTime.to_clickhouse_type().to_string(),
+            },
+            // DateTime vs DateTime64(scale): `=` compares in the finer type,
+            // so the fold target must be the finer side's scale — folding to
+            // either side's own scale would truncate the other's digits
+            // (a DateTime64(6) `.123456` becomes `.123`) and match text `=`
+            // does not (a DateTime64(3) node against a DateTime64(6) edge).
             (DateTime, DateTime) if self.is_datetime64() || other.is_datetime64() => {
-                let scale = self
-                    .datetime64_scale()
-                    .or(other.datetime64_scale())
-                    .unwrap_or(3);
-                format!("DateTime64({scale})")
+                format!("DateTime64({})", finer_scale(self, other).unwrap_or(3))
             }
             // `toString(FixedString)` already trims its padding, but cast
             // anyway so the spelling is explicit rather than incidental.
@@ -426,6 +435,16 @@ fn float_raw(raw: &str) -> bool {
     raw.to_ascii_lowercase().starts_with("float")
 }
 
+/// The finer of the two sides' `DateTime64` scales — `=` compares in the
+/// finer type, so the fold must cast to it; taking one side's own scale
+/// would truncate the other's digits and match text `=` refuses.
+fn finer_scale(a: &KeyPartType, b: &KeyPartType) -> Option<u32> {
+    match (a.datetime64_scale(), b.datetime64_scale()) {
+        (Some(x), Some(y)) => Some(x.max(y)),
+        (x, y) => x.or(y),
+    }
+}
+
 /// One type every side of a walk key part is compared in, or `None` when they
 /// already agree (or the mix is outside the table, so no cast is emitted).
 ///
@@ -435,7 +454,15 @@ fn float_raw(raw: &str) -> bool {
 /// silently stops joining. Folding the whole set makes that agreement
 /// structural instead of something each arm re-derives.
 pub fn fold_common(parts: &[KeyPartType]) -> Option<KeyPartType> {
-    let mut iter = parts.iter();
+    // Order-independent. The lattice's gaps make the fold's result depend
+    // on the input's order when a pair sits outside it ([Date, String,
+    // DateTime] folds the Date/DateTime pair while [String, Date, DateTime]
+    // folds nothing — the reach differs only by which arms discovered the
+    // sides in which order). Folding in a canonical order makes the fold a
+    // function of the SET, and its target one answer.
+    let mut sorted: Vec<&KeyPartType> = parts.iter().collect();
+    sorted.sort_by(|a, b| a.raw.to_ascii_lowercase().cmp(&b.raw.to_ascii_lowercase()));
+    let mut iter = sorted.into_iter();
     let mut acc = iter.next()?.clone();
     let mut widened = false;
     for part in iter {
@@ -849,6 +876,41 @@ mod walk_key_lct_tests {
             kp("LowCardinality(String)").schema,
             super::SchemaType::String
         );
+        // Wrapper order does not hide the nullability: a LowCardinality of a
+        // Nullable is nullable (round 3), and so is the other nesting.
+        let lc_nullable = kp("LowCardinality(Nullable(String))");
+        assert!(lc_nullable.nullable, "LowCardinality(Nullable( is nullable");
+        assert_eq!(lc_nullable.raw, "String", "both wrappers are stripped");
+        assert!(
+            kp("Nullable(LowCardinality(String))").nullable,
+            "Nullable(LowCardinality( is nullable too"
+        );
+        // A LowCardinality alone is not one, and the inner spelling survives.
+        assert!(!kp("LowCardinality(String)").nullable);
+        let lc_fixed = kp("LowCardinality(FixedString(8))");
+        assert!(!lc_fixed.nullable && lc_fixed.is_fixed_string());
+        assert_eq!(lc_fixed.raw, "FixedString(8)");
+
+        // The fold keeps it: a nullable String part against a plain one
+        // already agrees (no cast whose target could drop the flag), and
+        // against a FixedString it folds to Nullable(String) -- never a
+        // plain String, which a NULL row's CAST would die on (Code 349).
+        let plain = kp("String");
+        assert!(
+            a_from_widen(lc_nullable.clone(), plain).is_none(),
+            "a nullable String against a String needs no cast"
+        );
+        let folded = a_from_widen(kp("LowCardinality(Nullable(String))"), kp("FixedString(8)"));
+        assert_eq!(
+            folded.as_ref().map(|t| (t.raw.as_str(), t.nullable)),
+            Some(("String", true)),
+            "the fold's target keeps Nullable"
+        );
+    }
+
+    /// `KeyPartType::widen_to`, named so a test reads as its intent.
+    fn a_from_widen(a: super::KeyPartType, b: super::KeyPartType) -> Option<super::KeyPartType> {
+        a.widen_to(&b)
     }
 
     /// The target is always the WIDER type. Casting a DateTime end down to a
@@ -862,6 +924,12 @@ mod walk_key_lct_tests {
             ("DateTime", "Date", "DateTime64(3)"),
             ("DateTime", "DateTime64(6)", "DateTime64(6)"),
             ("DateTime64(6)", "DateTime", "DateTime64(6)"),
+            // Review round 3: the fold's target is the FINER scale — `=`
+            // compares in it, and either side's own scale would truncate the
+            // other's digits (a DateTime64(6) `.123456` becomes `.123`).
+            ("DateTime64(3)", "DateTime64(6)", "DateTime64(6)"),
+            ("DateTime64(6)", "DateTime64(3)", "DateTime64(6)"),
+            ("Date", "DateTime64(3)", "DateTime64(3)"),
             ("Date", "DateTime64(6)", "DateTime64(6)"),
             ("FixedString(5)", "String", "String"),
             ("String", "FixedString(5)", "String"),
@@ -972,5 +1040,23 @@ mod walk_key_lct_tests {
         let f = fold_common(&[kp("Date"), kp("Nullable(DateTime)")]).expect("folded");
         assert_eq!(f.raw, "DateTime64(3)");
         assert!(f.nullable, "a dangling end must not raise Code 349");
+        // The fold is order-independent (round 3, "fold order"): with a pair
+        // outside the lattice in the middle, one input order folded the
+        // Date/DateTime pair and another folded nothing — the reach must be
+        // one function of the set, not of the sides' discovery order. (The
+        // target stays masked today: CAST('x' AS DateTime64(3)) is Code 386.)
+        let folded = fold_common(&[kp("Date"), kp("String"), kp("DateTime")]);
+        for order in [
+            vec![kp("String"), kp("Date"), kp("DateTime")],
+            vec![kp("Date"), kp("DateTime"), kp("String")],
+            vec![kp("DateTime"), kp("String"), kp("Date")],
+        ] {
+            assert_eq!(
+                fold_common(&order).map(|t| t.raw),
+                folded.clone().map(|t| t.raw),
+                "every input order folds to one target"
+            );
+        }
+        assert_eq!(folded.expect("folded").raw, "DateTime64(3)");
     }
 }

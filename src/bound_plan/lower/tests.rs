@@ -4224,13 +4224,13 @@ graph_schema:
     );
 }
 
-/// The label fold is overwritten walk by walk (`walk_nodes`), so a walk has
-/// to tie its own ends before the next walk is built — or a later walk's
-/// different fold would spell an earlier walk's ties. Nothing tested that
-/// ordering; this does, with two walks (each a union of two types) over the
-/// same label whose folds disagree on both parts: the first's part 1 widens
-/// to `DateTime64(3)` (part 0 needs none), the second's part 0 to `String`
-/// (part 1 needs none).
+/// The fold is recorded per walk at its start (`build_union_path`), from its
+/// own arms, and dropped when it returns — so a walk spells its seed with its
+/// own fold, and a later walk over the same label never reads an earlier
+/// walk's. Nothing pinned the seed spell; this does, with two walks (each a
+/// union of two types) over the same label whose folds disagree on both
+/// parts: the first's part 1 widens to `DateTime64(3)` (part 0 needs none),
+/// the second's part 0 to `String` (part 1 needs none).
 ///
 /// The walks share the `e` row alias, so an assertion binds to its walk by
 /// reading that walk's own segment of the flattened query.
@@ -4361,6 +4361,258 @@ graph_schema:
     assert!(
         walk2.contains("CAST(e.k AS String)") && !walk2.contains("CAST(e.v AS"),
         "the second walk folds its part 0 only:\n{got}"
+    );
+}
+
+/// #1360, review round 3, blocker 1: a filtered or bound END of a by-keys
+/// union walk spells its seed rows before `walk_nodes` can record the fold —
+/// so the seed (`walk_key`) read the fold from a label map no walk had
+/// written yet and spelled the RAW tuple, which its own casted node CTE can
+/// never match (the issue's own filtered query returned no rows, and queries
+/// main gets right lost them). The fold is now recorded from the walk's own
+/// arms before the first restriction is spelled; this pins the seed's key as
+/// folded, and the walked CTE's key it must equal.
+///
+/// Same schema as the walks above: part 0 is String everywhere (never cast),
+/// part 1 folds Date/DateTime to `DateTime64(3)`.
+#[test]
+fn a_filtered_seed_spells_the_folds_1360() {
+    let config = crate::graph_catalog::config::GraphSchemaConfig::from_yaml_str(
+        r#"
+name: lower_composite_keys
+graph_schema:
+  nodes:
+    - label: Pair
+      database: db
+      table: pairs
+      node_id: [k, v]
+      auto_discover_columns: true
+      property_mappings: {}
+  edges:
+    - type: CE1
+      database: db
+      table: ce1
+      from_id: [kk, vv]
+      to_id: [kk2, vv2]
+      from_node: Pair
+      to_node: Pair
+      auto_discover_columns: true
+      property_mappings: {}
+    - type: CE2
+      database: db
+      table: ce2
+      from_id: [kk, vv]
+      to_id: [kk2, vv2]
+      from_node: Pair
+      to_node: Pair
+      auto_discover_columns: true
+      property_mappings: {}
+"#,
+    )
+    .unwrap();
+    let mut columns = crate::graph_catalog::column_info::DiscoveredColumns::default();
+    let col = |name: &str, ty: &str| {
+        crate::graph_catalog::column_info::ColumnInfo::new(name.to_string(), ty.to_string())
+    };
+    columns.insert("db", "pairs", vec![col("k", "String"), col("v", "Date")]);
+    columns.insert(
+        "db",
+        "ce1",
+        vec![
+            col("kk", "String"),
+            col("vv", "DateTime"),
+            col("kk2", "String"),
+            col("vv2", "Date"),
+        ],
+    );
+    columns.insert(
+        "db",
+        "ce2",
+        vec![
+            col("kk", "String"),
+            col("vv", "Date"),
+            col("kk2", "String"),
+            col("vv2", "Date"),
+        ],
+    );
+    let schema = config.to_graph_schema_with_columns(&columns).unwrap();
+    let got = lowered(
+        "MATCH (a:Pair {k: 'a'})-[:CE1|CE2*1..2]->(b:Pair) RETURN count(*)",
+        &schema,
+        &crate::bound_plan::lower::LowerOptions::default(),
+    );
+    // The seed's rows are THIS walk's fold: the key restricted to the node's
+    // own table spells part 1 as the fold does.
+    assert!(
+        got.contains(
+            "concat('Pair', ':', \
+             toString(tuple(v0.k, CAST(v0.v AS DateTime64(3)))))"
+        ),
+        "the filtered seed spells the folded key:\n{got}"
+    );
+    // ...never the raw tuple, which the walked key (cast) can surely differ
+    // from -- the fold must exist BEFORE the seed, or nothing joins.
+    assert!(
+        !got.contains("toString(tuple(v0.k, v0.v))"),
+        "the seed never spells the raw tuple:\n{got}"
+    );
+    assert!(
+        got.contains(
+            "(SELECT DISTINCT 'Pair' AS \"label\", concat('Pair', ':', toString(tuple(v0.k, \
+             CAST(v0.v AS DateTime64(3))))) AS \"id\" FROM db.pairs AS v0 WHERE v0.k = 'a')"
+        ),
+        "the seed's rows are the node's own table narrowed by its conjuncts:\n{got}"
+    );
+}
+
+/// #1360, review round 3, blocker 1, the two-walk shape: the folds are keyed
+/// by LABEL only so a later walk over the same label used to READ the first
+/// walk's fold while spelling its own seed — right here, `{k: 'd'}`'s seed
+/// for a walk whose own fold casts part 0 to String would borrow part 1's
+/// `DateTime64(3)` from the walk before it, and restrict rows its own node
+/// CTE spells raw. Each walk records its folds under its own arms and drops
+/// them when it returns, so the second walk spells only its own.
+///
+/// Same schema as the test above, plus the CE4|CE5 arms of the two-walks
+/// test: part 0 folds to String through the FixedString ends, part 1 is Date
+/// everywhere (needs no cast).
+#[test]
+fn a_later_walks_filtered_seed_spells_its_own_fold_1360() {
+    let config = crate::graph_catalog::config::GraphSchemaConfig::from_yaml_str(
+        r#"
+name: lower_composite_keys
+graph_schema:
+  nodes:
+    - label: Pair
+      database: db
+      table: pairs
+      node_id: [k, v]
+      auto_discover_columns: true
+      property_mappings: {}
+  edges:
+    - type: CE1
+      database: db
+      table: ce1
+      from_id: [kk, vv]
+      to_id: [kk2, vv2]
+      from_node: Pair
+      to_node: Pair
+      auto_discover_columns: true
+      property_mappings: {}
+    - type: CE2
+      database: db
+      table: ce2
+      from_id: [kk, vv]
+      to_id: [kk2, vv2]
+      from_node: Pair
+      to_node: Pair
+      auto_discover_columns: true
+      property_mappings: {}
+    - type: CE4
+      database: db
+      table: ce4
+      from_id: [kk, vv]
+      to_id: [kk2, vv2]
+      from_node: Pair
+      to_node: Pair
+      auto_discover_columns: true
+      property_mappings: {}
+    - type: CE5
+      database: db
+      table: ce5
+      from_id: [kk, vv]
+      to_id: [kk2, vv2]
+      from_node: Pair
+      to_node: Pair
+      auto_discover_columns: true
+      property_mappings: {}
+"#,
+    )
+    .unwrap();
+    let mut columns = crate::graph_catalog::column_info::DiscoveredColumns::default();
+    let col = |name: &str, ty: &str| {
+        crate::graph_catalog::column_info::ColumnInfo::new(name.to_string(), ty.to_string())
+    };
+    columns.insert("db", "pairs", vec![col("k", "String"), col("v", "Date")]);
+    columns.insert(
+        "db",
+        "ce1",
+        vec![
+            col("kk", "String"),
+            col("vv", "DateTime"),
+            col("kk2", "String"),
+            col("vv2", "Date"),
+        ],
+    );
+    columns.insert(
+        "db",
+        "ce2",
+        vec![
+            col("kk", "String"),
+            col("vv", "Date"),
+            col("kk2", "String"),
+            col("vv2", "Date"),
+        ],
+    );
+    columns.insert(
+        "db",
+        "ce4",
+        vec![
+            col("kk", "FixedString(8)"),
+            col("vv", "Date"),
+            col("kk2", "String"),
+            col("vv2", "Date"),
+        ],
+    );
+    columns.insert(
+        "db",
+        "ce5",
+        vec![
+            col("kk", "String"),
+            col("vv", "Date"),
+            col("kk2", "FixedString(8)"),
+            col("vv2", "Date"),
+        ],
+    );
+    let schema = config.to_graph_schema_with_columns(&columns).unwrap();
+    let got = lowered(
+        "MATCH p1=(a:Pair)-[:CE1|CE2*1..2]->(b:Pair) WITH count(p1) AS c1 \
+         MATCH p2=(d:Pair {k: 'd'})-[:CE4|CE5*1..2]->(e:Pair) RETURN count(p2)",
+        &schema,
+        &crate::bound_plan::lower::LowerOptions::default(),
+    );
+    // The FIRST walk's node CTE widens part 1 (Date against DateTime)...
+    assert!(
+        got.contains("CAST(e.v AS DateTime64(3))"),
+        "the first walk folds its part 1:\n{got}"
+    );
+    // ...yet the SECOND walk's filtered seed spells its OWN fold: part 0
+    // cast to String (its arms' FixedString ends widened it), part 1 raw --
+    // never the first walk's fold (a DateTime64 part 1), which it used to
+    // read from a label still holding it, and whose widened key its own
+    // node CTE spells raw. Pinned row for row:
+    assert!(
+        got.contains(
+            "(SELECT DISTINCT 'Pair' AS \"label\", concat('Pair', ':', \
+             toString(tuple(CAST(v5.k AS String), v5.v))) AS \"id\" FROM db.pairs AS v5 \
+             WHERE v5.k = 'd')"
+        ),
+        "the second walk's seed spells its own fold only:\n{got}"
+    );
+    // The borrow: while spelling its seed, the second walk's PART 1 must
+    // read raw. If the first walk's fold were still readable it would spell
+    // `CAST(<alias>.v AS DateTime64(3))` in the seed's row select.
+    let walk2 = match got.find("vlp_v6_nodes") {
+        Some(at) => &got[at..],
+        None => panic!("the second walk is not in\n{got}"),
+    };
+    assert!(
+        !walk2.contains("AS DateTime64(3)"),
+        "the second walk spells no DateTime64 fold at all:\n{walk2}"
+    );
+    assert!(
+        got.contains("concat('Pair', ':', toString(tuple(CAST(e.k AS String), e.v)))"),
+        "the second walk spells its own folded key:\n{got}"
     );
 }
 

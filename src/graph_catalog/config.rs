@@ -2269,55 +2269,62 @@ impl GraphSchemaConfig {
         self.validate()
     }
 
-    /// The tables whose columns this schema asks to discover
-    /// (`auto_discover_columns: true`), in definition order.
+    /// The tables whose columns this schema reads, in definition order: every
+    /// one whose `auto_discover_columns` asks (its columns are the
+    /// properties), plus every remaining table read for its id columns' types
+    /// alone — a declared-property schema gets its walk keys' types too
+    /// (#1360, round 3): `(required, auto_discover_columns)` makes the
+    /// difference, and the caller of [`Self::to_graph_schema_with_client`]
+    /// treats an unreadable `required` table as an error and the rest as a
+    /// warning.
     pub fn column_discovery_targets(&self) -> Vec<ColumnDiscoveryTarget> {
         let gs = &self.graph_schema;
-        let nodes = gs
-            .nodes
-            .iter()
-            .filter(|n| n.auto_discover_columns)
-            .map(|n| {
-                (
-                    format!("node '{}'", n.label),
-                    &n.database,
-                    &n.table,
-                    &n.source,
-                )
-            });
-        let relationships = gs
-            .relationships
-            .iter()
-            .filter(|r| r.auto_discover_columns)
-            .map(|r| {
-                (
-                    format!("relationship '{}'", r.type_name),
-                    &r.database,
-                    &r.table,
-                    &r.source,
-                )
-            });
-        let edges = gs.edges.iter().filter_map(|e| match e {
-            EdgeDefinition::Standard(e) if e.auto_discover_columns => Some((
+        let nodes = gs.nodes.iter().map(|n| {
+            (
+                format!("node '{}'", n.label),
+                &n.database,
+                &n.table,
+                &n.source,
+                n.auto_discover_columns,
+            )
+        });
+        let relationships = gs.relationships.iter().map(|r| {
+            (
+                format!("relationship '{}'", r.type_name),
+                &r.database,
+                &r.table,
+                &r.source,
+                r.auto_discover_columns,
+            )
+        });
+        let edges = gs.edges.iter().map(|e| match e {
+            EdgeDefinition::Standard(e) => (
                 format!("edge '{}'", e.type_name),
                 &e.database,
                 &e.table,
                 &e.source,
-            )),
-            EdgeDefinition::Polymorphic(e) if e.auto_discover_columns => {
-                Some((polymorphic_edge_owner(e), &e.database, &e.table, &None))
-            }
-            _ => None,
+                e.auto_discover_columns,
+            ),
+            EdgeDefinition::Polymorphic(e) => (
+                polymorphic_edge_owner(e),
+                &e.database,
+                &e.table,
+                &None,
+                e.auto_discover_columns,
+            ),
         });
         nodes
             .chain(relationships)
             .chain(edges)
-            .map(|(owner, database, table, source)| ColumnDiscoveryTarget {
-                owner,
-                database: database.clone(),
-                table: table.clone(),
-                source: source.clone(),
-            })
+            .map(
+                |(owner, database, table, source, required)| ColumnDiscoveryTarget {
+                    owner,
+                    database: database.clone(),
+                    table: table.clone(),
+                    source: source.clone(),
+                    required,
+                },
+            )
             .collect()
     }
 
@@ -2369,12 +2376,29 @@ impl GraphSchemaConfig {
             if columns.contains(&target.database, &target.table) {
                 continue;
             }
-            let info = query_table_column_info(client, &target.database, &target.table)
-                .await
-                .map_err(|e| GraphSchemaError::ConfigReadError {
-                    error: format!("Failed to query columns for {}: {}", target.owner, e),
-                })?;
-            columns.insert(&target.database, &target.table, info);
+            let info = query_table_column_info(client, &target.database, &target.table).await;
+            match info {
+                Ok(info) => columns.insert(&target.database, &target.table, info),
+                // A required read IS the properties (`auto_discover_columns`);
+                // otherwise the read was for the walk key's types alone: load
+                // on, spelling that table's keys as before the casts.
+                Err(e) if !target.required => {
+                    log::warn!(
+                        "⚠️  {}: its table {}.`{}` cannot be read for id types \
+                         ({}); its walk keys spell no casts",
+                        target.owner,
+                        target.database,
+                        target.table,
+                        e
+                    );
+                    continue;
+                }
+                Err(e) => {
+                    return Err(GraphSchemaError::ConfigReadError {
+                        error: format!("Failed to query columns for {}: {}", target.owner, e),
+                    });
+                }
+            }
         }
 
         let mut engines = HashMap::new();
@@ -4845,11 +4869,43 @@ graph_schema:
     fn targets_are_the_elements_that_ask() {
         let targets = config().column_discovery_targets();
         let owners: Vec<_> = targets.iter().map(|t| t.owner.as_str()).collect();
-        assert_eq!(owners, ["node 'User'", "edge 'FOLLOWS'"]);
+        // Every table is on the read list now: the auto ones for their
+        // columns-as-properties, the declared ones for their id types
+        // (#1360, round 3) — with the difference named (`required`).
+        assert_eq!(owners, ["node 'User'", "node 'Post'", "edge 'FOLLOWS'"]);
         assert_eq!(
             (targets[0].database.as_str(), targets[0].table.as_str()),
             ("db", "users")
         );
+        assert_eq!(
+            targets.iter().map(|t| t.required).collect::<Vec<_>>(),
+            [true, false, true],
+            "an auto table's read is required, a declared one's is not"
+        );
+    }
+
+    /// A declared-property node, whose table was read, keeps its mappings
+    /// (discovery is for the walk keys' types alone) but gets those types.
+    #[test]
+    fn a_declared_table_gets_types_but_keeps_its_mappings() {
+        let mut with_posts = discovered();
+        // An extra column only discovery could add.
+        with_posts.insert("db", "posts", columns(&["post_id", "content", "extra_col"]));
+        let schema = config().to_graph_schema_with_columns(&with_posts).unwrap();
+        let post = schema.node_schema("Post").unwrap();
+        // The mapping is exactly what the declared build has: discovery did
+        // not add `extra_col`.
+        let without = config()
+            .to_graph_schema_with_columns(&discovered())
+            .unwrap();
+        assert_eq!(
+            post.property_mappings,
+            without.node_schema("Post").unwrap().property_mappings,
+            "a declared table's properties stay its declared ones"
+        );
+        // ...but the id column's type did reach the walk key.
+        assert_eq!(post.node_id.part_types.len(), 1);
+        assert_eq!(post.node_id.part_types[0].raw, "String");
     }
 
     #[test]
@@ -4932,7 +4988,12 @@ graph_schema:
             .into_iter()
             .map(|t| t.owner)
             .collect();
-        assert_eq!(owners, ["polymorphic edge on `db`.`interactions`"]);
+        // The node's declared table is read for its id type; the polymorphic
+        // edge's is required and last in definition order.
+        assert_eq!(
+            owners,
+            ["node 'User'", "polymorphic edge on `db`.`interactions`"]
+        );
         assert!(config.to_graph_schema().is_err());
 
         let mut discovered = DiscoveredColumns::default();

@@ -1127,7 +1127,8 @@ types, definitions or labels; `Lowerer::build_union_path`, `path::Search`,
     `DateTime64` scales and knows nothing of nullability), so the discovered
     spelling is kept; the target's *spelling* is the dialect axis's
     (`SqlDialect::cast_target`). Only the pairs above are reconciled — every
-    other combination keeps the SQL it had.
+    other combination keeps the SQL it had, and the zone-less targets leave a
+    zone-bearing pair of one instant (a follow-up) to keep its own SQL too.
 - **Ends.** The last node is restricted as the first is (by label and id
   `IN` the rows so far or its own conjuncts, §4.8 d), and the search stops
   once it has reached every value the last node can have. A label condition
@@ -1408,9 +1409,20 @@ types, definitions or labels; `Lowerer::build_union_path`, `path::Search`,
   `Date` node widens the Date to midnight and would manufacture matches), and
   the fold is symmetric (`Float32`/`Float64` both cast to `Float64`: the
   Float32 0.3 that widens to '0.30000001192092896' falls apart from a Float64
-  0.3 exactly where `=` does). The parts still agreeing spell no cast. A
-  mix outside the table (`Int64` against `Float64`, a `Decimal` column,
-  `-0.`) is left uncast: its SQL is what it was before.
+  0.3 exactly where `=` does). `DateTime64` folds to the **finer** scale, the
+  one `=` compares in — either side's own scale would truncate the other's
+  digits (a DateTime64(6) `.123456` becomes `.123` and matches what `=`
+  refuses). A `Nullable` at any wrapper depth keeps the `Nullable(..)` in the
+  target (`LowCardinality(Nullable(String))` is a nullable part; a plain-String
+  target dies `Code: 349` on a NULL one), and the fold is a function of the
+  SET of sides, not the order they were discovered in (a pair outside the
+  table once made the reach depend on that order). The parts still agreeing
+  spell no cast. A mix outside the table (`Int64` against `Float64`, a
+  `Decimal` column, `-0.`) is left uncast: its SQL is what it was before. The
+  targets are spelled zone-less, so a zone-bearing pair of one instant —
+  `DateTime('Asia/Tokyo')` against `DateTime64(3,'UTC')` — is not covered
+  (a follow-up would spell the target's zone); the table is not complete past
+  that.
 - **Conditions the search cannot hold** (§4.8: a length it does not bound,
   a lower bound above 1, a condition on an end): the pick reads the
   generator's trails through `vlp_{var}_keyed`, their ends keyed alike from
@@ -1446,10 +1458,14 @@ ids, `Lowerer::walks_by_keys` / `walk_key`, `walk_key_sql`):
   `String`): fixed the same way — every side of every part is cast to one
   fold across the node and all the walk's arms' ends (`walk_key_targets`),
   pre-spelled by the dialect, and a walk's ends tie by the same fold read
-  through their label when the key was spelled elsewhere in the walk. Each
-  walk ties its ends before the next walk is lowered, so a shared label
-  never borrows another walk's fold (tested with two walks whose folds
-  disagree on both parts).
+  through their label when the key was spelled elsewhere in the walk. The
+  fold is recorded under this walk's arms before any of its restrictions are
+  spelled, and dropped again when the walk returns: a filtered or bound end
+  spells its seed rows THROUGH that fold, which before was read from a label
+  a previous walk over a shared label had left (or from nothing), spelling a
+  key own CTE could not match — a later walk never borrows another's (tested
+  with two walks whose folds disagree on both parts, and with filtered seeds
+  of both).
 - A walk's definitions still share one end arity (`rel_union_shape`); a
   union's identity columns of different types fail as before (#1352).
 
