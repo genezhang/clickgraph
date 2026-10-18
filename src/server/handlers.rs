@@ -1586,14 +1586,14 @@ async fn query_handler_inner(
             metrics.render_time = translation.timings.render.as_secs_f64();
             metrics.sql_generation_time = translation.timings.sql_generation.as_secs_f64();
             // Langfuse trace hook: detached and zero-cost unless configured.
-            let trace_dialect = match crate::server::query_context::get_current_dialect() {
-                crate::server::models::SqlDialect::Databricks => "databricks",
-                _ => "clickhouse",
-            };
+            // The dialect label comes from the axis's own spelling (`as_str`)
+            // — no raw dialect branching here (ratchet §2.1).
             crate::server::langfuse::trace_translation(
                 crate::server::langfuse::new_trace_id(),
                 clean_query.clone(),
-                trace_dialect.to_string(),
+                crate::server::query_context::get_current_dialect()
+                    .as_str()
+                    .to_string(),
                 schema_name.clone(),
                 (
                     metrics.planning_time,
