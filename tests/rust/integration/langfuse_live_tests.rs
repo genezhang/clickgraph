@@ -136,8 +136,6 @@ async fn trace_and_score_round_trip_to_real_langfuse() {
 }
 
 /// Tiny deterministic unique suffix without extra dependencies.
-
-/// Tiny deterministic unique suffix without extra dependencies.
 fn unique_suffix() -> String {
     use std::sync::atomic::{AtomicU64, Ordering};
     static C: AtomicU64 = AtomicU64::new(0);
