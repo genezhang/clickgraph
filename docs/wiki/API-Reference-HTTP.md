@@ -742,7 +742,7 @@ bounds on what can appear in the span text) is specified in
 | `CLICKGRAPH_OTLP_INCLUDE_QUERY` | `false` | Put the literals-stripped, sanitized Cypher text in the span (writes and comments gone; values never included unmasked) |
 | `CLICKGRAPH_OTLP_HEADERS` | (empty) | Static `key=value` headers for the exports, OTEL comma-separated form (e.g. `Authorization=Basic <basic64>`); values are percent-decoded per OTEL, marked sensitive, and malformed entries are warned about by position only |
 
-**Configuration** (env vars):
+Vendors mount the OTLP path wherever they like, so set `CLICKGRAPH_OTLP_ENDPOINT` to the base that makes `{endpoint}/v1/traces` the real URL — e.g. Langfuse 4.x serves OTLP at `http://<langfuse>/api/public/otel/v1/traces`, so its endpoint value is `http://<langfuse>/api/public/otel`.
 
 | Var | Default | Purpose |
 |-----|---------|---------|
