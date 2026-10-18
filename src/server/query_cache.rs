@@ -207,6 +207,11 @@ impl QueryCacheKey {
 struct CacheEntry {
     /// SQL template with $paramName placeholders
     sql_template: String,
+    /// The statement classification kept with the template (`None` when the
+    /// store path had no classification, e.g. the ad-hoc insert helper). A
+    /// cache hit runs no parser of its own, so the hit's metrics, counter and
+    /// span are labeled from here instead of collapsing into `other`.
+    query_type: Option<String>,
     /// Approximate size in bytes for memory tracking
     size_bytes: usize,
     /// Last access timestamp (for LRU)
@@ -216,10 +221,11 @@ struct CacheEntry {
 }
 
 impl CacheEntry {
-    fn new(sql_template: String) -> Self {
+    fn new(sql_template: String, query_type: Option<String>) -> Self {
         let size_bytes = sql_template.len() + std::mem::size_of::<Self>();
         CacheEntry {
             sql_template,
+            query_type,
             size_bytes,
             last_accessed: current_timestamp(),
             access_count: 0,
@@ -317,6 +323,14 @@ impl QueryCache {
     ///
     /// Returns Some(sql) if found, None if not cached
     pub fn get(&self, key: &QueryCacheKey) -> Option<String> {
+        self.get_with_type(key).map(|(sql, _)| sql)
+    }
+
+    /// Get the SQL template together with the statement classification kept
+    /// with it (`get_with_type`). The type rides in the entry so a cache hit
+    /// is recorded — counted and spanned — under the type it was classified
+    /// as when the template was stored, not as `other`.
+    pub fn get_with_type(&self, key: &QueryCacheKey) -> Option<(String, Option<String>)> {
         if !self.config.enabled {
             return None;
         }
@@ -325,7 +339,7 @@ impl QueryCache {
         if let Some(entry) = cache.get_mut(key) {
             entry.touch();
             self.hits.fetch_add(1, Ordering::Relaxed);
-            Some(entry.sql_template.clone())
+            Some((entry.sql_template.clone(), entry.query_type.clone()))
         } else {
             self.misses.fetch_add(1, Ordering::Relaxed);
             None
@@ -336,11 +350,22 @@ impl QueryCache {
     ///
     /// May trigger LRU eviction if cache is full
     pub fn insert(&self, key: QueryCacheKey, sql_template: String) {
+        self.insert_entry(key, sql_template, None);
+    }
+
+    /// Insert an SQL template together with the statement classification the
+    /// caller just computed, so a later hit is recorded under that type
+    /// ([`QueryCache::get_with_type`]).
+    pub fn insert_typed(&self, key: QueryCacheKey, sql_template: String, query_type: String) {
+        self.insert_entry(key, sql_template, Some(query_type));
+    }
+
+    fn insert_entry(&self, key: QueryCacheKey, sql_template: String, query_type: Option<String>) {
         if !self.config.enabled {
             return;
         }
 
-        let entry = CacheEntry::new(sql_template);
+        let entry = CacheEntry::new(sql_template, query_type);
 
         let mut cache = lock_cache!(self.cache, "insert", void);
 

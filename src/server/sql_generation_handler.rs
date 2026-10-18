@@ -454,9 +454,10 @@ async fn sql_generation_handler_inner(
         ));
     };
 
-    // Store in cache
+    // Store in cache. The statement's classification rides with the template
+    // so a later hit is recorded under this type (see `record_cache_hit`).
     if let Some(cache) = GLOBAL_QUERY_CACHE.get() {
-        cache.insert(cache_key, ch_query.clone());
+        cache.insert_typed(cache_key, ch_query.clone(), query_type_str.clone());
     }
 
     // Build SQL statements array

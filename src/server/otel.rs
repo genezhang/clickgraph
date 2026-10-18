@@ -70,7 +70,14 @@ fn redact_literals(input: &str) -> String {
             out.push(c);
             i += 1;
             while i < chars.len() {
-                if chars[i] == '\\' {
+                // A backslash escapes the next character inside a string
+                // literal only. Inside a backtick identifier it is an ordinary
+                // character (`` `db\` `` closes at the second backtick), so
+                // treating it as an escape swallows the identifier's closing
+                // backtick and everything after it — including the next
+                // literal's quotes — reads the rest as an open literal and
+                // leaks its body.
+                if chars[i] == '\\' && c != '`' {
                     i += 2; // skip the escaped character
                     continue;
                 }
@@ -132,6 +139,14 @@ fn number_len(chars: &[char], i: usize) -> Option<usize> {
     }
     while chars.get(j).is_some_and(char::is_ascii_digit) {
         j += 1;
+    }
+    // Underscore-separated digit groups are one literal, so `1_000_000`
+    // redacts as a single `?` instead of leaving `?_000_000`.
+    while chars.get(j) == Some(&'_') && chars.get(j + 1).is_some_and(char::is_ascii_digit) {
+        j += 1;
+        while chars.get(j).is_some_and(char::is_ascii_digit) {
+            j += 1;
+        }
     }
     // Fraction, but only when a digit follows, so `1..3` (a VLP range) keeps
     // its dots and only the bounds are masked.
@@ -306,33 +321,49 @@ pub fn parse_headers(spec: &str) -> reqwest::header::HeaderMap {
     use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
     let mut map = HeaderMap::new();
     for (n, pair) in spec.split(',').enumerate() {
+        // Position only: every message below names the entry's index and
+        // nothing else. An entry's "key" half can be a bare credential pasted
+        // without its key — base64 padding alone supplies the '=' of
+        // `Basic c2VjcmV0OnRva2Vu=` — so no half of a malformed entry is ever
+        // spelled into the log.
+        let entry = n + 1;
         let pair = pair.trim();
         if pair.is_empty() {
             continue;
         }
         let Some((k, v)) = pair.split_once('=') else {
-            // Log the entry's position, never its content: an entry without
-            // '=' has no header name, so the content could be a bare
-            // credential pasted without its key.
-            log::warn!("OTLP: header entry {} has no '=' and is ignored", n + 1);
+            log::warn!("OTLP: header entry {entry} has no '=' and is ignored (content withheld)");
             continue;
         };
-        let k = k.trim();
+        if v.trim().is_empty() {
+            // An empty value usually means the '=' that ended the entry was
+            // a credential's own padding (`Basic%20…=`): the "name" half is
+            // then the credential text itself — percent-encoded names pass
+            // the header-name check (`%` is a token character) and would be
+            // sent silently. Skip it and say only where it happened.
+            log::warn!(
+                "OTLP: header entry {entry} has an empty value and is ignored (content withheld)"
+            );
+            continue;
+        }
         let decoded = percent_decode(v.trim());
         match (
-            HeaderName::from_bytes(k.as_bytes()),
+            HeaderName::from_bytes(k.trim().as_bytes()),
             HeaderValue::from_str(&decoded),
         ) {
-            (Ok(name), Ok(value)) => {
+            (Ok(name), Ok(mut value)) => {
+                if SENSITIVE_HEADERS.contains(&name.as_str()) {
+                    // Marks the value so debug/tooling dumps of the header map
+                    // redact it; the list's other reader (the log wording
+                    // below) stays the only place the names are spelled.
+                    value.set_sensitive(true);
+                }
                 map.insert(name, value);
             }
             _ => {
-                let kind = if SENSITIVE_HEADERS.contains(&k.to_ascii_lowercase().as_str()) {
-                    " (value withheld: sensitive)"
-                } else {
-                    ""
-                };
-                log::warn!("OTLP: ignoring malformed header entry {k:?}{kind}");
+                log::warn!(
+                    "OTLP: ignoring malformed header entry {entry} (name or value is not spellable as a header; content withheld)"
+                );
             }
         }
     }
@@ -393,14 +424,18 @@ impl OtelExporter {
                 return None;
             }
         };
+        let auth = headers
+            .keys()
+            .filter(|k| SENSITIVE_HEADERS.contains(&k.as_str()))
+            .count();
         log::info!(
-            "OTLP: query tracing enabled -> {url} (query text {}, auth headers {})",
+            "OTLP: query tracing enabled -> {url} (query text {}, auth headers {auth}, other headers {})",
             if include_query {
                 "included"
             } else {
                 "excluded"
             },
-            headers.len()
+            headers.len() - auth
         );
         Some(Self {
             client,
@@ -451,14 +486,29 @@ impl OtelExporter {
     /// (and tests) can observe backpressure without I/O. Outside a runtime
     /// (unit tests) it also drops rather than panic.
     pub fn export(&self, payload: Value) -> bool {
-        let permit = match self.semaphore.clone().try_acquire_owned() {
-            Ok(p) => p,
+        let permit = self.reserve_permit();
+        let Some(permit) = permit else {
+            return false;
+        };
+        self.send_reserved(payload, permit)
+    }
+
+    /// Take one in-flight slot, or None when the bound is full (counted as a
+    /// drop).
+    fn reserve_permit(&self) -> Option<tokio::sync::OwnedSemaphorePermit> {
+        match self.semaphore.clone().try_acquire_owned() {
+            Ok(p) => Some(p),
             Err(_) => {
                 let n = self.dropped.fetch_add(1, Ordering::Relaxed) + 1;
                 log::debug!("OTLP: {MAX_IN_FLIGHT} exports in flight; span dropped ({n} total)");
-                return false;
+                None
             }
-        };
+        }
+    }
+
+    /// Send an already-queued span on an already-reserved slot. The whole
+    /// spawn path lives here so both entry points share it.
+    fn send_reserved(&self, payload: Value, permit: tokio::sync::OwnedSemaphorePermit) -> bool {
         let handle = match tokio::runtime::Handle::try_current() {
             Ok(h) => h,
             Err(_) => return false,
@@ -467,11 +517,16 @@ impl OtelExporter {
         let sent = Arc::clone(&self.sent);
         let failed = Arc::clone(&self.failed);
         let next_warn_at = Arc::clone(&self.next_warn_at);
+        // Per-request timeout from the accessor (the client carries the same
+        // value from the build; spelling it here keeps the send accountable
+        // independently of the client's own configuration).
+        let timeout = self.timeout();
         handle.spawn(async move {
             let _permit = permit;
             let result = client
                 .post(&url)
                 .headers(headers)
+                .timeout(timeout)
                 .json(&payload)
                 .send()
                 .await;
@@ -488,11 +543,28 @@ impl OtelExporter {
                 // A dead collector fails every query, so warning per failure
                 // would drown the log. Warn at exponentially growing totals
                 // (1, 2, 4, 8, …); the running count in the message means the
-                // rate never hides that failures happened.
-                let due = next_warn_at.load(Ordering::Relaxed);
-                if n >= due {
-                    log::warn!("OTLP: {problem}; {n} failed so far");
-                    next_warn_at.store(due.saturating_mul(2).max(due + 1), Ordering::Relaxed);
+                // rate never hides that failures happened. The doubling is
+                // itself a compare_exchange so concurrent failures claim
+                // distinct thresholds instead of racing two warnings past one
+                // (a load/store here lost that race: 200 failures warned 14
+                // times where 8 was the promise).
+                let mut due = next_warn_at.load(Ordering::Relaxed);
+                loop {
+                    if n < due {
+                        break;
+                    }
+                    match next_warn_at.compare_exchange(
+                        due,
+                        due.saturating_mul(2).max(due + 1),
+                        Ordering::Relaxed,
+                        Ordering::Relaxed,
+                    ) {
+                        Ok(_) => {
+                            log::warn!("OTLP: {problem}; {n} failed so far");
+                            break;
+                        }
+                        Err(current) => due = current,
+                    }
                 }
             }
         });
@@ -510,6 +582,12 @@ impl OtelExporter {
         query_text: Option<&str>,
         has_phase_breakdown: bool,
     ) -> bool {
+        // Reserve the slot BEFORE building the payload: the payload includes
+        // sanitizing the full query text, which is real work a full queue
+        // must not pay for (the span is dropped either way).
+        let Some(permit) = self.reserve_permit() else {
+            return false;
+        };
         let payload = build_trace_payload(
             metrics,
             outcome_ok,
@@ -520,7 +598,7 @@ impl OtelExporter {
             self.include_query,
             &self.dialect,
         );
-        self.export(payload)
+        self.send_reserved(payload, permit)
     }
 }
 
@@ -795,6 +873,64 @@ mod tests {
         assert_eq!(parse_headers("x-note=plain value")["x-note"], "plain value");
         assert_eq!(parse_headers("x-note=100%")["x-note"], "100%");
         assert_eq!(parse_headers("x-note=%zz")["x-note"], "%zz");
+    }
+
+    #[test]
+    fn bare_credential_padded_value_is_skipped_not_named_or_sent() {
+        // A credential pasted without its key: base64 padding alone supplies
+        // the '=', so the split's "key" half is the credential text. It is
+        // never sent and (at debug or info) never spelled — the warning speaks
+        // of the entry's position only.
+        let h = parse_headers("Basic c2VjcmV0OnRva2Vu=");
+        assert!(h.is_empty(), "nothing sent for a keyless entry: {h:?}");
+        // Same for the percent-encoded spelling, whose name half would even
+        // pass the header-name check (`%` is a token character).
+        let h2 = parse_headers("Basic%20c2VjcmV0OnRva2Vu=");
+        assert!(h2.is_empty(), "keyless entry not sent: {h2:?}");
+        // Double padding: the first '=' splits, the second makes a non-empty
+        // junk value with a name that is still the credential.
+        let h3 = parse_headers("Basic c2VjcmV0OnRva2Vu==");
+        assert!(h3.is_empty(), "malformed name never sent: {h3:?}");
+    }
+
+    #[test]
+    fn sensitive_headers_are_marked_sensitive() {
+        let h = parse_headers("Authorization=Basic t,x-api-key=k,x-tenant=acme");
+        assert!(h["authorization"].is_sensitive());
+        assert!(h["x-api-key"].is_sensitive());
+        assert!(!h["x-tenant"].is_sensitive(), "only credentials are marked");
+        // The name check is case-insensitive (HeaderMap keys are normalized).
+        let h2 = parse_headers("API-KEY=k");
+        assert!(h2["api-key"].is_sensitive());
+    }
+
+    #[test]
+    fn backtick_identifier_ends_at_the_unescaped_backtick() {
+        // Inside a backtick identifier a backslash is an ordinary character:
+        // the identifier ends at the next backtick (`db\` closes), and
+        // literals after it keep their bindings. The old escape handling ate
+        // the identifier's closing backtick and swallowed everything behind
+        // it, review case: ``USE `db\` … 'x`secret'``.
+        assert_eq!(
+            sanitize_query(r#"USE `db\` MATCH (x) WHERE x.p = 'a'"#),
+            "USE `?` MATCH (x) WHERE x.p = '?'"
+        );
+        let got = sanitize_query(r#"USE `db\` MATCH (x) WHERE x.p = 'x`secret'"#);
+        assert!(!got.contains("secret"), "leak: {got}");
+        assert_eq!(got, "USE `?` MATCH (x) WHERE x.p = '?'");
+    }
+
+    #[test]
+    fn underscore_digit_groups_are_one_number() {
+        // `1_000_000` redacts as one value, not `?_000_000`.
+        assert_eq!(sanitize_query("WHERE n > 1_000_000"), "WHERE n > ?");
+        assert_eq!(sanitize_query("WHERE n IN (1_000, 2)"), "WHERE n IN (?, ?)");
+        assert_eq!(sanitize_query("WHERE n > -1_000e5"), "WHERE n > ?");
+        // Identifier neighbours still survive untouched.
+        assert_eq!(
+            sanitize_query("WHERE x1_000 IS NOT NULL"),
+            "WHERE x1_000 IS NOT NULL"
+        );
     }
 
     #[test]

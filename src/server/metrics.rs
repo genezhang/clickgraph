@@ -460,7 +460,9 @@ impl ServerMetrics {
             self.errors_by_class[class.index()].fetch_add(1, Ordering::Relaxed);
         }
 
-        // Histograms: total + exec always; the rest only for HTTP samples.
+        // Histograms: total + exec always; the per-phase set only for samples
+        // that really ran the pipeline (`has_phase_breakdown`) — a cache-hit
+        // record spells false so hits add no zero samples there.
         self.histograms[0].observe(m.total_time);
         self.histograms[5].observe(m.execution_time);
         if sample.has_phase_breakdown {
@@ -770,7 +772,10 @@ pub struct StatsSnapshot {
     pub errors_by_class: std::collections::BTreeMap<String, u64>,
     pub latency: Vec<PhaseLatency>,
     pub clickhouse: ChStatsSnapshot,
-    /// Present only when OTLP tracing is configured.
+    /// OTLP export counters. Omitted from the serialized snapshot entirely
+    /// when tracing is not configured (the doc below promises "present only
+    /// when configured" — a null block would say otherwise).
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub otlp: Option<super::otel::OtelStats>,
 }
 

@@ -702,7 +702,11 @@ curl http://localhost:8080/metrics
 JSON snapshot for humans/dashboards: uptime, version, query counters by type and
 error class, latency percentiles (p50/p95/p99 + mean) per phase, cache
 hit-rate, connection-pool stats (`null` in embedded/Databricks modes), and
-ClickHouse transfer bytes.
+ClickHouse transfer bytes. When OTLP query tracing is configured
+(`CLICKGRAPH_OTLP_ENDPOINT`, the metrics section below), the snapshot also
+carries an `otlp` block with `sent`/`failed`/`dropped` export counters so
+tracing health is observable without waiting for a log line; when tracing is
+not configured the field is absent entirely (not `null`).
 
 ```bash
 curl http://localhost:8080/stats | jq
@@ -724,6 +728,19 @@ Each record carries `timestamp_ms`, `query_type`, `total_ms`, `exec_ms`,
 ```bash
 curl "http://localhost:8080/stats/queries?recent=10&slowest=10" | jq
 ```
+
+### OTLP query spans (opt-in)
+
+Every HTTP and Bolt query can emit one OTLP/HTTP trace span
+(`resource.name` `cypher.query`) to a collector — the span shape (attributes,
+bounds on what can appear in the span text) is specified in
+`specs/SPEC-otlp-spans.md`. Configuration:
+
+| Var | Default | Purpose |
+|-----|---------|---------|
+| `CLICKGRAPH_OTLP_ENDPOINT` | (unset) | Base URL of an OTLP/HTTP collector; traces POST to `{endpoint}/v1/traces`. Unset = no spans at all |
+| `CLICKGRAPH_OTLP_INCLUDE_QUERY` | `false` | Put the literals-stripped, sanitized Cypher text in the span (writes and comments gone; values never included unmasked) |
+| `CLICKGRAPH_OTLP_HEADERS` | (empty) | Static `key=value` headers for the exports, OTEL comma-separated form (e.g. `Authorization=Basic <basic64>`); values are percent-decoded per OTEL, marked sensitive, and malformed entries are warned about by position only |
 
 **Configuration** (env vars):
 
