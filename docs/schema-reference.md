@@ -657,8 +657,8 @@ and `cg validate`) through one `system.columns` read, embedded chdb through a
 read). Reading the types does not add properties; only `auto_discover_columns`
 does. A table that cannot be read keeps unknown types, which is not an error:
 `cg` prints a warning, the library lists it in `Database::load_warnings()`. The
-read from a server waits at most 5 s, so an unreachable `--clickhouse` delays
-`cg sql` by that much.
+read of the library's remote mode and of `cg --clickhouse` waits at most 5 s,
+so an unreachable `--clickhouse` delays `cg sql` by that much.
 
 The types decide how values of differently typed columns meet in one query.
 Today that is the id columns of a node and of its relationships' ends, which
