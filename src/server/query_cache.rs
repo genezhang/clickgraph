@@ -203,7 +203,9 @@ impl QueryCacheKey {
         let stripped = ReplanOption::strip_prefix(query);
 
         // Normalize whitespace: collapse multiple spaces/tabs/newlines into single space
-        let normalized = normalize_whitespace(stripped);
+        // (of the query without its comments: a quote inside one opens no
+        // string, `// it's`)
+        let normalized = normalize_whitespace(&crate::open_cypher_parser::strip_comments(stripped));
 
         // Build a scope string from tenant_id and view_parameters
         let view_scope = match (tenant_id, view_parameters) {
@@ -712,6 +714,11 @@ mod tests {
         assert_ne!(key("RETURN 1 AS `x  y`"), key("RETURN 1 AS `x y`"));
         assert_ne!(key("RETURN u.`a  b`"), key("RETURN u.`a b`"));
         assert_ne!(key(r#"RETURN "a  b""#), key(r#"RETURN "a b""#));
+        // A quote inside a comment opens no string (review).
+        assert_ne!(
+            key("MATCH (u) // it's\nWHERE u.name = 'Alice  Johnson' RETURN u"),
+            key("MATCH (u) // it's\nWHERE u.name = 'Alice Johnson' RETURN u")
+        );
         assert_eq!(
             key("  MATCH (u)\n\tRETURN   u.`a  b` , 'it\\'s  x' , `c``  d`  "),
             "MATCH (u) RETURN u.`a  b` , 'it\\'s  x' , `c``  d`"
