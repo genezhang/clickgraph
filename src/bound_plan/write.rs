@@ -43,23 +43,6 @@ pub enum WritePlanError {
     Rejected(String),
 }
 
-/// Whether `cypher` (comments stripped) is a statement of updating clauses
-/// the clause-list parser reads: a write, whichever planner plans it.
-pub fn is_write_statement(cypher: &str) -> bool {
-    use crate::open_cypher_parser::clause_list::Clause;
-    crate::open_cypher_parser::clause_list::parse_clause_statement(cypher).is_ok_and(|(_, stmt)| {
-        std::iter::once(&stmt.first)
-            .chain(stmt.unions.iter().map(|(_, q)| q))
-            .flat_map(|q| &q.clauses)
-            .any(|c| {
-                matches!(
-                    c,
-                    Clause::Create(_) | Clause::Set(_) | Clause::Remove(_) | Clause::Delete(_)
-                )
-            })
-    })
-}
-
 /// A planned write statement: its writes, and its RETURN's SQL (a read run
 /// after them).
 #[derive(Debug, Clone)]

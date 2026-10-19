@@ -95,7 +95,7 @@ MATCH (u:User) RETURN u;    -- Still uses test_graph_schema
 
 The same rule applies on HTTP `/query`, `/query/sql` and Bolt. A Bolt session that names no database runs on the `default` schema, as HTTP does without `schema_name`.
 
-**USE and UNION.** The first query's `USE` (else the request's schema) is the statement's graph, and a UNION arm without `USE` runs on it. A later arm whose `USE` names another graph is an error, as in Neo4j ("Multiple graphs in the same query not allowed"); every arm may name the statement's graph. Neo4j runs an arm without `USE` on the session's graph, so it also refuses `USE g … UNION …` from a session on another graph, which ClickGraph runs on `g`.
+**USE and UNION.** The first query's `USE` (else the request's schema) is the statement's graph, and a UNION arm without `USE` runs on it. A later arm whose `USE` names another graph is an error, as in Neo4j ("Multiple graphs in the same query not allowed"); every arm may name the statement's graph, by its name or as `default` when it is the default schema. Neo4j runs an arm without `USE` on the session's graph, so it also refuses `USE g … UNION …` from a session on another graph, which ClickGraph runs on `g`.
 
 ```bash
 # USE clause overrides schema_name parameter

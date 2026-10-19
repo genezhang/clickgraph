@@ -468,16 +468,39 @@ async fn invalid_prelude_options_and_explain_are_refused() {
             "PROFILE",
         ),
     ] {
-        let (status, body) = post_text("/query", json!({ "query": text })).await;
-        assert_eq!(status, StatusCode::BAD_REQUEST, "{text}: {body}");
-        assert!(body.contains(expected), "{text}: {body}");
+        for uri in ["/query", "/query/sql"] {
+            let body = json!({ "query": text, "target_database": "clickhouse" });
+            let (status, body) = post_text(uri, body).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{uri} {text}: {body}");
+            assert!(body.contains(expected), "{uri} {text}: {body}");
+        }
     }
+}
+
+/// The query argument of `apoc.export.*.query` runs on the statement's
+/// graph: a `USE` in it naming another graph is refused (it was ignored,
+/// and the export read the statement's graph); `default` and the schema it
+/// aliases are one graph.
+#[tokio::test]
+async fn an_export_query_runs_on_the_statements_graph() {
+    register_schema_as("prelude_g").await;
+    let export =
+        |inner: &str| format!("CALL apoc.export.csv.query(\"{inner}\", \"/tmp/g4_x.csv\", {{}})");
+    let q = "MATCH (u:User) RETURN u.name AS n";
     let (status, body) = post_text(
-        "/query/sql",
-        json!({ "query": "CYPHER replan=bogus MATCH (u:User) RETURN u.name",
-                "target_database": "clickhouse" }),
+        "/query",
+        json!({ "query": export(&format!("USE prelude_g {q}")), "sql_only": true }),
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
-    assert!(body.contains("not a valid option for replan"), "{body}");
+    assert!(body.contains("Multiple graphs"), "{body}");
+    for (inner, schema) in [
+        (format!("USE prelude_g {q}"), json!("prelude_g")),
+        (q.to_string(), json!("prelude_g")),
+        (format!("USE default {q}"), Value::Null),
+    ] {
+        let body = json!({ "query": export(&inner), "schema_name": schema, "sql_only": true });
+        let (status, body) = post_text("/query", body).await;
+        assert_eq!(status, StatusCode::OK, "{inner}: {body}");
+    }
 }

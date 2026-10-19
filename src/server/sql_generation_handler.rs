@@ -82,6 +82,21 @@ async fn sql_generation_handler_inner(
         )
     };
     let prepared = crate::translate::PreparedStatement::parse(&payload.query).map_err(refused)?;
+    // As on `/query`: this endpoint returns the SQL a query runs, which
+    // EXPLAIN / PROFILE do not ask for.
+    if prepared.prelude.mode != crate::translate::prepared::ExecutionMode::Run {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(SqlGenerationError {
+                cypher_query: payload.query.clone(),
+                error: "Not supported: EXPLAIN / PROFILE (this endpoint returns the SQL a query \
+                        runs)"
+                    .to_string(),
+                error_type: "NotSupported".to_string(),
+                error_details: None,
+            }),
+        ));
+    }
     let schema_name = prepared
         .targets
         .graph(payload.schema_name.as_deref())

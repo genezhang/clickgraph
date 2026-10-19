@@ -1354,6 +1354,22 @@ impl BoltHandler {
         )]
     }
 
+    /// The statement front end's refusal as a FAILURE, with Neo4j's codes:
+    /// an invalid `CYPHER` option is an `ArgumentError`, UNION arms on
+    /// different graphs a `SyntaxError`.
+    fn prepare_failure(&self, error: crate::translate::PrepareError) -> Vec<BoltMessage> {
+        use crate::translate::PrepareError;
+        let code = match error {
+            PrepareError::InvalidOption(_) => "Neo.ClientError.Statement.ArgumentError",
+            PrepareError::MultipleGraphs(_) => "Neo.ClientError.Statement.SyntaxError",
+        };
+        vec![BoltMessage::failure(
+            code.to_string(),
+            error.to_string(),
+            self.negotiated_version(),
+        )]
+    }
+
     async fn handle_run(&mut self, message: BoltMessage) -> BoltResult<Vec<BoltMessage>> {
         // Verify connection state
         {
@@ -1381,7 +1397,7 @@ impl BoltHandler {
         // the statement after it.
         let prelude = match crate::translate::Prelude::parse(query) {
             Ok(prelude) => prelude,
-            Err(e) => return Ok(self.query_failure(e.to_string())),
+            Err(e) => return Ok(self.prepare_failure(e)),
         };
         let query = prelude.text.as_str();
 
@@ -1483,7 +1499,7 @@ impl BoltHandler {
         let schema_name =
             match crate::translate::StatementTargets::of(&query).graph(session_graph.as_deref()) {
                 Ok(graph) => graph,
-                Err(e) => return Ok(self.query_failure(e.to_string())),
+                Err(e) => return Ok(self.prepare_failure(e)),
             };
 
         // Store tenant_id on context (needed for execute_cypher_query fallback)
@@ -2263,7 +2279,7 @@ impl BoltHandler {
             None
         };
 
-        let db_name = database.unwrap_or_else(|| "default".to_string());
+        let db_name = database.unwrap_or_else(|| crate::translate::DEFAULT_GRAPH.to_string());
         log::info!("ROUTE request for database: {}", db_name);
 
         // Verify schema exists
@@ -2458,8 +2474,12 @@ impl BoltHandler {
             crate::server::query_context::set_current_schema(Arc::new(graph_schema_obj.clone()));
 
             // Translate inner Cypher → SQL
-            let inner_sql = crate::translate::translate_inner_read(&inner_query, &graph_schema_obj)
-                .map_err(BoltError::query_error)?;
+            let inner_sql = crate::translate::translate_inner_read(
+                &inner_query,
+                &graph_schema_obj,
+                &effective_schema,
+            )
+            .map_err(BoltError::query_error)?;
 
             let export_sql = crate::procedures::apoc_export::build_export_sql(
                 &inner_sql,
@@ -2708,16 +2728,15 @@ impl BoltHandler {
                         ));
 
                         // Translate inner Cypher → SQL
-                        let inner_sql = {
-                            // `cypher_query` is a Cypher string-literal ARGUMENT to
-                            // apoc.export.*.query(...) — a separate string from the
-                            // outer `query` already stripped above, so it needs its
-                            // own strip_comments() before this independent parse.
-                            let stripped_inner =
-                                open_cypher_parser::strip_comments(&export_args.cypher_query);
-                            crate::translate::translate_inner_read(&stripped_inner, &graph_schema)
-                                .map_err(BoltError::query_error)?
-                        };
+                        // `cypher_query` is a Cypher string-literal ARGUMENT to
+                        // apoc.export.*.query(...), read through the front end
+                        // (its own comments, a USE naming another graph refused).
+                        let inner_sql = crate::translate::translate_inner_read(
+                            &export_args.cypher_query,
+                            &graph_schema,
+                            &effective_schema,
+                        )
+                        .map_err(BoltError::query_error)?;
 
                         // Build export SQL
                         let export_sql = crate::procedures::apoc_export::build_export_sql(

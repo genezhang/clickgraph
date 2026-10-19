@@ -2255,7 +2255,7 @@ fn translate_cypher_to_sql(
         "Translating inner Cypher query for schema '{}'",
         schema_name
     );
-    crate::translate::translate_inner_read(cypher, graph_schema)
+    crate::translate::translate_inner_read(cypher, graph_schema, schema_name)
 }
 
 /// The status of an inner query's translation error: a broken invariant is

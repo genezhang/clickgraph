@@ -83,6 +83,9 @@ impl Prelude {
     /// Read the prelude of `raw` (comments are stripped first). Options
     /// other than `replan` are accepted and ignored (planner hints such as
     /// `runtime=slotted` do not change the answer); so is a version number.
+    /// Unlike Neo4j, which refuses an option or a version it does not know
+    /// (`CYPHER foo=bar`, `CYPHER 4.4`), and an invalid value of a known
+    /// one (`runtime=bogus`): only `replan` is checked.
     pub fn parse(raw: &str) -> Result<Prelude, PrepareError> {
         let stripped = crate::open_cypher_parser::strip_comments(raw);
         let (replan, mode, rest) = scan_prelude(&stripped)?;
@@ -288,9 +291,27 @@ impl StatementTargets {
         let Some(first) = named.next() else {
             return Ok(None);
         };
-        match named.find(|g| *g != first) {
+        match named.find(|g| !same_graph(g, first)) {
             Some(other) => Err(multiple_graphs(first, other)),
             None => Ok(Some(first)),
+        }
+    }
+
+    /// Refuse an arm's `USE` naming another graph than `graph`: for a query
+    /// inside a statement running on `graph` (the query argument of
+    /// `apoc.export.*.query`).
+    pub fn within(&self, graph: &str) -> Result<(), PrepareError> {
+        match self
+            .arm_graphs
+            .iter()
+            .flatten()
+            .find(|g| !same_graph(g, graph))
+        {
+            Some(other) => Err(PrepareError::MultipleGraphs(format!(
+                "Multiple graphs in the same query not allowed: the statement runs on graph \
+                 `{graph}`, and the inner query's USE names `{other}`"
+            ))),
+            None => Ok(()),
         }
     }
 
@@ -318,12 +339,19 @@ impl StatementTargets {
             .iter()
             .skip(1)
             .flatten()
-            .find(|g| **g != graph)
+            .find(|g| !same_graph(g, &graph))
         {
             return Err(multiple_graphs(&graph, other));
         }
         Ok(graph)
     }
+}
+
+/// Whether two graph names name the same graph: the same name, or on a
+/// server `default` and the schema it aliases (the configured
+/// `default_schema`, else the first schema loaded).
+fn same_graph(a: &str, b: &str) -> bool {
+    crate::server::graph_catalog::same_schema(a, b)
 }
 
 fn multiple_graphs(graph: &str, other: &str) -> PrepareError {
@@ -485,6 +513,33 @@ mod tests {
         assert_eq!(graph("USE g MATCH (", Some("s")).unwrap(), "g");
         assert_eq!(graph("USE `my-g` CALL x() UNWIND [", None).unwrap(), "my-g");
         assert_eq!(graph("MATCH (", Some("s")).unwrap(), "s");
+    }
+
+    /// On a server, `default` and the schema it aliases are one graph: a
+    /// statement may name it either way (review of #1370).
+    #[test]
+    fn the_default_alias_is_the_same_graph() {
+        use crate::server::graph_catalog::set_default_schema_target;
+        let q = "MATCH (a:User) RETURN a.name AS n";
+        set_default_schema_target(Some("alias_target_t".to_string()));
+        let got = [
+            graph(&format!("{q} UNION USE alias_target_t {q}"), None),
+            graph(
+                &format!("USE default {q} UNION USE alias_target_t {q}"),
+                None,
+            ),
+            graph(
+                &format!("{q} UNION USE default {q}"),
+                Some("alias_target_t"),
+            ),
+        ];
+        let other = graph(&format!("{q} UNION USE alias_other_u {q}"), None);
+        set_default_schema_target(None);
+        assert_eq!(
+            got.map(|g| g.unwrap()),
+            ["default", "default", "alias_target_t"].map(String::from)
+        );
+        assert!(matches!(other, Err(PrepareError::MultipleGraphs(_))));
     }
 
     /// A single-schema entry point checks only that the arms' USEs agree.

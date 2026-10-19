@@ -171,6 +171,7 @@ async fn the_prelude_and_every_arms_use_on_bolt() {
         .await
         .unwrap_err();
     assert!(message.contains("Multiple graphs"), "{code}: {message}");
+    assert_eq!(code, "Neo.ClientError.Statement.SyntaxError");
     run(
         &mut handler,
         &format!("USE bolt_fe_d {q} UNION USE bolt_fe_d {q}"),
@@ -194,11 +195,13 @@ async fn the_prelude_and_every_arms_use_on_bolt() {
         .await
         .unwrap_err();
     assert_eq!(code, "Neo.ClientError.Statement.FeatureNotSupported");
-    let (_, message) = run(&mut handler, "CYPHER replan=bogus RETURN 1 AS x")
+    let (code, message) = run(&mut handler, "CYPHER replan=bogus RETURN 1 AS x")
         .await
         .unwrap_err();
     assert!(
         message.contains("not a valid option for replan"),
         "{message}"
     );
+    // Neo4j's codes.
+    assert_eq!(code, "Neo.ClientError.Statement.ArgumentError");
 }

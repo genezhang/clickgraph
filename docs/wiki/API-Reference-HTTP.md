@@ -113,9 +113,10 @@ response = requests.post('http://localhost:8080/query', json={
 
 The `CYPHER replan=<option>` syntax is **compatible with Neo4j**, allowing the same queries to work across both systems. The prelude is read as Neo4j reads it, on every entry point (HTTP `/query` and `/query/sql`, Bolt, the embedded library and `cg`):
 
-- `CYPHER` may carry a version (`CYPHER 5`) and several `name=value` options (`CYPHER 5 runtime=slotted replan=force`). Options other than `replan` are accepted and ignored. An invalid `replan` value, or two different ones, is an error.
+- `CYPHER` may carry a version (`CYPHER 5`) and several `name=value` options (`CYPHER 5 runtime=slotted replan=force`). Options other than `replan`, and the version, are accepted and ignored: unlike Neo4j, an unknown option (`CYPHER foo=bar`), version (`CYPHER 4.4`) or value of another option (`runtime=bogus`) is not an error. An invalid `replan` value, or two different ones, is an error, as in Neo4j.
 - The prelude ends where the statement starts: `CYPHER replan=force USE social MATCH …` runs on `social`.
-- `EXPLAIN` / `PROFILE` may come before or after `CYPHER`. HTTP refuses both (`sql_only: true` returns the SQL a query runs); Bolt answers `EXPLAIN` with an empty plan (Neo4j Browser sends it while you type) and refuses `PROFILE`; the library refuses both.
+- `EXPLAIN` / `PROFILE` may come before or after `CYPHER`. HTTP `/query` and `/query/sql` refuse both (`sql_only: true` returns the SQL a query runs); Bolt answers `EXPLAIN` with an empty plan (Neo4j Browser sends it while you type) and refuses `PROFILE`; the library refuses both.
+- The query argument of `apoc.export.*.query` runs on the statement's graph: a `USE` in it naming another graph is an error.
 
 ### Configuration
 
