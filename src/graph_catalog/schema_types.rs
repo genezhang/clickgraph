@@ -509,52 +509,43 @@ pub fn fold_common(parts: &[KeyPartType]) -> Option<KeyPartType> {
     widened.then_some(acc)
 }
 
-/// Whether `ty` spells a ClickHouse column type (`column_types:` in the
-/// YAML, VALUE_TYPES.md T1): a scalar ClickGraph knows, or a container
-/// (`Array(..)`, `Map(..)`, `Tuple(..)`), possibly `Nullable` /
-/// `LowCardinality`.
-pub fn is_clickhouse_column_type(ty: &str) -> bool {
-    let mut base = ty.trim().to_ascii_lowercase();
-    loop {
-        let unwrapped = ["nullable(", "lowcardinality("]
-            .iter()
-            .find_map(|w| base.strip_prefix(w).and_then(|b| b.strip_suffix(')')));
-        match unwrapped {
-            Some(inner) => base = inner.trim().to_string(),
-            None => break,
+/// Whether `ty` is spelled as a column type (`column_types:` in the YAML,
+/// VALUE_TYPES.md T1): a type name, with arguments in balanced parentheses
+/// (`DateTime64(3, 'UTC')`, `Map(String, Array(UInt8))`). The family is not
+/// checked: ClickGraph reads what it knows of it (`KeyPartType::parse`) and
+/// never spells a declared type into SQL.
+pub fn is_column_type_spelling(ty: &str) -> bool {
+    let ty = ty.trim();
+    let name_len = ty
+        .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        .unwrap_or(ty.len());
+    if name_len == 0 || !ty.starts_with(|c: char| c.is_ascii_alphabetic()) {
+        return false;
+    }
+    let args = ty[name_len..].trim();
+    if args.is_empty() {
+        return true;
+    }
+    if !(args.starts_with('(') && args.ends_with(')')) {
+        return false;
+    }
+    let mut depth = 0i32;
+    let mut quoted = false;
+    for (i, c) in args.char_indices() {
+        match c {
+            '\'' => quoted = !quoted,
+            '(' if !quoted => depth += 1,
+            ')' if !quoted => {
+                depth -= 1;
+                // Closed before the end: `Array(String) x`.
+                if depth == 0 && i + 1 != args.len() {
+                    return false;
+                }
+            }
+            _ => {}
         }
     }
-    let scalar = |b: &str| {
-        let ints = [
-            "int8", "int16", "int32", "int64", "int128", "int256", "uint8", "uint16", "uint32",
-            "uint64", "uint128", "uint256",
-        ];
-        ints.contains(&b)
-            || [
-                "float32", "float64", "bfloat16", "string", "uuid", "date", "date32", "datetime",
-                "bool", "ipv4", "ipv6",
-            ]
-            .contains(&b)
-    };
-    let with_args = [
-        "fixedstring(",
-        "datetime(",
-        "datetime64(",
-        "decimal(",
-        "decimal32(",
-        "decimal64(",
-        "decimal128(",
-        "decimal256(",
-        "enum8(",
-        "enum16(",
-        "array(",
-        "map(",
-        "tuple(",
-    ];
-    scalar(&base)
-        || with_args
-            .iter()
-            .any(|p| base.starts_with(p) && base.ends_with(')'))
+    depth == 0 && !quoted
 }
 
 pub fn map_clickhouse_type(ch_type: &str) -> SchemaType {
@@ -592,31 +583,31 @@ mod tests {
     use super::*;
 
     #[test]
-    fn clickhouse_column_types_are_recognized() {
+    fn column_type_spellings_are_recognized() {
         for ok in [
             "UInt64",
-            "Int8",
             "String",
             "FixedString(3)",
-            "Date",
-            "Date32",
-            "DateTime",
             "DateTime('UTC')",
             "DateTime64(3, 'Asia/Tokyo')",
-            "Bool",
-            "UUID",
-            "Float32",
             "Decimal(10, 2)",
-            "Nullable(UInt32)",
             "LowCardinality(Nullable(String))",
-            "Array(String)",
-            "Map(String, UInt64)",
-            "Tuple(UInt8, String)",
+            "Map(String, Array(UInt64))",
+            "Enum8('a(' = 1)",
+            "JSON",
+            "INTEGER",
         ] {
-            assert!(is_clickhouse_column_type(ok), "{ok}");
+            assert!(is_column_type_spelling(ok), "{ok}");
         }
-        for bad in ["", "Strng", "integer", "Nullable(", "DateTime64", "Array"] {
-            assert!(!is_clickhouse_column_type(bad), "{bad}");
+        for bad in [
+            "",
+            "Array(",
+            "Array(String) x",
+            "(String)",
+            "1Int",
+            "Map(String))",
+        ] {
+            assert!(!is_column_type_spelling(bad), "{bad}");
         }
     }
 

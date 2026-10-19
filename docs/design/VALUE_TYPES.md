@@ -48,13 +48,13 @@ sets `auto_discover_columns`, because only those elements carry column types.
   embedded chdb (`DESCRIBE` of a `source:`; a table chdb creates from the
   schema is not read). A table that cannot be read gets no types, and that is
   not an error: the library reports it (`Database::load_warnings`, printed by
-  `cg`). Discovery of *types* does not discover *properties*:
+  `cg`; not yet exposed through the FFI bindings). Discovery of *types* does not discover *properties*:
   `auto_discover_columns` alone still decides which columns are properties
   (the undeclared-property rule is unchanged).
 - **Declared types win**: a `column_types:` map on a node or edge definition
   (column → ClickHouse type spelling, e.g. `DateTime64(3)`, `Array(String)`),
-  checked at load: the column is one the element reads, the spelling a
-  ClickHouse column type.
+  checked at load: a type spelling, and, where the table's columns were read,
+  one of them.
 - **Freeze**: a `cg schema` option writes the discovered types into the
   YAML's `column_types`, for deployments that want SQL that depends on the
   YAML alone.

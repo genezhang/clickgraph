@@ -657,8 +657,8 @@ and `cg validate`) through one `system.columns` read, embedded chdb through a
 read). Reading the types does not add properties; only `auto_discover_columns`
 does. A table that cannot be read keeps unknown types, which is not an error:
 `cg` prints a warning, the library lists it in `Database::load_warnings()`. The
-read waits at most 5 s, so an unreachable `--clickhouse` delays `cg sql` by
-that much.
+read from a server waits at most 5 s, so an unreachable `--clickhouse` delays
+`cg sql` by that much.
 
 The types decide how values of differently typed columns meet in one query.
 Today that is the id columns of a node and of its relationships' ends, which
@@ -669,9 +669,9 @@ the SQL is as before, and such a walk can relate nothing.
 
 `column_types` declares them in the YAML instead, and wins over the types
 read. It makes the SQL depend on the YAML alone, e.g. for `cg sql` without a
-connection. Each entry must name a column the element reads (an id or end
-column, a label or type column, a column of its property mappings) and spell a
-ClickHouse column type; the schema is refused otherwise. The id of a node
+connection. Each entry must spell a column type (a name, with any arguments in
+balanced parentheses), and, where the table's columns were read, name one of
+them; the schema is refused otherwise. The id of a node
 embedded in edge tables (`from_node_properties` / `to_node_properties`) is not
 typed by it (its edges' end columns are):
 

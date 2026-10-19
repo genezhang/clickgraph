@@ -541,7 +541,13 @@ fn build_graph_schema(
         let info = column_info_from_rows(&rows).map_err(read)?;
         columns.insert(&target.database, &target.table, info);
     }
-    let warnings = read_column_types(schema_config, readers, runtime, &mut columns);
+    let warnings = read_column_types(
+        schema_config,
+        readers,
+        runtime,
+        &mut columns,
+        COLUMN_TYPES_TIMEOUT,
+    );
     for w in &warnings {
         log::warn!("{}", w);
     }
@@ -551,23 +557,25 @@ fn build_graph_schema(
     Ok((schema, warnings))
 }
 
-/// How long reading the column types may take before loading goes on
-/// without them: they only refine the SQL, and an unreachable server would
-/// otherwise hold a translation for minutes (a TCP connect timeout).
+/// How long reading the column types from a server may take before loading
+/// goes on without them: they only refine the SQL, and an unreachable server
+/// would otherwise hold a translation for minutes (a TCP connect timeout).
 const COLUMN_TYPES_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
-/// Run `sql` on `executor` within [`COLUMN_TYPES_TIMEOUT`].
+/// Run `sql` on `executor`, within `timeout` if one is given.
 fn read_rows(
     runtime: &tokio::runtime::Runtime,
     executor: &dyn QueryExecutor,
     sql: &str,
+    timeout: Option<std::time::Duration>,
 ) -> Result<Vec<serde_json::Value>, String> {
-    runtime
-        .block_on(async {
-            tokio::time::timeout(COLUMN_TYPES_TIMEOUT, executor.execute_json(sql, None)).await
-        })
-        .map_err(|_| format!("no answer within {} s", COLUMN_TYPES_TIMEOUT.as_secs()))?
-        .map_err(|e| e.to_string())
+    let rows = match timeout {
+        Some(t) => runtime
+            .block_on(async { tokio::time::timeout(t, executor.execute_json(sql, None)).await })
+            .map_err(|_| format!("no answer within {:?}", t))?,
+        None => runtime.block_on(executor.execute_json(sql, None)),
+    };
+    rows.map_err(|e| e.to_string())
 }
 
 /// Read the column types of every table `columns` does not hold yet, where
@@ -582,6 +590,7 @@ fn read_column_types(
     readers: ColumnReaders<'_>,
     runtime: &tokio::runtime::Runtime,
     columns: &mut DiscoveredColumns,
+    timeout: std::time::Duration,
 ) -> Vec<String> {
     let mut warnings = Vec::new();
     let mut tables: Vec<(String, String)> = Vec::new();
@@ -593,7 +602,9 @@ fn read_column_types(
             (Some(source), Some(executor), _) => {
                 let read = resolve_source_uri(source)
                     .map_err(|e| e.to_string())
-                    .and_then(|uri| read_rows(runtime, executor, &describe_columns_sql(&uri)))
+                    // chdb's own session: a timeout would not stop the
+                    // DESCRIBE, whose session lock the next one waits for.
+                    .and_then(|uri| read_rows(runtime, executor, &describe_columns_sql(&uri), None))
                     .and_then(|rows| column_info_from_rows(&rows));
                 match read {
                     Ok(info) => columns.insert(&target.database, &target.table, info),
@@ -619,8 +630,13 @@ fn read_column_types(
     if tables.is_empty() {
         return warnings;
     }
-    let read = read_rows(runtime, executor, &system_columns_of_tables_sql(&tables))
-        .and_then(|rows| columns_by_table_from_rows(&rows));
+    let read = read_rows(
+        runtime,
+        executor,
+        &system_columns_of_tables_sql(&tables),
+        Some(timeout),
+    )
+    .and_then(|rows| columns_by_table_from_rows(&rows));
     match read {
         Ok(found) => {
             for ((database, table), info) in found {
@@ -1014,6 +1030,54 @@ graph_schema:
             assert_eq!(warnings.len(), 1, "{warnings:?}");
             assert!(warnings[0].contains("column types"), "{warnings:?}");
         }
+    }
+
+    /// Never answers, as an unroutable server does not.
+    struct SilentExecutor;
+
+    #[async_trait]
+    impl QueryExecutor for SilentExecutor {
+        async fn execute_json(
+            &self,
+            _sql: &str,
+            _role: Option<&str>,
+        ) -> Result<Vec<serde_json::Value>, ExecutorError> {
+            std::future::pending().await
+        }
+
+        async fn execute_text(
+            &self,
+            _sql: &str,
+            _format: &str,
+            _role: Option<&str>,
+        ) -> Result<String, ExecutorError> {
+            std::future::pending().await
+        }
+    }
+
+    /// A server that does not answer holds the load for the timeout only
+    /// (review finding: ~133 s for an unroutable `--clickhouse`).
+    #[test]
+    fn a_silent_server_holds_the_types_read_for_the_timeout_only() {
+        let config: GraphSchemaConfig = serde_yaml::from_str(MINIMAL_SCHEMA).unwrap();
+        let runtime = build_runtime().unwrap();
+        let readers = ColumnReaders {
+            sources: None,
+            tables: Some(&SilentExecutor),
+        };
+        let mut columns = DiscoveredColumns::default();
+        let started = std::time::Instant::now();
+        let warnings = read_column_types(
+            &config,
+            readers,
+            &runtime,
+            &mut columns,
+            std::time::Duration::from_millis(50),
+        );
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].contains("no answer within"), "{warnings:?}");
+        assert!(!columns.contains("test_db", "users"));
     }
 
     /// With chdb, an element without a `source:` is a table chdb creates:

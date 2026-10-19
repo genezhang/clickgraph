@@ -51,7 +51,7 @@ fn unreadable_types_translate_without_them_and_warn() {
 fn a_wrong_schema_is_an_error_not_a_connection_warning() {
     let s = schema(&SCHEMA.replace(
         "      node_id: user_id\n",
-        "      node_id: user_id\n      column_types: {userid: UInt64}\n",
+        "      node_id: user_id\n      column_types: {user_id: 'Array('}\n",
     ));
     Command::cargo_bin("cg")
         .expect("bin")
@@ -61,8 +61,6 @@ fn a_wrong_schema_is_an_error_not_a_connection_warning() {
         .arg("MATCH (u:User) RETURN u.name")
         .assert()
         .failure()
-        .stderr(predicate::str::contains(
-            "'userid', a column it does not read",
-        ))
+        .stderr(predicate::str::contains("'Array(' for column 'user_id'"))
         .stderr(predicate::str::contains("could not read column types").not());
 }

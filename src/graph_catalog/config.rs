@@ -1267,46 +1267,6 @@ fn parse_edge_id_types(
     }
 }
 
-/// VALUE_TYPES.md T1: each declared `column_types` entry names a column the
-/// element reads (`read`: its ids, ends, label / type columns and the columns
-/// of its property mappings), and spells a ClickHouse column type. A typo
-/// would otherwise be ignored silently.
-fn check_column_types(
-    owner: &str,
-    declared: &HashMap<String, String>,
-    read: &std::collections::BTreeSet<String>,
-) -> Result<(), GraphSchemaError> {
-    let mut names: Vec<&String> = declared.keys().collect();
-    names.sort();
-    for column in names {
-        if !read.contains(column) {
-            return Err(GraphSchemaError::InvalidConfig {
-                message: format!(
-                    "{} declares column_types for '{}', a column it does not read \
-                     (its ids and the columns of its property_mappings: {:?})",
-                    owner, column, read
-                ),
-            });
-        }
-        let ty = &declared[column];
-        if !crate::graph_catalog::schema_types::is_clickhouse_column_type(ty) {
-            return Err(GraphSchemaError::InvalidConfig {
-                message: format!(
-                    "{} declares column_types '{}' for column '{}', which is not a \
-                     ClickHouse column type (e.g. UInt64, String, Date, DateTime64(3))",
-                    owner, ty, column
-                ),
-            });
-        }
-    }
-    Ok(())
-}
-
-/// The columns an element's property mappings read.
-fn mapped_columns(mappings: &HashMap<String, PropertyValue>) -> impl Iterator<Item = String> + '_ {
-    mappings.values().flat_map(|pv| pv.get_columns())
-}
-
 /// Build a NodeSchema from a NodeDefinition with optional discovery data
 fn build_node_schema(
     node_def: &NodeDefinition,
@@ -1391,25 +1351,6 @@ fn build_node_schema(
         &node_def.label,
     )?;
 
-    let read: std::collections::BTreeSet<String> = node_def
-        .node_id
-        .columns()
-        .iter()
-        .map(|c| c.to_string())
-        .chain(mapped_columns(&property_mappings))
-        .chain(
-            [&node_def.from_node_properties, &node_def.to_node_properties]
-                .into_iter()
-                .flatten()
-                .flat_map(|m| m.values().cloned()),
-        )
-        .chain(node_def.label_column.iter().cloned())
-        .collect();
-    check_column_types(
-        &format!("node '{}'", node_def.label),
-        &node_def.column_types,
-        &read,
-    )?;
     // A node embedded in an edge table has one id column per role
     // (`from_node_properties` / `to_node_properties`), not one physical id
     // column: it keeps the discovered types read by id name, as before.
@@ -1564,20 +1505,6 @@ fn build_relationship_schema(
     );
 
     let property_mappings = parse_property_mappings(raw_mappings)?;
-    let read: std::collections::BTreeSet<String> = rel_def
-        .from_id
-        .columns()
-        .into_iter()
-        .chain(rel_def.to_id.columns())
-        .chain(rel_def.edge_id.iter().flat_map(|id| id.columns()))
-        .map(str::to_string)
-        .chain(mapped_columns(&property_mappings))
-        .collect();
-    check_column_types(
-        &format!("relationship '{}'", rel_def.type_name),
-        &rel_def.column_types,
-        &read,
-    )?;
 
     // Determine use_final
     let use_final = determine_use_final(rel_def.use_final, &discovery.engine);
@@ -1802,20 +1729,6 @@ fn build_standard_edge_schema(
     );
 
     let property_mappings = parse_property_mappings(raw_mappings)?;
-    let read: std::collections::BTreeSet<String> = std_edge
-        .from_id
-        .columns()
-        .into_iter()
-        .chain(std_edge.to_id.columns())
-        .chain(std_edge.edge_id.iter().flat_map(|id| id.columns()))
-        .map(str::to_string)
-        .chain(mapped_columns(&property_mappings))
-        .collect();
-    check_column_types(
-        &format!("edge '{}'", std_edge.type_name),
-        &std_edge.column_types,
-        &read,
-    )?;
 
     // Determine use_final
     let use_final = determine_use_final(std_edge.use_final, &discovery.engine);
@@ -1970,30 +1883,6 @@ fn build_polymorphic_edge_schemas(
         &poly_edge.exclude_columns,
         &poly_edge.naming_convention,
     ))?;
-    let read: std::collections::BTreeSet<String> = poly_edge
-        .from_id
-        .columns()
-        .into_iter()
-        .chain(poly_edge.to_id.columns())
-        .chain(poly_edge.edge_id.iter().flat_map(|id| id.columns()))
-        .map(str::to_string)
-        .chain(mapped_columns(&property_mappings))
-        .chain(
-            [
-                &poly_edge.type_column,
-                &poly_edge.from_label_column,
-                &poly_edge.to_label_column,
-            ]
-            .into_iter()
-            .flatten()
-            .cloned(),
-        )
-        .collect();
-    check_column_types(
-        &polymorphic_edge_owner(poly_edge),
-        &poly_edge.column_types,
-        &read,
-    )?;
 
     // Determine use_final
     let use_final = determine_use_final(poly_edge.use_final, &discovery.engine);
@@ -2698,10 +2587,28 @@ impl GraphSchemaConfig {
                 .collect(),
             Columns::DeclaredOnly => HashMap::new(),
         };
-        for (column, ty) in declared_types {
-            if ty.trim().is_empty() {
+        // Declared types: a type spelling each; a column of the table where
+        // its columns were read (offline, a typo cannot be told from a
+        // column).
+        let read = !column_types.is_empty();
+        let mut declared: Vec<(&String, &String)> = declared_types.iter().collect();
+        declared.sort();
+        for (column, ty) in declared {
+            if !crate::graph_catalog::schema_types::is_column_type_spelling(ty) {
                 return Err(GraphSchemaError::InvalidConfig {
-                    message: format!("{} declares an empty type for column '{}'", owner, column),
+                    message: format!(
+                        "{} declares column_types '{}' for column '{}', which is not a \
+                         column type (e.g. UInt64, String, Date, DateTime64(3))",
+                        owner, ty, column
+                    ),
+                });
+            }
+            if read && !column_types.contains_key(column) {
+                return Err(GraphSchemaError::InvalidConfig {
+                    message: format!(
+                        "{} declares column_types for '{}', which `{}`.`{}` has no column of",
+                        owner, column, database, table
+                    ),
                 });
             }
             column_types.insert(column.clone(), KeyPartType::parse(ty));
@@ -5446,39 +5353,55 @@ graph_schema:
             .to_graph_schema()
             .unwrap_err();
         assert!(
-            e.to_string().contains("empty type for column 'post_id'"),
+            e.to_string()
+                .contains("'' for column 'post_id', which is not a column type"),
             "{e}"
         );
     }
 
-    /// A declared type names a column the element reads, spelled as
-    /// ClickHouse spells column types (review finding: a typo was ignored).
+    /// A declared type is a type spelling, and, where the table's columns
+    /// were read, names one of them (review findings: a typo was ignored; a
+    /// column the element reads only through the undeclared-property rule
+    /// or a `filter:` was refused offline).
     #[test]
     fn declared_column_types_are_checked() {
-        let with = |types: &str| {
-            let y = SHARED
+        let yaml = |types: &str| {
+            SHARED
                 .replace(
                     "      node_id: post_id\n",
                     &format!("      node_id: post_id\n      column_types: {types}\n"),
                 )
-                .replace("      auto_discover_columns: true\n", "");
-            GraphSchemaConfig::from_yaml_str(&y)
+                .replace("      auto_discover_columns: true\n", "")
+        };
+        let offline = |types: &str| {
+            GraphSchemaConfig::from_yaml_str(&yaml(types))
                 .unwrap()
                 .to_graph_schema()
         };
-        let e = with("{postid: String}").unwrap_err().to_string();
+        let read = |types: &str| {
+            let mut d = DiscoveredColumns::default();
+            d.insert("db", "posts", posts_columns());
+            GraphSchemaConfig::from_yaml_str(&yaml(types))
+                .unwrap()
+                .to_graph_schema_with_columns(&d)
+        };
+        let e = offline("{post_id: 'Array('}").unwrap_err().to_string();
+        assert!(e.contains("'Array(' for column 'post_id'"), "{e}");
+        // Offline, any column: it may be read by the undeclared-property
+        // rule or a filter.
+        assert!(offline("{age: UInt8}").is_ok());
+        // Read, a column of the table only.
+        let e = read("{postid: String}").unwrap_err().to_string();
         assert!(
-            e.contains("column_types for 'postid', a column it does not read"),
+            e.contains("'postid', which `db`.`posts` has no column of"),
             "{e}"
         );
-        let e = with("{post_id: Strng}").unwrap_err().to_string();
-        assert!(e.contains("'Strng' for column 'post_id'"), "{e}");
         for ok in [
             "{post_id: UInt64}",
-            "{post_id: 'Nullable(DateTime64(3))'}",
-            "{post_id: 'LowCardinality(String)', content: 'Array(String)'}",
+            "{post_id: 'Nullable(DateTime64(3))', author_id: JSON}",
+            "{content: 'Array(String)'}",
         ] {
-            assert!(with(ok).is_ok(), "{ok}");
+            assert!(read(ok).is_ok(), "{ok}");
         }
     }
 
