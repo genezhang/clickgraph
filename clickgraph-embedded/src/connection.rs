@@ -1942,6 +1942,7 @@ graph_schema:
                 .unwrap(),
             executor_kind: crate::database::ExecutorKind::EmbeddedChdb,
             dialect: clickgraph::sql_generator::SqlDialect::ClickHouse,
+            load_warnings: Vec::new(),
         }
     }
 
@@ -2003,6 +2004,7 @@ graph_schema:
                 .unwrap(),
             executor_kind: crate::database::ExecutorKind::EmbeddedChdb,
             dialect: clickgraph::sql_generator::SqlDialect::ClickHouse,
+            load_warnings: Vec::new(),
         };
         (db, captured)
     }
@@ -2039,6 +2041,7 @@ graph_schema:
                 .unwrap(),
             executor_kind: crate::database::ExecutorKind::EmbeddedChdb,
             dialect: clickgraph::sql_generator::SqlDialect::ClickHouse,
+            load_warnings: Vec::new(),
         }
     }
 

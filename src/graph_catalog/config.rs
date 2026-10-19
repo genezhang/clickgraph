@@ -1267,6 +1267,46 @@ fn parse_edge_id_types(
     }
 }
 
+/// VALUE_TYPES.md T1: each declared `column_types` entry names a column the
+/// element reads (`read`: its ids, ends, label / type columns and the columns
+/// of its property mappings), and spells a ClickHouse column type. A typo
+/// would otherwise be ignored silently.
+fn check_column_types(
+    owner: &str,
+    declared: &HashMap<String, String>,
+    read: &std::collections::BTreeSet<String>,
+) -> Result<(), GraphSchemaError> {
+    let mut names: Vec<&String> = declared.keys().collect();
+    names.sort();
+    for column in names {
+        if !read.contains(column) {
+            return Err(GraphSchemaError::InvalidConfig {
+                message: format!(
+                    "{} declares column_types for '{}', a column it does not read \
+                     (its ids and the columns of its property_mappings: {:?})",
+                    owner, column, read
+                ),
+            });
+        }
+        let ty = &declared[column];
+        if !crate::graph_catalog::schema_types::is_clickhouse_column_type(ty) {
+            return Err(GraphSchemaError::InvalidConfig {
+                message: format!(
+                    "{} declares column_types '{}' for column '{}', which is not a \
+                     ClickHouse column type (e.g. UInt64, String, Date, DateTime64(3))",
+                    owner, ty, column
+                ),
+            });
+        }
+    }
+    Ok(())
+}
+
+/// The columns an element's property mappings read.
+fn mapped_columns(mappings: &HashMap<String, PropertyValue>) -> impl Iterator<Item = String> + '_ {
+    mappings.values().flat_map(|pv| pv.get_columns())
+}
+
 /// Build a NodeSchema from a NodeDefinition with optional discovery data
 fn build_node_schema(
     node_def: &NodeDefinition,
@@ -1351,6 +1391,25 @@ fn build_node_schema(
         &node_def.label,
     )?;
 
+    let read: std::collections::BTreeSet<String> = node_def
+        .node_id
+        .columns()
+        .iter()
+        .map(|c| c.to_string())
+        .chain(mapped_columns(&property_mappings))
+        .chain(
+            [&node_def.from_node_properties, &node_def.to_node_properties]
+                .into_iter()
+                .flatten()
+                .flat_map(|m| m.values().cloned()),
+        )
+        .chain(node_def.label_column.iter().cloned())
+        .collect();
+    check_column_types(
+        &format!("node '{}'", node_def.label),
+        &node_def.column_types,
+        &read,
+    )?;
     // A node embedded in an edge table has one id column per role
     // (`from_node_properties` / `to_node_properties`), not one physical id
     // column: it keeps the discovered types read by id name, as before.
@@ -1505,6 +1564,20 @@ fn build_relationship_schema(
     );
 
     let property_mappings = parse_property_mappings(raw_mappings)?;
+    let read: std::collections::BTreeSet<String> = rel_def
+        .from_id
+        .columns()
+        .into_iter()
+        .chain(rel_def.to_id.columns())
+        .chain(rel_def.edge_id.iter().flat_map(|id| id.columns()))
+        .map(str::to_string)
+        .chain(mapped_columns(&property_mappings))
+        .collect();
+    check_column_types(
+        &format!("relationship '{}'", rel_def.type_name),
+        &rel_def.column_types,
+        &read,
+    )?;
 
     // Determine use_final
     let use_final = determine_use_final(rel_def.use_final, &discovery.engine);
@@ -1729,6 +1802,20 @@ fn build_standard_edge_schema(
     );
 
     let property_mappings = parse_property_mappings(raw_mappings)?;
+    let read: std::collections::BTreeSet<String> = std_edge
+        .from_id
+        .columns()
+        .into_iter()
+        .chain(std_edge.to_id.columns())
+        .chain(std_edge.edge_id.iter().flat_map(|id| id.columns()))
+        .map(str::to_string)
+        .chain(mapped_columns(&property_mappings))
+        .collect();
+    check_column_types(
+        &format!("edge '{}'", std_edge.type_name),
+        &std_edge.column_types,
+        &read,
+    )?;
 
     // Determine use_final
     let use_final = determine_use_final(std_edge.use_final, &discovery.engine);
@@ -1883,6 +1970,30 @@ fn build_polymorphic_edge_schemas(
         &poly_edge.exclude_columns,
         &poly_edge.naming_convention,
     ))?;
+    let read: std::collections::BTreeSet<String> = poly_edge
+        .from_id
+        .columns()
+        .into_iter()
+        .chain(poly_edge.to_id.columns())
+        .chain(poly_edge.edge_id.iter().flat_map(|id| id.columns()))
+        .map(str::to_string)
+        .chain(mapped_columns(&property_mappings))
+        .chain(
+            [
+                &poly_edge.type_column,
+                &poly_edge.from_label_column,
+                &poly_edge.to_label_column,
+            ]
+            .into_iter()
+            .flatten()
+            .cloned(),
+        )
+        .collect();
+    check_column_types(
+        &polymorphic_edge_owner(poly_edge),
+        &poly_edge.column_types,
+        &read,
+    )?;
 
     // Determine use_final
     let use_final = determine_use_final(poly_edge.use_final, &discovery.engine);
@@ -5338,6 +5449,84 @@ graph_schema:
             e.to_string().contains("empty type for column 'post_id'"),
             "{e}"
         );
+    }
+
+    /// A declared type names a column the element reads, spelled as
+    /// ClickHouse spells column types (review finding: a typo was ignored).
+    #[test]
+    fn declared_column_types_are_checked() {
+        let with = |types: &str| {
+            let y = SHARED
+                .replace(
+                    "      node_id: post_id\n",
+                    &format!("      node_id: post_id\n      column_types: {types}\n"),
+                )
+                .replace("      auto_discover_columns: true\n", "");
+            GraphSchemaConfig::from_yaml_str(&y)
+                .unwrap()
+                .to_graph_schema()
+        };
+        let e = with("{postid: String}").unwrap_err().to_string();
+        assert!(
+            e.contains("column_types for 'postid', a column it does not read"),
+            "{e}"
+        );
+        let e = with("{post_id: Strng}").unwrap_err().to_string();
+        assert!(e.contains("'Strng' for column 'post_id'"), "{e}");
+        for ok in [
+            "{post_id: UInt64}",
+            "{post_id: 'Nullable(DateTime64(3))'}",
+            "{post_id: 'LowCardinality(String)', content: 'Array(String)'}",
+        ] {
+            assert!(with(ok).is_ok(), "{ok}");
+        }
+    }
+
+    /// A node embedded in an edge table keeps its id types as before T1:
+    /// read by id name, and only when it discovers its columns.
+    #[test]
+    fn an_embedded_node_keeps_its_id_types_as_before() {
+        let y = r#"
+graph_schema:
+  nodes:
+    - label: Airport
+      database: db
+      table: flights
+      node_id: code
+      property_mappings: {}
+      from_node_properties: {code: origin}
+      to_node_properties: {code: dest}
+  edges:
+    - type: FLIGHT
+      database: db
+      table: flights
+      from_node: Airport
+      to_node: Airport
+      from_id: origin
+      to_id: dest
+      property_mappings: {}
+"#;
+        let c = GraphSchemaConfig::from_yaml_str(y).unwrap();
+        let mut d = DiscoveredColumns::default();
+        d.insert(
+            "db",
+            "flights",
+            vec![
+                ColumnInfo::new("code".into(), "Date".into()),
+                ColumnInfo::new("origin".into(), "String".into()),
+                ColumnInfo::new("dest".into(), "FixedString(3)".into()),
+            ],
+        );
+        let s = c.to_graph_schema_with_columns(&d).unwrap();
+        assert!(s
+            .node_schema("Airport")
+            .unwrap()
+            .node_id
+            .part_types
+            .is_empty());
+        let r = s.get_rel_schema("FLIGHT").unwrap();
+        assert_eq!(r.from_node_id_part_types[0].raw, "String");
+        assert_eq!(r.to_node_id_part_types[0].raw, "FixedString(3)");
     }
 
     /// Each table is read once, whether or not it discovers its properties.

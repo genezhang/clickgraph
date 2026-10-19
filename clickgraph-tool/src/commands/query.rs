@@ -2,6 +2,7 @@ use anyhow::{anyhow, Result};
 use clickgraph_embedded::{
     connection::Connection,
     database::{Database, RemoteConfig},
+    error::EmbeddedError,
     value::Value,
 };
 
@@ -48,7 +49,12 @@ pub(crate) fn open_for_translation(cfg: &CgConfig) -> Result<Database> {
         // connection, the translation is the same one with unknown types.
         if let (DialectArg::Clickhouse, Some(remote)) = (&cfg.dialect, remote_config(cfg)) {
             match Database::new_remote(path, remote) {
-                Ok(db) => return Ok(db),
+                Ok(db) => {
+                    warn_load(&db);
+                    return Ok(db);
+                }
+                // The schema itself is wrong: the same error either way.
+                Err(e @ EmbeddedError::Schema(_)) => return Err(anyhow!("{}", e)),
                 Err(e) => eprintln!(
                     "warning: could not read column types from ClickHouse, translating \
                      without them: {}",
@@ -61,6 +67,7 @@ pub(crate) fn open_for_translation(cfg: &CgConfig) -> Result<Database> {
     };
     match (&cfg.dialect, remote_config(cfg)) {
         (DialectArg::Clickhouse, Some(remote)) => Database::new_remote(path, remote)
+            .inspect(warn_load)
             .map_err(|e| anyhow!("Failed to read columns from ClickHouse: {}", e)),
         (DialectArg::Clickhouse, None) => Err(anyhow!(
             "{} sets auto_discover_columns: true, so its properties are the columns of \
@@ -75,6 +82,15 @@ pub(crate) fn open_for_translation(cfg: &CgConfig) -> Result<Database> {
              declare its property_mappings instead",
             target.owner
         )),
+    }
+}
+
+/// Print what loading the schema did without (`Database::load_warnings`:
+/// column types it could not read), so a translation that differs from the
+/// server's says why.
+fn warn_load(db: &Database) {
+    for w in db.load_warnings() {
+        eprintln!("warning: {}", w);
     }
 }
 
@@ -109,6 +125,7 @@ pub async fn run_query(cypher: &str, sql_only: bool, format: &str, cfg: &CgConfi
     let (col_names, rows) = tokio::task::spawn_blocking(move || {
         let db = Database::new_remote(&schema_path, remote)
             .map_err(|e| anyhow!("Failed to connect to ClickHouse: {}", e))?;
+        warn_load(&db);
         let conn = Connection::new(&db).map_err(|e| anyhow!("{}", e))?;
         let result = conn.query_remote(&cypher).map_err(|e| anyhow!("{}", e))?;
         let col_names: Vec<String> = result.get_column_names().to_vec();

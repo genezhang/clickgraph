@@ -8307,3 +8307,48 @@ graph_schema:
     let unknown = lowered(q, &config.to_graph_schema().unwrap(), &options);
     assert!(!unknown.contains("CAST(e.d"), "{unknown}");
 }
+
+/// A part whose type is unknown on one side tells nothing: it is not read as
+/// an `Integer` (whose `Bool` / `Integer` rule would cast the known `Bool`
+/// side to `Int64`), while the part known on every side is still folded.
+#[test]
+fn an_unknown_key_part_is_not_folded() {
+    let config = crate::graph_catalog::config::GraphSchemaConfig::from_yaml_str(
+        r#"
+name: lower_partly_typed_keys
+graph_schema:
+  nodes:
+    - label: P
+      database: db
+      table: ps
+      node_id: [b, d]
+      column_types: {b: Bool, d: Date}
+      property_mappings: {b: b, d: d}
+  edges:
+    - type: E
+      database: db
+      table: es
+      from_id: [fb, fd]
+      to_id: [tb, td]
+      from_node: P
+      to_node: P
+      column_types: {fd: DateTime, td: DateTime}
+      property_mappings: {}
+"#,
+    )
+    .unwrap();
+    let schema = config.to_graph_schema().unwrap();
+    let got = lowered(
+        "MATCH p = shortestPath((a:P)-[:E*1..]->(b:P)) RETURN count(*)",
+        &schema,
+        &crate::bound_plan::lower::LowerOptions::default(),
+    );
+    assert!(
+        !got.contains("AS Int64)"),
+        "the Bool part is not cast:\n{got}"
+    );
+    assert!(
+        got.contains("CAST(start_node.d AS DateTime64(3))"),
+        "the Date part is folded with the DateTime ends:\n{got}"
+    );
+}

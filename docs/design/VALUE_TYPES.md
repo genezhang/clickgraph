@@ -44,13 +44,17 @@ sets `auto_discover_columns`, because only those elements carry column types.
 
 - **Discovery at schema load, for every table**, wherever a connection
   exists: the server (`system.columns` through its client), remote and
-  `cg --clickhouse` (`system.columns`), embedded chdb (`DESCRIBE` of a
-  `source:`). A table that cannot be read gets no types, and that is not an
-  error. Discovery of *types* does not discover *properties*:
+  `cg --clickhouse` (`system.columns`, one read for every table, within 5 s),
+  embedded chdb (`DESCRIBE` of a `source:`; a table chdb creates from the
+  schema is not read). A table that cannot be read gets no types, and that is
+  not an error: the library reports it (`Database::load_warnings`, printed by
+  `cg`). Discovery of *types* does not discover *properties*:
   `auto_discover_columns` alone still decides which columns are properties
   (the undeclared-property rule is unchanged).
 - **Declared types win**: a `column_types:` map on a node or edge definition
-  (column → backend type spelling, e.g. `DateTime64(3)`, `Array(String)`).
+  (column → ClickHouse type spelling, e.g. `DateTime64(3)`, `Array(String)`),
+  checked at load: the column is one the element reads, the spelling a
+  ClickHouse column type.
 - **Freeze**: a `cg schema` option writes the discovered types into the
   YAML's `column_types`, for deployments that want SQL that depends on the
   YAML alone.
@@ -58,14 +62,17 @@ sets `auto_discover_columns`, because only those elements carry column types.
   `column_types`, emits the SQL of an unknown type (today's), which can differ
   from the server's.
 - Databricks: no discovery yet (its types are Spark's). Declared
-  `column_types` work there once a slice consumes them.
+  `column_types` apply there too, spelled as ClickHouse types.
+- The id of a node embedded in edge tables (`from_node_properties` /
+  `to_node_properties`) has one column per role, so it keeps its types as
+  before T1 (only `auto_discover_columns`); its edges' end columns get theirs.
 
 ## 3. Slices
 
 Each slice is one PR, keeps the golden net byte-identical unless it says why,
 and is verified live against ClickHouse and the Neo4j oracle.
 
-- [ ] **T1 — catalog column types.** `column_types` in the YAML; discovery of
+- [x] **T1 — catalog column types** (PR #1503). `column_types` in the YAML; discovery of
   every table's types in the server, remote, `cg` and chdb loaders (non-fatal);
   `NodeIdSchema.part_types` and the edges' `*_node_id_part_types` filled for
   declared elements too, which completes #1498 for declared schemas (#1360
