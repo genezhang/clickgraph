@@ -211,6 +211,19 @@ pub fn has_query_context() -> bool {
     QUERY_CONTEXT.try_with(|_| ()).is_ok()
 }
 
+/// A copy of the current query context (`None` outside one): for running
+/// part of a query on another thread (`translate::on_translation_stack`),
+/// which then hands its final state back with [`restore_query_context`].
+pub fn snapshot_query_context() -> Option<QueryContext> {
+    QUERY_CONTEXT.try_with(|ctx| ctx.borrow().clone()).ok()
+}
+
+/// Replace the current query context's state with `context` (no-op outside
+/// one): see [`snapshot_query_context`].
+pub fn restore_query_context(context: QueryContext) {
+    let _ = QUERY_CONTEXT.try_with(|ctx| *ctx.borrow_mut() = context);
+}
+
 /// Synchronous counterpart of [`with_query_context`]: run `f` with `context`
 /// as the task-local query context (for synchronous entry points such as
 /// `translate::translate_read` called by library code without one).

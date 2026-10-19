@@ -204,4 +204,9 @@ async fn the_prelude_and_every_arms_use_on_bolt() {
     );
     // Neo4j's codes.
     assert_eq!(code, "Neo.ClientError.Statement.ArgumentError");
+    // #1373: too many clauses, refused before anything parses them.
+    let long = format!("MATCH (u:User) {}RETURN u.name", "WITH u ".repeat(1500));
+    let (code, message) = run(&mut handler, &long).await.unwrap_err();
+    assert_eq!(code, "Neo.ClientError.Statement.FeatureNotSupported");
+    assert!(message.contains("(at most 1000)"), "{message}");
 }

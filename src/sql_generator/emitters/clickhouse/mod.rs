@@ -87,7 +87,19 @@ pub fn cypher_to_sql_with_metadata(
 ///
 /// A library caller has one schema, and `USE` does not choose it; UNION
 /// arms whose `USE` clauses name different graphs are still refused.
+///
+/// It runs on a thread with the servers' stack
+/// ([`crate::translate::on_translation_stack`], #1373): on the caller's, a
+/// long statement could overflow it and abort the caller's process.
 fn translate_text_for_library(
+    cypher: &str,
+    schema: &crate::graph_catalog::graph_schema::GraphSchema,
+) -> Result<crate::translate::ReadTranslation, String> {
+    crate::translate::on_translation_stack(cypher, || translate_library_text(cypher, schema))?
+}
+
+/// [`translate_text_for_library`] on this thread.
+fn translate_library_text(
     cypher: &str,
     schema: &crate::graph_catalog::graph_schema::GraphSchema,
 ) -> Result<crate::translate::ReadTranslation, String> {

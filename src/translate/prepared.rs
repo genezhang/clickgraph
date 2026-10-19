@@ -21,6 +21,23 @@
 
 use crate::open_cypher_parser::clause_list::{parse_clause_statement, Clause, ClauseQuery};
 
+/// The most clauses a statement may have, all UNION arms together (#1373).
+/// Translation recurses once per clause in several stages (the legacy
+/// parser reads a WITH chain as nested queries; the lowering recurses over
+/// the clauses), so a long enough chain overflows any thread's stack, and a
+/// stack overflow aborts the process: one 255 KB request of 15,000 `WITH a
+/// LIMIT 100` aborted a (debug-build) server, and 800 aborted `cg`. Real
+/// queries have tens of clauses (the LDBC ones at most about 30).
+pub const MAX_CLAUSES: usize = 1000;
+
+/// The deepest nesting of brackets (`(`, `[`, `{`) a statement may have, and
+/// the most `CASE` expressions (#1373 review): the expression parser and the
+/// lowering recurse once per level, so 20,000 nested parentheses (a 40 KB
+/// request), or 5,000 nested CASEs, aborted a (debug-build) server. CASEs
+/// are counted, not their nesting: `end` is also a name a query may use.
+/// Real queries nest a few levels.
+pub const MAX_NESTING: usize = 500;
+
 /// The graph a statement runs on when neither the statement (`USE`) nor the
 /// request names one: the schema registered as `default` (the configured
 /// `default_schema`, else the first schema loaded).
@@ -57,12 +74,16 @@ pub enum PrepareError {
     /// The UNION arms name different graphs (Neo4j: "Multiple graphs in the
     /// same query not allowed").
     MultipleGraphs(String),
+    /// The statement has more than [`MAX_CLAUSES`] clauses.
+    TooLarge(String),
 }
 
 impl std::fmt::Display for PrepareError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            PrepareError::InvalidOption(e) | PrepareError::MultipleGraphs(e) => write!(f, "{e}"),
+            PrepareError::InvalidOption(e)
+            | PrepareError::MultipleGraphs(e)
+            | PrepareError::TooLarge(e) => write!(f, "{e}"),
         }
     }
 }
@@ -222,12 +243,36 @@ impl StatementTargets {
     /// `CALL p() YIELD x WHERE ..`, `COPY (..) TO ..`, whose inner query's
     /// arms are read). Text neither reads names no graph and writes nothing:
     /// the caller's parse reports the error.
-    pub fn of(text: &str) -> StatementTargets {
+    ///
+    /// A statement of more than [`MAX_CLAUSES`] clauses is refused here,
+    /// before a parser that recurses per clause reads it.
+    pub fn of(text: &str) -> Result<StatementTargets, PrepareError> {
+        // Before any parser reads it: they recurse once per bracket and
+        // per CASE.
+        let shape = StatementShape::of(text);
+        if shape.depth > MAX_NESTING {
+            return Err(PrepareError::TooLarge(format!(
+                "Not supported: brackets nested {} deep (at most {MAX_NESTING})",
+                shape.depth
+            )));
+        }
+        if shape.cases > MAX_NESTING {
+            return Err(PrepareError::TooLarge(format!(
+                "Not supported: {} CASE expressions (at most {MAX_NESTING})",
+                shape.cases
+            )));
+        }
         if let Ok((_, stmt)) = parse_clause_statement(text) {
             let arms: Vec<&ClauseQuery<'_>> = std::iter::once(&stmt.first)
                 .chain(stmt.unions.iter().map(|(_, q)| q))
                 .collect();
-            return StatementTargets {
+            let clauses: usize = arms.iter().map(|q| q.clauses.len()).sum();
+            if clauses > MAX_CLAUSES {
+                return Err(PrepareError::TooLarge(format!(
+                    "Not supported: a statement of {clauses} clauses (at most {MAX_CLAUSES})"
+                )));
+            }
+            return Ok(StatementTargets {
                 arm_graphs: arms
                     .iter()
                     .map(|q| q.use_clause.as_ref().map(|u| u.database_name.to_string()))
@@ -238,8 +283,11 @@ impl StatementTargets {
                         Clause::Create(_) | Clause::Set(_) | Clause::Remove(_) | Clause::Delete(_)
                     )
                 }),
-            };
+            });
         }
+        // Text the clause-list parser rejects: its clause keywords bound its
+        // clauses (the legacy parser reads it next, recursing per WITH).
+        check_clause_keywords(text)?;
         use crate::open_cypher_parser::ast::{CypherStatement, OpenCypherQueryAst};
         let writes = |q: &OpenCypherQueryAst<'_>| {
             q.create_clause.is_some()
@@ -249,32 +297,34 @@ impl StatementTargets {
         };
         let graph =
             |q: &OpenCypherQueryAst<'_>| q.use_clause.as_ref().map(|u| u.database_name.to_string());
-        match crate::open_cypher_parser::parse_cypher_statement(text) {
-            Ok((
-                _,
-                CypherStatement::Query {
-                    query,
-                    union_clauses,
+        Ok(
+            match crate::open_cypher_parser::parse_cypher_statement(text) {
+                Ok((
+                    _,
+                    CypherStatement::Query {
+                        query,
+                        union_clauses,
+                    },
+                )) => StatementTargets {
+                    arm_graphs: std::iter::once(graph(&query))
+                        .chain(union_clauses.iter().map(|u| graph(&u.query)))
+                        .collect(),
+                    is_write: writes(&query) || union_clauses.iter().any(|u| writes(&u.query)),
                 },
-            )) => StatementTargets {
-                arm_graphs: std::iter::once(graph(&query))
-                    .chain(union_clauses.iter().map(|u| graph(&u.query)))
-                    .collect(),
-                is_write: writes(&query) || union_clauses.iter().any(|u| writes(&u.query)),
+                Ok((_, CypherStatement::CopyTo(copy))) => StatementTargets {
+                    is_write: false,
+                    ..StatementTargets::of(copy.query)?
+                },
+                Ok((_, CypherStatement::ProcedureCall(_))) => StatementTargets::default(),
+                // Neither parser reads it (the MCP servers' `CALL
+                // apoc.meta.schema() .. UNWIND ..`, which the server answers
+                // without parsing): a leading `USE` still names its graph.
+                Err(_) => StatementTargets {
+                    arm_graphs: vec![leading_use(text)],
+                    is_write: false,
+                },
             },
-            Ok((_, CypherStatement::CopyTo(copy))) => StatementTargets {
-                is_write: false,
-                ..StatementTargets::of(copy.query)
-            },
-            Ok((_, CypherStatement::ProcedureCall(_))) => StatementTargets::default(),
-            // Neither parser reads it (the MCP servers' `CALL
-            // apoc.meta.schema() .. UNWIND ..`, which the server answers
-            // without parsing): a leading `USE` still names its graph.
-            Err(_) => StatementTargets {
-                arm_graphs: vec![leading_use(text)],
-                is_write: false,
-            },
-        }
+        )
     }
 
     /// The graph the first arm's `USE` names.
@@ -347,6 +397,118 @@ impl StatementTargets {
     }
 }
 
+/// Refuse a statement the clause-list parser does not read when it has
+/// more than [`MAX_CLAUSES`] clause keywords ([`clause_keywords`]).
+fn check_clause_keywords(text: &str) -> Result<(), PrepareError> {
+    if clause_keywords(text) > MAX_CLAUSES {
+        return Err(PrepareError::TooLarge(format!(
+            "Not supported: a statement of more than {MAX_CLAUSES} clauses"
+        )));
+    }
+    Ok(())
+}
+
+/// The clause keywords of `text` (comments stripped), without parsing it:
+/// an upper bound of its clauses ([`StatementShape::clause_keywords`]).
+pub fn clause_keywords(text: &str) -> usize {
+    StatementShape::of(text).clause_keywords
+}
+
+/// How big a statement is, read without parsing it (one pass over the
+/// characters; comments already stripped): what decides whether a library
+/// caller translates it on its own thread (`translate::on_translation_stack`)
+/// and bounds what a parser that recurses reads ([`MAX_CLAUSES`],
+/// [`MAX_NESTING`]).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct StatementShape {
+    /// Clause keywords: an upper bound of the clauses (`STARTS WITH` counts
+    /// too). Strings, backticked names and property keys (`n.limit`) are
+    /// skipped.
+    pub clause_keywords: usize,
+    /// Tokens: names, numbers, strings, and each other character that is
+    /// not white space.
+    pub tokens: usize,
+    /// The deepest nesting of `(`, `[` and `{`.
+    pub depth: usize,
+    /// `CASE` keywords: an upper bound of how deep `CASE … END` nests (the
+    /// word `end` is also a name a query may use, so `END` is not counted
+    /// down).
+    pub cases: usize,
+}
+
+impl StatementShape {
+    pub fn of(text: &str) -> StatementShape {
+        const KEYWORDS: [&str; 15] = [
+            "MATCH", "UNWIND", "WITH", "RETURN", "CALL", "CREATE", "MERGE", "SET", "REMOVE",
+            "DELETE", "LIMIT", "SKIP", "OFFSET", "ORDER", "UNION",
+        ];
+        let mut shape = StatementShape::default();
+        let mut depth = 0usize;
+        let mut chars = text.char_indices().peekable();
+        let mut previous = ' ';
+        while let Some((i, c)) = chars.next() {
+            match c {
+                '\'' | '"' | '`' => {
+                    // To the closing quote (a backslash escapes in strings).
+                    while let Some((_, d)) = chars.next() {
+                        if d == '\\' && c != '`' {
+                            chars.next();
+                        } else if d == c {
+                            break;
+                        }
+                    }
+                    shape.tokens += 1;
+                    previous = c;
+                }
+                // A number: its digits only, so a keyword glued to it
+                // (`1 = 1WITH`, which the parsers read) is a word of its own.
+                c if c.is_ascii_digit() => {
+                    while chars.peek().is_some_and(|&(_, d)| d.is_ascii_digit()) {
+                        chars.next();
+                    }
+                    shape.tokens += 1;
+                    previous = '0';
+                }
+                c if c.is_alphabetic() || c == '_' => {
+                    let mut end = i + c.len_utf8();
+                    while let Some(&(j, d)) = chars.peek() {
+                        if !is_identifier_char(d) {
+                            break;
+                        }
+                        end = j + d.len_utf8();
+                        chars.next();
+                    }
+                    let word = &text[i..end];
+                    if previous != '.' {
+                        if KEYWORDS.iter().any(|k| word.eq_ignore_ascii_case(k)) {
+                            shape.clause_keywords += 1;
+                        }
+                        if previous != ':' && word.eq_ignore_ascii_case("CASE") {
+                            shape.cases += 1;
+                        }
+                    }
+                    shape.tokens += 1;
+                    previous = 'a';
+                }
+                c if c.is_whitespace() => {}
+                c => {
+                    match c {
+                        '(' | '[' | '{' => {
+                            depth += 1;
+                            shape.depth = shape.depth.max(depth);
+                        }
+                        ')' | ']' | '}' => depth = depth.saturating_sub(1),
+                        _ => {}
+                    }
+                    shape.tokens += 1;
+                    previous = c;
+                }
+            }
+        }
+        shape
+    }
+}
+
 /// Whether two graph names name the same graph: the same name, or on a
 /// server `default` and the schema it aliases (the configured
 /// `default_schema`, else the first schema loaded).
@@ -391,7 +553,7 @@ impl PreparedStatement {
     /// ([`StatementTargets::of`]).
     pub fn parse(raw: &str) -> Result<PreparedStatement, PrepareError> {
         let prelude = Prelude::parse(raw)?;
-        let targets = StatementTargets::of(&prelude.text);
+        let targets = StatementTargets::of(&prelude.text)?;
         Ok(PreparedStatement { prelude, targets })
     }
 
@@ -469,7 +631,7 @@ mod tests {
     }
 
     fn graph(text: &str, requested: Option<&str>) -> Result<String, PrepareError> {
-        StatementTargets::of(text).graph(requested)
+        StatementTargets::of(text).unwrap().graph(requested)
     }
 
     /// #1370: the first arm's USE, else the request's graph, else the
@@ -565,6 +727,7 @@ mod tests {
         let q = "MATCH (a:User) RETURN a.name AS n";
         let named = |t: &str| {
             StatementTargets::of(t)
+                .unwrap()
                 .named_graph()
                 .map(|g| g.map(String::from))
         };
@@ -585,15 +748,103 @@ mod tests {
         ));
     }
 
+    /// #1373: more than `MAX_CLAUSES` clauses, all arms together, are
+    /// refused; text the clause-list parser does not read is bounded by its
+    /// clause keywords (strings, backticked names and property keys aside).
+    #[test]
+    fn statement_size_limit() {
+        let chain = |n: usize| format!("MATCH (a) {}RETURN a", "WITH a ".repeat(n));
+        assert!(StatementTargets::of(&chain(MAX_CLAUSES - 2)).is_ok());
+        assert!(matches!(
+            StatementTargets::of(&chain(MAX_CLAUSES - 1)),
+            Err(PrepareError::TooLarge(_))
+        ));
+        let arms = vec!["MATCH (a) RETURN a"; MAX_CLAUSES / 2 + 1].join(" UNION ");
+        assert!(matches!(
+            StatementTargets::of(&arms),
+            Err(PrepareError::TooLarge(_))
+        ));
+        let unparsed = format!("{} GARBAGE", chain(MAX_CLAUSES));
+        assert!(matches!(
+            StatementTargets::of(&unparsed),
+            Err(PrepareError::TooLarge(_))
+        ));
+        assert_eq!(
+            clause_keywords("MATCH (n) WHERE n.limit = 'WITH x' AND n.`match` > 1 RETURN n"),
+            2
+        );
+        assert_eq!(clause_keywords("match (n) with n Return n"), 3);
+        // A free-standing OFFSET is a clause, and a keyword glued to a
+        // number is one (review of #1506).
+        assert_eq!(clause_keywords("MATCH (n) OFFSET 1 OFFSET 2 RETURN n"), 4);
+        assert_eq!(
+            clause_keywords("MATCH (n) WITH n WHERE 1 = 1WITH n RETURN n"),
+            4
+        );
+        let case = StatementShape::of(
+            "RETURN CASE WHEN x THEN CASE WHEN y THEN 1 END END AS c, n.case, n:Case",
+        );
+        assert_eq!(case.cases, 2);
+        // A name `end` does not count nesting down (review of #1506): a map
+        // key, a variable.
+        let lists = format!(
+            "RETURN {}1{} AS x",
+            "[{end: 1}, ".repeat(MAX_NESTING),
+            "]".repeat(MAX_NESTING)
+        );
+        assert!(matches!(
+            StatementTargets::of(&lists),
+            Err(PrepareError::TooLarge(_))
+        ));
+        let cases = format!(
+            "WITH 1 AS end RETURN {}1{} AS x",
+            "CASE WHEN end = 1 THEN ".repeat(MAX_NESTING + 1),
+            " END".repeat(MAX_NESTING + 1)
+        );
+        assert!(matches!(
+            StatementTargets::of(&cases),
+            Err(PrepareError::TooLarge(_))
+        ));
+        let shape = StatementShape::of("MATCH (n) WHERE n.x IN [1, (2 + 3)] RETURN 'a(b'");
+        assert_eq!((shape.depth, shape.tokens), (2, 20));
+        let nested = format!(
+            "RETURN {}1{} AS x",
+            "(".repeat(MAX_NESTING + 1),
+            ")".repeat(MAX_NESTING + 1)
+        );
+        assert!(matches!(
+            StatementTargets::of(&nested),
+            Err(PrepareError::TooLarge(_))
+        ));
+        // At the limit it parses, on the stack of a server worker (128 MB;
+        // a debug build needs more than a test thread's 2 MB).
+        let nested = format!(
+            "RETURN {}1{} AS x",
+            "(".repeat(MAX_NESTING),
+            ")".repeat(MAX_NESTING)
+        );
+        let parsed = std::thread::Builder::new()
+            .stack_size(128 * 1024 * 1024)
+            .spawn(move || StatementTargets::of(&nested).is_ok())
+            .unwrap()
+            .join()
+            .unwrap();
+        assert!(parsed);
+    }
+
     /// #1447: an update in any arm makes the statement a write.
     #[test]
     fn write_in_any_arm() {
         let read = "MATCH (x:Person) RETURN x.name AS n";
         let write = "MATCH (y:Person) SET y.name = 'w' RETURN y.name AS n";
-        assert!(!StatementTargets::of(read).is_write());
-        assert!(StatementTargets::of(write).is_write());
-        assert!(StatementTargets::of(&format!("{read} UNION {write}")).is_write());
-        assert!(StatementTargets::of("CREATE (:Person {name: 'a'})").is_write());
-        assert!(!StatementTargets::of("CALL db.labels()").is_write());
+        assert!(!StatementTargets::of(read).unwrap().is_write());
+        assert!(StatementTargets::of(write).unwrap().is_write());
+        assert!(StatementTargets::of(&format!("{read} UNION {write}"))
+            .unwrap()
+            .is_write());
+        assert!(StatementTargets::of("CREATE (:Person {name: 'a'})")
+            .unwrap()
+            .is_write());
+        assert!(!StatementTargets::of("CALL db.labels()").unwrap().is_write());
     }
 }

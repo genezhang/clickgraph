@@ -86,9 +86,11 @@ impl<'db> Connection<'db> {
     /// }
     /// ```
     pub fn query(&self, cypher: &str) -> Result<QueryResult, EmbeddedError> {
-        self.db
-            .runtime
-            .block_on(self.with_timeout(self.query_async(cypher)))
+        self.on_query_thread(cypher, || {
+            self.db
+                .runtime
+                .block_on(self.with_timeout(self.query_async(cypher)))
+        })
     }
 
     /// Execute a Cypher query and return the generated SQL without executing it.
@@ -100,20 +102,22 @@ impl<'db> Connection<'db> {
             set_current_dialect, set_current_schema, with_query_context, QueryContext,
         };
         let schema = Arc::clone(&self.schema);
-        let cypher = cypher.to_string();
+        let text = cypher.to_string();
         let dialect = self.db.dialect;
-        self.db.runtime.block_on(async move {
-            let context = QueryContext::new(None);
-            with_query_context(context, async move {
-                set_current_dialect(dialect);
-                set_current_schema(Arc::clone(&schema));
-                // #1314: SQL handed to the caller (for running elsewhere)
-                // carries the semantic session settings in the statement.
-                cypher_to_sql(&cypher, &schema)
-                    .map(|sql| clickgraph::sql_generator::portable_sql(&sql, dialect))
-                    .map_err(EmbeddedError::Query)
+        self.on_translation_stack(cypher, || {
+            self.db.runtime.block_on(async move {
+                let context = QueryContext::new(None);
+                with_query_context(context, async move {
+                    set_current_dialect(dialect);
+                    set_current_schema(Arc::clone(&schema));
+                    // #1314: SQL handed to the caller (for running elsewhere)
+                    // carries the semantic session settings in the statement.
+                    cypher_to_sql(&text, &schema)
+                        .map(|sql| clickgraph::sql_generator::portable_sql(&sql, dialect))
+                        .map_err(EmbeddedError::Query)
+                })
+                .await
             })
-            .await
         })
     }
 
@@ -142,9 +146,11 @@ impl<'db> Connection<'db> {
         output_path: &str,
         options: ExportOptions,
     ) -> Result<(), EmbeddedError> {
-        self.db
-            .runtime
-            .block_on(self.export_async(cypher, output_path, options))
+        self.on_query_thread(cypher, || {
+            self.db
+                .runtime
+                .block_on(self.export_async(cypher, output_path, options))
+        })
     }
 
     /// Generate the export SQL without executing it (for debugging).
@@ -175,9 +181,11 @@ impl<'db> Connection<'db> {
     /// Returns an error if no remote executor is configured.
     pub fn query_remote(&self, cypher: &str) -> Result<QueryResult, EmbeddedError> {
         let remote = self.get_remote_executor()?;
-        self.db
-            .runtime
-            .block_on(self.with_timeout(self.query_with_executor_async(cypher, remote)))
+        self.on_query_thread(cypher, || {
+            self.db
+                .runtime
+                .block_on(self.with_timeout(self.query_with_executor_async(cypher, remote)))
+        })
     }
 
     /// Execute a Cypher query locally and return a structured graph result.
@@ -185,9 +193,11 @@ impl<'db> Connection<'db> {
     /// Uses `cypher_to_sql_with_metadata()` to get plan metadata, then
     /// transforms the result rows into `GraphNode`s and `GraphEdge`s.
     pub fn query_graph(&self, cypher: &str) -> Result<GraphResult, EmbeddedError> {
-        self.db
-            .runtime
-            .block_on(self.with_timeout(self.query_graph_async(cypher, &self.executor)))
+        self.on_query_thread(cypher, || {
+            self.db
+                .runtime
+                .block_on(self.with_timeout(self.query_graph_async(cypher, &self.executor)))
+        })
     }
 
     /// Execute a Cypher query on the remote cluster and return a structured graph result.
@@ -196,9 +206,11 @@ impl<'db> Connection<'db> {
     /// `GraphResult` can be passed to `store_subgraph()` to persist locally.
     pub fn query_remote_graph(&self, cypher: &str) -> Result<GraphResult, EmbeddedError> {
         let remote = self.get_remote_executor()?;
-        self.db
-            .runtime
-            .block_on(self.with_timeout(self.query_graph_async(cypher, remote)))
+        self.on_query_thread(cypher, || {
+            self.db
+                .runtime
+                .block_on(self.with_timeout(self.query_graph_async(cypher, remote)))
+        })
     }
 
     /// Store a `GraphResult` (from `query_graph` or `query_remote_graph`) into
@@ -1091,6 +1103,33 @@ impl<'db> Connection<'db> {
             })
             .collect();
         Ok(QueryResult::new(columns, rows))
+    }
+
+    /// Run `f`, which only translates Cypher, with the servers' stack
+    /// (`CLICKGRAPH_THREAD_STACK_MB`, default 128 MB), on a translation pool
+    /// worker (`clickgraph::translate::on_translation_stack`): on the
+    /// caller's thread (8 MB for a main thread, 2 MB for a spawned Rust
+    /// thread) a long statement overflowed it and aborted the caller's
+    /// process (#1373). A short statement runs inline.
+    fn on_translation_stack<T: Send>(
+        &self,
+        cypher: &str,
+        f: impl FnOnce() -> Result<T, EmbeddedError> + Send,
+    ) -> Result<T, EmbeddedError> {
+        clickgraph::translate::on_translation_stack(cypher, f).map_err(EmbeddedError::Query)?
+    }
+
+    /// [`Self::on_translation_stack`] for an entry point that also runs the
+    /// SQL: on a thread of its own (`translate::on_translation_thread`), so
+    /// a long-running query never holds a pool worker. Every Cypher entry
+    /// point of the connection, and so FFI, Go, Python and `cg`, runs
+    /// through one of the two.
+    fn on_query_thread<T: Send>(
+        &self,
+        cypher: &str,
+        f: impl FnOnce() -> Result<T, EmbeddedError> + Send,
+    ) -> Result<T, EmbeddedError> {
+        clickgraph::translate::on_translation_thread(cypher, f).map_err(EmbeddedError::Query)?
     }
 
     /// Wrap a future with the configured query timeout (if any).
@@ -2034,6 +2073,69 @@ graph_schema:
             dialect: clickgraph::sql_generator::SqlDialect::ClickHouse,
             load_warnings: Vec::new(),
         }
+    }
+
+    /// #1373: a long statement translated from a thread with a small stack
+    /// (a spawned Rust thread's 2 MB) ran on that stack and aborted the
+    /// process; it now runs on a thread with the servers' stack. A short
+    /// one still runs inline, and one of more than `MAX_CLAUSES` clauses is
+    /// refused before anything parses it.
+    #[test]
+    fn a_long_statement_translates_from_a_small_stack() {
+        let db = make_stub_db();
+        let conn = Connection::new(&db).unwrap();
+        let chain = |n: usize| {
+            format!(
+                "MATCH (u:User) {}RETURN u.name",
+                "WITH u LIMIT 10 ".repeat(n)
+            )
+        };
+        let results = std::thread::scope(|s| {
+            std::thread::Builder::new()
+                .stack_size(2 * 1024 * 1024)
+                .spawn_scoped(s, || {
+                    [
+                        conn.query_to_sql(&chain(15)).map(|_| ()),
+                        conn.query_to_sql(&chain(900)).map(|_| ()),
+                        conn.query(&chain(900)).map(|_| ()),
+                        conn.query_to_sql(&chain(1500)).map(|_| ()),
+                        // A free-standing OFFSET chain, a long operator
+                        // chain and deep brackets recurse too (review of
+                        // #1506): they hop by their tokens and nesting.
+                        conn.query_to_sql(&format!(
+                            "MATCH (u:User) {}RETURN u.name",
+                            "OFFSET 1 ".repeat(900)
+                        ))
+                        .map(|_| ()),
+                        conn.query_to_sql(&format!(
+                            "MATCH (u:User) RETURN 1{} AS x",
+                            " + 1".repeat(2000)
+                        ))
+                        .map(|_| ()),
+                        conn.query_to_sql(&format!(
+                            "MATCH (u:User) RETURN {}1{} AS x",
+                            "[".repeat(300),
+                            "]".repeat(300)
+                        ))
+                        .map(|_| ()),
+                    ]
+                })
+                .unwrap()
+                .join()
+                .unwrap()
+        });
+        let [short, long, executed, too_long, offsets, operators, brackets] = results;
+        short.unwrap();
+        long.unwrap();
+        executed.unwrap();
+        offsets.unwrap();
+        operators.unwrap();
+        brackets.unwrap();
+        let err = too_long.unwrap_err().to_string();
+        assert!(
+            err.contains("a statement of 1502 clauses (at most 1000)"),
+            "{err}"
+        );
     }
 
     #[test]

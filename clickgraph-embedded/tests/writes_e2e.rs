@@ -691,3 +691,23 @@ fn a_write_in_a_later_union_arm_is_refused_by_the_write_planner() {
         1
     );
 }
+
+/// #1373: a long statement is parsed and translated on a thread with the
+/// servers' stack, and its SQL runs on chdb from there; a statement of more
+/// than 1000 clauses is refused.
+#[test]
+fn a_long_statement_runs_on_chdb() {
+    let Some(conn) = conn() else { return };
+    person(&conn, "ls1", 20);
+    let chain = |n: usize| {
+        format!(
+            "MATCH (a:Person) WHERE a.person_id = 'ls1' {}RETURN count(a) AS c",
+            "WITH a LIMIT 1000 ".repeat(n)
+        )
+    };
+    // 60 WITHs: 120 clause keywords, past the inline limit; ClickHouse
+    // runs at most 100 nested subqueries (`max_subquery_depth`).
+    assert_eq!(count(&conn, &chain(60)), 1);
+    let err = conn.query(&chain(1200)).expect_err("too many clauses");
+    assert!(err.to_string().contains("(at most 1000)"), "{err}");
+}

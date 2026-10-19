@@ -504,3 +504,109 @@ async fn an_export_query_runs_on_the_statements_graph() {
         assert_eq!(status, StatusCode::OK, "{inner}: {body}");
     }
 }
+
+/// #1373: a statement of more than `MAX_CLAUSES` clauses is refused before
+/// anything parses it. Translation recurses per clause, and a long enough
+/// chain overflowed a server worker's stack, aborting the server (15,000
+/// `WITH a LIMIT 100`, a 255 KB request, on a debug build). Run on a thread
+/// with the server workers' stack (128 MB): a statement at the limit needs
+/// more than a test thread's 2 MB.
+#[test]
+fn a_statement_of_too_many_clauses_is_refused() {
+    std::thread::Builder::new()
+        .stack_size(128 * 1024 * 1024)
+        .spawn(|| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(too_many_clauses_are_refused())
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+async fn too_many_clauses_are_refused() {
+    ensure_default_schema_registered().await;
+    let long = format!(
+        "MATCH (u:User) {}RETURN u.name",
+        "WITH u LIMIT 10 ".repeat(1500)
+    );
+    let at_cap = format!(
+        "MATCH (u:User) {}RETURN u.name",
+        "WITH u LIMIT 10 ".repeat(998)
+    );
+    for uri in ["/query", "/query/sql"] {
+        let body = json!({ "query": long, "sql_only": true, "target_database": "clickhouse" });
+        let (status, body) = post_text(uri, body).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{uri}");
+        assert!(
+            body.contains("a statement of 1502 clauses (at most 1000)"),
+            "{uri}: {body}"
+        );
+        let body = json!({ "query": at_cap, "sql_only": true, "target_database": "clickhouse" });
+        let (status, body) = post_text(uri, body).await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "{uri}: {}",
+            &body[..body.len().min(300)]
+        );
+    }
+    // Inside an export's query argument (not read by the outer parse), and
+    // in text the clause-list parser does not read (its clause keywords).
+    let export = format!("CALL apoc.export.csv.query(\"{long}\", \"/tmp/g4_x.csv\", {{}})");
+    let unparsed = format!(
+        "MATCH (u:User) {}RETURN u.name GARBAGE",
+        "WITH u ".repeat(1500)
+    );
+    for text in [export, unparsed] {
+        let (status, body) = post_text("/query", json!({ "query": text, "sql_only": true })).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(body.contains("clauses"), "{body}");
+    }
+}
+
+/// A hop to the translation stack carries the caller's query context
+/// over (the dialect, the schema) and hands its final state back
+/// (review of #1506).
+#[test]
+fn the_translation_stack_carries_the_query_context() {
+    use clickgraph::server::query_context::{
+        get_current_dialect, get_current_schema_name, set_current_dialect, set_current_schema_name,
+        with_query_context_sync, QueryContext,
+    };
+    use clickgraph::sql_generator::SqlDialect;
+    let long = format!("MATCH (a) {}RETURN a", "WITH a ".repeat(100));
+    // On a pool worker (translation) and on a thread of its own (a query
+    // that also runs its SQL).
+    for pool in [true, false] {
+        let (inside, after) = with_query_context_sync(QueryContext::new(None), || {
+            set_current_dialect(SqlDialect::Databricks);
+            let f = || {
+                let hopped = std::thread::current()
+                    .name()
+                    .is_some_and(|n| n.starts_with("clickgraph-translate"));
+                set_current_schema_name(Some("set_on_the_hop".to_string()));
+                (hopped, get_current_dialect())
+            };
+            let inside = if pool {
+                clickgraph::translate::on_translation_stack(&long, f)
+            } else {
+                clickgraph::translate::on_translation_thread(&long, f)
+            }
+            .unwrap();
+            (inside, get_current_schema_name())
+        });
+        assert_eq!(inside, (true, SqlDialect::Databricks), "pool: {pool}");
+        assert_eq!(after.as_deref(), Some("set_on_the_hop"), "pool: {pool}");
+    }
+    // A short statement runs inline.
+    let hopped = clickgraph::translate::on_translation_stack("MATCH (a) RETURN a", || {
+        std::thread::current()
+            .name()
+            .is_some_and(|n| n.starts_with("clickgraph-translate"))
+    });
+    assert_eq!(hopped, Ok(false));
+}

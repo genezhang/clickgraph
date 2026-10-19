@@ -333,6 +333,161 @@ pub fn translate_inner_read(
     }
 }
 
+/// The stack queries translate on, in bytes: `CLICKGRAPH_THREAD_STACK_MB`
+/// (default 128; 0 or unparsable is the default), for the servers' worker
+/// threads and for a library translation (#1373), so a statement
+/// translates in a library as it does on a server whatever thread the
+/// caller is on (the main thread's 8 MB, a spawned Rust thread's 2 MB, a
+/// cgo or Python thread's). [`prepared::MAX_CLAUSES`] and
+/// [`prepared::MAX_NESTING`] are set for the default.
+pub fn translation_stack_bytes() -> usize {
+    std::env::var("CLICKGRAPH_THREAD_STACK_MB")
+        .ok()
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .filter(|mb| *mb > 0)
+        .unwrap_or(128)
+        .saturating_mul(1024 * 1024)
+}
+
+thread_local! {
+    /// This thread has [`translation_stack_bytes`] of stack: a translation
+    /// pool worker, or a thread [`on_translation_thread`] started.
+    static ON_TRANSLATION_STACK: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// A statement runs on the caller's thread ([`on_translation_stack`]) when it
+/// has at most [`INLINE_TOKENS`] tokens and nests brackets at most
+/// [`INLINE_DEPTH`] deep ([`prepared::StatementShape`]): it needs a few
+/// hundred KB of stack at most, which a spawned Rust thread (2 MB) has. The
+/// parsers and the lowering recurse per clause, per bracket and per
+/// operator of a chain (`1 + 1 + …`): anything longer moves.
+pub const INLINE_TOKENS: usize = 64;
+
+/// See [`INLINE_TOKENS`].
+pub const INLINE_DEPTH: usize = 8;
+
+/// Whether `cypher` needs no more stack than the caller's thread has
+/// ([`INLINE_TOKENS`]), or the caller's thread is one with
+/// [`translation_stack_bytes`].
+fn runs_inline(cypher: &str) -> bool {
+    ON_TRANSLATION_STACK.with(|on| on.get()) || {
+        let shape =
+            prepared::StatementShape::of(&crate::open_cypher_parser::strip_comments(cypher));
+        shape.tokens <= INLINE_TOKENS && shape.depth <= INLINE_DEPTH && shape.cases <= INLINE_DEPTH
+    }
+}
+
+/// The translation pool: one worker per CPU (at most 8), each with
+/// [`translation_stack_bytes`] of stack, started on first use. Its workers
+/// stay, so a translation sent to one costs a few µs, not a thread start
+/// and the faults of a fresh stack (about 100 µs). Only CPU-bound work goes
+/// to it ([`on_translation_stack`]): work that waits on a backend gets a
+/// thread of its own ([`on_translation_thread`]).
+///
+/// `None`: the pool could not be started, or this process is a fork of the
+/// one that started it (a fork has none of its threads, and a translation
+/// sent to it would wait forever: Python's `multiprocessing` forks): the
+/// caller uses a thread of its own instead ([`on_translation_thread`]).
+fn translation_pool() -> Option<&'static rayon::ThreadPool> {
+    static POOL: std::sync::OnceLock<(u32, Option<rayon::ThreadPool>)> = std::sync::OnceLock::new();
+    let (pid, pool) = POOL.get_or_init(|| {
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(std::thread::available_parallelism().map_or(4, |n| n.get().min(8)))
+            .stack_size(translation_stack_bytes())
+            .thread_name(|i| format!("clickgraph-translate-{i}"))
+            .start_handler(|_| ON_TRANSLATION_STACK.with(|on| on.set(true)))
+            .build();
+        if let Err(e) = &pool {
+            log::warn!("translation pool not started ({e}): a thread per translation");
+        }
+        (std::process::id(), pool.ok())
+    });
+    pool.as_ref().filter(|_| *pid == std::process::id())
+}
+
+/// Run `f` with the caller's query context (schema, dialect, counters) as
+/// its own, and hand back `f`'s result and the context's final state: what
+/// moving `f` to another thread needs to be invisible to `f` and the caller.
+fn with_carried_context<T, F>(
+    context: Option<crate::server::query_context::QueryContext>,
+    f: F,
+) -> (T, Option<crate::server::query_context::QueryContext>)
+where
+    F: FnOnce() -> T,
+{
+    use crate::server::query_context::{snapshot_query_context, with_query_context_sync};
+    match context {
+        Some(context) => with_query_context_sync(context, || {
+            let result = f();
+            (result, snapshot_query_context())
+        }),
+        None => (f(), None),
+    }
+}
+
+/// Run `f`, which parses or translates the statement `cypher` (CPU-bound:
+/// no waiting on a backend), on a translation pool worker with
+/// [`translation_stack_bytes`] of stack, and wait for it: the library entry
+/// points (the embedded connection, and through it FFI, Go, Python and
+/// `cg`) translate on the caller's thread otherwise, whose stack a long
+/// statement overflows, aborting the caller's process (#1373). A short
+/// statement ([`INLINE_TOKENS`]) runs inline, as do nested calls. The
+/// caller's query context is carried over and its final state handed back;
+/// a panic is the caller's. `Err`: the pool could not be started.
+pub fn on_translation_stack<T, F>(cypher: &str, f: F) -> Result<T, String>
+where
+    T: Send,
+    F: FnOnce() -> T + Send,
+{
+    if runs_inline(cypher) {
+        return Ok(f());
+    }
+    let Some(pool) = translation_pool() else {
+        return on_translation_thread(cypher, f);
+    };
+    let context = crate::server::query_context::snapshot_query_context();
+    let (result, context) = pool.install(move || with_carried_context(context, f));
+    if let Some(context) = context {
+        crate::server::query_context::restore_query_context(context);
+    }
+    Ok(result)
+}
+
+/// [`on_translation_stack`] for work that also waits on a backend (the
+/// embedded connection's `query`, which runs the SQL): on a thread of its
+/// own with [`translation_stack_bytes`] of stack, so a long-running query
+/// never holds a pool worker. Starting it costs about 100 µs, little next to
+/// running a query. `Err`: the thread could not be started.
+pub fn on_translation_thread<T, F>(cypher: &str, f: F) -> Result<T, String>
+where
+    T: Send,
+    F: FnOnce() -> T + Send,
+{
+    if runs_inline(cypher) {
+        return Ok(f());
+    }
+    let context = crate::server::query_context::snapshot_query_context();
+    let (result, context) = std::thread::scope(|scope| -> Result<_, String> {
+        let handle = std::thread::Builder::new()
+            .name("clickgraph-translate".to_string())
+            .stack_size(translation_stack_bytes())
+            .spawn_scoped(scope, move || {
+                ON_TRANSLATION_STACK.with(|on| on.set(true));
+                with_carried_context(context, f)
+            })
+            .map_err(|e| format!("could not start a translation thread: {e}"))?;
+        // A panic is the caller's, as if `f` had run on its thread.
+        match handle.join() {
+            Ok(done) => Ok(done),
+            Err(panic) => std::panic::resume_unwind(panic),
+        }
+    })?;
+    if let Some(context) = context {
+        crate::server::query_context::restore_query_context(context);
+    }
+    Ok(result)
+}
+
 /// Whether the clause-list parser reads `cypher` (a statement without its
 /// prelude): entry points route text the legacy parser rejects to the bound
 /// plan when it does (S10b).
@@ -751,6 +906,7 @@ mod tests {
         // The text-only statement's USE is the statement's graph.
         assert_eq!(
             super::StatementTargets::of("USE g MATCH (a) ORDER BY a.x LIMIT 1 RETURN a")
+                .unwrap()
                 .use_graph(),
             Some("g")
         );
