@@ -97,7 +97,7 @@ and is verified live against ClickHouse and the Neo4j oracle.
   the sources that do not hold a property spell a NULL of its column's type.
   Prerequisite for #504 (ARRAY JOIN of an array-valued edge column).
 - [ ] **T3 — node identities meet in one comparable type** (#1358, #1390,
-  #1393). A first, site-by-site attempt (branch
+  #1393): #1358 done as ELEMENT_IDENTITY.md I1. A first, site-by-site attempt (branch
   `fix/1358-undirected-mixed-signedness`: cast ids of a `UInt64` / signed
   pair to `Int128` where a tie, a union of ends or a walk meets them) was
   parked after review: it broke undirected relationships whose end can be

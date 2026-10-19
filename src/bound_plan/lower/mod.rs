@@ -624,6 +624,95 @@ impl Lowerer<'_> {
             &[&edge.from_node_id_part_types, &edge.to_node_id_part_types],
         )
     }
+
+    /// ELEMENT_IDENTITY.md I1 (#1358): the type each id part of `label` is
+    /// compared in, wherever a node of it meets a relationship's end: the
+    /// fold of the node's id part type and every relationship end at a
+    /// `label` node in the schema, where the backend has no common type for
+    /// them (a `UInt64` id and an `Int64` end: joins and unions of them
+    /// fail, Code 386; the dialect's `common_type_where_none`), spelled as a
+    /// CAST target. Every producer of an identity part for comparison casts
+    /// to it ([`Self::comparable`]), so every comparison agrees. `None`: no
+    /// cast, the SQL as before.
+    fn comparable_targets(&self, label: &str) -> Vec<Option<String>> {
+        // The id part types where nodes of each label meet relationship ends:
+        // the node's own, and every end at it.
+        let mut by_label: std::collections::BTreeMap<String, Vec<Vec<KeyPartType>>> =
+            std::collections::BTreeMap::new();
+        let mut add = |label: &str, types: &[KeyPartType]| {
+            let sets = by_label.entry(label.to_string()).or_default();
+            for (i, t) in types.iter().enumerate() {
+                if sets.len() <= i {
+                    sets.resize(i + 1, Vec::new());
+                }
+                if !t.raw.is_empty() {
+                    sets[i].push(t.clone());
+                }
+            }
+        };
+        for (l, ns) in self.schema.all_node_schemas() {
+            add(l.as_str(), &ns.node_id.part_types);
+        }
+        for rs in self.schema.get_relationships_schemas().values() {
+            add(rs.from_node.as_str(), &rs.from_node_id_part_types);
+            add(rs.to_node.as_str(), &rs.to_node_id_part_types);
+        }
+        let integers = |set: &[KeyPartType]| {
+            set.iter()
+                .all(|t| t.schema == crate::graph_catalog::schema_types::SchemaType::Integer)
+        };
+        let own = by_label.get(label).cloned().unwrap_or_default();
+        own.iter()
+            .enumerate()
+            .map(|(i, set)| {
+                // An integer part meets the integer parts of every other
+                // label in the unions that mix labels (a node of several
+                // labels, a walk over them): one type for all of them.
+                let set: Vec<KeyPartType> = match !set.is_empty() && integers(set) {
+                    true => by_label
+                        .values()
+                        .filter_map(|sets| sets.get(i))
+                        .filter(|s| integers(s))
+                        .flatten()
+                        .cloned()
+                        .collect(),
+                    false => set.clone(),
+                };
+                self.options
+                    .dialect
+                    .common_type_where_none(&set)
+                    .map(|t| self.options.dialect.cast_target(&t))
+            })
+            .collect()
+    }
+
+    /// Id part `i` of a node of `label` (or a relationship end at one), `e`,
+    /// as it is compared ([`Self::comparable_targets`]).
+    pub(super) fn comparable(&self, label: &str, i: usize, e: RenderExpr) -> RenderExpr {
+        match self.comparable_targets(label).get(i).cloned().flatten() {
+            Some(target) => RenderExpr::Cast {
+                expr: Box::new(e),
+                target,
+            },
+            None => e,
+        }
+    }
+
+    /// Whether some id part of `label` is compared in a cast type.
+    fn compared_cast(&self, label: &str) -> bool {
+        self.comparable_targets(label).iter().any(Option::is_some)
+    }
+}
+
+/// How [`Lowerer::edge_ends`] reads an edge table's rows.
+#[derive(Clone, Copy, PartialEq)]
+enum Orientation {
+    /// Each row from its stored `from` to its `to`.
+    Forward,
+    /// Each row from its stored `to` to its `from`.
+    Backward,
+    /// Each row both ways (an undirected relationship).
+    Both,
 }
 
 /// Where an element's columns are.
@@ -1868,6 +1957,11 @@ impl<'s> Lowerer<'s> {
                 let (Some(fl), Some(tl)) = (single(from), single(to)) else {
                     return None;
                 };
+                // An end compared in a cast type is read and tied, cast (I1):
+                // the elided node's place would compare its raw columns.
+                if self.compared_cast(&fl) || self.compared_cast(&tl) {
+                    return None;
+                }
                 let rel_type = types.iter().next().expect("one type");
                 // No such edge: the pattern matches nothing (decided later).
                 let Ok(rs) = self.edge_schema(rel_type, &fl, &tl) else {
@@ -2210,8 +2304,12 @@ impl<'s> Lowerer<'s> {
                 RenderExpr::Literal(Literal::String(label.clone())),
                 LABEL_COLUMN,
             )];
+            // Each arm's id as its label's is compared (I1).
             for (i, c) in ns.id_physical_columns().iter().enumerate() {
-                items.push(select(col_at(ROW, c), &indexed_column(LABEL_ID, i)));
+                items.push(select(
+                    self.comparable(label, i, col_at(ROW, c)),
+                    &indexed_column(LABEL_ID, i),
+                ));
             }
             for (p, defs) in &definitions {
                 let value = self.label_arm_value(ns, p, arms);
@@ -2678,16 +2776,23 @@ impl<'s> Lowerer<'s> {
                 let cols = |id: &crate::graph_catalog::config::Identifier| {
                     id.columns().iter().map(|c| c.to_string()).collect()
                 };
+                // Each end as it is compared with its nodes (I1).
+                let compared = |label: &str, cols: Vec<RenderExpr>| -> Vec<RenderExpr> {
+                    cols.into_iter()
+                        .enumerate()
+                        .map(|(i, c)| self.comparable(label, i, c))
+                        .collect()
+                };
                 vec![
                     (
                         from,
                         EndLabel::Is(schema.from_node.clone()),
-                        physical(cols(&schema.from_id))?,
+                        compared(&schema.from_node, physical(cols(&schema.from_id))?),
                     ),
                     (
                         to,
                         EndLabel::Is(schema.to_node.clone()),
-                        physical(cols(&schema.to_id))?,
+                        compared(&schema.to_node, physical(cols(&schema.to_id))?),
                     ),
                 ]
             }
@@ -2887,6 +2992,18 @@ impl<'s> Lowerer<'s> {
         if ids.len() != cols.len() {
             return unsupported("endpoint id arity differs from the edge's");
         }
+        // The node's id as it is compared (I1); the relationship's columns
+        // are, where they were read. A several-labels node's id columns are
+        // its arms', each cast there (`label_union`).
+        let ids: Vec<RenderExpr> = match (labels.as_slice(), self.scans.get(&end)) {
+            (_, Some(Scan::Labels { .. })) => ids,
+            ([one], _) => ids
+                .into_iter()
+                .enumerate()
+                .map(|(i, id)| self.comparable(one, i, id))
+                .collect(),
+            _ => ids,
+        };
         eqs.extend(cols.into_iter().zip(ids));
         if turned && self.is_emitted(end) {
             self.filters.extend(
@@ -2990,10 +3107,20 @@ impl<'s> Lowerer<'s> {
                 select(string(&rs.from_node), REL_FROM_LABEL),
                 select(string(&rs.to_node), REL_TO_LABEL),
             ];
+            // Ids as they are compared (I1): an identity of stored ends as
+            // its ends are (an `edge_id`'s is compared with itself only).
+            let id_label = |i: usize| match (&rs.edge_id, i < from.len()) {
+                (Some(_), _) => None,
+                (None, true) => Some((rs.from_node.as_str(), i)),
+                (None, false) => Some((rs.to_node.as_str(), i - from.len())),
+            };
             for i in 0..shape.identity {
                 let e = identity
                     .get(i)
-                    .map_or(RenderExpr::Literal(Literal::Null), |c| col_at(ROW, c));
+                    .map_or(RenderExpr::Literal(Literal::Null), |c| match id_label(i) {
+                        Some((label, part)) => self.comparable(label, part, col_at(ROW, c)),
+                        None => col_at(ROW, c),
+                    });
                 items.push(select(e, &indexed_column(REL_ID, i)));
             }
             let (starts, ends) = if arm.reversed {
@@ -3002,17 +3129,25 @@ impl<'s> Lowerer<'s> {
                 (&from, &to)
             };
             // A walk by keys (S8d2b) joins its rows by their ends' keys.
-            let both: [(&str, &Vec<&str>); 2] = [(BOTH_START, starts), (BOTH_END, ends)];
+            let both: [(&str, &Vec<&str>, &str); 2] =
+                [(BOTH_START, starts, left), (BOTH_END, ends, right)];
             let walked_by = match by_keys {
                 true => &both[..0],
                 false => &both[..],
             };
-            for (side, cols) in [(REL_FROM, &from), (REL_TO, &to)]
-                .into_iter()
-                .chain(walked_by.iter().copied())
+            // Each end as its label's ids are compared (I1).
+            for (side, cols, label) in [
+                (REL_FROM, &from, rs.from_node.as_str()),
+                (REL_TO, &to, rs.to_node.as_str()),
+            ]
+            .into_iter()
+            .chain(walked_by.iter().copied())
             {
                 for (i, c) in cols.iter().enumerate() {
-                    items.push(select(col_at(ROW, c), &indexed_column(side, i)));
+                    items.push(select(
+                        self.comparable(label, i, col_at(ROW, c)),
+                        &indexed_column(side, i),
+                    ));
                 }
             }
             // #1360: a walk key is compared as TEXT, so both sides must
@@ -3193,16 +3328,26 @@ impl<'s> Lowerer<'s> {
         const FROM: &str = "__cg_cfrom";
         const TO: &str = "__cg_cto";
         let mut joins = Vec::new();
-        for (ns, id, alias) in [(from_ns, &rs.from_id, FROM), (to_ns, &rs.to_id, TO)] {
+        for (ns, label, id, alias) in [
+            (from_ns, rs.from_node.as_str(), &rs.from_id, FROM),
+            (to_ns, rs.to_node.as_str(), &rs.to_id, TO),
+        ] {
             let mut j = join(self.node_relation_sql(ns)?, alias);
             let node_id = ns.id_physical_columns();
             if node_id.len() != id.columns().len() {
                 return unsupported("an edge constraint between ids of another number of columns");
             }
+            // Both sides as the label's ids are compared (I1).
             j.joining_on = node_id
                 .iter()
                 .zip(id.columns())
-                .map(|(n, e)| eq(col_at(alias, n), col_at(row, e)))
+                .enumerate()
+                .map(|(i, (n, e))| {
+                    eq(
+                        self.comparable(label, i, col_at(alias, n)),
+                        self.comparable(label, i, col_at(row, e)),
+                    )
+                })
                 .collect();
             joins.push(j);
         }
@@ -3281,7 +3426,42 @@ impl<'s> Lowerer<'s> {
         rs: &'s RelationshipSchema,
         v: VarId,
     ) -> Result<String, LowerError> {
-        let name = format!("{}_both", v.name());
+        self.edge_ends(rs, v, Orientation::Both)
+    }
+
+    /// The edge of directed variable-length relationship `v` over `rs` where
+    /// its ends are compared in a cast type (I1, [`Self::comparable_targets`]):
+    /// the CTE `{v}_ends` of its rows read one way (`backward`: from `to` to
+    /// `from`), as [`Self::both_directions`] reads them. `None` where no end
+    /// is cast: the walk reads the table itself, as before.
+    fn typed_ends(
+        &mut self,
+        rs: &'s RelationshipSchema,
+        v: VarId,
+        backward: bool,
+    ) -> Result<Option<String>, LowerError> {
+        if !self.compared_cast(&rs.from_node) && !self.compared_cast(&rs.to_node) {
+            return Ok(None);
+        }
+        let orientation = match backward {
+            true => Orientation::Backward,
+            false => Orientation::Forward,
+        };
+        self.edge_ends(rs, v, orientation).map(Some)
+    }
+
+    /// The rows of `rs` read in `orientation` ([`Self::both_directions`],
+    /// [`Self::typed_ends`]).
+    fn edge_ends(
+        &mut self,
+        rs: &'s RelationshipSchema,
+        v: VarId,
+        orientation: Orientation,
+    ) -> Result<String, LowerError> {
+        let name = match orientation {
+            Orientation::Both => format!("{}_both", v.name()),
+            _ => format!("{}_ends", v.name()),
+        };
         let (from, to) = (rs.from_id.columns(), rs.to_id.columns());
         if from.len() != to.len() {
             return unsupported("endpoint id arity differs from the edge's");
@@ -3321,19 +3501,30 @@ impl<'s> Lowerer<'s> {
             let mut items: Vec<SelectItem> =
                 carried.iter().map(|c| select(col_at(ROW, c), c)).collect();
             let (starts, ends) = if forward { (&from, &to) } else { (&to, &from) };
-            if rs.constraints.is_some() {
+            let (start_label, end_label) = match forward {
+                true => (rs.from_node.as_str(), rs.to_node.as_str()),
+                false => (rs.to_node.as_str(), rs.from_node.as_str()),
+            };
+            if rs.constraints.is_some() && orientation == Orientation::Both {
                 // Which end the edge constraint reads as `from` (S11h).
                 let flag = RenderExpr::Literal(Literal::Integer(i64::from(forward)));
                 items.push(select(flag, FORWARD));
             }
+            // Each end as its label's ids are compared (I1).
             for (i, c) in starts.iter().enumerate() {
-                items.push(select(col_at(ROW, c), &indexed_column(BOTH_START, i)));
+                items.push(select(
+                    self.comparable(start_label, i, col_at(ROW, c)),
+                    &indexed_column(BOTH_START, i),
+                ));
             }
             for (i, c) in ends.iter().enumerate() {
-                items.push(select(col_at(ROW, c), &indexed_column(BOTH_END, i)));
+                items.push(select(
+                    self.comparable(end_label, i, col_at(ROW, c)),
+                    &indexed_column(BOTH_END, i),
+                ));
             }
             let mut filters: Vec<RenderExpr> = filter.iter().cloned().collect();
-            if !forward {
+            if !forward && orientation == Orientation::Both {
                 // A self-loop is read forward.
                 let differ = from
                     .iter()
@@ -3361,12 +3552,16 @@ impl<'s> Lowerer<'s> {
                 ..empty_plan()
             }
         };
-        let body = RenderPlan {
-            union: UnionItems(Some(Union {
-                input: vec![arm(true), arm(false)],
-                union_type: UnionType::All,
-            })),
-            ..empty_plan()
+        let body = match orientation {
+            Orientation::Both => RenderPlan {
+                union: UnionItems(Some(Union {
+                    input: vec![arm(true), arm(false)],
+                    union_type: UnionType::All,
+                })),
+                ..empty_plan()
+            },
+            Orientation::Forward => arm(true),
+            Orientation::Backward => arm(false),
         };
         self.ctes.push(Cte::new(
             name.clone(),
@@ -3675,9 +3870,11 @@ impl<'s> Lowerer<'s> {
             rel.push(RenderExpr::OperatorApplicationExp(eq(column, value)));
         }
         let var = r.var.name();
+        // A directed walk whose ends are compared in a cast type reads its
+        // edge through a CTE of them cast, as an undirected one does (I1).
         let both = match undirected {
             true => Some(self.both_directions(edge, r.var)?),
-            false => None,
+            false => self.typed_ends(edge, r.var, backward)?,
         };
         self.node_table(node)?;
         // #1360 (item 6): the walk's BFS keys are texts (S8d2a) and need the
@@ -4241,7 +4438,9 @@ impl<'s> Lowerer<'s> {
             // By keys, its id is its key (S8d2b); otherwise its one column.
             let id = match (by_keys, ns.id_physical_columns().as_slice()) {
                 (true, _) => key.clone(),
-                (false, [id]) => col_at(ROW, id),
+                // As its label's ids are compared (I1): the walk's steps join
+                // it to its relationships' ends, cast so.
+                (false, [id]) => self.comparable(label, 0, col_at(ROW, id)),
                 (false, _) => return unsupported("internal: a composite id not walked by keys"),
             };
             let mut items = vec![
