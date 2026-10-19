@@ -5,7 +5,7 @@ use super::graph_schema::{
     FulltextIndexConfig, GraphSchema, NodeIdSchema, NodeSchema, RelationshipSchema,
     VectorIndexConfig,
 };
-use super::schema_types::SchemaType;
+use super::schema_types::{KeyPartType, SchemaType};
 use super::schema_validator::SchemaValidator;
 use serde::{Deserialize, Serialize};
 use serde_yaml;
@@ -1330,6 +1330,7 @@ fn build_node_schema(
         node_id: NodeIdSchema {
             id: node_def.node_id.clone(),
             dtype: node_id_dtype,
+            part_types: id_part_types(discovery, &node_def.node_id),
         },
         property_mappings,
         view_parameters: node_def.view_parameters.clone(),
@@ -1372,7 +1373,46 @@ fn build_node_schema(
     Ok(node_schema)
 }
 
-/// Build a RelationshipSchema from a legacy RelationshipDefinition
+/// Each id column's discovered type, per part (`RelationshipSchema` ends'
+/// `*_node_id_part_types`, the nodes' `NodeIdSchema.part_types`),
+/// #1360.
+///
+/// Empty when discovery did not run or the column is invisible, which the walk
+/// key reads as "unknown" and leaves the SQL exactly as it was before. A mixed
+/// set does NOT collapse to one `Integer` the way the old `edge_end_id_dtype`
+/// did: each part keeps its own type, so a composite id like `[k String,
+/// v Date]` can be compared in the right type per part.
+fn id_part_types(discovery: &TableDiscovery, id: &Identifier) -> Vec<KeyPartType> {
+    let Some(col_info) = &discovery.column_info else {
+        return Vec::new();
+    };
+    let types: Vec<KeyPartType> = id
+        .columns()
+        .iter()
+        .map(|col| {
+            col_info
+                .get(*col)
+                .map(|ch| KeyPartType::parse(ch))
+                .unwrap_or_default()
+        })
+        .collect();
+    // Nothing resolved: report "unknown" rather than a row of wrong defaults.
+    if types.iter().all(|t| t.raw.is_empty()) {
+        return Vec::new();
+    }
+    types
+}
+
+/// The single generic dtype these parts agree on, else [`SchemaType::Integer`]
+/// (today's default) — kept for the `*_dtype` fields other code still reads.
+fn parts_dtype(types: &[KeyPartType]) -> SchemaType {
+    match types.split_first() {
+        Some((first, rest)) if rest.iter().all(|t| t.schema == first.schema) => first.schema,
+        _ => SchemaType::Integer,
+    }
+}
+
+/// Build a RelationshipSchema from a legacy RelationshipDefinition.
 fn build_relationship_schema(
     rel_def: &RelationshipDefinition,
     default_node_type: &str,
@@ -1511,8 +1551,10 @@ fn build_relationship_schema(
         to_node_table,   // 🔵 RELATIONAL: Resolved table name
         from_id: rel_def.from_id.clone(),
         to_id: rel_def.to_id.clone(),
-        from_node_id_dtype: SchemaType::Integer,
-        to_node_id_dtype: SchemaType::Integer,
+        from_node_id_dtype: parts_dtype(&id_part_types(discovery, &rel_def.from_id)),
+        to_node_id_dtype: parts_dtype(&id_part_types(discovery, &rel_def.to_id)),
+        from_node_id_part_types: id_part_types(discovery, &rel_def.from_id),
+        to_node_id_part_types: id_part_types(discovery, &rel_def.to_id),
         property_mappings,
         view_parameters: rel_def.view_parameters.clone(),
         engine: discovery.engine.clone(),
@@ -1724,8 +1766,10 @@ fn build_standard_edge_schema(
         to_node_table: resolved_to_node,       // 🔵 RELATIONAL: Resolved table name
         from_id: std_edge.from_id.clone(),
         to_id: std_edge.to_id.clone(),
-        from_node_id_dtype: SchemaType::Integer,
-        to_node_id_dtype: SchemaType::Integer,
+        from_node_id_dtype: parts_dtype(&id_part_types(discovery, &std_edge.from_id)),
+        to_node_id_dtype: parts_dtype(&id_part_types(discovery, &std_edge.to_id)),
+        from_node_id_part_types: id_part_types(discovery, &std_edge.from_id),
+        to_node_id_part_types: id_part_types(discovery, &std_edge.to_id),
         property_mappings,
         view_parameters: std_edge.view_parameters.clone(),
         engine: discovery.engine.clone(),
@@ -1805,8 +1849,10 @@ fn build_polymorphic_edge_schemas(
             to_node_table: to_node.clone(), // 🔵 RELATIONAL: Same as label for polymorphic
             from_id: poly_edge.from_id.clone(),
             to_id: poly_edge.to_id.clone(),
-            from_node_id_dtype: SchemaType::Integer,
-            to_node_id_dtype: SchemaType::Integer,
+            from_node_id_dtype: parts_dtype(&id_part_types(discovery, &poly_edge.from_id)),
+            to_node_id_dtype: parts_dtype(&id_part_types(discovery, &poly_edge.to_id)),
+            from_node_id_part_types: id_part_types(discovery, &poly_edge.from_id),
+            to_node_id_part_types: id_part_types(discovery, &poly_edge.to_id),
             property_mappings: property_mappings.clone(),
             view_parameters: poly_edge.view_parameters.clone(),
             engine: discovery.engine.clone(),
@@ -2409,6 +2455,10 @@ impl GraphSchemaConfig {
             }
             Columns::Discovered(_) | Columns::DeclaredOnly => None,
         };
+        // #1360: only an `auto_discover_columns` element keeps the column
+        // types (its id parts' too). A declared element whose table another
+        // element reads stays as on main: no types, no casts, and the
+        // `node_id.dtype` Bolt `id()` decoding reads unchanged.
         Ok(TableDiscovery {
             columns: discovered.map(|c| c.iter().map(|c| c.name.clone()).collect()),
             column_info: discovered.map(|c| {
@@ -4957,5 +5007,65 @@ graph_schema:
             result.is_err(),
             "a denormalized self-loop missing to_node_properties must be rejected by validation"
         );
+    }
+}
+
+#[cfg(test)]
+mod declared_table_shared_with_auto_1360 {
+    use super::*;
+    use crate::graph_catalog::column_info::ColumnInfo;
+
+    /// A declared node whose table an `auto_discover_columns` edge reads gets
+    /// no id types from that read: declared elements stay as on main (#1360),
+    /// including the `node_id.dtype` Bolt `id()` decoding reads.
+    #[test]
+    fn a_declared_node_sharing_an_auto_table_gets_no_types() {
+        let y = r#"
+graph_schema:
+  nodes:
+    - label: Post
+      database: db
+      table: posts
+      node_id: post_id
+      property_mappings:
+        content: content
+    - label: User
+      database: db
+      table: users
+      node_id: user_id
+      property_mappings:
+        name: name
+  edges:
+    - type: AUTHORED
+      database: db
+      table: posts
+      from_id: author_id
+      to_id: post_id
+      from_node: User
+      to_node: Post
+      auto_discover_columns: true
+      property_mappings: {}
+"#;
+        let c = GraphSchemaConfig::from_yaml_str(y).unwrap();
+        let mut d = DiscoveredColumns::default();
+        d.insert(
+            "db",
+            "posts",
+            vec![
+                ColumnInfo::new("post_id".into(), "String".into()),
+                ColumnInfo::new("author_id".into(), "UInt64".into()),
+                ColumnInfo::new("content".into(), "String".into()),
+            ],
+        );
+        let s = c.to_graph_schema_with_columns(&d).unwrap();
+        let p = s.node_schema("Post").unwrap();
+        let u = s.node_schema("User").unwrap();
+        assert_eq!(p.node_id.dtype, SchemaType::Integer);
+        assert!(p.node_id.part_types.is_empty());
+        assert!(u.node_id.part_types.is_empty());
+        // The edge asked: its ends keep their types.
+        let r = s.get_rel_schema("AUTHORED").unwrap();
+        assert_eq!(r.to_node_id_part_types.len(), 1);
+        assert_eq!(r.to_node_id_part_types[0].raw, "String");
     }
 }

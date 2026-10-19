@@ -206,6 +206,28 @@ pub(super) fn node_key_text(g: &GraphValues, label: &str, id: &str) -> String {
     (g.text)(&[label.to_string(), string(":"), (g.to_text)(id)])
 }
 
+/// #1360: cast a walk-key part so both sides spell the same type before they
+/// are stringified.
+///
+/// Walk keys are compared as *text* (`identity_text`), which is why a cast is
+/// needed at all: `toString(Date)` and `toString(DateTime)` differ, so a Date
+/// node and a DateTime edge can never join without one. `target` is the
+/// least-common type for this part's (node, edge) pair: `KeyPartType::widen_to`
+/// folds a pair, and `graph_catalog::schema_types::fold_common` folds a whole
+/// walk's set of sides. `None` means the two sides already agree and the
+/// column is emitted untouched.
+///
+/// Both sides are cast, to the same target. Casting only one side is what
+/// this function's first version did, and it was wrong: casting a DateTime
+/// edge down to a Date node *widens* the Date to midnight and manufactures
+/// matches that `=` correctly refuses.
+pub(super) fn cast_key_part(col_sql: &str, target: Option<&str>) -> String {
+    match target {
+        Some(t) => format!("CAST({col_sql} AS {t})"),
+        None => col_sql.to_string(),
+    }
+}
+
 /// A node's id parts (SQL) as its element id spells them
 /// (`graph_catalog::element_id`): the one id, or the parts' texts joined by
 /// `|` (the element id's contract; a value's identity is its key, which no

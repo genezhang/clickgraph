@@ -284,6 +284,8 @@ mod tests {
         props: HashMap<String, PropertyValue>,
     ) -> RelationshipSchema {
         RelationshipSchema {
+            from_node_id_part_types: Vec::new(),
+            to_node_id_part_types: Vec::new(),
             closed_properties: false,
             database: "test".to_string(),
             table_name: table.to_string(),

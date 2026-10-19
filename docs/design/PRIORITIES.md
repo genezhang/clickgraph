@@ -819,8 +819,48 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 - 2026-10-11: **P-4c S8d2a: shortest paths between composite ids** (#1359, `src/bound_plan/lower/path.rs` `composite_key` / `Search::node_key`, behind `CLICKGRAPH_BOUND_PLAN=on`).
   - The shortest-path search keys a node by the dialect's text of its id's tuple (`toString(tuple(bank, num))`: no two ids share it, unlike the generator's `|`-joined text), computed where it reads a node or a relationship's end; the relation's ends are tied by the same key. Conditions the search cannot hold pick among the generator's trails keyed alike from their `start_<col>` / `end_<col>` (`vlp_{var}_keyed`). A relationship row with a NULL end part relates no node.
   - Sweeps: 20 composite shortest-path shapes, all equal Neo4j (legacy wrong / erroring on all 20); the review's 49, rerun, equal but older gaps. Oracle unchanged (no corpus query); mutation check 5 of 6 (the sixth a pushdown, pinned). Live suite unchanged.
-  - Review: 2 findings fixed (NULL id parts related nodes; MATERIALIZED / ALIAS columns through `SELECT *`). Known gap: parts spelled differently by node and edge column types (FixedString vs String). Filed #1358 (undirected walks over columns of other signedness).
+  - Review: 2 findings fixed (NULL id parts related nodes; MATERIALIZED / ALIAS columns through `SELECT *`). Known gap: parts spelled differently by node and edge column types (FixedString vs String). Filed #1358 (undirected walks over columns of other signedness) and #1360 (text keys vs differently typed columns).
   - Not lowered (S8d2c): a composite shortest path read as a path (`RETURN p`, `nodes(p)`, `DISTINCT p`).
+
+- **#1360 addressed (PR #1498).** A by-keys walk compares
+  its keys as *text*, so two columns of different types spell differently and never join
+  (`toString(Date)` vs a `DateTime`'s; `toString(Bool)` `'true'` vs a `UInt8`'s `'1'`).
+  Each key part is now cast on **both** sides to the least common type of that part's
+  (node, edge) pair, folded across every relationship type in the walk because the node
+  key is one CTE shared by all of them. The target is always the wider type — an earlier
+  version of this PR cast the edge side *down* to the node's type, which widened a `Date`
+  to midnight and matched rows `=` correctly refuses (review finding). Nullable on either
+  side keeps the `Nullable(..)` wrapper (`Code: 349` otherwise), at any wrapper depth —
+  a `LowCardinality(Nullable(String))` is a nullable part, whose plain-String fold died
+  `Code: 349` on a NULL one (review round 3) — and a `DateTime64` folds to the **finer**
+  scale, the one `=` compares in (either side's own would truncate the other's digits and
+  match what `=` refuses; review round 3). The fold is a function of the set of sides,
+  not their discovery order (a pair outside the table once made the reach order-dependent;
+  round 3). Covered: single and composite ids, per part; `Date`/`DateTime`/`DateTime64(scale)`;
+  `FixedString`/`String`; `Bool`/`UInt8`; `Float32`/`Float64` (both cast to `Float64`, the
+  type `=` compares them in — equal texts, unequal values, was the table's reverse row).
+  Not covered: time columns in different zones are left uncast (a zone-less target keeps
+  each column's zone, so one local text would match two instants), so a pair of one instant
+  (`DateTime('Asia/Tokyo')` against `DateTime64(3,'UTC')`) stays unmatched — a follow-up
+  would spell the target's zone. The fold is
+  recorded under a walk's own arms before any of its restrictions are spelled, and dropped
+  when the walk returns (round 3; before, a filtered or bound end read a fold a previous
+  walk over a shared label had left — or none — and its seed matched nothing, and queries
+  main gets right lost rows). The id parts' types come from the columns
+  `auto_discover_columns` reads: a declared-`property_mappings` table has none, so its
+  keys spell no casts and stay as on main (not covered; reading its types too needs a
+  per-mode design — `cg sql`, Databricks and embedded chdb have no `system.columns` to
+  read, and `node_id.dtype` also decides Bolt `id()` decoding). The lowerer takes the
+  casting dialect from the query context (round 3; it always used ClickHouse before).
+  Covered spellings: the union walk's node CTE, its relationship ends, its filtered and
+  bound walks' seed rows, and the tie-back that recovers a shortest path's ends — plus,
+  of the review's item 6, the *single-definition* composite `shortestPath`: its BFS
+  keys (`path::Search`), the search's keyed trails, and the search's pair tie-backs now
+  spell the same fold the union walks do (the fold is computed once per walk from the
+  node's and the edge's ends' part types, `Lowerer::path_key_targets`). A single-column
+  id's BFS joins its columns typed `=`, which already compares in ClickHouse's common
+  type: its SQL is unchanged. #1358 (other signedness) and the walk-constraints text gap
+  (#1402) remain.
 
 - 2026-10-11: **P-4c S9: subquery expressions** (#1357, `src/bound_plan/expr.rs` `hoist_subqueries`, `binder.rs` `bind_subquery`, `src/bound_plan/lower/subquery.rs`, `FunctionMapper::null_safe_equal` / `Lists::collect_all`, behind `CLICKGRAPH_BOUND_PLAN=on`).
   - `EXISTS { … }`, pattern predicates, `exists(pattern)`, `size(pattern)` (Cypher 4's; Neo4j 5's `COUNT {}`), `size([pattern …])` and pattern comprehensions of values are bound as MATCHes over the expression's scope (an explicit correlation set, carried as the placeholder's arguments) and lowered as a LEFT JOIN of their matches grouped by the correlation: a boolean, count or NULL-keeping list per row. The drive reads a copy of the rows, so subqueries apply mid-MATCH, inside OPTIONAL MATCH and nested. A WITH WHERE reading a subquery of projected names is a filter after the projection.

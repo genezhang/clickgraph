@@ -500,6 +500,10 @@ fn bound_plan_or_reason(
                     )
                 }))
             }),
+            // The fold's cast targets spell for the query's dialect
+            // (`cast_target`): the context carries it (round 3, "dialect") —
+            // previously always ClickHouse here, whatever the context said.
+            dialect: crate::server::query_context::get_current_dialect(),
             ..LowerOptions::default()
         },
     )
