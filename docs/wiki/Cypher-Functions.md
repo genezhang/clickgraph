@@ -653,8 +653,12 @@ they are three-valued as in Neo4j: a predicate that is NULL for an element
 makes the answer NULL where it could decide it (see the table below), and a
 NULL list gives NULL. They are lowered as the sizes of list comprehensions
 (`size([x IN l WHERE p])`, … `WHERE p IS NULL`), so the list and the
-predicate are read more than once: a predicate that is not deterministic
-(`rand() < 0.5`) may be read differently each time.
+predicate are read up to four times: a list or a predicate that is not
+deterministic (`rand() < 0.5`) may be read differently each time, a pattern
+predicate on the element is planned once per count, and nested list
+predicates grow their SQL by that factor per level. `all(l)`, `single(l)`
+and the like without `x IN … WHERE` are no functions (a syntax error, as in
+Neo4j).
 
 ### List Reduction
 

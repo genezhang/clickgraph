@@ -8614,9 +8614,9 @@ fn list_predicates_1420() {
     has(
         "MATCH (u:User) WHERE any(x IN [1, 2] WHERE x = u.user_id) RETURN u.name AS n",
         &[
-            "CASE WHEN length([1, 2]) IS NULL THEN NULL",
-            "WHEN length(arrayFilter(v1 -> v1 = v0.user_id, [1, 2])) > 0 THEN true",
-            "WHEN length(arrayFilter(v2 -> (v2 = v0.user_id) IS NULL, [1, 2])) > 0 THEN NULL \
+            "CASE WHEN length(arrayFilter(v1 -> v1 = v0.user_id, [1, 2])) IS NULL THEN NULL",
+            "WHEN length(arrayFilter(v2 -> v2 = v0.user_id, [1, 2])) > 0 THEN true",
+            "WHEN length(arrayFilter(v3 -> (v3 = v0.user_id) IS NULL, [1, 2])) > 0 THEN NULL \
              ELSE false END",
         ],
     );
@@ -8634,7 +8634,42 @@ fn list_predicates_1420() {
         &databricks_sql("RETURN single(x IN [1, null] WHERE x > 0) AS s", &social()).unwrap(),
     );
     assert!(
-        got.contains("CASE WHEN array_size(array(1, NULL)) IS NULL THEN NULL"),
+        got.contains("CASE WHEN array_size(filter(array(1, NULL), "),
+        "{got}"
+    );
+}
+
+/// Review of #1508: on Databricks the NULL-list guard is the size of a
+/// comprehension (`array_size(filter(…)) IS NULL`), never `length(list)`
+/// (strings only there) nor `size(list)` (-1 of NULL without ANSI).
+#[test]
+fn list_predicate_null_guard_on_databricks_1420() {
+    let schema = GraphSchemaConfig::from_yaml_str(include_str!(
+        "../../../schemas/test/array_property_probe.yaml"
+    ))
+    .unwrap()
+    .to_graph_schema()
+    .unwrap();
+    let got = squash(
+        &databricks_sql(
+            "MATCH (i:Item) RETURN any(t IN i.tags WHERE t = 'a') AS a",
+            &schema,
+        )
+        .unwrap(),
+    );
+    assert!(
+        got.contains("CASE WHEN array_size(filter(v0.tags, ") && !got.contains("length("),
+        "{got}"
+    );
+    let got = squash(
+        &databricks_sql(
+            "WITH CASE WHEN false THEN [1] END AS l RETURN all(x IN l WHERE x > 0) AS a",
+            &social(),
+        )
+        .unwrap(),
+    );
+    assert!(
+        got.contains("CASE WHEN array_size(filter(w1.v0, ") && !got.contains(" size("),
         "{got}"
     );
 }

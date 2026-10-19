@@ -369,7 +369,7 @@ fn parse_reduce_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
 /// * `all`: false if `f > 0`; else NULL if `n > 0`; else true (empty: true).
 /// * `none`: false if `t > 0`; else NULL if `n > 0`; else true.
 /// * `single`: false if `t > 1`; else NULL if `n > 0`; else `t = 1`.
-/// * Of a NULL list (`size(list) IS NULL`): NULL.
+/// * Of a NULL list (`t IS NULL`): NULL.
 ///
 /// `t` is `size([x IN list WHERE predicate])`, `n` the same of `predicate
 /// IS NULL`, `f` of `NOT predicate`: the list and the predicate are read once
@@ -392,10 +392,11 @@ fn parse_list_predicate<'a>(input: &'a str) -> IResult<&'a str, Expression<'a>> 
     ))
     .parse(input)?;
     let (input, _) = ws(char('(')).parse(input)?;
-    let (input, variable) = ws(common::symbolic_name).parse(input)?;
-    let (input, _) = keyword("IN").parse(input)?;
-    // `q(x IN …` is a list predicate: what does not follow is an error, not
-    // a call of a function named `any`.
+    // `q(…` is a list predicate: what does not follow is an error, not a call
+    // of a function named `any` (Neo4j has none; the library's mappings of
+    // `single(l)` / `none(l)` read a list of booleans, not Cypher).
+    let (input, variable) = cut(ws(common::symbolic_name)).parse(input)?;
+    let (input, _) = cut(keyword("IN")).parse(input)?;
     let (input, list) = cut(parse_expression).parse(input)?;
     let (input, predicate) = cut(preceded(keyword("WHERE"), parse_expression)).parse(input)?;
     let (input, _) = cut(ws(char(')'))).parse(input)?;
@@ -425,13 +426,10 @@ fn parse_list_predicate<'a>(input: &'a str) -> IResult<&'a str, Expression<'a>> 
     let falses = || count(unary(Operator::Not, predicate.clone()));
     let some = |n: Expression<'a>| binary(Operator::GreaterThan, n, int(0));
 
-    // Of a NULL list, NULL: `size(list) IS NULL` (a list of nodes is not
-    // compared with NULL itself on every dialect; its size is).
-    let size_of_list = Expression::FunctionCallExp(FunctionCall {
-        name: "size".to_string(),
-        args: vec![list.clone()],
-    });
-    let mut when_then = vec![(unary(Operator::IsNull, size_of_list), null())];
+    // Of a NULL list, NULL: the size of a comprehension over it is NULL
+    // exactly then, read as the counts are (a list of nodes is not compared
+    // with NULL itself on every dialect, and Spark's `size(NULL)` is -1).
+    let mut when_then = vec![(unary(Operator::IsNull, trues()), null())];
     let else_expr = match quantifier {
         Quantifier::Any => {
             when_then.push((some(trues()), boolean(true)));
@@ -2543,7 +2541,7 @@ mod tests {
         let (rem, got) = parse_expression("any(x IN l WHERE x > 1)").unwrap();
         assert_eq!(rem, "");
         let (_, want) = parse_expression(
-            "CASE WHEN size(l) IS NULL THEN null \
+            "CASE WHEN size([x IN l WHERE x > 1]) IS NULL THEN null \
              WHEN size([x IN l WHERE x > 1]) > 0 THEN true \
              WHEN size([x IN l WHERE (x > 1) IS NULL]) > 0 THEN null ELSE false END",
         )
@@ -2552,17 +2550,20 @@ mod tests {
         for (input, form) in [
             (
                 "all(x IN l WHERE p)",
-                "CASE WHEN size(l) IS NULL THEN null WHEN size([x IN l WHERE NOT p]) > 0 THEN false \
+                "CASE WHEN size([x IN l WHERE p]) IS NULL THEN null \
+                 WHEN size([x IN l WHERE NOT p]) > 0 THEN false \
                  WHEN size([x IN l WHERE p IS NULL]) > 0 THEN null ELSE true END",
             ),
             (
                 "NONE(x IN l WHERE p)",
-                "CASE WHEN size(l) IS NULL THEN null WHEN size([x IN l WHERE p]) > 0 THEN false \
+                "CASE WHEN size([x IN l WHERE p]) IS NULL THEN null \
+                 WHEN size([x IN l WHERE p]) > 0 THEN false \
                  WHEN size([x IN l WHERE p IS NULL]) > 0 THEN null ELSE true END",
             ),
             (
                 "single(`x y` IN l WHERE `x y`.a)",
-                "CASE WHEN size(l) IS NULL THEN null WHEN size([`x y` IN l WHERE `x y`.a]) > 1 \
+                "CASE WHEN size([`x y` IN l WHERE `x y`.a]) IS NULL THEN null \
+                 WHEN size([`x y` IN l WHERE `x y`.a]) > 1 \
                  THEN false WHEN size([`x y` IN l WHERE `x y`.a IS NULL]) > 0 THEN null \
                  ELSE size([`x y` IN l WHERE `x y`.a]) = 1 END",
             ),
@@ -2576,11 +2577,13 @@ mod tests {
             parse_expression("any(x IN [true, false])"),
             Err(nom::Err::Failure(_))
         ));
-        // A function of that name without `x IN` is still a call.
-        assert!(matches!(
-            parse_expression("all(x)").unwrap().1,
-            Expression::FunctionCallExp(_)
-        ));
+        // Nor is a call of a function of that name (Neo4j has none).
+        for input in ["all(x)", "single([true, true])", "none([true])"] {
+            assert!(
+                matches!(parse_expression(input), Err(nom::Err::Failure(_))),
+                "{input}"
+            );
+        }
         // A variable named so is a variable.
         assert_eq!(
             parse_expression("single").unwrap().1,
