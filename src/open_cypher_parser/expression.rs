@@ -605,10 +605,13 @@ fn parse_predicate_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_>
         map(keyword("IN"), |_| Operator::In),
     ));
     match opt(predicate).parse(input)? {
-        (rest, Some(operator)) => {
-            let (rest, rhs) = parse_additive_expression(rest)?;
-            Ok((rest, binary(operator, lhs, rhs)))
-        }
+        // Without an operand the predicate is not one: the error points at
+        // it, as at any operator.
+        (rest, Some(operator)) => match parse_additive_expression(rest) {
+            Ok((rest, rhs)) => Ok((rest, binary(operator, lhs, rhs))),
+            Err(nom::Err::Error(_)) => Ok((input, lhs)),
+            Err(e) => Err(e),
+        },
         (rest, None) => Ok((rest, lhs)),
     }
 }

@@ -42,7 +42,7 @@ fn parse_with_item(input: &'_ str) -> IResult<&'_ str, WithItem<'_>> {
     };
 
     let (input, alias) = opt(preceded(
-        ws(tag_no_case("AS")),
+        super::common::keyword("AS"),
         ws(super::common::symbolic_name),
     ))
     .parse(input)?;

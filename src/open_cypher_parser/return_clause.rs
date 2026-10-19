@@ -23,7 +23,7 @@ fn parse_return_item(input: &'_ str) -> IResult<&'_ str, ReturnItem<'_>> {
     let (_, expression) = parse_expression.parse(expr_text)?;
 
     let (input, alias) = opt(preceded(
-        ws(tag_no_case("AS")),
+        super::common::keyword("AS"),
         ws(super::common::symbolic_name),
     ))
     .parse(input)?;

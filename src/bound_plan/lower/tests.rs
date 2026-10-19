@@ -8584,5 +8584,25 @@ fn keywords_are_words_in_clauses_1398() {
         &ReadOptions::default(),
     )
     .unwrap_err();
-    assert!(err.contains("> ? RETURN u") && !err.contains("at `MATCH"), "{err}");
+    assert!(
+        err.contains("> ? RETURN u") && !err.contains("at `MATCH"),
+        "{err}"
+    );
+    let err = translate_bound_plan(
+        "MATCH (u:User) WHERE u.age IN ? RETURN u",
+        &social(),
+        &ReadOptions::default(),
+    )
+    .unwrap_err();
+    assert!(
+        err.contains("IN ? RETURN u") && !err.contains("at `MATCH"),
+        "{err}"
+    );
+    // `AS` is a word: `ASage` is no alias.
+    assert!(translate_bound_plan(
+        "MATCH (n:User) RETURN n.age ASage",
+        &social(),
+        &ReadOptions::default()
+    )
+    .is_err());
 }
