@@ -641,11 +641,24 @@ MATCH path = (a:User)-[:FOLLOWS*1..3]->(b:User)
 WHERE none(node IN nodes(path) WHERE node.is_blocked = true)
 RETURN b.name
 
--- At least one element satisfies condition
+-- Exactly one element satisfies condition
 MATCH path = (a:User)-[:FOLLOWS*1..3]->(b:User)
 WHERE single(node IN nodes(path) WHERE node.country = 'USA')
 RETURN b.name
 ```
+
+They take any list a list comprehension takes (values, `collect()`ed nodes,
+`nodes(p)` / `relationships(p)`, lists of lists), a WHERE is required, and
+they are three-valued as in Neo4j: a predicate that is NULL for an element
+makes the answer NULL where it could decide it (see the table below), and a
+NULL list gives NULL. They are lowered as the sizes of list comprehensions
+(`size([x IN l WHERE p])`, … `WHERE p IS NULL`), so the list and the
+list is read up to four times and the predicate up to three: a list or a
+predicate that is not deterministic (`rand() < 0.5`) may be read differently
+each time, a pattern predicate on the element is planned once per count, and
+nested list predicates grow their SQL up to 4x per level. `all(l)`, `single(l)`
+and the like without `x IN … WHERE` are no functions (a syntax error, as in
+Neo4j).
 
 ### List Reduction
 
@@ -898,6 +911,14 @@ The number depends on a label code each process assigns as it meets types, so th
 | `any(x IN list WHERE pred)` | Any match predicate | `any(x IN [1,2,3] WHERE x > 2)` → `true` |
 | `none(x IN list WHERE pred)` | None match predicate | `none(x IN [1,2,3] WHERE x < 0)` → `true` |
 | `single(x IN list WHERE pred)` | Exactly one matches | `single(x IN [1,2,3] WHERE x = 2)` → `true` |
+
+Three-valued, as in Neo4j (`t`, `f`, `n`: the elements whose predicate is true, false, NULL):
+
+- `any`: true if some `t`; else NULL if some `n`; else false (an empty list: false).
+- `all`: false if some `f`; else NULL if some `n`; else true (an empty list: true).
+- `none`: false if some `t`; else NULL if some `n`; else true.
+- `single`: false if two or more `t`; else NULL if some `n`; else true if exactly one `t`.
+- Of a NULL list: NULL. Without WHERE: a syntax error.
 
 ### Path Functions
 

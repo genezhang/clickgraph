@@ -2,7 +2,7 @@ use nom::{
     branch::alt,
     bytes::complete::{tag, take_while1},
     character::complete::multispace0,
-    combinator::{map, not, opt, peek},
+    combinator::{cut, map, not, opt, peek},
     error::{Error, ErrorKind},
     multi::separated_list0,
     sequence::{delimited, preceded, separated_pair, terminated},
@@ -52,6 +52,7 @@ fn parse_postfix_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_>> 
         parse_pattern_comprehension, // Must be before parse_list_literal to catch [(pattern) | ...]
         parse_list_comprehension, // Must be before parse_list_literal to catch [x IN list WHERE ...]
         parse_path_pattern_expression,
+        parse_list_predicate, // Must be before parse_function_call: any(x IN l WHERE p)
         parse_function_call,
         parse_map_literal, // Must be before list_literal (different brackets anyway)
         parse_list_literal,
@@ -353,6 +354,115 @@ fn parse_reduce_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
             variable,
             list: Box::new(list),
             expression: Box::new(expression),
+        }),
+    ))
+}
+
+/// The list predicates `all`, `any`, `none`, `single` (`x IN list WHERE
+/// predicate`), #1420. Each is read as what it means, three-valued as in
+/// Neo4j, over the list comprehensions the lowering already has (on every
+/// dialect and element kind). With `t`, `f`, `n` the numbers of elements whose
+/// predicate is true, false, NULL:
+///
+/// * `any`: true if `t > 0`; else NULL if `n > 0`; else false (an empty list:
+///   false).
+/// * `all`: false if `f > 0`; else NULL if `n > 0`; else true (empty: true).
+/// * `none`: false if `t > 0`; else NULL if `n > 0`; else true.
+/// * `single`: false if `t > 1`; else NULL if `n > 0`; else `t = 1`.
+/// * Of a NULL list (`size([x IN list WHERE true]) IS NULL`): NULL.
+///
+/// `t` is `size([x IN list WHERE predicate])`, `n` the same of `predicate
+/// IS NULL`, `f` of `NOT predicate`: the list and the predicate are read once
+/// for each (a predicate that is not deterministic, `rand() < 0.5`, may be
+/// read differently by each). A list predicate without WHERE is a syntax
+/// error, as in Neo4j ("any(...) requires a WHERE predicate").
+fn parse_list_predicate<'a>(input: &'a str) -> IResult<&'a str, Expression<'a>> {
+    #[derive(Clone, Copy)]
+    enum Quantifier {
+        All,
+        Any,
+        None,
+        Single,
+    }
+    let (input, quantifier) = alt((
+        map(keyword("ALL"), |_| Quantifier::All),
+        map(keyword("ANY"), |_| Quantifier::Any),
+        map(keyword("NONE"), |_| Quantifier::None),
+        map(keyword("SINGLE"), |_| Quantifier::Single),
+    ))
+    .parse(input)?;
+    let (input, _) = ws(char('(')).parse(input)?;
+    // `q(…` is a list predicate: what does not follow is an error, not a call
+    // of a function named `any` (Neo4j has none; the library's mappings of
+    // `single(l)` / `none(l)` read a list of booleans, not Cypher).
+    let (input, variable) = cut(ws(common::symbolic_name)).parse(input)?;
+    let (input, _) = cut(keyword("IN")).parse(input)?;
+    let (input, list) = cut(parse_expression).parse(input)?;
+    let (input, predicate) = cut(preceded(keyword("WHERE"), parse_expression)).parse(input)?;
+    let (input, _) = cut(ws(char(')'))).parse(input)?;
+
+    let count = |condition: Expression<'a>| -> Expression<'a> {
+        Expression::FunctionCallExp(FunctionCall {
+            name: "size".to_string(),
+            args: vec![Expression::ListComprehension(ListComprehension {
+                variable: variable.clone(),
+                list_expr: Box::new(list.clone()),
+                where_clause: Some(Box::new(condition)),
+                projection: None,
+            })],
+        })
+    };
+    let unary = |operator: Operator, operand: Expression<'a>| -> Expression<'a> {
+        Expression::OperatorApplicationExp(OperatorApplication {
+            operator,
+            operands: vec![operand],
+        })
+    };
+    let int = |i: i64| Expression::Literal(Literal::Integer(i));
+    let boolean = |b: bool| Expression::Literal(Literal::Boolean(b));
+    let null = || Expression::Literal(Literal::Null);
+    let trues = || count(predicate.clone());
+    let nulls = || count(unary(Operator::IsNull, predicate.clone()));
+    let falses = || count(unary(Operator::Not, predicate.clone()));
+    let some = |n: Expression<'a>| binary(Operator::GreaterThan, n, int(0));
+
+    // Of a NULL list, NULL: the size of a comprehension over it is NULL
+    // exactly then, read as the counts are (a list of nodes is not compared
+    // with NULL itself on every dialect, and Spark's `size(NULL)` is -1).
+    // `WHERE true` keeps it a comprehension (without a WHERE it is the list
+    // itself) and copies no predicate.
+    let mut when_then = vec![(unary(Operator::IsNull, count(boolean(true))), null())];
+    let else_expr = match quantifier {
+        Quantifier::Any => {
+            when_then.push((some(trues()), boolean(true)));
+            when_then.push((some(nulls()), null()));
+            boolean(false)
+        }
+        Quantifier::All => {
+            when_then.push((some(falses()), boolean(false)));
+            when_then.push((some(nulls()), null()));
+            boolean(true)
+        }
+        Quantifier::None => {
+            when_then.push((some(trues()), boolean(false)));
+            when_then.push((some(nulls()), null()));
+            boolean(true)
+        }
+        Quantifier::Single => {
+            when_then.push((
+                binary(Operator::GreaterThan, trues(), int(1)),
+                boolean(false),
+            ));
+            when_then.push((some(nulls()), null()));
+            binary(Operator::Equal, trues(), int(1))
+        }
+    };
+    Ok((
+        input,
+        Expression::Case(crate::open_cypher_parser::ast::Case {
+            expr: None,
+            when_then,
+            else_expr: Some(Box::new(else_expr)),
         }),
     ))
 }
@@ -2423,5 +2533,63 @@ mod tests {
         let (rem, e) = parse_expression("CASE When x THEN 1 eLsE 2 End").unwrap();
         assert_eq!(rem, "");
         assert!(matches!(e, Expression::Case(ref c) if c.expr.is_none()));
+    }
+
+    /// `all` / `any` / `none` / `single` (#1420): read as their three-valued
+    /// CASE over the sizes of list comprehensions; WHERE is required, and a
+    /// predicate without one is an error, no call of a function `any`.
+    #[test]
+    fn list_predicates_1420() {
+        let (rem, got) = parse_expression("any(x IN l WHERE x > 1)").unwrap();
+        assert_eq!(rem, "");
+        let (_, want) = parse_expression(
+            "CASE WHEN size([x IN l WHERE true]) IS NULL THEN null \
+             WHEN size([x IN l WHERE x > 1]) > 0 THEN true \
+             WHEN size([x IN l WHERE (x > 1) IS NULL]) > 0 THEN null ELSE false END",
+        )
+        .unwrap();
+        assert_eq!(got, want);
+        for (input, form) in [
+            (
+                "all(x IN l WHERE p)",
+                "CASE WHEN size([x IN l WHERE true]) IS NULL THEN null \
+                 WHEN size([x IN l WHERE NOT p]) > 0 THEN false \
+                 WHEN size([x IN l WHERE p IS NULL]) > 0 THEN null ELSE true END",
+            ),
+            (
+                "NONE(x IN l WHERE p)",
+                "CASE WHEN size([x IN l WHERE true]) IS NULL THEN null \
+                 WHEN size([x IN l WHERE p]) > 0 THEN false \
+                 WHEN size([x IN l WHERE p IS NULL]) > 0 THEN null ELSE true END",
+            ),
+            (
+                "single(`x y` IN l WHERE `x y`.a)",
+                "CASE WHEN size([`x y` IN l WHERE true]) IS NULL THEN null \
+                 WHEN size([`x y` IN l WHERE `x y`.a]) > 1 \
+                 THEN false WHEN size([`x y` IN l WHERE `x y`.a IS NULL]) > 0 THEN null \
+                 ELSE size([`x y` IN l WHERE `x y`.a]) = 1 END",
+            ),
+        ] {
+            let (rem, got) = parse_expression(input).unwrap_or_else(|e| panic!("{input}: {e:?}"));
+            assert_eq!(rem, "", "{input}");
+            assert_eq!(got, parse_expression(form).unwrap().1, "{input}");
+        }
+        // Without WHERE: an error (Neo4j: "any(...) requires a WHERE predicate").
+        assert!(matches!(
+            parse_expression("any(x IN [true, false])"),
+            Err(nom::Err::Failure(_))
+        ));
+        // Nor is a call of a function of that name (Neo4j has none).
+        for input in ["all(x)", "single([true, true])", "none([true])"] {
+            assert!(
+                matches!(parse_expression(input), Err(nom::Err::Failure(_))),
+                "{input}"
+            );
+        }
+        // A variable named so is a variable.
+        assert_eq!(
+            parse_expression("single").unwrap().1,
+            Expression::Variable("single".into())
+        );
     }
 }
