@@ -1,1 +1,1 @@
-parse error: Parsing Failure: OpenCypherParsingError { errors: [("MATCH (a:TestUser)\n            WHERE a.age > AND a.name = 'Alice'\n            RETURN a.name", "Unexpected tokens after query"), ("MATCH (a:TestUser)\n            WHERE a.age > AND a.name = 'Alice'\n            RETURN a.name", "Unparsed input")] }
+parse error: Parsing Failure: OpenCypherParsingError { errors: [(" > AND a.name = 'Alice'\n            RETURN a.name", "Unexpected tokens after query"), ("> AND a.name = 'Alice'\n            RETURN a.name", "Unparsed input")] }

@@ -8552,7 +8552,37 @@ fn xor_1398() {
         .unwrap(),
     );
     assert!(
-        got.contains("((v0.age > 30) <> (v0.country = 'USA'))"),
+        got.contains("(CAST(v0.age > 30 AS BOOLEAN) <> CAST(v0.country = 'USA' AS BOOLEAN))"),
         "{got}"
     );
+}
+
+/// Review of #1507: clause keywords are words too (`RETURN distinctcountry`
+/// read as `RETURN DISTINCT country`), ASCENDING / DESCENDING, and an
+/// operator without an operand leaves the error at the operator.
+#[test]
+fn keywords_are_words_in_clauses_1398() {
+    assert_eq!(
+        sql("MATCH (n:User) WITH n.country AS country, n.user_id AS distinctcountry \
+             RETURN distinctcountry"),
+        sql("MATCH (n:User) WITH n.country AS country, n.user_id AS dc RETURN dc AS distinctcountry"),
+    );
+    assert!(
+        !sql("MATCH (n:User) WITH n.user_id AS distinctx RETURN distinctx").contains("DISTINCT")
+    );
+    assert_eq!(
+        sql("MATCH (n:User) RETURN n.age AS a ORDER BY a DESCENDING"),
+        sql("MATCH (n:User) RETURN n.age AS a ORDER BY a DESC"),
+    );
+    assert_eq!(
+        sql("MATCH (n:User) RETURN n.age AS a ORDER BY a ASCENDING"),
+        sql("MATCH (n:User) RETURN n.age AS a ORDER BY a"),
+    );
+    let err = translate_bound_plan(
+        "MATCH (u:User) WHERE u.name = 'x' AND u.age > ? RETURN u",
+        &social(),
+        &ReadOptions::default(),
+    )
+    .unwrap_err();
+    assert!(err.contains("> ? RETURN u") && !err.contains("at `MATCH"), "{err}");
 }

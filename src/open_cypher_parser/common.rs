@@ -202,6 +202,20 @@ pub fn symbolic_name<'a, E: ParseError<&'a str>>(input: &'a str) -> IResult<&'a 
     )))
 }
 
+/// A keyword: `word` in any case, between optional whitespace, not followed
+/// by a name character (`DISTINCT` but not `distinctcountry`, `WHERE` but
+/// not `WHEREx`).
+pub fn keyword<'a, E: ParseError<&'a str>>(
+    word: &'static str,
+) -> impl Parser<&'a str, Output = &'a str, Error = E> {
+    ws(nom::sequence::terminated(
+        nom::bytes::complete::tag_no_case(word),
+        nom::combinator::not(nom::combinator::peek(nom::character::complete::satisfy(
+            is_name_continue,
+        ))),
+    ))
+}
+
 /// Is the symbolic name at the start of `input` an escaped one?
 pub fn is_escaped_name(input: &str) -> bool {
     input.starts_with('`')

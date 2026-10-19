@@ -1,6 +1,6 @@
 use nom::{
     branch::alt,
-    bytes::complete::{tag, tag_no_case, take_while1},
+    bytes::complete::{tag, take_while1},
     character::complete::multispace0,
     combinator::{map, not, opt, peek},
     error::{Error, ErrorKind},
@@ -306,12 +306,7 @@ fn parse_case_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
 fn keyword<'a>(
     word: &'static str,
 ) -> impl Parser<&'a str, Output = &'a str, Error = Error<&'a str>> {
-    ws(terminated(
-        tag_no_case(word),
-        not(peek(nom::character::complete::satisfy(
-            common::is_name_continue,
-        ))),
-    ))
+    common::keyword(word)
 }
 
 /// Parse reduce expression
@@ -323,7 +318,7 @@ fn keyword<'a>(
 /// No operator is spelled `|` or `)`, so each expression ends there.
 fn parse_reduce_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
     // Parse "reduce" keyword (case-insensitive)
-    let (input, _) = ws(tag_no_case("reduce")).parse(input)?;
+    let (input, _) = keyword("REDUCE").parse(input)?;
 
     // Parse opening parenthesis
     let (input, _) = ws(char('(')).parse(input)?;
@@ -481,7 +476,9 @@ fn binary<'a>(operator: Operator, lhs: Expression<'a>, rhs: Expression<'a>) -> E
     })
 }
 
-/// A left-associative level: `operand (op operand)*`.
+/// A left-associative level: `operand (op operand)*`. An operator without
+/// an operand ends the level before it (the error then points at the
+/// operator: `… AND u.age > ? RETURN u`), as the levels always did.
 fn left_assoc<'a>(
     input: &'a str,
     operand: fn(&'a str) -> IResult<&'a str, Expression<'a>>,
@@ -490,11 +487,14 @@ fn left_assoc<'a>(
     let (mut input, mut expr) = operand(input)?;
     loop {
         match op.parse(input) {
-            Ok((rest, operator)) => {
-                let (rest, rhs) = operand(rest)?;
-                expr = binary(operator, expr, rhs);
-                input = rest;
-            }
+            Ok((rest, operator)) => match operand(rest) {
+                Ok((rest, rhs)) => {
+                    expr = binary(operator, expr, rhs);
+                    input = rest;
+                }
+                Err(nom::Err::Error(_)) => return Ok((input, expr)),
+                Err(e) => return Err(e),
+            },
             Err(nom::Err::Error(_)) => return Ok((input, expr)),
             Err(e) => return Err(e),
         }
@@ -639,12 +639,15 @@ fn parse_comparison_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_
     let mut operators = Vec::new();
     loop {
         match ws(comparison_operator).parse(input) {
-            Ok((rest, operator)) => {
-                let (rest, rhs) = parse_predicate_expression(rest)?;
-                operators.push(operator);
-                operands.push(rhs);
-                input = rest;
-            }
+            Ok((rest, operator)) => match parse_predicate_expression(rest) {
+                Ok((rest, rhs)) => {
+                    operators.push(operator);
+                    operands.push(rhs);
+                    input = rest;
+                }
+                Err(nom::Err::Error(_)) => break,
+                Err(e) => return Err(e),
+            },
             Err(nom::Err::Error(_)) => break,
             Err(e) => return Err(e),
         }
