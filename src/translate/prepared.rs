@@ -30,11 +30,12 @@ use crate::open_cypher_parser::clause_list::{parse_clause_statement, Clause, Cla
 /// queries have tens of clauses (the LDBC ones at most about 30).
 pub const MAX_CLAUSES: usize = 1000;
 
-/// The deepest nesting of brackets (`(`, `[`, `{`, `CASE … END`) a statement
-/// may have (#1373 review): the expression parser and the lowering recurse
-/// once per level, so 20,000 nested parentheses (a 40 KB request), or 5,000
-/// nested CASEs, aborted a (debug-build) server. Real queries nest a few
-/// levels.
+/// The deepest nesting of brackets (`(`, `[`, `{`) a statement may have, and
+/// the most `CASE` expressions (#1373 review): the expression parser and the
+/// lowering recurse once per level, so 20,000 nested parentheses (a 40 KB
+/// request), or 5,000 nested CASEs, aborted a (debug-build) server. CASEs
+/// are counted, not their nesting: `end` is also a name a query may use.
+/// Real queries nest a few levels.
 pub const MAX_NESTING: usize = 500;
 
 /// The graph a statement runs on when neither the statement (`USE`) nor the
@@ -246,11 +247,19 @@ impl StatementTargets {
     /// A statement of more than [`MAX_CLAUSES`] clauses is refused here,
     /// before a parser that recurses per clause reads it.
     pub fn of(text: &str) -> Result<StatementTargets, PrepareError> {
-        // Before any parser reads it: they recurse once per bracket.
-        let depth = StatementShape::of(text).depth;
-        if depth > MAX_NESTING {
+        // Before any parser reads it: they recurse once per bracket and
+        // per CASE.
+        let shape = StatementShape::of(text);
+        if shape.depth > MAX_NESTING {
             return Err(PrepareError::TooLarge(format!(
-                "Not supported: brackets nested {depth} deep (at most {MAX_NESTING})"
+                "Not supported: brackets nested {} deep (at most {MAX_NESTING})",
+                shape.depth
+            )));
+        }
+        if shape.cases > MAX_NESTING {
+            return Err(PrepareError::TooLarge(format!(
+                "Not supported: {} CASE expressions (at most {MAX_NESTING})",
+                shape.cases
             )));
         }
         if let Ok((_, stmt)) = parse_clause_statement(text) {
@@ -419,8 +428,12 @@ pub struct StatementShape {
     /// Tokens: names, numbers, strings, and each other character that is
     /// not white space.
     pub tokens: usize,
-    /// The deepest nesting of `(`, `[`, `{` and `CASE … END`.
+    /// The deepest nesting of `(`, `[` and `{`.
     pub depth: usize,
+    /// `CASE` keywords: an upper bound of how deep `CASE … END` nests (the
+    /// word `end` is also a name a query may use, so `END` is not counted
+    /// down).
+    pub cases: usize,
 }
 
 impl StatementShape {
@@ -470,12 +483,8 @@ impl StatementShape {
                         if KEYWORDS.iter().any(|k| word.eq_ignore_ascii_case(k)) {
                             shape.clause_keywords += 1;
                         }
-                        // `CASE … END` nests as a bracket does.
-                        if word.eq_ignore_ascii_case("CASE") {
-                            depth += 1;
-                            shape.depth = shape.depth.max(depth);
-                        } else if word.eq_ignore_ascii_case("END") {
-                            depth = depth.saturating_sub(1);
+                        if previous != ':' && word.eq_ignore_ascii_case("CASE") {
+                            shape.cases += 1;
                         }
                     }
                     shape.tokens += 1;
@@ -772,9 +781,30 @@ mod tests {
             clause_keywords("MATCH (n) WITH n WHERE 1 = 1WITH n RETURN n"),
             4
         );
-        let case =
-            StatementShape::of("RETURN CASE WHEN x THEN CASE WHEN y THEN 1 END END AS c, n.end");
-        assert_eq!(case.depth, 2);
+        let case = StatementShape::of(
+            "RETURN CASE WHEN x THEN CASE WHEN y THEN 1 END END AS c, n.case, n:Case",
+        );
+        assert_eq!(case.cases, 2);
+        // A name `end` does not count nesting down (review of #1506): a map
+        // key, a variable.
+        let lists = format!(
+            "RETURN {}1{} AS x",
+            "[{end: 1}, ".repeat(MAX_NESTING),
+            "]".repeat(MAX_NESTING)
+        );
+        assert!(matches!(
+            StatementTargets::of(&lists),
+            Err(PrepareError::TooLarge(_))
+        ));
+        let cases = format!(
+            "WITH 1 AS end RETURN {}1{} AS x",
+            "CASE WHEN end = 1 THEN ".repeat(MAX_NESTING + 1),
+            " END".repeat(MAX_NESTING + 1)
+        );
+        assert!(matches!(
+            StatementTargets::of(&cases),
+            Err(PrepareError::TooLarge(_))
+        ));
         let shape = StatementShape::of("MATCH (n) WHERE n.x IN [1, (2 + 3)] RETURN 'a(b'");
         assert_eq!((shape.depth, shape.tokens), (2, 20));
         let nested = format!(

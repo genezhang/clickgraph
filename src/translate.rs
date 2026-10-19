@@ -373,30 +373,36 @@ fn runs_inline(cypher: &str) -> bool {
     ON_TRANSLATION_STACK.with(|on| on.get()) || {
         let shape =
             prepared::StatementShape::of(&crate::open_cypher_parser::strip_comments(cypher));
-        shape.tokens <= INLINE_TOKENS && shape.depth <= INLINE_DEPTH
+        shape.tokens <= INLINE_TOKENS && shape.depth <= INLINE_DEPTH && shape.cases <= INLINE_DEPTH
     }
 }
 
-/// The translation pool: one worker per CPU, each with
+/// The translation pool: one worker per CPU (at most 8), each with
 /// [`translation_stack_bytes`] of stack, started on first use. Its workers
 /// stay, so a translation sent to one costs a few µs, not a thread start
 /// and the faults of a fresh stack (about 100 µs). Only CPU-bound work goes
 /// to it ([`on_translation_stack`]): work that waits on a backend gets a
 /// thread of its own ([`on_translation_thread`]).
-fn translation_pool() -> Result<&'static rayon::ThreadPool, String> {
-    static POOL: std::sync::OnceLock<Result<rayon::ThreadPool, String>> =
-        std::sync::OnceLock::new();
-    POOL.get_or_init(|| {
-        rayon::ThreadPoolBuilder::new()
-            .num_threads(std::thread::available_parallelism().map_or(4, |n| n.get()))
+///
+/// `None`: the pool could not be started, or this process is a fork of the
+/// one that started it (a fork has none of its threads, and a translation
+/// sent to it would wait forever: Python's `multiprocessing` forks): the
+/// caller uses a thread of its own instead ([`on_translation_thread`]).
+fn translation_pool() -> Option<&'static rayon::ThreadPool> {
+    static POOL: std::sync::OnceLock<(u32, Option<rayon::ThreadPool>)> = std::sync::OnceLock::new();
+    let (pid, pool) = POOL.get_or_init(|| {
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(std::thread::available_parallelism().map_or(4, |n| n.get().min(8)))
             .stack_size(translation_stack_bytes())
             .thread_name(|i| format!("clickgraph-translate-{i}"))
             .start_handler(|_| ON_TRANSLATION_STACK.with(|on| on.set(true)))
-            .build()
-            .map_err(|e| format!("could not start the translation pool: {e}"))
-    })
-    .as_ref()
-    .map_err(String::clone)
+            .build();
+        if let Err(e) = &pool {
+            log::warn!("translation pool not started ({e}): a thread per translation");
+        }
+        (std::process::id(), pool.ok())
+    });
+    pool.as_ref().filter(|_| *pid == std::process::id())
 }
 
 /// Run `f` with the caller's query context (schema, dialect, counters) as
@@ -436,8 +442,11 @@ where
     if runs_inline(cypher) {
         return Ok(f());
     }
+    let Some(pool) = translation_pool() else {
+        return on_translation_thread(cypher, f);
+    };
     let context = crate::server::query_context::snapshot_query_context();
-    let (result, context) = translation_pool()?.install(move || with_carried_context(context, f));
+    let (result, context) = pool.install(move || with_carried_context(context, f));
     if let Some(context) = context {
         crate::server::query_context::restore_query_context(context);
     }
