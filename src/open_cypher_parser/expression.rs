@@ -294,7 +294,25 @@ fn parse_count_or_collect(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
 
     // Another body (several MATCH or patterns, OPTIONAL MATCH, a path
     // variable, UNION, CALL, …, with or without RETURN): to its closing
-    // brace, refused when bound.
+    // brace, refused when bound. Only a body that starts as a query does:
+    // other text (`count { }`, `count {a: 1}`) is no subquery, a syntax
+    // error.
+    let starts_as_query = input.trim_start().starts_with('(')
+        || alt((
+            keyword("MATCH"),
+            keyword("OPTIONAL"),
+            keyword("WITH"),
+            keyword("UNWIND"),
+            keyword("CALL"),
+            keyword("RETURN"),
+        ))
+        .parse(input)
+        .is_ok()
+        || common::symbolic_name::<Error<&str>>(input.trim_start())
+            .is_ok_and(|(r, _)| r.trim_start().starts_with('='));
+    if !starts_as_query {
+        return Err(nom::Err::Error(Error::new(input, ErrorKind::Verify)));
+    }
     let rest = past_closing_brace(input)
         .ok_or_else(|| nom::Err::Error(Error::new(input, ErrorKind::Verify)))?;
     Ok((
@@ -376,13 +394,13 @@ fn subquery_match<'a>(
         // bound (for their errors: an undefined variable, an arity, an
         // aggregate) as a pattern comprehension's projection is.
         CountOrCollectKind::Count => {
-            let items = r.clause.return_items;
-            if items
-                .iter()
-                .any(|i| matches!(&i.expression, Expression::Variable(v) if v == "*"))
-            {
-                return Err("a RETURN * in a COUNT { }");
-            }
+            // (`*`: the variables in scope, each defined; nothing to bind)
+            let items: Vec<_> = r
+                .clause
+                .return_items
+                .into_iter()
+                .filter(|i| !matches!(&i.expression, Expression::Variable(v) if v == "*"))
+                .collect();
             let mut names: Vec<&str> = Vec::new();
             for i in &items {
                 let name = match (&i.alias, &i.expression) {
@@ -398,11 +416,11 @@ fn subquery_match<'a>(
                 }
             }
             let mut exprs: Vec<Expression<'a>> = items.into_iter().map(|i| i.expression).collect();
-            Some(if exprs.len() == 1 {
-                exprs.remove(0)
-            } else {
-                Expression::List(exprs)
-            })
+            match exprs.len() {
+                0 => None,
+                1 => Some(exprs.remove(0)),
+                _ => Some(Expression::List(exprs)),
+            }
         }
         CountOrCollectKind::Collect => match <[_; 1]>::try_from(r.clause.return_items) {
             Ok([item]) if !matches!(&item.expression, Expression::Variable(v) if v == "*") => {
@@ -2824,12 +2842,17 @@ mod tests {
             "COUNT { MATCH (a)-[:R]->(b) WHERE b.x > 1 }",
             "COUNT { MATCH (a)-[:R]->(b) RETURN b }",
             "Count { MATCH (a)-[:R]->(b) RETURN b.x, b.y }",
+            "COUNT { MATCH (a)-[:R]->(b) RETURN * }",
         ] {
             let (kind, b) = body(input);
             assert_eq!(kind, CountOrCollectKind::Count, "{input}");
             let m = b.unwrap_or_else(|e| panic!("{input}: {e}"));
             // A COUNT's RETURN items are kept to be bound (for their errors).
-            assert_eq!(m.projection.is_some(), input.contains("RETURN"), "{input}");
+            assert_eq!(
+                m.projection.is_some(),
+                input.contains("RETURN") && !input.contains("RETURN *"),
+                "{input}"
+            );
         }
         let (kind, b) = body("COLLECT { MATCH (a)-[:R]->(b) WHERE b.x > 1 RETURN b.name }");
         assert_eq!(kind, CountOrCollectKind::Collect);
@@ -2852,7 +2875,6 @@ mod tests {
             "COUNT { MATCH (a)-[:R]->(b) MATCH (b)-[:R]->(c) RETURN c }",
             "COUNT { MATCH (a)-[:R]->(b) WITH b RETURN b }",
             "COUNT { MATCH p = (a)-[:R]->(b) RETURN p }",
-            "COUNT { MATCH (a)-[:R]->(b) RETURN * }",
             "COUNT { MATCH (a)-[:R]->(b) RETURN b.x AS y, b.z AS y }",
             // Without RETURN: to the closing brace (strings and names may
             // hold one).
@@ -2862,6 +2884,16 @@ mod tests {
             "COUNT { OPTIONAL MATCH (a)-[:R]->(b {k: \u{27}}\u{27}}) WHERE b.`}` = 1 }",
         ] {
             assert!(body(input).1.is_err(), "{input}");
+        }
+        // A body that does not start as a query is no subquery.
+        for input in ["COUNT { }", "count {a: 1}", "count {.x}"] {
+            assert!(
+                !matches!(
+                    parse_expression(input),
+                    Ok(("", Expression::CountOrCollect(_)))
+                ),
+                "{input}"
+            );
         }
         // The functions.
         for input in ["count(x)", "COUNT(*)", "collect(DISTINCT x)"] {

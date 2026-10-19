@@ -135,8 +135,9 @@ const FUNCTION_ARITIES: &[(&str, usize, usize)] = &[
     ("right", 2, 2),
     ("replace", 3, 3),
     ("split", 2, 2),
-    // (Neo4j reads `trim(…)` by its own grammar: only none is refused.)
-    ("trim", 1, usize::MAX),
+    // (Neo4j also reads `trim(a, b, …)`, by its own grammar, and answers
+    // differently from this library's two-argument trim: refused.)
+    ("trim", 1, 1),
     ("ltrim", 1, 2),
     ("rtrim", 1, 2),
     // conversion

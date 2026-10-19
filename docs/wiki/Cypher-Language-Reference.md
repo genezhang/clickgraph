@@ -420,8 +420,8 @@ RETURN COLLECT { MATCH (a)-[:FOLLOWS]->(b) WHERE b.age > 30 RETURN b.name } AS n
 ```
 
 `COUNT { }` takes one pattern (with or without `MATCH`) and its WHERE, or one
-MATCH and a RETURN (its items are checked as Neo4j does, and do not change
-the count); `COLLECT { }` one MATCH (and WHERE) and a RETURN of one column.
+MATCH and a RETURN (its items are bound, for an undefined variable, an
+arity or a duplicate name, and do not change the count); `COLLECT { }` one MATCH (and WHERE) and a RETURN of one column.
 Not supported yet (a "Not supported" error): several MATCH clauses or
 comma-separated patterns, OPTIONAL MATCH, WITH, UNWIND, UNION, CALL, a path
 variable, DISTINCT / ORDER BY / SKIP / LIMIT, `RETURN *` or an aggregate
