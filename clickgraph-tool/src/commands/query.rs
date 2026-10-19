@@ -24,7 +24,7 @@ pub fn run_validate(cypher: &str, cfg: &CgConfig) -> Result<()> {
     Ok(())
 }
 
-/// Translate Cypher → SQL using sql_only mode (no executor needed).
+/// Translate Cypher → SQL (nothing is executed).
 fn translate(cypher: &str, cfg: &CgConfig) -> Result<String> {
     let db = open_for_translation(cfg)?;
     let conn = Connection::new(&db).map_err(|e| anyhow!("{}", e))?;
@@ -42,6 +42,20 @@ pub(crate) fn open_for_translation(cfg: &CgConfig) -> Result<Database> {
     let config = GraphSchemaConfig::from_yaml_file(path)
         .map_err(|e| anyhow!("Failed to load schema '{}': {}", path, e))?;
     let Some(target) = config.column_discovery_targets().into_iter().next() else {
+        // With a ClickHouse to read from, translate with the column types
+        // the server would read (docs/design/VALUE_TYPES.md §2), so the SQL
+        // is the SQL `cg query` runs. They are best effort: without a
+        // connection, the translation is the same one with unknown types.
+        if let (DialectArg::Clickhouse, Some(remote)) = (&cfg.dialect, remote_config(cfg)) {
+            match Database::new_remote(path, remote) {
+                Ok(db) => return Ok(db),
+                Err(e) => eprintln!(
+                    "warning: could not read column types from ClickHouse, translating \
+                     without them: {}",
+                    e
+                ),
+            }
+        }
         return Database::sql_only_with_dialect(path, cfg.dialect.to_sql_dialect())
             .map_err(|e| anyhow!("{}", e));
     };

@@ -191,6 +191,7 @@ MATCH (u:User) RETURN count(u)
 | `use_final` | bool | `null` | Override FINAL keyword usage (auto-detect if null). A table read with FINAL is read as its merged rows wherever it appears in a query, also when joined to other tables |
 | `filter` | string | `null` | SQL predicate filter applied to all queries |
 | `auto_discover_columns` | bool | `false` | Map every table column as a property, read from the database at load (see [Auto-Discovery](#auto-discovery)) |
+| `column_types` | object | `{}` | The backend type of columns, by column name (`{d: Date, ts: "DateTime64(3)"}`); wins over the types read at load (see [Column Types](#column-types)) |
 | `exclude_columns` | list | `[]` | Columns that auto-discovery leaves out: they are not properties, so reading one gives NULL |
 | `naming_convention` | string | `"snake_case"` | Property naming: "snake_case" or "camelCase" |
 | `id_generation` | enum | `"uuid"` | **Embedded mode only.** How the ID column is filled when Cypher `CREATE` omits it: `"uuid"` (default — DDL `DEFAULT generateUUIDv4()` fills it), `"provided"` (caller must supply, planner errors otherwise), `"snowflake"` (planner emits a `generateSnowflakeID()` call). |
@@ -243,6 +244,7 @@ For edges with their own dedicated table.
 | `use_final` | bool | `null` | Override FINAL keyword usage |
 | `filter` | string | `null` | SQL predicate filter |
 | `constraints` | string | `null` | Cross-node validation expression (e.g., `"from.timestamp <= to.timestamp"`) |
+| `column_types` | object | `{}` | The backend type of columns, by column name (`{d: Date, ts: "DateTime64(3)"}`); wins over the types read at load (see [Column Types](#column-types)) |
 
 #### Edge Constraints
 
@@ -645,6 +647,43 @@ does not exist, the user cannot see it, or it is a parameterized view
 (`view_parameters`), whose columns ClickHouse does not list. Nodes,
 relationships, standard edges and polymorphic edges support it.
 
+### Column Types
+
+ClickGraph reads the type of every column of the schema's tables when the
+schema loads, wherever it has a connection, whether or not the element
+discovers its properties: the server and `cg --clickhouse` (including `cg sql`
+and `cg validate`) through `system.columns`, embedded chdb through a `source:`'s
+`DESCRIBE TABLE`. Reading the types does not add properties; only
+`auto_discover_columns` does. A table that cannot be read keeps unknown types,
+which is not an error.
+
+The types decide how values of differently typed columns meet in one query.
+Today that is the id columns of a node and of its relationships' ends, which
+walks over several relationship types, shortest paths and composite ids
+compare in one common type (a `Date` node id against `DateTime` edge ends,
+`Bool` against `UInt8`, `FixedString` against `String`). With unknown types
+the SQL is as before, and such a walk can relate nothing.
+
+`column_types` declares them in the YAML instead, and wins over the types
+read. It makes the SQL depend on the YAML alone, e.g. for `cg sql` without a
+connection:
+
+```yaml
+nodes:
+  - label: Day
+    table: days
+    node_id: d
+    column_types: {d: Date}
+edges:
+  - type: NEXT
+    table: next_days
+    from_id: d1
+    to_id: d2
+    column_types: {d1: DateTime, d2: DateTime}
+```
+
+Databricks reads no types yet; declared `column_types` apply there too.
+
 ---
 
 ## Attribute Applicability Matrix
@@ -675,6 +714,7 @@ relationships, standard edges and polymorphic edges support it.
 | `use_final` | ✅ | ✅ | ✅ | ✅ |
 | `filter` | ✅ | ✅ | ✅ | ✅ |
 | `auto_discover_columns` | ✅ | ✅ | ✅ | ✅ |
+| `column_types` | ✅ | ✅ | ✅ | ✅ |
 | `exclude_columns` | ✅ | ✅ | ✅ | ✅ |
 | `naming_convention` | ✅ | ✅ | ✅ | ✅ |
 

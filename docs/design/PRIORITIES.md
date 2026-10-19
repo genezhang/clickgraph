@@ -521,6 +521,30 @@ in the legacy composition code (`with_to_cte`, `join_builder`,
 new silently wrong bug in a covered family is made loud in legacy and recorded
 as a corpus entry for the slice that will handle it.
 
+### P-4d — Root-cause clusters of the open issues (2026-10-18)  ◐
+The 2026-10-18 analysis of the 56 open issues found six clusters whose
+issues share one design gap each; each is fixed structurally instead of issue
+by issue (user: "go ahead with your plan").
+1. **Value types** — SQL columns carry no Cypher type, so values meet in the
+   backend's common type (#1358 #1360 #1390 #1393 #1396 #1491 #1482 #1362
+   #1430 #1490 #1485 #504 #1436 #1474 #1414). Plan:
+   `docs/design/VALUE_TYPES.md` (T1–T5). Column types are read for every
+   table where a connection exists, declared `column_types` win, plus a freeze
+   option (user, 2026-10-18). T1 (catalog column types): this PR.
+2. **Element identity** — element ids spelled in Rust and in SQL separately
+   (#1334 #1410 #1387 #1383 #1388 #1354; #1409 closed as a duplicate of #1334).
+   After cluster 1.
+3. **Expression grammar** — names without backticks, hand-built precedence,
+   missing productions (#1489 #1421 #1381 #1398 #1420 #1492 #1413).
+4. **Statement front door** — prelude, USE, write dispatch, stack, request
+   recording and error classes per entry point (#1371 #1370 #1372 #1447 #1373
+   #1500 #1399).
+5. **Lists of nodes in two physical forms** (#1362 #1378 #1380 #1425 #1383
+   #1335): needs a design doc; depends on 1 and 2.
+6. **Walk SQL built as text / Spark recursion limits** (#1402 #1444 #1443
+   #1445 #1099).
+Done first: #1501 (PR #1502, CI tests the tool, client and embedded crates).
+
 ### P-5 — Stats-informed SQL generation  ◐ (S1 implemented on branch; S2/S3 open)
 New. Today all planning is rules/heuristics; the concrete gap is
 `select_anchor()` (`analyzer/graph_join/join_generation.rs:550`) breaking

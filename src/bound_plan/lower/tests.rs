@@ -8223,3 +8223,87 @@ fn paren_comparison_in_vlp_where_renders_1355() {
         "#1355: the comparison is compared, not chained:\n{got}"
     );
 }
+
+/// VALUE_TYPES.md T1 (#1360 item 1): a schema that declares its properties
+/// gets the same walk-key casts once its tables' column types are read (or
+/// declared in `column_types`), and none without them.
+#[test]
+fn declared_union_walk_casts_mixed_type_end_keys_with_read_types() {
+    use crate::graph_catalog::column_info::{ColumnInfo, DiscoveredColumns};
+    const YAML: &str = r#"
+name: lower_declared_mixed_keys
+graph_schema:
+  nodes:
+    - label: Day
+      database: db
+      table: days
+      node_id: d
+      property_mappings: {d: d, nm: nm}
+  edges:
+    - type: E1
+      database: db
+      table: e1
+      from_id: d1
+      to_id: d2
+      from_node: Day
+      to_node: Day
+      property_mappings: {}
+    - type: E2
+      database: db
+      table: e2
+      from_id: d1
+      to_id: d2
+      from_node: Day
+      to_node: Day
+      property_mappings: {}
+"#;
+    let config = crate::graph_catalog::config::GraphSchemaConfig::from_yaml_str(YAML).unwrap();
+    let col = |n: &str, t: &str| ColumnInfo::new(n.to_string(), t.to_string());
+    let mut columns = DiscoveredColumns::default();
+    columns.insert("db", "days", vec![col("d", "Date"), col("nm", "String")]);
+    columns.insert(
+        "db",
+        "e1",
+        vec![col("d1", "DateTime"), col("d2", "DateTime")],
+    );
+    columns.insert("db", "e2", vec![col("d1", "Date"), col("d2", "Date")]);
+    let q = "MATCH p = shortestPath((a:Day)-[:E1|E2*1..]->(b:Day)) RETURN count(*)";
+    let options = crate::bound_plan::lower::LowerOptions::default();
+
+    let read = lowered(
+        q,
+        &config.to_graph_schema_with_columns(&columns).unwrap(),
+        &options,
+    );
+    for cast in [
+        "CAST(e.d1 AS DateTime64(3))",
+        "CAST(e.d2 AS DateTime64(3))",
+        "CAST(e.d AS DateTime64(3))",
+    ] {
+        assert!(read.contains(cast), "{cast}:\n{read}");
+    }
+
+    // The same types declared in the YAML, with no connection.
+    let declared = YAML
+        .replace(
+            "      node_id: d\n",
+            "      node_id: d\n      column_types: {d: Date}\n",
+        )
+        .replace(
+            "      table: e1\n",
+            "      table: e1\n      column_types: {d1: DateTime, d2: DateTime}\n",
+        )
+        .replace(
+            "      table: e2\n",
+            "      table: e2\n      column_types: {d1: Date, d2: Date}\n",
+        );
+    let declared = crate::graph_catalog::config::GraphSchemaConfig::from_yaml_str(&declared)
+        .unwrap()
+        .to_graph_schema()
+        .unwrap();
+    assert_eq!(lowered(q, &declared, &options), read);
+
+    // Unknown types: the SQL is what it was before T1.
+    let unknown = lowered(q, &config.to_graph_schema().unwrap(), &options);
+    assert!(!unknown.contains("CAST(e.d"), "{unknown}");
+}

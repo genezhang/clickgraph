@@ -19,7 +19,8 @@ use clickgraph::executor::remote::RemoteClickHouseExecutor;
 use clickgraph::executor::source_resolver::resolve_source_uri;
 use clickgraph::executor::{ExecutorError, QueryExecutor};
 use clickgraph::graph_catalog::column_info::{
-    column_info_from_rows, describe_columns_sql, system_columns_sql, DiscoveredColumns,
+    column_info_from_rows, columns_by_table_from_rows, describe_columns_sql,
+    system_columns_of_tables_sql, system_columns_sql, DiscoveredColumns,
 };
 use clickgraph::graph_catalog::config::GraphSchemaConfig;
 use clickgraph::graph_catalog::graph_schema::GraphSchema;
@@ -519,9 +520,77 @@ fn build_graph_schema(
         let info = column_info_from_rows(&rows).map_err(read)?;
         columns.insert(&target.database, &target.table, info);
     }
+    read_column_types(schema_config, readers, runtime, &mut columns);
     schema_config
         .to_graph_schema_with_columns(&columns)
         .map_err(schema_build_error)
+}
+
+/// Read the column types of every table `columns` does not hold yet, where
+/// `readers` can (docs/design/VALUE_TYPES.md T1): a `source:` through its
+/// executor, the others in one `system.columns` read. A table that cannot be
+/// read keeps unknown types, which leaves its SQL as it was, so failures are
+/// logged, not errors.
+fn read_column_types(
+    schema_config: &GraphSchemaConfig,
+    readers: ColumnReaders<'_>,
+    runtime: &tokio::runtime::Runtime,
+    columns: &mut DiscoveredColumns,
+) {
+    let mut tables: Vec<(String, String)> = Vec::new();
+    for target in schema_config.type_discovery_targets() {
+        if columns.contains(&target.database, &target.table) {
+            continue;
+        }
+        match (&target.source, readers.sources, readers.tables) {
+            (Some(source), Some(executor), _) => {
+                let read = resolve_source_uri(source)
+                    .map_err(|e| e.to_string())
+                    .and_then(|uri| {
+                        runtime
+                            .block_on(executor.execute_json(&describe_columns_sql(&uri), None))
+                            .map_err(|e| e.to_string())
+                    })
+                    .and_then(|rows| column_info_from_rows(&rows));
+                match read {
+                    Ok(info) => columns.insert(&target.database, &target.table, info),
+                    Err(e) => log::warn!(
+                        "Could not read the column types of {}; they stay unknown: {}",
+                        target.owner,
+                        e
+                    ),
+                }
+            }
+            (_, _, Some(_)) => {
+                let key = (target.database, target.table);
+                if !tables.contains(&key) {
+                    tables.push(key);
+                }
+            }
+            (_, _, None) => {}
+        }
+    }
+    let Some(executor) = readers.tables else {
+        return;
+    };
+    if tables.is_empty() {
+        return;
+    }
+    let read = runtime
+        .block_on(executor.execute_json(&system_columns_of_tables_sql(&tables), None))
+        .map_err(|e| e.to_string())
+        .and_then(|rows| columns_by_table_from_rows(&rows));
+    match read {
+        Ok(found) => {
+            for ((database, table), info) in found {
+                columns.insert(&database, &table, info);
+            }
+        }
+        Err(e) => log::warn!(
+            "Could not read the column types of the schema's tables; they stay unknown: {}",
+            e
+        ),
+    }
 }
 
 fn schema_build_error(e: impl std::fmt::Display) -> EmbeddedError {
@@ -734,6 +803,129 @@ graph_schema:
             let node = schema.node_schema(label).unwrap();
             assert!(node.property_mappings.contains_key("city"), "{label}");
         }
+    }
+
+    /// Answers a source's DESCRIBE and the one `system.columns` read of
+    /// several tables, as a loader sees them.
+    struct TypesExecutor {
+        seen: std::sync::Mutex<Vec<String>>,
+    }
+
+    #[async_trait]
+    impl QueryExecutor for TypesExecutor {
+        async fn execute_json(
+            &self,
+            sql: &str,
+            _role: Option<&str>,
+        ) -> Result<Vec<serde_json::Value>, ExecutorError> {
+            self.seen.lock().unwrap().push(sql.to_string());
+            if sql.starts_with("DESCRIBE") {
+                return Ok(vec![serde_json::json!({"name": "id", "type": "Date"})]);
+            }
+            Ok(vec![
+                serde_json::json!({"database": "db", "table": "plain", "name": "id", "type": "String"}),
+                serde_json::json!({"database": "db", "table": "links", "name": "a", "type": "DateTime"}),
+                serde_json::json!({"database": "db", "table": "links", "name": "b", "type": "String"}),
+            ])
+        }
+
+        async fn execute_text(
+            &self,
+            _sql: &str,
+            _format: &str,
+            _role: Option<&str>,
+        ) -> Result<String, ExecutorError> {
+            Ok(String::new())
+        }
+    }
+
+    /// VALUE_TYPES.md T1: a schema that discovers nothing still has its
+    /// tables' column types read, a source locally and the other tables in
+    /// one remote read, without gaining properties.
+    #[test]
+    fn column_types_are_read_for_declared_elements() {
+        let config: GraphSchemaConfig = serde_yaml::from_str(
+            r#"
+graph_schema:
+  nodes:
+    - label: Sourced
+      database: db
+      table: sourced
+      node_id: id
+      source: "/data/sourced.parquet"
+      property_mappings: {}
+    - label: Plain
+      database: db
+      table: plain
+      node_id: id
+      property_mappings: {}
+  edges:
+    - type: LINK
+      database: db
+      table: links
+      from_node: Sourced
+      to_node: Plain
+      from_id: a
+      to_id: b
+      property_mappings: {}
+"#,
+        )
+        .unwrap();
+        let runtime = build_runtime().unwrap();
+        let (local, remote) = (
+            TypesExecutor {
+                seen: Default::default(),
+            },
+            TypesExecutor {
+                seen: Default::default(),
+            },
+        );
+        let readers = ColumnReaders {
+            sources: Some(&local),
+            tables: Some(&remote),
+        };
+        let schema = build_graph_schema(&config, readers, &runtime).unwrap();
+        assert_eq!(
+            *local.seen.lock().unwrap(),
+            ["DESCRIBE TABLE file('/data/sourced.parquet', 'Parquet')"]
+        );
+        assert_eq!(
+            *remote.seen.lock().unwrap(),
+            [system_columns_of_tables_sql(&[
+                ("db".to_string(), "plain".to_string()),
+                ("db".to_string(), "links".to_string()),
+            ])]
+        );
+        let sourced = schema.node_schema("Sourced").unwrap();
+        assert_eq!(sourced.node_id.part_types[0].raw, "Date");
+        assert_eq!(sourced.property_mappings.len(), 1);
+        assert_eq!(
+            schema.node_schema("Plain").unwrap().node_id.part_types[0].raw,
+            "String"
+        );
+        let link = schema.get_rel_schema("LINK").unwrap();
+        assert_eq!(link.from_node_id_part_types[0].raw, "DateTime");
+        assert_eq!(link.to_node_id_part_types[0].raw, "String");
+    }
+
+    /// A failed read of the types is not an error: they stay unknown.
+    #[test]
+    fn unreadable_column_types_stay_unknown() {
+        let config: GraphSchemaConfig = serde_yaml::from_str(MINIMAL_SCHEMA).unwrap();
+        let runtime = build_runtime().unwrap();
+        // Rows without `database` / `table`: not a reply to the read.
+        let remote = RecordingExecutor::new();
+        let readers = ColumnReaders {
+            sources: None,
+            tables: Some(&remote),
+        };
+        let schema = build_graph_schema(&config, readers, &runtime).unwrap();
+        assert!(schema
+            .node_schema("User")
+            .unwrap()
+            .node_id
+            .part_types
+            .is_empty());
     }
 
     #[test]

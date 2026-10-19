@@ -1429,9 +1429,9 @@ types, definitions or labels; `Lowerer::build_union_path`, `path::Search`,
   two instants and match what `=` refuses); a pair of one instant in two
   zones — `DateTime('Asia/Tokyo')` against `DateTime64(3,'UTC')` — is
   therefore not covered (a follow-up would spell the target's zone), and the
-  table is not complete past that. Types come only from
-  `auto_discover_columns`: a declared `property_mappings` element keeps its
-  SQL.
+  table is not complete past that. Types come from the column types read at
+  load for every element, or its declared `column_types`
+  (`VALUE_TYPES.md` T1); an element whose types are unknown keeps its SQL.
 - **Conditions the search cannot hold** (§4.8: a length it does not bound,
   a lower bound above 1, a condition on an end): the pick reads the
   generator's trails through `vlp_{var}_keyed`, their ends keyed alike from
