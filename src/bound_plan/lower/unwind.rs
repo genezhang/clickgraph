@@ -564,10 +564,9 @@ impl<'s> Lowerer<'s> {
     /// whose list is otherwise a `Variant` in which equal integers are two
     /// values). `None` unless every element's type is known (a property of a
     /// known column type, an integer or NULL literal), and where they have
-    /// one: the SQL as before. NULL-able where an element can be NULL.
+    /// one: the SQL as before. The target is Nullable.
     pub(super) fn list_meeting_type(&self, xs: &[LogicalExpr]) -> Option<String> {
         let mut known = Vec::new();
-        let mut nullable = false;
         for x in xs {
             match x {
                 // A literal is of the narrowest type holding it: a negative
@@ -585,7 +584,7 @@ impl<'s> Lowerer<'s> {
                 {
                     known.push(KeyPartType::parse("Int64"))
                 }
-                LogicalExpr::Literal(lx::Literal::Null) => nullable = true,
+                LogicalExpr::Literal(lx::Literal::Null) => {}
                 LogicalExpr::PropertyAccessExp(pa) => {
                     let (PropertyValue::Column(p), Some(v)) =
                         (&pa.column, parse_var(&pa.table_alias.0))
@@ -597,19 +596,15 @@ impl<'s> Lowerer<'s> {
                     if types.iter().any(|t| *t != Some(first)) {
                         return None;
                     }
-                    nullable |= self.binding(v).nullable;
                     known.push(first.clone());
                 }
                 _ => return None,
             }
         }
         let mut target = self.options.dialect.common_type_where_none(&known)?;
-        // A column may be NULL whatever its declared type says (a
-        // `column_types` entry without its `Nullable`): Nullable then too.
-        target.nullable |= nullable
-            || xs
-                .iter()
-                .any(|x| matches!(x, LogicalExpr::PropertyAccessExp(_)));
+        // Nullable always: a column element (one there is, the `UInt64`) may
+        // be NULL whatever its declared type says, and NULL literals join.
+        target.nullable = true;
         Some(self.options.dialect.cast_target(&target))
     }
 

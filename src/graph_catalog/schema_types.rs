@@ -1052,13 +1052,6 @@ mod tests {
         assert_eq!(format!("{}", SchemaType::String), "string");
     }
 }
-/// #1360: the walk-key common-type table. Every arm below was checked against
-/// ClickHouse 25.8: for each pair, casting both sides to the target makes their
-/// *text* agree exactly when `=` agrees on the values.
-///
-/// These assert the type decision itself. Spelling a target for a given
-/// dialect is the dialect axis's job, so it is tested where that is
-/// dispatched rather than here.
 #[cfg(test)]
 mod common_type_where_none_tests {
     use super::*;
@@ -1092,6 +1085,13 @@ mod common_type_where_none_tests {
     }
 }
 
+/// #1360: the walk-key common-type table. Every arm below was checked against
+/// ClickHouse 25.8: for each pair, casting both sides to the target makes their
+/// *text* agree exactly when `=` agrees on the values.
+///
+/// These assert the type decision itself. Spelling a target for a given
+/// dialect is the dialect axis's job, so it is tested where that is
+/// dispatched rather than here.
 #[cfg(test)]
 mod walk_key_lct_tests {
     use super::{fold_common, KeyPartType};
