@@ -66,52 +66,26 @@ async fn sql_generation_handler_inner(
         ));
     }
 
-    // Parse and validate schema name
-    // First, do a quick parse to extract USE clause if present.
-    // Strip comments before parsing (#516 made parse_cypher_statement
-    // all-consuming — a trailing `//`/`/* */` comment must not be mistaken
-    // for garbage input).
-    let stripped_for_use_check = open_cypher_parser::strip_comments(&payload.query);
-    let clean_query = stripped_for_use_check.trim();
-    let schema_name: String = if clean_query.to_uppercase().starts_with("USE ") {
-        // Quick extraction of schema name from USE clause
-        match open_cypher_parser::parse_cypher_statement(clean_query) {
-            Ok((_, statement)) => match statement {
-                open_cypher_parser::ast::CypherStatement::Query { query, .. } => {
-                    if let Some(ref use_clause) = query.use_clause {
-                        use_clause.database_name.to_string()
-                    } else {
-                        payload
-                            .schema_name
-                            .as_deref()
-                            .unwrap_or("default")
-                            .to_string()
-                    }
-                }
-                _ => payload
-                    .schema_name
-                    .as_deref()
-                    .unwrap_or("default")
-                    .to_string(),
-            },
-            // Text only the clause-list parser reads (P-4c S10b) keeps its USE.
-            Err(_) => crate::translate::clause_list_use_name(clean_query)
-                .flatten()
-                .unwrap_or_else(|| {
-                    payload
-                        .schema_name
-                        .as_deref()
-                        .unwrap_or("default")
-                        .to_string()
-                }),
-        }
-    } else {
-        payload
-            .schema_name
-            .as_deref()
-            .unwrap_or("default")
-            .to_string()
+    // The statement front end, as `/query` reads it (`translate::prepared`):
+    // the prelude (`CYPHER ..`) is read and dropped, comments are stripped,
+    // and the schema is the first arm's USE, else `schema_name`, else the
+    // default (a later arm's USE naming another graph is refused).
+    let refused = |e: crate::translate::PrepareError| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(SqlGenerationError {
+                cypher_query: payload.query.clone(),
+                error: e.to_string(),
+                error_type: "QueryError".to_string(),
+                error_details: None,
+            }),
+        )
     };
+    let prepared = crate::translate::PreparedStatement::parse(&payload.query).map_err(refused)?;
+    let schema_name = prepared
+        .targets
+        .graph(payload.schema_name.as_deref())
+        .map_err(refused)?;
     let schema_name = schema_name.as_str();
 
     // Check query cache first
@@ -119,7 +93,7 @@ async fn sql_generation_handler_inner(
     // with (they change parameterized-view SQL).
     let vp_strings = view_parameter_strings(&payload);
     let cache_key =
-        QueryCacheKey::with_view_scope(&payload.query, schema_name, None, vp_strings.as_ref())
+        QueryCacheKey::with_view_scope(prepared.text(), schema_name, None, vp_strings.as_ref())
             .for_route("query_sql");
 
     let mut cache_status = "MISS";
@@ -200,19 +174,10 @@ async fn sql_generation_handler_inner(
     set_current_schema(Arc::new(graph_schema.clone()));
     attach_current_table_stats(&graph_schema).await;
 
-    // Clean query (remove CYPHER prefix if present), then strip comments
-    // before parsing (#516 made parse_cypher_statement all-consuming — a
-    // trailing `//`/`/* */` comment must not be mistaken for garbage input).
-    let clean_query = payload.query.trim();
-    let clean_query = if clean_query.to_uppercase().starts_with("CYPHER") {
-        clean_query
-            .split_once(char::is_whitespace)
-            .map_or(clean_query, |(_, rest)| rest)
-    } else {
-        clean_query
-    };
-    let stripped_query = open_cypher_parser::strip_comments(clean_query);
-    let clean_query = stripped_query.trim();
+    // Without the prelude and comments (#516 made parse_cypher_statement
+    // all-consuming: a trailing `//`/`/* */` comment must not be mistaken
+    // for garbage input).
+    let clean_query = prepared.text().trim();
 
     // Phase 1: Parse query (support UNION ALL)
     let parse_start = Instant::now();
@@ -241,7 +206,7 @@ async fn sql_generation_handler_inner(
     let (cypher_statement, legacy_parse_error) =
         match open_cypher_parser::parse_cypher_statement(clean_query) {
             Ok((_, stmt)) => (Some(stmt), None),
-            Err(e) if crate::translate::clause_list_use_name(clean_query).is_some() => {
+            Err(e) if crate::translate::clause_list_parses(clean_query) => {
                 (None, Some(format!("{}", e)))
             }
             Err(e) => return Err(parse_error(format!("{}", e))),

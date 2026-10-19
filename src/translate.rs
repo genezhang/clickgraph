@@ -18,6 +18,9 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
+pub mod prepared;
+pub use prepared::{Prelude, PrepareError, PreparedStatement, StatementTargets, DEFAULT_GRAPH};
+
 use crate::bound_plan::lower::{ResultColumn, ResultKind};
 use crate::graph_catalog::graph_schema::GraphSchema;
 use crate::open_cypher_parser::ast::CypherStatement;
@@ -317,16 +320,11 @@ pub fn translate_inner_read(cypher: &str, schema: &GraphSchema) -> Result<String
     }
 }
 
-/// The `USE` graph name of read-query text the clause-list parser reads
-/// (`Some(None)`: no `USE`), or `None` when it does not parse. For entry
-/// points choosing the schema of text the legacy parser rejects (S10b).
-pub fn clause_list_use_name(cypher: &str) -> Option<Option<String>> {
-    match crate::open_cypher_parser::clause_list::parse_clause_statement(cypher) {
-        Ok((rest, stmt)) if rest.trim().trim_end_matches(';').trim().is_empty() => {
-            Some(stmt.first.use_clause.map(|u| u.database_name.to_string()))
-        }
-        _ => None,
-    }
+/// Whether the clause-list parser reads `cypher` (a statement without its
+/// prelude): entry points route text the legacy parser rejects to the bound
+/// plan when it does (S10b).
+pub fn clause_list_parses(cypher: &str) -> bool {
+    crate::open_cypher_parser::clause_list::parse_clause_statement(cypher).is_ok()
 }
 
 /// The bound-plan path (P-4c): clause list → bind → lower → plain print.
@@ -539,7 +537,7 @@ fn merged_view_parameters(
 
 #[cfg(test)]
 mod tests {
-    use super::{clause_list_use_name, translate_text_read, ReadOptions, TranslateError};
+    use super::{clause_list_parses, translate_text_read, ReadOptions, TranslateError};
 
     fn social() -> super::GraphSchema {
         crate::graph_catalog::config::GraphSchemaConfig::from_yaml_str(include_str!(
@@ -714,16 +712,18 @@ mod tests {
     }
 
     #[test]
-    fn the_use_name_of_text_only_syntax() {
+    fn text_only_syntax_parses() {
+        assert!(clause_list_parses(
+            "USE g MATCH (a) ORDER BY a.x LIMIT 1 RETURN a"
+        ));
+        assert!(clause_list_parses("MATCH (a) LIMIT 1 RETURN a;"));
+        assert!(!clause_list_parses("MATCH (a) RETRUN a"));
+        // The text-only statement's USE is the statement's graph.
         assert_eq!(
-            clause_list_use_name("USE g MATCH (a) ORDER BY a.x LIMIT 1 RETURN a"),
-            Some(Some("g".to_string()))
+            super::StatementTargets::of("USE g MATCH (a) ORDER BY a.x LIMIT 1 RETURN a")
+                .use_graph(),
+            Some("g")
         );
-        assert_eq!(
-            clause_list_use_name("MATCH (a) LIMIT 1 RETURN a;"),
-            Some(None)
-        );
-        assert_eq!(clause_list_use_name("MATCH (a) RETRUN a"), None);
     }
 
     use crate::server::query_context::{generate_cte_id, generate_id, reset_all_counters};

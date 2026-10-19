@@ -456,15 +456,28 @@ async fn query_handler_body(
     let query_string = payload.query.clone();
     let schema_name_param = payload.schema_name.clone();
 
-    // Query cache integration - Strip CYPHER prefix FIRST
-    // Extract replan option and clean query
-    let replan_option = query_cache::ReplanOption::from_query_prefix(&query_string)
-        .unwrap_or(query_cache::ReplanOption::Default);
-    let clean_query_with_comments = query_cache::ReplanOption::strip_prefix(&query_string);
-
-    // Strip SQL-style comments (-- and /* */) before parsing
-    let clean_query_string = open_cypher_parser::strip_comments(clean_query_with_comments);
-    let clean_query = clean_query_string.clone();
+    // The statement front end (`translate::prepared`, shared with Bolt and
+    // the embedded connection): the prelude (`CYPHER replan=..`, EXPLAIN /
+    // PROFILE) is read once, comments are stripped, and the statement's
+    // graph is chosen by the one rule: the first arm's USE, else
+    // `schema_name`, else the default schema (a later arm's USE naming
+    // another graph is refused, #1370).
+    let prepared = crate::translate::PreparedStatement::parse(&query_string)
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    let replan_option = prepared.prelude.replan;
+    if prepared.prelude.mode != crate::translate::prepared::ExecutionMode::Run {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "Not supported: EXPLAIN / PROFILE over HTTP (`sql_only: true` returns the SQL a \
+             query runs)"
+                .to_string(),
+        ));
+    }
+    let graph_name = prepared
+        .targets
+        .graph(schema_name_param.as_deref())
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    let clean_query = prepared.prelude.text;
 
     // Handle SHOW DATABASES early (special case for Neo4j browser compatibility)
     let clean_upper = clean_query.trim().to_uppercase();
@@ -496,11 +509,7 @@ async fn query_handler_body(
     if clean_upper.contains("APOC.META.SCHEMA") && clean_upper.contains("UNWIND") {
         log::info!("Detected apoc.meta.schema MCP query — short-circuiting with unwound results");
 
-        // Determine schema: payload param > USE clause > "default"
-        let schema_name = schema_name_param
-            .clone()
-            .or_else(|| extract_schema_from_use_clause(&clean_query))
-            .unwrap_or_else(|| "default".to_string());
+        let schema_name = graph_name.clone();
 
         let schema_guard = crate::server::GLOBAL_SCHEMAS.get().ok_or_else(|| {
             (
@@ -568,10 +577,8 @@ async fn query_handler_body(
         log::info!("Detected COPY TO: destination={}", destination);
         let export_start = Instant::now();
 
-        // Resolve schema
-        let schema_name_for_export = schema_name_param
-            .clone()
-            .unwrap_or_else(|| "default".to_string());
+        // The inner query's USE, else the request's schema.
+        let schema_name_for_export = graph_name.clone();
         let graph_schema =
             match graph_catalog::get_graph_schema_by_name(&schema_name_for_export).await {
                 Ok(s) => s,
@@ -695,7 +702,7 @@ async fn query_handler_body(
         };
 
         let registry = crate::procedures::ProcedureRegistry::new();
-        let schema_name = schema_name_param.unwrap_or_else(|| "default".to_string());
+        let schema_name = graph_name.clone();
 
         // Now execute (no lifetimes involved), each branch with its tail
         let results = async {
@@ -786,11 +793,7 @@ async fn query_handler_body(
                     .map_err(|e| (StatusCode::BAD_REQUEST, e))?
             };
 
-            // Resolve schema
-            // Resolve schema
-            let schema_name_for_export = schema_name_param
-                .clone()
-                .unwrap_or_else(|| "default".to_string());
+            let schema_name_for_export = graph_name.clone();
             let graph_schema =
                 match graph_catalog::get_graph_schema_by_name(&schema_name_for_export).await {
                     Ok(s) => s,
@@ -871,9 +874,8 @@ async fn query_handler_body(
 
             let search_start = Instant::now();
 
-            // Re-parse to extract arguments and USE clause
+            // Re-parse to extract the arguments
             let search_args;
-            let use_schema_name;
             {
                 let (_, stmt) =
                     open_cypher_parser::parse_cypher_statement(&clean_query).map_err(|e| {
@@ -883,15 +885,8 @@ async fn query_handler_body(
                         )
                     })?;
                 let expressions: Vec<_> = match &stmt {
-                    CypherStatement::ProcedureCall(pc) => {
-                        use_schema_name = None;
-                        pc.arguments.iter().collect()
-                    }
+                    CypherStatement::ProcedureCall(pc) => pc.arguments.iter().collect(),
                     CypherStatement::Query { query, .. } => {
-                        use_schema_name = query
-                            .use_clause
-                            .as_ref()
-                            .map(|uc| uc.database_name.to_string());
                         let cc = query.call_clause.as_ref().ok_or_else(|| {
                             (
                                 StatusCode::BAD_REQUEST,
@@ -912,10 +907,7 @@ async fn query_handler_body(
                         .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
             }
 
-            // Resolve schema: USE clause > schema_name param > "default"
-            let schema_name_for_search = use_schema_name
-                .or_else(|| schema_name_param.clone())
-                .unwrap_or_else(|| "default".to_string());
+            let schema_name_for_search = graph_name.clone();
             let graph_schema = graph_catalog::get_graph_schema_by_name(&schema_name_for_search)
                 .await
                 .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
@@ -993,7 +985,6 @@ async fn query_handler_body(
             let search_start = Instant::now();
 
             let search_args;
-            let use_schema_name;
             {
                 let (_, stmt) =
                     open_cypher_parser::parse_cypher_statement(&clean_query).map_err(|e| {
@@ -1003,15 +994,8 @@ async fn query_handler_body(
                         )
                     })?;
                 let expressions: Vec<_> = match &stmt {
-                    CypherStatement::ProcedureCall(pc) => {
-                        use_schema_name = None;
-                        pc.arguments.iter().collect()
-                    }
+                    CypherStatement::ProcedureCall(pc) => pc.arguments.iter().collect(),
                     CypherStatement::Query { query, .. } => {
-                        use_schema_name = query
-                            .use_clause
-                            .as_ref()
-                            .map(|uc| uc.database_name.to_string());
                         let cc = query.call_clause.as_ref().ok_or_else(|| {
                             (
                                 StatusCode::BAD_REQUEST,
@@ -1032,10 +1016,7 @@ async fn query_handler_body(
                         .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
             }
 
-            // Resolve schema: USE clause > schema_name param > "default"
-            let schema_name_for_search = use_schema_name
-                .or_else(|| schema_name_param.clone())
-                .unwrap_or_else(|| "default".to_string());
+            let schema_name_for_search = graph_name.clone();
             let graph_schema = graph_catalog::get_graph_schema_by_name(&schema_name_for_search)
                 .await
                 .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
@@ -1101,7 +1082,7 @@ async fn query_handler_body(
         }
 
         let registry = crate::procedures::ProcedureRegistry::new();
-        let schema_name = schema_name_param.unwrap_or_else(|| "default".to_string());
+        let schema_name = graph_name.clone();
 
         // Check if procedure exists
         if !registry.contains(&proc_name) {
@@ -1150,87 +1131,33 @@ async fn query_handler_body(
         }
     }
 
-    // 🔧 FIX: Validate query syntax FIRST before schema lookup
-    // This prevents misleading "Schema not found" errors when query has syntax errors
-    // Quick syntax validation (doesn't need full planning)
-    // Note: Use parse_cypher_statement to support UNION ALL queries
-    // `Err`: the syntax error (owned: the parse result must not live across
+    // Validate the syntax before the schema lookup: a query with a syntax
+    // error gets the syntax error, not a misleading "Schema not found".
+    // `Some`: the syntax error (owned: the parse result must not live across
     // the await below).
-    let parsed_schema_name: Result<String, String> =
-        match open_cypher_parser::parse_cypher_statement(&clean_query) {
-            Ok((_, statement)) => {
-                // Parse succeeded - extract schema name from USE clause
-                Ok(match statement {
-                    open_cypher_parser::ast::CypherStatement::Query { query, .. } => {
-                        if let Some(ref use_clause) = query.use_clause {
-                            use_clause.database_name.to_string()
-                        } else {
-                            // No USE clause - use request parameter or "default"
-                            schema_name_param
-                                .clone()
-                                .unwrap_or_else(|| "default".to_string())
-                        }
-                    }
-                    open_cypher_parser::ast::CypherStatement::ProcedureCall(_) => {
-                        // Procedure calls don't have USE clauses
-                        schema_name_param
-                            .clone()
-                            .unwrap_or_else(|| "default".to_string())
-                    }
-                    open_cypher_parser::ast::CypherStatement::CopyTo(_) => {
-                        // COPY TO uses request parameter or "default"
-                        schema_name_param
-                            .clone()
-                            .unwrap_or_else(|| "default".to_string())
-                    }
-                })
-            }
-            Err(e) => {
-                log::error!("Query parse failed during schema extraction: {}", e);
-                Err(format!(
-                    "Query syntax error: {}. Check Cypher syntax before proceeding.",
-                    e
-                ))
-            }
-        };
-    let schema_name = match parsed_schema_name {
-        Ok(name) => name,
-        Err(syntax_error) => {
-            // Text only the clause-list parser reads (P-4c S10b) is a read
-            // query for the bound plan, which reports whether it translates.
-            // Over a schema that does not exist, the syntax error is still
-            // the answer (not a misleading "Schema not found").
-            let text_only_schema = match crate::translate::clause_list_use_name(&clean_query) {
-                Some(use_name) => {
-                    let name = use_name.unwrap_or_else(|| {
-                        schema_name_param
-                            .clone()
-                            .unwrap_or_else(|| "default".to_string())
-                    });
-                    graph_catalog::get_graph_schema_by_name(&name)
-                        .await
-                        .is_ok()
-                        .then_some(name)
-                }
-                None => None,
-            };
-            match text_only_schema {
-                Some(name) => name,
-                // ❌ PARSE ERROR: Return immediately with clear error message
-                None => return Err((StatusCode::BAD_REQUEST, syntax_error)),
-            }
+    let syntax_error = open_cypher_parser::parse_cypher_statement(&clean_query)
+        .err()
+        .map(|e| {
+            log::error!("Query parse failed: {}", e);
+            format!(
+                "Query syntax error: {}. Check Cypher syntax before proceeding.",
+                e
+            )
+        });
+    if let Some(syntax_error) = syntax_error {
+        // Text only the clause-list parser reads (P-4c S10b) is a read query
+        // for the bound plan, which reports whether it translates. Over a
+        // schema that does not exist, the syntax error is still the answer.
+        let text_only = crate::translate::clause_list_parses(&clean_query)
+            && graph_catalog::get_graph_schema_by_name(&graph_name)
+                .await
+                .is_ok();
+        if !text_only {
+            return Err((StatusCode::BAD_REQUEST, syntax_error));
         }
-    };
-
-    log::debug!(
-        "Using schema: {} ({})",
-        schema_name,
-        if payload.schema_name.is_none() && !clean_query.to_uppercase().contains("USE ") {
-            "explicit default - no USE clause"
-        } else {
-            "from query or parameter"
-        }
-    );
+    }
+    let schema_name = graph_name;
+    log::debug!("Using schema: {}", schema_name);
 
     // ✅ TASK-LOCAL CONTEXT: Wrap ALL query processing in with_query_context()
     // This creates an isolated per-task context that is:
@@ -1474,7 +1401,7 @@ async fn query_handler_inner(
         let (parsed_stmt, legacy_parse_error) =
             match open_cypher_parser::parse_cypher_statement(&clean_query) {
                 Ok((_remaining, stmt)) => (Some(stmt), None),
-                Err(e) if crate::translate::clause_list_use_name(&clean_query).is_some() => (
+                Err(e) if crate::translate::clause_list_parses(&clean_query) => (
                     None,
                     Some(format!(
                         "Query syntax error: {}. Check Cypher syntax before proceeding.",
@@ -2338,41 +2265,6 @@ fn inner_read_status(e: &str) -> StatusCode {
         StatusCode::INTERNAL_SERVER_ERROR
     } else {
         StatusCode::BAD_REQUEST
-    }
-}
-
-/// Extract a schema name from a leading `USE <schema>` clause in a Cypher query.
-///
-/// This lightweight text-based extraction mirrors the normal path's USE handling
-/// (which relies on the parser AST) for interceptions that run before parsing.
-fn extract_schema_from_use_clause(query: &str) -> Option<String> {
-    let trimmed = query.trim_start();
-    if !trimmed
-        .get(..4)
-        .map(|s| s.eq_ignore_ascii_case("USE "))
-        .unwrap_or(false)
-    {
-        return None;
-    }
-
-    let after_use = trimmed[3..].trim_start();
-    if after_use.is_empty() {
-        return None;
-    }
-
-    let mut end = after_use.len();
-    for (i, ch) in after_use.char_indices() {
-        if ch.is_whitespace() || ch == ';' {
-            end = i;
-            break;
-        }
-    }
-
-    let schema = after_use[..end].trim_matches('`').trim();
-    if schema.is_empty() {
-        None
-    } else {
-        Some(schema.to_string())
     }
 }
 

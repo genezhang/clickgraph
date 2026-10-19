@@ -1214,21 +1214,28 @@ impl<'db> Connection<'db> {
     }
 
     async fn query_async(&self, cypher: &str) -> Result<QueryResult, EmbeddedError> {
-        // Strip comments before dispatch parsing so write detection matches
-        // what `handle_write_async` sees during its own parse below — comments
-        // (e.g., `// ...` or `/* ... */`) inside the query would otherwise
-        // break parsing here and silently bypass write routing.
-        let dispatch_input = clickgraph::open_cypher_parser::strip_comments(cypher);
-        // A write the legacy parser does not read (two SET clauses): the
-        // clause-list parser's (S13).
-        if clickgraph::open_cypher_parser::parse_cypher_statement(&dispatch_input).is_err()
-            && clickgraph::bound_plan::write::is_write_statement(&dispatch_input)
-        {
-            return self.handle_write_async(cypher).await;
+        // The statement front end (`translate::prepared`, shared with the
+        // servers): the prelude (`CYPHER ..`) is read and dropped and
+        // comments are stripped, so dispatch reads what `handle_write_async`
+        // and the read path parse. Whether the statement writes is read over
+        // every UNION arm (#1447: the first arm's legacy parse decided).
+        let prepared = clickgraph::translate::PreparedStatement::parse(cypher)
+            .map_err(|e| EmbeddedError::Query(e.to_string()))?;
+        // EXPLAIN must not run the statement (a write would be applied).
+        if prepared.prelude.mode != clickgraph::translate::prepared::ExecutionMode::Run {
+            return Err(EmbeddedError::Query(
+                "Not supported: EXPLAIN / PROFILE (`query_to_sql` returns the SQL a query runs)"
+                    .to_string(),
+            ));
         }
-        if let Ok((_, stmt)) =
-            clickgraph::open_cypher_parser::parse_cypher_statement(&dispatch_input)
-        {
+        // One schema, which USE does not choose; arms naming different
+        // graphs are refused, as on the servers.
+        prepared
+            .targets
+            .named_graph()
+            .map_err(|e| EmbeddedError::Query(e.to_string()))?;
+        let text = prepared.text();
+        if let Ok((_, stmt)) = clickgraph::open_cypher_parser::parse_cypher_statement(text) {
             if let clickgraph::open_cypher_parser::ast::CypherStatement::CopyTo(ref copy_stmt) =
                 stmt
             {
@@ -1257,40 +1264,24 @@ impl<'db> Connection<'db> {
                         .map_err(EmbeddedError::Query)?;
                 }
                 if clickgraph::procedures::apoc_export::is_export_procedure(&name) {
-                    return self.handle_export_call(cypher).await;
+                    return self.handle_export_call(text).await;
                 }
                 if clickgraph::procedures::vector_search::is_vector_search_procedure(&name) {
-                    return self.handle_vector_search_call(cypher).await;
+                    return self.handle_vector_search_call(text).await;
                 }
                 if clickgraph::procedures::fulltext_search::is_fulltext_search_procedure(&name) {
-                    return self.handle_fulltext_search_call(cypher).await;
-                }
-            }
-            // Cypher write clauses route to a separate executor path that
-            // emits lightweight INSERT / UPDATE / DELETE per Phase 2's
-            // WriteRenderPlan. Read queries fall through to the regular
-            // SELECT path below.
-            //
-            // Any query carrying a write clause — CREATE / SET / DELETE /
-            // REMOVE — must enter the write pipeline so we either execute it
-            // or reject it with a clear error. Falling through to the read
-            // path produces confusing render-time errors. Note that
-            // `get_query_type` only inspects SET / DELETE / REMOVE, so we
-            // also need an explicit `create_clause.is_some()` check to cover
-            // `CREATE`, `MATCH ... CREATE`, and `CREATE ... RETURN` variants.
-            if let clickgraph::open_cypher_parser::ast::CypherStatement::Query { query, .. } = &stmt
-            {
-                use clickgraph::query_planner::types::QueryType;
-                let is_write = matches!(
-                    clickgraph::query_planner::get_query_type(query),
-                    QueryType::Update | QueryType::Delete
-                ) || query.create_clause.is_some();
-                if is_write {
-                    return self.handle_write_async(cypher).await;
+                    return self.handle_fulltext_search_call(text).await;
                 }
             }
         }
-        self.query_with_executor_async(cypher, &self.executor).await
+        // Any statement with a write clause (CREATE / SET / DELETE / REMOVE)
+        // in any arm enters the write pipeline, which executes it or refuses
+        // it clearly (a write in a UNION: "an updating clause in a UNION");
+        // the read path would answer "ClickGraph is read-only".
+        if prepared.targets.is_write() {
+            return self.handle_write_async(text).await;
+        }
+        self.query_with_executor_async(text, &self.executor).await
     }
 
     /// Plan, render, and execute a Cypher write query (CREATE / SET /
@@ -2711,6 +2702,77 @@ graph_schema:
             "expected executor-rejection error, got: {}",
             msg
         );
+    }
+
+    #[test]
+    fn a_write_in_a_later_union_arm_routes_to_the_write_path() {
+        // #1447: dispatch read only the first arm, so this reached the read
+        // path ("ClickGraph is read-only"); the write planner refuses it.
+        let (db, captured) = make_capturing_db(build_writable_test_schema());
+        let conn = Connection::new(&db).unwrap();
+        let err = conn
+            .query(
+                "MATCH (x:Person) RETURN x.name AS n UNION MATCH (y:Person) WHERE \
+                 y.person_id = 'w' SET y.name = 'w' RETURN y.name AS n",
+            )
+            .expect_err("an update in a UNION is not planned");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("an updating clause in a UNION"),
+            "expected the write planner's refusal, got: {msg}"
+        );
+        assert!(captured.lock().unwrap().is_empty(), "nothing must run");
+    }
+
+    #[test]
+    fn the_cypher_prelude_is_read_and_dropped() {
+        // #1371: `CYPHER ..` options before the statement (a parse error
+        // before the shared front end).
+        let db = make_stub_db_with_schema(build_writable_test_schema());
+        let conn = Connection::new(&db).unwrap();
+        let plain = conn
+            .query_to_sql("MATCH (p:Person) RETURN p.name AS n")
+            .unwrap();
+        let prefixed = conn
+            .query_to_sql("CYPHER 5 replan=force MATCH (p:Person) RETURN p.name AS n")
+            .unwrap();
+        assert_eq!(plain, prefixed);
+        let err = conn
+            .query_to_sql("CYPHER replan=bogus MATCH (p:Person) RETURN p.name AS n")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("not a valid option for replan"), "{err}");
+        // EXPLAIN never runs a statement (a write would be applied).
+        let (db, captured) = make_capturing_db(build_writable_test_schema());
+        let conn = Connection::new(&db).unwrap();
+        let err = conn
+            .query("EXPLAIN CREATE (a:Person {person_id: 'p1'})")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("EXPLAIN"), "{err}");
+        assert!(captured.lock().unwrap().is_empty(), "nothing must run");
+    }
+
+    #[test]
+    fn union_arms_naming_different_graphs_are_refused() {
+        // #1370: one schema, which USE does not choose; arms that name
+        // different graphs cannot all run on it.
+        let db = make_stub_db_with_schema(build_writable_test_schema());
+        let conn = Connection::new(&db).unwrap();
+        let q = "MATCH (p:Person) RETURN p.name AS n";
+        let err = conn
+            .query_to_sql(&format!("USE a {q} UNION USE b {q}"))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("Multiple graphs"), "{err}");
+        let err = conn
+            .query(&format!("USE a {q} UNION USE b {q}"))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("Multiple graphs"), "{err}");
+        assert!(conn
+            .query_to_sql(&format!("USE a {q} UNION USE a {q}"))
+            .is_ok());
     }
 
     /// `CREATE` with leading line comments must still route to the write

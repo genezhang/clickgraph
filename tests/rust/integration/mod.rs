@@ -3,6 +3,7 @@
 //! These tests verify that components work together correctly with real dependencies.
 
 mod binder_corpus;
+mod bolt_statement_front_end_tests;
 mod clause_list_parity;
 mod corpus_sweep;
 #[cfg(feature = "databricks")]

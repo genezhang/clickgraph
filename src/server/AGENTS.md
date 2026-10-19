@@ -51,9 +51,11 @@ Client POST /query  { "query": "MATCH (n:User) RETURN n", "schema_name": "defaul
 handlers.rs::query_handler()
     │
     ├── 1. Extract payload fields (format, sql_only, schema_name, parameters)
-    ├── 2. Strip CYPHER prefix, extract ReplanOption, strip comments
+    ├── 2. translate::PreparedStatement::parse(): the prelude (CYPHER
+    │      options → ReplanOption, EXPLAIN / PROFILE), comments stripped,
+    │      every UNION arm's USE; .targets.graph(schema_name) → the schema
     ├── 3. Check for procedure calls (early return if standalone CALL/UNION)
-    ├── 4. Parse query to extract USE clause → determine schema_name
+    ├── 4. Syntax check (a syntax error before "Schema not found")
     │
     ├── 5. Create QueryContext, wrap in with_query_context()  ← CRITICAL
     │      └── query_handler_inner() runs inside task-local scope
@@ -137,10 +139,16 @@ with_query_context(context, async move {
 
 ### 3. Schema Name Resolution Order
 
-Schema name is determined in this priority:
-1. `USE <schema>` clause in the Cypher query (parsed from AST)
-2. `schema_name` field in the JSON request body
-3. `"default"` fallback
+Schema name is determined in this priority, by one rule for HTTP `/query`,
+`/query/sql` and Bolt (`translate::StatementTargets::graph`):
+1. The first UNION arm's `USE <schema>` clause
+2. `schema_name` field in the JSON request body (Bolt: the session's database)
+3. `"default"` fallback (`translate::DEFAULT_GRAPH`)
+
+A later arm's `USE` naming another graph is an error (#1370). Every early
+return (procedures, COPY TO, apoc, vector / fulltext search) uses the same
+resolved name; read the prelude only through `translate::prepared`, never by
+searching the text for keywords (#1371).
 
 ### 4. Parse Before Schema Lookup
 
@@ -315,6 +323,9 @@ Neo4j Browser/Driver → TCP or WebSocket
     │
     ├── connection.rs: handshake + version negotiation (4.1–5.8)
     ├── handler.rs: HELLO → LOGON → RUN(cypher) → PULL
+    │      RUN: translate::Prelude::parse (EXPLAIN → empty plan, PROFILE
+    │      refused), parameter substitution, then StatementTargets::of(text)
+    │      .graph(session db) → the graph (a session without one: "default")
     │   ├── Query pipeline same as HTTP (parse→bind→lower→SQL→execute)
     │   ├── result_transformer.rs: flat rows → Node/Relationship/Path objects
     │   └── id_mapper.rs: generate integer IDs for id() compat
