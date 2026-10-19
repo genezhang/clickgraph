@@ -81,6 +81,7 @@ pub(crate) fn bind_expr(
     ast: &Expression<'_>,
     env: &mut dyn NameEnv,
 ) -> Result<LogicalExpr, BindError> {
+    check_arities(ast)?;
     let mut ast = ast.clone();
     hoist_subqueries(&mut ast, env, &[])?;
     let converted = LogicalExpr::try_from(ast)
@@ -89,10 +90,108 @@ pub(crate) fn bind_expr(
     rename(converted, env, &mut locals)
 }
 
+/// The number of arguments each Neo4j function takes, for the functions
+/// whose arity is fixed (Neo4j 5.26): (name in lower case, least, most).
+/// `count()` was read as `count(*)` (#1413); Neo4j refuses a call with too
+/// few or too many arguments as a syntax error.
+const FUNCTION_ARITIES: &[(&str, usize, usize)] = &[
+    // aggregates
+    ("count", 1, 1),
+    ("sum", 1, 1),
+    ("avg", 1, 1),
+    ("min", 1, 1),
+    ("max", 1, 1),
+    ("collect", 1, 1),
+    ("stdev", 1, 1),
+    ("stdevp", 1, 1),
+    ("percentilecont", 2, 2),
+    ("percentiledisc", 2, 2),
+    // scalar, list, path
+    ("size", 1, 1),
+    ("length", 1, 1),
+    ("type", 1, 1),
+    ("id", 1, 1),
+    ("elementid", 1, 1),
+    ("labels", 1, 1),
+    ("keys", 1, 1),
+    ("properties", 1, 1),
+    ("startnode", 1, 1),
+    ("endnode", 1, 1),
+    ("nodes", 1, 1),
+    ("relationships", 1, 1),
+    ("head", 1, 1),
+    ("last", 1, 1),
+    ("tail", 1, 1),
+    ("reverse", 1, 1),
+    ("isempty", 1, 1),
+    ("coalesce", 1, usize::MAX),
+    ("range", 2, 3),
+    // string
+    ("toupper", 1, 1),
+    ("tolower", 1, 1),
+    ("tostring", 1, 1),
+    ("substring", 2, 3),
+    ("left", 2, 2),
+    ("right", 2, 2),
+    ("replace", 3, 3),
+    ("split", 2, 2),
+    // (Neo4j also reads `trim(a, b, …)`, by its own grammar, and answers
+    // differently from this library's two-argument trim: refused.)
+    ("trim", 1, 1),
+    ("ltrim", 1, 2),
+    ("rtrim", 1, 2),
+    // conversion
+    ("tointeger", 1, 1),
+    ("tofloat", 1, 1),
+    ("toboolean", 1, 1),
+    // math
+    ("abs", 1, 1),
+    ("ceil", 1, 1),
+    ("floor", 1, 1),
+    ("sign", 1, 1),
+    ("sqrt", 1, 1),
+    ("exp", 1, 1),
+    ("log", 1, 1),
+    ("log10", 1, 1),
+    ("round", 1, 3),
+    ("atan2", 2, 2),
+    ("rand", 0, 0),
+    ("pi", 0, 0),
+    ("e", 0, 0),
+    ("timestamp", 0, 0),
+];
+
+/// Refuse a call of a function of fixed arity with too few or too many
+/// arguments, as Neo4j does ("Insufficient parameters for function
+/// 'count'"), anywhere in `e` (a subquery expression's own expressions are
+/// bound, and checked, by themselves).
+fn check_arities(e: &Expression<'_>) -> Result<(), BindError> {
+    if let Expression::FunctionCallExp(f) = e {
+        let lower = f.name.to_ascii_lowercase();
+        if let Some(&(_, least, most)) = FUNCTION_ARITIES.iter().find(|(n, _, _)| *n == lower) {
+            if f.args.len() < least {
+                return Err(BindError::Invalid(format!(
+                    "Insufficient parameters for function '{}'",
+                    f.name
+                )));
+            }
+            if f.args.len() > most {
+                return Err(BindError::Invalid(format!(
+                    "Too many parameters for function '{}'",
+                    f.name
+                )));
+            }
+        }
+    }
+    ast_children(e).into_iter().try_for_each(check_arities)
+}
+
 /// Does the AST expression contain a subquery expression?
 pub(crate) fn has_subquery(e: &Expression<'_>) -> bool {
     match e {
-        Expression::ExistsExpression(_) | Expression::PatternComprehension(_) => true,
+        Expression::ExistsExpression(_)
+        | Expression::CountOrCollect(_)
+        | Expression::PatternComprehension(_) => true,
         Expression::PathPattern(PathPattern::ConnectedPattern(_)) => true,
         _ => ast_children(e).into_iter().any(has_subquery),
     }
@@ -108,6 +207,7 @@ fn ast_children<'e, 'a>(e: &'e Expression<'a>) -> Vec<&'e Expression<'a>> {
         | Expression::LabelExpression { .. }
         | Expression::PathPattern(_)
         | Expression::ExistsExpression(_)
+        | Expression::CountOrCollect(_)
         | Expression::PatternComprehension(_) => Vec::new(),
         Expression::List(xs) => xs.iter().collect(),
         Expression::FunctionCallExp(f) => f.args.iter().collect(),
@@ -154,8 +254,15 @@ fn hoist_subqueries<'a>(
     env: &mut dyn NameEnv,
     locals: &[Local<'a>],
 ) -> Result<(), BindError> {
+    if let Expression::CountOrCollect(c) = e {
+        if let Err(why) = &c.body {
+            return Err(BindError::Unsupported(why.to_string()));
+        }
+    }
     let raw = match e {
-        Expression::ExistsExpression(_) | Expression::PatternComprehension(_) => true,
+        Expression::ExistsExpression(_)
+        | Expression::CountOrCollect(_)
+        | Expression::PatternComprehension(_) => true,
         Expression::PathPattern(PathPattern::ConnectedPattern(_)) => true,
         Expression::FunctionCallExp(f) => {
             if f.name.eq_ignore_ascii_case(SUBQUERY_FN) {
@@ -212,6 +319,23 @@ fn hoist_subqueries<'a>(
                 projection: None,
                 elements: None,
             },
+            // COUNT { … }: the number of its matches, as size(pattern);
+            // COLLECT { … RETURN e }: `e` of each, as [pattern WHERE c | e].
+            Expression::CountOrCollect(c) => {
+                let m = c
+                    .body
+                    .map_err(|why| BindError::Unsupported(why.to_string()))?;
+                RawSubquery {
+                    kind: match c.kind {
+                        ast::CountOrCollectKind::Count => RawKind::Count,
+                        ast::CountOrCollectKind::Collect => RawKind::Collect,
+                    },
+                    pattern: m.pattern,
+                    where_: m.where_clause,
+                    projection: m.projection,
+                    elements: None,
+                }
+            }
             Expression::PathPattern(pattern) => RawSubquery {
                 kind: RawKind::Predicate,
                 pattern,
@@ -349,6 +473,7 @@ fn hoist_subqueries<'a>(
         | Expression::LabelExpression { .. }
         | Expression::PathPattern(_)
         | Expression::ExistsExpression(_)
+        | Expression::CountOrCollect(_)
         | Expression::PatternComprehension(_) => Ok(()),
     }
 }
@@ -523,6 +648,14 @@ fn ast_names<'a>(e: &Expression<'a>, out: &mut Vec<Name<'a>>) {
                 ast_names(w, out);
             }
             ast_names(&pc.projection, out);
+        }
+        Expression::CountOrCollect(c) => {
+            if let Ok(m) = &c.body {
+                pattern(&m.pattern, out);
+                for e in m.where_clause.iter().chain(&m.projection) {
+                    ast_names(e, out);
+                }
+            }
         }
         _ => {
             for c in ast_children(e) {

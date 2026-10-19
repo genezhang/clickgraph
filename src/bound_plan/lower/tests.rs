@@ -8673,3 +8673,114 @@ fn list_predicate_null_guard_on_databricks_1420() {
         "{got}"
     );
 }
+
+/// `COUNT { }` lowers as `size()` of its pattern does, `COLLECT { … RETURN e }`
+/// as the pattern comprehension `[pattern WHERE c | e]` (#1492); other bodies
+/// are refused by name.
+#[test]
+fn count_and_collect_subqueries_1492() {
+    for (sub, equivalent) in [
+        (
+            "MATCH (a:User) RETURN COUNT { (a)-[:FOLLOWS]->() } AS c",
+            "MATCH (a:User) RETURN size([(a)-[:FOLLOWS]->() | 1]) AS c",
+        ),
+        (
+            "MATCH (a:User) RETURN COUNT { MATCH (a)-[:FOLLOWS]->(b) WHERE b.age > 30 } AS c",
+            "MATCH (a:User) RETURN size([(a)-[:FOLLOWS]->(b) WHERE b.age > 30 | 1]) AS c",
+        ),
+        (
+            "MATCH (a:User) RETURN COUNT { MATCH (a)-[:FOLLOWS]->(b) RETURN b.name } AS c",
+            "MATCH (a:User) RETURN size([(a)-[:FOLLOWS]->(b) | 1]) AS c",
+        ),
+        (
+            "MATCH (a:User) RETURN COLLECT { MATCH (a)-[:FOLLOWS]->(b) WHERE b.age > 30 \
+             RETURN b.user_id } AS c",
+            "MATCH (a:User) RETURN [(a)-[:FOLLOWS]->(b) WHERE b.age > 30 | b.user_id] AS c",
+        ),
+    ] {
+        assert_eq!(sql(sub), sql(equivalent), "{sub}");
+        databricks_sql(sub, &social()).unwrap_or_else(|e| panic!("{sub}: {e}"));
+    }
+    sql("MATCH (a:User) WHERE COUNT { (a)-[:FOLLOWS]->() } > 1 RETURN count(*) AS c");
+    sql("MATCH (a:User) WITH a, COUNT { (a)-[:FOLLOWS]->() } AS c RETURN sum(c) AS s");
+    for (q, why) in [
+        (
+            "MATCH (a:User) RETURN COLLECT { MATCH (a)-[:FOLLOWS]->(b) RETURN b.name ORDER BY b.name } AS c",
+            "DISTINCT, ORDER BY, SKIP or LIMIT",
+        ),
+        (
+            "MATCH (a:User) RETURN COUNT { MATCH (a)-[:FOLLOWS]->(b) RETURN DISTINCT b.country } AS c",
+            "DISTINCT, ORDER BY, SKIP or LIMIT",
+        ),
+        (
+            "MATCH (a:User) RETURN COUNT { MATCH (a)-[:FOLLOWS]->(b) WITH b RETURN b } AS c",
+            "of other than one MATCH",
+        ),
+        (
+            "MATCH (a:User) RETURN COLLECT { (a)-[:FOLLOWS]->(b) } AS c",
+            "a COLLECT { } without RETURN",
+        ),
+        (
+            "MATCH (a:User) RETURN COUNT { MATCH (a)-[:FOLLOWS]->(b) MATCH (b)-[:FOLLOWS]->(c) } AS c",
+            "of other than one pattern or one MATCH",
+        ),
+        (
+            "MATCH (a:User) RETURN COUNT { (a)-[:FOLLOWS]->(b), (b)-[:FOLLOWS]->(c) } AS c",
+            "of other than one pattern or one MATCH",
+        ),
+    ] {
+        not_lowered(q, why);
+    }
+}
+
+/// A call of a function of fixed arity with too few or too many arguments is
+/// refused, as Neo4j does (#1413: `count()` read as `count(*)`).
+#[test]
+fn function_arity_1413() {
+    for (q, msg) in [
+        (
+            "MATCH (a:User) RETURN count() AS c",
+            "Insufficient parameters for function 'count'",
+        ),
+        (
+            "MATCH (a:User) RETURN COUNT() AS c",
+            "Insufficient parameters for function 'COUNT'",
+        ),
+        (
+            "RETURN size([1], 2) AS c",
+            "Too many parameters for function 'size'",
+        ),
+        (
+            "RETURN rand(1) AS c",
+            "Too many parameters for function 'rand'",
+        ),
+        (
+            "RETURN substring('a') AS c",
+            "Insufficient parameters for function 'substring'",
+        ),
+        (
+            "MATCH (a:User) WITH a WHERE size([x IN [1] WHERE toUpper() = 'A']) > 0 RETURN a",
+            "Insufficient parameters for function 'toUpper'",
+        ),
+        // A COUNT { }'s RETURN items are bound for their errors.
+        (
+            "MATCH (a:User) RETURN COUNT { MATCH (a)-[:FOLLOWS]->(b) RETURN size() } AS c",
+            "Insufficient parameters for function 'size'",
+        ),
+        (
+            "MATCH (a:User) RETURN COUNT { MATCH (a)-[:FOLLOWS]->(b) RETURN nope } AS c",
+            "Variable `nope` not defined",
+        ),
+    ] {
+        match translate_bound_plan(q, &social(), &ReadOptions::default()) {
+            Err(e) if e.contains(msg) => {}
+            other => panic!("{q}: {:?}", other.map(|t| t.sql)),
+        }
+    }
+    for q in [
+        "MATCH (a:User) RETURN count(*) AS c, substring(a.name, 1) AS s, round(1.25, 1) AS r",
+        "RETURN coalesce(null, null, 1) AS c, range(1, 5, 2) AS g, rand() AS x",
+    ] {
+        sql(q);
+    }
+}

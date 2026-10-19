@@ -15,9 +15,9 @@ use crate::open_cypher_parser::common::{self, ws};
 
 use super::{
     ast::{
-        ExistsSubquery, Expression, FunctionCall, LambdaExpression, ListComprehension, Literal,
-        Name, Operator, OperatorApplication, PathPattern, PatternComprehension, PropertyAccess,
-        ReduceExpression,
+        CountOrCollect, CountOrCollectKind, ExistsSubquery, Expression, FunctionCall,
+        LambdaExpression, ListComprehension, Literal, Name, Operator, OperatorApplication,
+        PathPattern, PatternComprehension, PropertyAccess, ReduceExpression, SubqueryMatch,
     },
     path_pattern, where_clause,
 };
@@ -47,6 +47,7 @@ fn parse_postfix_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_>> 
     // First, parse any primary expression (function call, literal, variable, etc.)
     let (mut input, mut expr) = alt((
         parse_exists_expression, // Must be before parse_function_call to catch EXISTS { }
+        parse_count_or_collect,  // COUNT { } / COLLECT { }, before count(...) / collect(...)
         parse_case_expression,
         parse_reduce_expression, // Must be before parse_function_call to catch reduce(...)
         parse_pattern_comprehension, // Must be before parse_list_literal to catch [(pattern) | ...]
@@ -244,6 +245,238 @@ fn parse_exists_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
             where_clause: where_clause.map(Box::new),
         })),
     ))
+}
+
+/// `COUNT { … }` / `COLLECT { … }` (Neo4j 5 subquery expressions, #1492).
+///
+/// The forms read: `COUNT { [MATCH] pattern [WHERE c] }`, and with one
+/// MATCH (and its WHERE) then RETURN: `COUNT { MATCH … RETURN items }` (its
+/// rows: the matches, the items read no aggregate), `COLLECT { MATCH … RETURN
+/// e }` (`e` for each match, as `[pattern WHERE c | e]`). Another body is
+/// read to its closing brace, to be refused when bound
+/// ([`CountOrCollect::body`]); `count(…)` /
+/// `collect(…)` stay the functions.
+fn parse_count_or_collect(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
+    let (input, kind) = alt((
+        map(keyword("COUNT"), |_| CountOrCollectKind::Count),
+        map(keyword("COLLECT"), |_| CountOrCollectKind::Collect),
+    ))
+    .parse(input)?;
+    let (input, _) = ws(char('{')).parse(input)?;
+
+    // A pattern and its WHERE.
+    let simple = (
+        opt(keyword("MATCH")),
+        ws(path_pattern::parse_path_pattern),
+        opt(preceded(keyword("WHERE"), parse_expression)),
+        ws(char('}')),
+    )
+        .parse(input);
+    if let Ok((rest, (_, pattern, where_clause, _))) = simple {
+        let body = match kind {
+            CountOrCollectKind::Count => Ok(SubqueryMatch {
+                pattern,
+                where_clause,
+                projection: None,
+            }),
+            CountOrCollectKind::Collect => Err("a COLLECT { } without RETURN"),
+        };
+        return Ok((rest, count_or_collect(kind, body)));
+    }
+
+    // A query.
+    if let Ok((rest, query)) = super::clause_list::parse_clause_query(input) {
+        if let Ok((rest, _)) = ws(char::<_, Error<&str>>('}')).parse(rest) {
+            let body = subquery_match(kind, query);
+            return Ok((rest, count_or_collect(kind, body)));
+        }
+    }
+
+    // Another body (several MATCH or patterns, OPTIONAL MATCH, a path
+    // variable, UNION, CALL, …, with or without RETURN): to its closing
+    // brace, refused when bound. Only a body that starts as a query does:
+    // other text (`count { }`, `count {a: 1}`) is no subquery, a syntax
+    // error.
+    let starts_as_query = input.trim_start().starts_with('(')
+        || alt((
+            keyword("MATCH"),
+            keyword("OPTIONAL"),
+            keyword("WITH"),
+            keyword("UNWIND"),
+            keyword("CALL"),
+            keyword("RETURN"),
+        ))
+        .parse(input)
+        .is_ok()
+        || common::symbolic_name::<Error<&str>>(input.trim_start())
+            .is_ok_and(|(r, _)| r.trim_start().starts_with('='));
+    if !starts_as_query {
+        return Err(nom::Err::Error(Error::new(input, ErrorKind::Verify)));
+    }
+    let rest = past_closing_brace(input)
+        .ok_or_else(|| nom::Err::Error(Error::new(input, ErrorKind::Verify)))?;
+    Ok((
+        rest,
+        count_or_collect(
+            kind,
+            Err(
+                "a COUNT { } / COLLECT { } of other than one pattern or one MATCH (and its WHERE) \
+                 and RETURN",
+            ),
+        ),
+    ))
+}
+
+/// The input after the `}` that closes a `{` already read: braces nest, and
+/// a string or an escaped name holds none (`'…'`, `"…"` with `\` escapes,
+/// `` `…` `` without).
+fn past_closing_brace(input: &str) -> Option<&str> {
+    let mut depth = 0usize;
+    let mut chars = input.char_indices();
+    while let Some((i, c)) = chars.next() {
+        match c {
+            '\'' | '"' | '`' => {
+                while let Some((_, d)) = chars.next() {
+                    if d == '\\' && c != '`' {
+                        chars.next();
+                    } else if d == c {
+                        break;
+                    }
+                }
+            }
+            '{' => depth += 1,
+            '}' if depth == 0 => return Some(&input[i + 1..]),
+            '}' => depth -= 1,
+            _ => {}
+        }
+    }
+    None
+}
+
+fn count_or_collect<'a>(
+    kind: CountOrCollectKind,
+    body: Result<SubqueryMatch<'a>, &'static str>,
+) -> Expression<'a> {
+    Expression::CountOrCollect(Box::new(CountOrCollect { kind, body }))
+}
+
+/// The one MATCH and RETURN of a subquery expression's query, or why it is
+/// not one this reads.
+fn subquery_match<'a>(
+    kind: CountOrCollectKind,
+    query: super::clause_list::ClauseQuery<'a>,
+) -> Result<SubqueryMatch<'a>, &'static str> {
+    use super::clause_list::Clause;
+    let other = "a COUNT { } / COLLECT { } of other than one MATCH (and its WHERE) and RETURN";
+    if query.use_clause.is_some() {
+        return Err(other);
+    }
+    let [Clause::Match(m), Clause::Return(r)] =
+        <[Clause<'a>; 2]>::try_from(query.clauses).map_err(|_| other)?
+    else {
+        return Err(other);
+    };
+    let [(None, pattern)] = <[_; 1]>::try_from(m.path_patterns).map_err(|_| other)? else {
+        return Err("a path variable in a COUNT { } / COLLECT { }");
+    };
+    if r.clause.distinct || r.order_by.is_some() || r.skip.is_some() || r.limit.is_some() {
+        return Err("DISTINCT, ORDER BY, SKIP or LIMIT in a COUNT { } / COLLECT { }");
+    }
+    if r.clause
+        .return_items
+        .iter()
+        .any(|i| reads_an_aggregate(&i.expression))
+    {
+        return Err("an aggregate in the RETURN of a COUNT { } / COLLECT { }");
+    }
+    let projection = match kind {
+        // The rows of a COUNT do not depend on its RETURN items, but they are
+        // bound (for their errors: an undefined variable, an arity, an
+        // aggregate) as a pattern comprehension's projection is.
+        CountOrCollectKind::Count => {
+            // (`*`: the variables in scope, each defined; nothing to bind)
+            let items: Vec<_> = r
+                .clause
+                .return_items
+                .into_iter()
+                .filter(|i| !matches!(&i.expression, Expression::Variable(v) if v == "*"))
+                .collect();
+            let mut names: Vec<&str> = Vec::new();
+            for i in &items {
+                let name = match (&i.alias, &i.expression) {
+                    (Some(a), _) => Some(&**a),
+                    (None, Expression::Variable(v)) => Some(&**v),
+                    (None, _) => i.original_text,
+                };
+                if let Some(n) = name {
+                    if names.contains(&n) {
+                        return Err("several RETURN columns of one name in a COUNT { }");
+                    }
+                    names.push(n);
+                }
+            }
+            let mut exprs: Vec<Expression<'a>> = items.into_iter().map(|i| i.expression).collect();
+            match exprs.len() {
+                0 => None,
+                1 => Some(exprs.remove(0)),
+                _ => Some(Expression::List(exprs)),
+            }
+        }
+        CountOrCollectKind::Collect => match <[_; 1]>::try_from(r.clause.return_items) {
+            Ok([item]) if !matches!(&item.expression, Expression::Variable(v) if v == "*") => {
+                Some(item.expression)
+            }
+            // Neo4j: "A Collect Expression must end with a single return column."
+            _ => return Err("a COLLECT { } of other than one RETURN column"),
+        },
+    };
+    Ok(SubqueryMatch {
+        pattern,
+        where_clause: m.where_clause.map(|w| w.conditions),
+        projection,
+    })
+}
+
+/// Does `e` call an aggregate function (outside a subquery of its own)?
+fn reads_an_aggregate(e: &Expression<'_>) -> bool {
+    const AGGREGATES: [&str; 10] = [
+        "count",
+        "collect",
+        "sum",
+        "avg",
+        "min",
+        "max",
+        "stdev",
+        "stdevp",
+        "percentilecont",
+        "percentiledisc",
+    ];
+    match e {
+        Expression::FunctionCallExp(f) => {
+            AGGREGATES.contains(&f.name.to_ascii_lowercase().as_str())
+                || f.args.iter().any(reads_an_aggregate)
+        }
+        Expression::OperatorApplicationExp(o) => o.operands.iter().any(reads_an_aggregate),
+        Expression::List(xs) => xs.iter().any(reads_an_aggregate),
+        Expression::MapLiteral(kvs) => kvs.iter().any(|(_, v)| reads_an_aggregate(v)),
+        Expression::Case(c) => {
+            c.expr.as_deref().is_some_and(reads_an_aggregate)
+                || c.when_then
+                    .iter()
+                    .any(|(w, t)| reads_an_aggregate(w) || reads_an_aggregate(t))
+                || c.else_expr.as_deref().is_some_and(reads_an_aggregate)
+        }
+        Expression::PropertyOf { base, .. } => reads_an_aggregate(base),
+        Expression::ArraySubscript { array, index } => {
+            reads_an_aggregate(array) || reads_an_aggregate(index)
+        }
+        Expression::ArraySlicing { array, from, to } => {
+            reads_an_aggregate(array)
+                || from.as_deref().is_some_and(reads_an_aggregate)
+                || to.as_deref().is_some_and(reads_an_aggregate)
+        }
+        _ => false,
+    }
 }
 
 fn parse_case_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
@@ -2591,5 +2824,86 @@ mod tests {
             parse_expression("single").unwrap().1,
             Expression::Variable("single".into())
         );
+    }
+
+    /// `COUNT { }` / `COLLECT { }` (#1492): the forms read, those kept as
+    /// refused, and `count(…)` still the function.
+    #[test]
+    fn count_and_collect_subqueries_1492() {
+        fn body(input: &str) -> (CountOrCollectKind, Result<SubqueryMatch<'_>, &'static str>) {
+            match parse_expression(input) {
+                Ok(("", Expression::CountOrCollect(c))) => (c.kind, c.body),
+                other => panic!("{input}: {other:?}"),
+            }
+        }
+        for input in [
+            "COUNT { (a)-[:R]->() }",
+            "count{(a)-[:R]->(b) WHERE b.x > 1}",
+            "COUNT { MATCH (a)-[:R]->(b) WHERE b.x > 1 }",
+            "COUNT { MATCH (a)-[:R]->(b) RETURN b }",
+            "Count { MATCH (a)-[:R]->(b) RETURN b.x, b.y }",
+            "COUNT { MATCH (a)-[:R]->(b) RETURN * }",
+        ] {
+            let (kind, b) = body(input);
+            assert_eq!(kind, CountOrCollectKind::Count, "{input}");
+            let m = b.unwrap_or_else(|e| panic!("{input}: {e}"));
+            // A COUNT's RETURN items are kept to be bound (for their errors).
+            assert_eq!(
+                m.projection.is_some(),
+                input.contains("RETURN") && !input.contains("RETURN *"),
+                "{input}"
+            );
+        }
+        let (kind, b) = body("COLLECT { MATCH (a)-[:R]->(b) WHERE b.x > 1 RETURN b.name }");
+        assert_eq!(kind, CountOrCollectKind::Collect);
+        let m = b.unwrap();
+        assert!(m.where_clause.is_some());
+        assert_eq!(
+            m.projection,
+            Some(Expression::PropertyAccessExp(PropertyAccess {
+                base: "b".into(),
+                key: "name".into(),
+            }))
+        );
+        // Parsed, refused when bound.
+        for input in [
+            "COLLECT { (a)-[:R]->(b) }",
+            "COLLECT { MATCH (a)-[:R]->(b) RETURN b.x, b.y }",
+            "COLLECT { MATCH (a)-[:R]->(b) RETURN b.x ORDER BY b.x }",
+            "COUNT { MATCH (a)-[:R]->(b) RETURN DISTINCT b.x }",
+            "COUNT { MATCH (a)-[:R]->(b) RETURN count(b) }",
+            "COUNT { MATCH (a)-[:R]->(b) MATCH (b)-[:R]->(c) RETURN c }",
+            "COUNT { MATCH (a)-[:R]->(b) WITH b RETURN b }",
+            "COUNT { MATCH p = (a)-[:R]->(b) RETURN p }",
+            "COUNT { MATCH (a)-[:R]->(b) RETURN b.x AS y, b.z AS y }",
+            // Without RETURN: to the closing brace (strings and names may
+            // hold one).
+            "COUNT { MATCH (a)-[:R]->(b) MATCH (b)-[:R]->(c) }",
+            "COUNT { (a)-[:R]->(b), (b)-[:R]->(c) }",
+            "COUNT { MATCH p = (a)-[:R]->(b) WHERE length(p) = 1 }",
+            "COUNT { OPTIONAL MATCH (a)-[:R]->(b {k: \u{27}}\u{27}}) WHERE b.`}` = 1 }",
+        ] {
+            assert!(body(input).1.is_err(), "{input}");
+        }
+        // A body that does not start as a query is no subquery.
+        for input in ["COUNT { }", "count {a: 1}", "count {.x}"] {
+            assert!(
+                !matches!(
+                    parse_expression(input),
+                    Ok(("", Expression::CountOrCollect(_)))
+                ),
+                "{input}"
+            );
+        }
+        // The functions.
+        for input in ["count(x)", "COUNT(*)", "collect(DISTINCT x)"] {
+            assert!(
+                matches!(
+                    parse_expression(input),
+                    Ok(("", Expression::FunctionCallExp(_)))
+                ),
+                "{input}"
+            );
+        }
     }
 }

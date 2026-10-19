@@ -603,7 +603,8 @@ impl<'a> std::convert::TryFrom<open_cypher_parser::ast::Expression<'a>> for Logi
             // pattern's property map (`(a {name: EXISTS { … }})`), a pattern the
             // binder refuses as a value.
             Expression::PathPattern(open_cypher_parser::ast::PathPattern::ConnectedPattern(_))
-            | Expression::ExistsExpression(_) => {
+            | Expression::ExistsExpression(_)
+            | Expression::CountOrCollect(_) => {
                 Err(errors::LogicalExprError::UnsupportedExpression(
                     "a graph pattern inside an expression (EXISTS, pattern predicate, \
                      size(pattern), pattern comprehension)"
@@ -739,6 +740,7 @@ fn expr_contains_path_pattern(expr: &open_cypher_parser::ast::Expression<'_>) ->
         // Directly a pattern, or a node whose very presence implies a pattern.
         Expression::PathPattern(_)
         | Expression::ExistsExpression(_)
+        | Expression::CountOrCollect(_)
         | Expression::PatternComprehension(_) => true,
 
         // Recurse through every expression-bearing child.

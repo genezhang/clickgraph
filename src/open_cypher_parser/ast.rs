@@ -572,6 +572,8 @@ pub enum Expression<'a> {
     /// EXISTS subquery expression: EXISTS { (pattern) } or EXISTS { MATCH (pattern) WHERE ... }
     /// Evaluates to true if the pattern matches at least one result
     ExistsExpression(Box<ExistsSubquery<'a>>),
+    /// `COUNT { … }` / `COLLECT { … }` subquery expression (#1492).
+    CountOrCollect(Box<CountOrCollect<'a>>),
     /// Reduce expression: reduce(acc = init, x IN list | expr)
     /// Folds a list into a single value using an accumulator
     ReduceExp(ReduceExpression<'a>),
@@ -642,6 +644,37 @@ pub struct ExistsSubquery<'a> {
     pub pattern: PathPattern<'a>,
     /// Optional WHERE clause for filtering the pattern
     pub where_clause: Option<Box<WhereClause<'a>>>,
+}
+
+/// Which of `COUNT { }` / `COLLECT { }`.
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub enum CountOrCollectKind {
+    /// `COUNT { … }`: the number of rows the subquery has.
+    Count,
+    /// `COLLECT { … }`: the list of the values its one RETURN column has.
+    Collect,
+}
+
+/// `COUNT { [MATCH] pattern [WHERE c] }`, `COUNT { MATCH pattern [WHERE c]
+/// RETURN … }`, `COLLECT { MATCH pattern [WHERE c] RETURN e }` (#1492): its
+/// one pattern, filter and value (a COLLECT's; a COUNT's RETURN items, bound
+/// for their errors only). A body of another shape (several MATCH or
+/// patterns, OPTIONAL MATCH, WITH, UNWIND, UNION, a path variable, DISTINCT,
+/// ORDER BY, SKIP, LIMIT, an aggregate, `RETURN *`) is read to its closing
+/// brace and kept as the reason it is not supported, refused when bound.
+#[derive(Debug, PartialEq, Clone)]
+pub struct CountOrCollect<'a> {
+    pub kind: CountOrCollectKind,
+    pub body: Result<SubqueryMatch<'a>, &'static str>,
+}
+
+/// One MATCH of a subquery expression: the pattern, its WHERE, and the value
+/// a COLLECT returns.
+#[derive(Debug, PartialEq, Clone)]
+pub struct SubqueryMatch<'a> {
+    pub pattern: PathPattern<'a>,
+    pub where_clause: Option<Expression<'a>>,
+    pub projection: Option<Expression<'a>>,
 }
 
 /// Reduce expression: aggregates list elements into a single value
