@@ -175,7 +175,11 @@ fn render_id_source(source: &RowSource) -> String {
 fn render_expr_inline(expr: &crate::render_plan::render_expr::RenderExpr) -> String {
     use crate::render_plan::render_expr::{Literal, RenderExpr};
     match expr {
-        RenderExpr::Literal(Literal::String(s)) => format!("'{}'", s.replace('\'', "''")),
+        // The literal's text as the query wrote it (a value read from
+        // elsewhere is held so, `sql_literal::value_as_cypher_text`).
+        RenderExpr::Literal(Literal::String(s)) => {
+            crate::utils::sql_literal::cypher_string_to_sql_literal(s)
+        }
         RenderExpr::Literal(Literal::Integer(i)) => i.to_string(),
         RenderExpr::Literal(Literal::Float(f)) => f.to_string(),
         RenderExpr::Literal(Literal::Boolean(b)) => b.to_string(),
@@ -318,5 +322,16 @@ mod tests {
             "expected escaped quote, got: {}",
             sql
         );
+    }
+
+    /// A string literal holds its text as the query wrote it: an escaped
+    /// quote is one quote, and a value read from elsewhere
+    /// (`value_as_cypher_text`) keeps every character, a backslash too.
+    #[test]
+    fn string_literals_are_spelled_as_cypher_text() {
+        let sql = |s: &str| render_expr_inline(&lit_string(s));
+        assert_eq!(sql("it\\'s"), "'it''s'");
+        let value = crate::utils::sql_literal::value_as_cypher_text("a\\'b");
+        assert_eq!(sql(&value), "'a\\\\''b'");
     }
 }

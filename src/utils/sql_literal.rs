@@ -83,8 +83,10 @@ pub fn string_value_to_sql_literal_with(value: &str, quote: &str) -> String {
     cypher_string_to_sql_literal_with(&value_as_cypher_text(value), quote)
 }
 
-/// The raw Cypher string-literal body whose value is `value`.
-fn value_as_cypher_text(value: &str) -> String {
+/// The raw Cypher string-literal body whose value is `value`: what a
+/// `Literal::String` holds (its text as the query wrote it) for a value read
+/// from elsewhere.
+pub fn value_as_cypher_text(value: &str) -> String {
     value.replace('\\', "\\\\").replace('\'', "\\'")
 }
 
@@ -139,20 +141,13 @@ mod tests {
     use super::cypher_string_to_sql_literal as lit;
     use super::string_value_to_sql_literal_with;
 
-    /// A value's every character is literal: a backslash before a quote
-    /// does not close the literal (a request's view parameter was spelled
-    /// with its quotes doubled only, which a trailing backslash undid).
+    /// A value's every character is literal, a backslash and a quote
+    /// included.
     #[test]
     fn a_value_is_literal_to_its_last_character() {
-        let v = "x\\' OR 1=1 --";
-        assert_eq!(
-            string_value_to_sql_literal_with(v, "''"),
-            "'x\\\\'' OR 1=1 --'"
-        );
-        assert_eq!(
-            string_value_to_sql_literal_with(v, "\\'"),
-            "'x\\\\\\' OR 1=1 --'"
-        );
+        let v = "a\\'b";
+        assert_eq!(string_value_to_sql_literal_with(v, "''"), "'a\\\\''b'");
+        assert_eq!(string_value_to_sql_literal_with(v, "\\'"), "'a\\\\\\'b'");
         assert_eq!(string_value_to_sql_literal_with("it's", "''"), "'it''s'");
         // Not decoded: the value holds the six characters `\u0041`.
         assert_eq!(
