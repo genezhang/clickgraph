@@ -622,6 +622,118 @@ impl Lowerer<'_> {
             &[&edge.from_node_id_part_types, &edge.to_node_id_part_types],
         )
     }
+
+    /// VALUE_TYPES.md T3 (#1358): the type each id part is compared in
+    /// where the ids of nodes of `labels` and end columns of types `ends`
+    /// meet: one key space (a tie, a walk, a union of ends), whose values the
+    /// backend must be able to compare. `Some` only where it has no common
+    /// type for their known types (a `UInt64` id and an `Int64` end: joins
+    /// and unions of them fail, Code 386,
+    /// [`crate::graph_catalog::schema_types::common_type_where_none`]);
+    /// elsewhere `None`, which
+    /// leaves the SQL as it was.
+    fn meeting_types(&self, labels: &[&str], ends: &[&[KeyPartType]]) -> Vec<Option<KeyPartType>> {
+        let mut sets: Vec<Vec<KeyPartType>> = Vec::new();
+        let mut add = |types: &[KeyPartType]| {
+            for (i, t) in types.iter().enumerate() {
+                if sets.len() <= i {
+                    sets.resize(i + 1, Vec::new());
+                }
+                if !t.raw.is_empty() {
+                    sets[i].push(t.clone());
+                }
+            }
+        };
+        for label in labels {
+            if let Some(ns) = self.schema.node_schema_opt(label) {
+                add(&ns.node_id.part_types);
+            }
+        }
+        for end in ends {
+            add(end);
+        }
+        sets.iter()
+            .map(|set| crate::graph_catalog::schema_types::common_type_where_none(set))
+            .collect()
+    }
+
+    /// [`Self::meeting_types`] spelled as CAST targets for the dialect.
+    fn spell(&self, types: &[Option<KeyPartType>]) -> Vec<Option<String>> {
+        types
+            .iter()
+            .map(|t| t.as_ref().map(|t| self.options.dialect.cast_target(t)))
+            .collect()
+    }
+
+    /// The types the ends of `rs` meet in where its rows are read as ends
+    /// ([`Self::edge_ends`]): with each other and its nodes' ids.
+    fn edge_end_types(&self, rs: &RelationshipSchema) -> Vec<Option<KeyPartType>> {
+        self.meeting_types(
+            &[&rs.from_node, &rs.to_node],
+            &[&rs.from_node_id_part_types, &rs.to_node_id_part_types],
+        )
+    }
+
+    /// The types the end columns of a union of `arms` meet in
+    /// ([`Self::rel_union_of`]): every arm's ends and their nodes' ids, one
+    /// type per id part. None where the arms' ends differ in arity.
+    fn union_end_types(&self, arms: &[RelArm]) -> Vec<Option<KeyPartType>> {
+        let arity = arms.first().map(|a| a.schema.from_id.columns().len());
+        if arms.iter().any(|a| {
+            Some(a.schema.from_id.columns().len()) != arity
+                || Some(a.schema.to_id.columns().len()) != arity
+        }) {
+            return Vec::new();
+        }
+        let labels: Vec<&str> = arms
+            .iter()
+            .flat_map(|a| [a.schema.from_node.as_str(), a.schema.to_node.as_str()])
+            .collect();
+        let ends: Vec<&[KeyPartType]> = arms
+            .iter()
+            .flat_map(|a| {
+                [
+                    a.schema.from_node_id_part_types.as_slice(),
+                    a.schema.to_node_id_part_types.as_slice(),
+                ]
+            })
+            .collect();
+        self.meeting_types(&labels, &ends)
+    }
+}
+
+/// The types of columns of `types`, each cast to its `targets` entry where
+/// it has one.
+fn cast_types(types: &[KeyPartType], targets: &[Option<KeyPartType>]) -> Vec<KeyPartType> {
+    let n = types.len().max(targets.len());
+    (0..n)
+        .map(|i| match targets.get(i) {
+            Some(Some(t)) => t.clone(),
+            _ => types.get(i).cloned().unwrap_or_default(),
+        })
+        .collect()
+}
+
+/// `e` cast to `target` ([`Lowerer::meeting_types`]), or `e` as it is.
+fn cast_to(e: RenderExpr, target: Option<&String>) -> RenderExpr {
+    match target {
+        Some(t) => RenderExpr::Cast {
+            expr: Box::new(e),
+            target: t.clone(),
+        },
+        None => e,
+    }
+}
+
+/// How [`Lowerer::edge_ends`] reads an edge table's rows.
+#[derive(Clone, Copy, PartialEq)]
+enum Orientation {
+    /// Each row from its stored `from` to its `to`.
+    Forward,
+    /// Each row from its stored `to` to its `from`.
+    Backward,
+    /// Each row both ways (an undirected relationship).
+    Both,
 }
 
 /// Where an element's columns are.
@@ -996,7 +1108,9 @@ impl EndLabel {
 
 /// The ends a relationship's columns tie: (end, the label it gives the end,
 /// the relationship's columns equal to the end's identity).
-type Ends = Vec<(VarId, EndLabel, Vec<RenderExpr>)>;
+/// Each end: its node, its label, the relationship's columns of its id and
+/// their types where known (T3; empty: unknown).
+type Ends = Vec<(VarId, EndLabel, Vec<RenderExpr>, Vec<KeyPartType>)>;
 
 /// The widths of a relationship union's columns ([`Lowerer::rel_union`]).
 struct RelUnionShape {
@@ -2415,8 +2529,8 @@ impl<'s> Lowerer<'s> {
             }
             (ends, false)
         };
-        for (end, label, cols) in ends {
-            self.tie_end(r.var, end, label, cols, turned)?;
+        for (end, label, cols, types) in ends {
+            self.tie_end(r.var, end, label, cols, &types, turned)?;
         }
         Ok(())
     }
@@ -2612,13 +2726,22 @@ impl<'s> Lowerer<'s> {
                         both: Some(both),
                     },
                 );
+                // Each end column holds `from` and `to` ends, cast where they
+                // meet in a type ([`Self::edge_ends`]).
+                let types = cast_types(&[], &self.edge_end_types(rs));
                 return Ok(vec![
                     (
                         left,
                         label.clone(),
                         starts.iter().map(|c| at_table(c)).collect(),
+                        types.clone(),
                     ),
-                    (right, label, ends.iter().map(|c| at_table(c)).collect()),
+                    (
+                        right,
+                        label,
+                        ends.iter().map(|c| at_table(c)).collect(),
+                        types,
+                    ),
                 ]);
             }
             _ => {
@@ -2640,6 +2763,7 @@ impl<'s> Lowerer<'s> {
                 };
                 let (ll, lc) = side(true, REL_START_LABEL, BOTH_START, shape.start);
                 let (rl, rc) = side(false, REL_END_LABEL, BOTH_END, shape.end);
+                let types = cast_types(&[], &self.union_end_types(&arms));
                 self.scans.insert(
                     r,
                     Scan::Rels {
@@ -2649,7 +2773,7 @@ impl<'s> Lowerer<'s> {
                         at,
                     },
                 );
-                return Ok(vec![(left, ll, lc), (right, rl, rc)]);
+                return Ok(vec![(left, ll, lc, types.clone()), (right, rl, rc, types)]);
             }
         };
         self.scans.insert(r, scan);
@@ -2672,11 +2796,13 @@ impl<'s> Lowerer<'s> {
                         from,
                         EndLabel::Is(schema.from_node.clone()),
                         physical(cols(&schema.from_id))?,
+                        schema.from_node_id_part_types.clone(),
                     ),
                     (
                         to,
                         EndLabel::Is(schema.to_node.clone()),
                         physical(cols(&schema.to_id))?,
+                        schema.to_node_id_part_types.clone(),
                     ),
                 ]
             }
@@ -2694,16 +2820,19 @@ impl<'s> Lowerer<'s> {
                         })
                         .collect()
                 };
+                let types = cast_types(&[], &self.union_end_types(arms));
                 vec![
                     (
                         from,
                         EndLabel::of(labels(false), self.physical(r, REL_FROM_LABEL)?),
                         physical(indexed_columns(REL_FROM, fa))?,
+                        types.clone(),
                     ),
                     (
                         to,
                         EndLabel::of(labels(true), self.physical(r, REL_TO_LABEL)?),
                         physical(indexed_columns(REL_TO, ta))?,
+                        types,
                     ),
                 ]
             }
@@ -2724,12 +2853,31 @@ impl<'s> Lowerer<'s> {
             return Ok(Vec::new());
         }
         let stored = self.stored_ends(r, left, right)?;
-        let Ok([(_, fl, fc), (_, tl, tc)]) = <[_; 2]>::try_from(stored) else {
+        let Ok([(_, fl, fc, ft), (_, tl, tc, tt)]) = <[_; 2]>::try_from(stored) else {
             return Ok(Vec::new()); // it matches nothing
         };
         if fc.len() != tc.len() {
             return unsupported("an undirected relationship whose ends' ids differ in arity (S8)");
         }
+        // Either end is picked by row: the two meet in one type (T3).
+        let meet = self.meeting_types(&[], &[&ft, &tt]);
+        let targets = self.spell(&meet);
+        let cast = |cols: Vec<RenderExpr>| -> Vec<RenderExpr> {
+            cols.into_iter()
+                .enumerate()
+                .map(|(i, c)| cast_to(c, targets.get(i).and_then(Option::as_ref)))
+                .collect()
+        };
+        let (fc, tc) = (cast(fc), cast(tc));
+        // A picked end is of the type both are cast to, else known only
+        // where the two agree.
+        let picked: Vec<KeyPartType> = (0..fc.len())
+            .map(|i| match (meet.get(i), ft.get(i), tt.get(i)) {
+                (Some(Some(t)), ..) => t.clone(),
+                (_, Some(a), Some(b)) if a == b => a.clone(),
+                _ => KeyPartType::default(),
+            })
+            .collect();
         let turned = self.turns(r)?;
         let pick = |reversed: &RenderExpr, stored: &RenderExpr| {
             RenderExpr::Case(RenderCase {
@@ -2780,11 +2928,13 @@ impl<'s> Lowerer<'s> {
                 left,
                 EndLabel::of(both_labels.clone(), pick(&tv, &fv)),
                 end(&fc, &tc),
+                picked.clone(),
             ),
             (
                 right,
                 EndLabel::of(both_labels, pick(&fv, &tv)),
                 end(&tc, &fc),
+                picked,
             ),
         ])
     }
@@ -2844,12 +2994,22 @@ impl<'s> Lowerer<'s> {
         end: VarId,
         label: EndLabel,
         cols: Vec<RenderExpr>,
+        col_types: &[KeyPartType],
         turned: bool,
     ) -> Result<(), LowerError> {
         let labels = self.labels_of(end)?;
         if labels.is_empty() {
             return Ok(()); // an endpoint that matches nothing
         }
+        // The node's id and the relationship's end (of types `col_types`)
+        // meet in one type (T3). Only a node of its one label: a several-
+        // labels node's id column is its labels' common type, whichever.
+        let targets = match &label {
+            EndLabel::Is(l) if labels.len() == 1 && labels[0] == *l => {
+                self.spell(&self.meeting_types(&[l], &[col_types]))
+            }
+            _ => Vec::new(),
+        };
         let mut eqs = Vec::new();
         match label {
             EndLabel::Is(l) if labels.contains(&l) => self.holds_label(end, &l)?,
@@ -2876,7 +3036,12 @@ impl<'s> Lowerer<'s> {
         if ids.len() != cols.len() {
             return unsupported("endpoint id arity differs from the edge's");
         }
-        eqs.extend(cols.into_iter().zip(ids));
+        eqs.extend(cols.into_iter().zip(ids).enumerate().map(|(i, (c, n))| {
+            (
+                cast_to(c, targets[..].get(i).and_then(Option::as_ref)),
+                cast_to(n, targets[..].get(i).and_then(Option::as_ref)),
+            )
+        }));
         if turned && self.is_emitted(end) {
             self.filters.extend(
                 eqs.into_iter()
@@ -2965,6 +3130,22 @@ impl<'s> Lowerer<'s> {
             .iter()
             .map(|p| (p, self.rel_value_definitions(p, arms)))
             .collect();
+        // The arms' end columns are unioned, tied to nodes and (in a walk)
+        // to each other: they meet in one type per id part (T3, #1358).
+        let end_targets = self.spell(&self.union_end_types(arms));
+        // An identity of stored ends is cast as they are, where every arm's
+        // is (an `edge_id`'s column types are not known).
+        let id_targets: Vec<Option<String>> = match arms.iter().all(|a| a.schema.edge_id.is_none())
+        {
+            true => (0..shape.from)
+                .map(|i| end_targets.get(i).cloned().flatten())
+                .chain(end_targets.iter().cloned())
+                .collect(),
+            false => Vec::new(),
+        };
+        let cast_at = |targets: &[Option<String>], i: usize, e: RenderExpr| {
+            cast_to(e, targets.get(i).and_then(Option::as_ref))
+        };
         let mut input = Vec::new();
         for (i, arm) in arms.iter().enumerate() {
             let rs = arm.schema;
@@ -2982,7 +3163,9 @@ impl<'s> Lowerer<'s> {
             for i in 0..shape.identity {
                 let e = identity
                     .get(i)
-                    .map_or(RenderExpr::Literal(Literal::Null), |c| col_at(ROW, c));
+                    .map_or(RenderExpr::Literal(Literal::Null), |c| {
+                        cast_at(&id_targets, i, col_at(ROW, c))
+                    });
                 items.push(select(e, &indexed_column(REL_ID, i)));
             }
             let (starts, ends) = if arm.reversed {
@@ -3001,7 +3184,10 @@ impl<'s> Lowerer<'s> {
                 .chain(walked_by.iter().copied())
             {
                 for (i, c) in cols.iter().enumerate() {
-                    items.push(select(col_at(ROW, c), &indexed_column(side, i)));
+                    items.push(select(
+                        cast_at(&end_targets, i, col_at(ROW, c)),
+                        &indexed_column(side, i),
+                    ));
                 }
             }
             // #1360: a walk key is compared as TEXT, so both sides must
@@ -3270,7 +3456,43 @@ impl<'s> Lowerer<'s> {
         rs: &'s RelationshipSchema,
         v: VarId,
     ) -> Result<String, LowerError> {
-        let name = format!("{}_both", v.name());
+        self.edge_ends(rs, v, Orientation::Both)
+    }
+
+    /// The relationship ends of directed variable-length relationship `v`
+    /// over `rs`, when its stored ends and nodes meet in a cast
+    /// ([`Self::tie_targets`]): the CTE `{v}_ends` of its rows, read as
+    /// [`Self::both_directions`] reads them but one way (`backward`: from
+    /// `to` to `from`), its ends cast. `None` when no cast is needed: the walk
+    /// reads the table itself, as before.
+    fn typed_ends(
+        &mut self,
+        rs: &'s RelationshipSchema,
+        v: VarId,
+        backward: bool,
+    ) -> Result<Option<String>, LowerError> {
+        if self.edge_end_types(rs).iter().all(Option::is_none) {
+            return Ok(None);
+        }
+        let orientation = match backward {
+            true => Orientation::Backward,
+            false => Orientation::Forward,
+        };
+        self.edge_ends(rs, v, orientation).map(Some)
+    }
+
+    /// The rows of `rs` read in `orientation` ([`Self::both_directions`],
+    /// [`Self::typed_ends`]).
+    fn edge_ends(
+        &mut self,
+        rs: &'s RelationshipSchema,
+        v: VarId,
+        orientation: Orientation,
+    ) -> Result<String, LowerError> {
+        let name = match orientation {
+            Orientation::Both => format!("{}_both", v.name()),
+            _ => format!("{}_ends", v.name()),
+        };
         let (from, to) = (rs.from_id.columns(), rs.to_id.columns());
         if from.len() != to.len() {
             return unsupported("endpoint id arity differs from the edge's");
@@ -3306,23 +3528,29 @@ impl<'s> Lowerer<'s> {
             rs.view_parameters.as_deref(),
             self.options.view_parameter_values.as_ref(),
         );
+        // #1358: each end column is unioned with the other end's and tied to
+        // the nodes', so they meet in one type (T3): a `UInt64` and an `Int64`
+        // end have no common one in ClickHouse.
+        let targets = self.spell(&self.edge_end_types(rs));
+        let end_column =
+            |i: usize, c: &str| cast_to(col_at(ROW, c), targets.get(i).and_then(Option::as_ref));
         let arm = |forward: bool| {
             let mut items: Vec<SelectItem> =
                 carried.iter().map(|c| select(col_at(ROW, c), c)).collect();
             let (starts, ends) = if forward { (&from, &to) } else { (&to, &from) };
-            if rs.constraints.is_some() {
+            if rs.constraints.is_some() && orientation == Orientation::Both {
                 // Which end the edge constraint reads as `from` (S11h).
                 let flag = RenderExpr::Literal(Literal::Integer(i64::from(forward)));
                 items.push(select(flag, FORWARD));
             }
             for (i, c) in starts.iter().enumerate() {
-                items.push(select(col_at(ROW, c), &indexed_column(BOTH_START, i)));
+                items.push(select(end_column(i, c), &indexed_column(BOTH_START, i)));
             }
             for (i, c) in ends.iter().enumerate() {
-                items.push(select(col_at(ROW, c), &indexed_column(BOTH_END, i)));
+                items.push(select(end_column(i, c), &indexed_column(BOTH_END, i)));
             }
             let mut filters: Vec<RenderExpr> = filter.iter().cloned().collect();
-            if !forward {
+            if !forward && orientation == Orientation::Both {
                 // A self-loop is read forward.
                 let differ = from
                     .iter()
@@ -3350,12 +3578,16 @@ impl<'s> Lowerer<'s> {
                 ..empty_plan()
             }
         };
-        let body = RenderPlan {
-            union: UnionItems(Some(Union {
-                input: vec![arm(true), arm(false)],
-                union_type: UnionType::All,
-            })),
-            ..empty_plan()
+        let body = match orientation {
+            Orientation::Both => RenderPlan {
+                union: UnionItems(Some(Union {
+                    input: vec![arm(true), arm(false)],
+                    union_type: UnionType::All,
+                })),
+                ..empty_plan()
+            },
+            Orientation::Forward => arm(true),
+            Orientation::Backward => arm(false),
         };
         self.ctes.push(Cte::new(
             name.clone(),
@@ -3664,9 +3896,11 @@ impl<'s> Lowerer<'s> {
             rel.push(RenderExpr::OperatorApplicationExp(eq(column, value)));
         }
         let var = r.var.name();
+        // A directed walk whose ends need a cast to meet its nodes (T3)
+        // reads its edge through a CTE of them cast, as an undirected one does.
         let both = match undirected {
             true => Some(self.both_directions(edge, r.var)?),
-            false => None,
+            false => self.typed_ends(edge, r.var, backward)?,
         };
         self.node_table(node)?;
         // #1360 (item 6): the walk's BFS keys are texts (S8d2a) and need the
@@ -3954,6 +4188,8 @@ impl<'s> Lowerer<'s> {
                 (ctes, cte, edges)
             }
         };
+        // Its ends' ids are its arms' end columns ([`Self::union_end_types`]).
+        let end_types = cast_types(&[], &self.union_end_types(&arms));
         self.ctes.extend(ctes);
         self.scans.insert(
             r.var,
@@ -3983,7 +4219,7 @@ impl<'s> Lowerer<'s> {
             match by_keys {
                 // Its id is its key (S8d2b).
                 true => self.tie_end_by_key(r.var, end, label, column(id))?,
-                false => self.tie_end(r.var, end, label, vec![column(id)], false)?,
+                false => self.tie_end(r.var, end, label, vec![column(id)], &end_types, false)?,
             }
         }
         // The walk is built — its ties were spelled while its folds still

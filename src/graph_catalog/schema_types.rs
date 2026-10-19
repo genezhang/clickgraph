@@ -449,6 +449,39 @@ impl KeyPartType {
     }
 }
 
+/// The type values of `parts` meet in where ClickHouse has no common type
+/// for them, or `None` where it has one (docs/design/VALUE_TYPES.md T3,
+/// #1358). Its own common type compares them as Cypher does; the one gap is
+/// a `UInt64` with a signed integer (joins, `UNION ALL` and `IN` of them
+/// fail, Code 386), where no 64-bit type holds both: `Int128` holds every
+/// value of each and spells each as the same digits. Only a set of integers
+/// (booleans among them) is cast.
+pub fn common_type_where_none(parts: &[KeyPartType]) -> Option<KeyPartType> {
+    let integers = parts
+        .iter()
+        .all(|p| matches!(p.schema, SchemaType::Integer | SchemaType::Boolean));
+    let gap = parts
+        .iter()
+        .enumerate()
+        .any(|(i, a)| parts[i + 1..].iter().any(|b| unsigned_signed_64(a, b)));
+    (integers && gap).then(|| KeyPartType {
+        schema: SchemaType::Integer,
+        nullable: parts.iter().any(|p| p.nullable),
+        raw: "Int128".to_string(),
+    })
+}
+
+/// One side a `UInt64` and the other a signed integer: the pair
+/// ClickHouse has no supertype for (#1358).
+fn unsigned_signed_64(a: &KeyPartType, b: &KeyPartType) -> bool {
+    let signed = |t: &KeyPartType| {
+        let raw = t.raw.to_ascii_lowercase();
+        raw.starts_with("int") && !raw.starts_with("interval")
+    };
+    let uint64 = |t: &KeyPartType| t.raw.eq_ignore_ascii_case("UInt64");
+    (uint64(a) && signed(b)) || (uint64(b) && signed(a))
+}
+
 /// A raw `Float32` / `Float64` spelling (`Decimal` is not: exact, and no
 /// table entry says how `=` sells it against a binary float).
 fn float_raw(raw: &str) -> bool {
@@ -963,6 +996,36 @@ mod tests {
 /// These assert the type decision itself. Spelling a target for a given
 /// dialect is the dialect axis's job, so it is tested where that is
 /// dispatched rather than here.
+#[cfg(test)]
+mod common_type_where_none_tests {
+    use super::*;
+
+    fn kp(raw: &str) -> KeyPartType {
+        KeyPartType::parse(raw)
+    }
+
+    /// #1358: only a `UInt64` with a signed integer has no ClickHouse common
+    /// type; every other pair keeps its SQL.
+    #[test]
+    fn only_unsigned_and_signed_64_bit_integers_meet_in_int128() {
+        let int128 = common_type_where_none(&[kp("UInt64"), kp("Int64")]).unwrap();
+        assert_eq!((int128.raw.as_str(), int128.nullable), ("Int128", false));
+        let int128 = common_type_where_none(&[kp("Int32"), kp("Nullable(UInt64)")]).unwrap();
+        assert_eq!((int128.raw.as_str(), int128.nullable), ("Int128", true));
+        for set in [
+            vec![kp("UInt64"), kp("UInt64")],
+            vec![kp("UInt32"), kp("Int64")],
+            vec![kp("Int64"), kp("Int32")],
+            vec![kp("UInt64"), kp("Bool")],
+            vec![kp("UInt64"), kp("Int64"), kp("String")],
+            vec![kp("Date"), kp("DateTime")],
+            vec![],
+        ] {
+            assert_eq!(common_type_where_none(&set), None, "{set:?}");
+        }
+    }
+}
+
 #[cfg(test)]
 mod walk_key_lct_tests {
     use super::{fold_common, KeyPartType};

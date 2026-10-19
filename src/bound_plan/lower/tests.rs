@@ -8352,3 +8352,100 @@ graph_schema:
         "the Date part is folded with the DateTime ends:\n{got}"
     );
 }
+
+/// VALUE_TYPES.md T3 (#1358): a `UInt64` node id and `Int64` relationship
+/// ends have no ClickHouse common type (joins and unions of them fail, Code
+/// 386), so wherever they meet both sides are cast to `Int128`; with agreeing
+/// types nothing is cast.
+#[test]
+fn ids_of_mixed_signedness_meet_in_int128_1358() {
+    const YAML: &str = r#"
+name: lower_mixed_signedness
+graph_schema:
+  nodes:
+    - label: Acct
+      database: db
+      table: p
+      node_id: id
+      column_types: {id: UInt64}
+      property_mappings: {id: id, owner: owner}
+  edges:
+    - type: SENT
+      database: db
+      table: s
+      from_node: Acct
+      to_node: Acct
+      from_id: f
+      to_id: t
+      column_types: {f: UInt64, t: Int64}
+      property_mappings: {}
+    - type: SENT2
+      database: db
+      table: s2
+      from_node: Acct
+      to_node: Acct
+      from_id: f
+      to_id: t
+      column_types: {f: UInt64, t: UInt64}
+      property_mappings: {}
+"#;
+    let schema = |yaml: &str| {
+        crate::graph_catalog::config::GraphSchemaConfig::from_yaml_str(yaml)
+            .unwrap()
+            .to_graph_schema()
+            .unwrap()
+    };
+    let mixed = schema(YAML);
+    let options = crate::bound_plan::lower::LowerOptions::default();
+    let sql = |q: &str| lowered(q, &mixed, &options);
+
+    // A directed hop: the `Int64` end and the `UInt64` id, in the join.
+    let hop = sql("MATCH (a:Acct)-[:SENT]->(b:Acct) RETURN a.owner, b.owner");
+    assert!(
+        hop.contains("CAST(v1.t AS Int128) = CAST(v2.id AS Int128)"),
+        "{hop}"
+    );
+    // The `UInt64` end and the `UInt64` id agree: no cast there.
+    assert!(!hop.contains("CAST(v1.f AS"), "{hop}");
+
+    // An undirected hop: its two directions are one union of both ends.
+    let undirected = sql("MATCH (a:Acct)-[:SENT]-(b:Acct) RETURN count(*)");
+    for side in [
+        "CAST(e.f AS Int128) AS \"__cg_start_0\"",
+        "CAST(e.t AS Int128) AS \"__cg_end_0\"",
+        "CAST(e.t AS Int128) AS \"__cg_start_0\"",
+    ] {
+        assert!(undirected.contains(side), "{side}:\n{undirected}");
+    }
+
+    // A directed walk reads its edge through a CTE of its ends cast.
+    let walk = sql("MATCH (a:Acct)-[:SENT*1..2]->(b:Acct) RETURN count(*)");
+    assert!(
+        walk.contains("v1_ends AS ( SELECT")
+            && walk.contains("CAST(e.t AS Int128) AS \"__cg_end_0\""),
+        "{walk}"
+    );
+
+    // Several types: every arm's end columns in the union, and its ids.
+    let union = sql("MATCH (a:Acct)-[:SENT|SENT2]->(b:Acct) RETURN count(*)");
+    for column in [
+        "CAST(e.t AS Int128) AS \"__cg_to_0\"",
+        "CAST(e.f AS Int128) AS \"__cg_from_0\"",
+        "CAST(e.t AS Int128) AS \"__cg_rid_1\"",
+    ] {
+        assert!(union.contains(column), "{column}:\n{union}");
+    }
+
+    // Agreeing (or unknown) types: the SQL of before, no `_ends` CTE.
+    let agreeing = schema(&YAML.replace("{f: UInt64, t: Int64}", "{f: UInt64, t: UInt64}"));
+    for q in [
+        "MATCH (a:Acct)-[:SENT]->(b:Acct) RETURN a.owner, b.owner",
+        "MATCH (a:Acct)-[:SENT]-(b:Acct) RETURN count(*)",
+        "MATCH (a:Acct)-[:SENT*1..2]->(b:Acct) RETURN count(*)",
+        "MATCH (a:Acct)-[:SENT|SENT2]->(b:Acct) RETURN count(*)",
+    ] {
+        let got = lowered(q, &agreeing, &options);
+        assert!(!got.contains("Int128"), "{q}:\n{got}");
+        assert!(!got.contains("_ends AS"), "{q}:\n{got}");
+    }
+}

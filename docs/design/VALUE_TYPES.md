@@ -84,10 +84,23 @@ and is verified live against ClickHouse and the Neo4j oracle.
   reads by its source (#1485) and the union arms of an embedded node type
   their absent side (#1430, #1490). Prerequisite for #504 (ARRAY JOIN of an
   array-valued edge column).
-- [ ] **T3 — union arms meet in one type.** `both_directions` (#1358) and
-  `label_union`'s key (#1390, #1393) cast each arm to the folded target; where
-  no target exists, the label-union key is carried as text in every arm, the
-  way walk keys and element ids already spell it.
+- [x] **T3a — ids meet in a type the backend can compare** (#1358). Where a
+  node's id and relationship ends meet (a tie in a join, an undirected
+  relationship's two directions, a union of several types' ends, a walk's
+  steps), each site folds the known types of the columns that meet there
+  (`Lowerer::meeting_types`), and casts them only where ClickHouse has no
+  common type for them (`schema_types::common_type_where_none`): a `UInt64`
+  with a signed integer meets in `Int128`. Its own common type already
+  compares every other pair as Cypher does, so their SQL is unchanged. A
+  directed walk whose ends need a cast reads its edge through a CTE of them
+  cast (`{v}_ends`). Casts are a SQL IR node (`RenderExpr::Cast`), so the
+  placing of ties still sees the columns they read. On main, any hop, walk or
+  shortest path between a `UInt64` id and `Int64` ends failed (Code 386).
+- [ ] **T3b — the label-union key** (#1390, #1393): a several-labels node's
+  key is the arms' common type (a `Variant` where none exists: `'01'` reads as
+  `1`). It is the node identity's representation, so it moves to cluster 2
+  (element identity), carried as the label and its text the way walk keys and
+  element ids already spell it.
 - [ ] **T4 — one value key.** Equality, DISTINCT, grouping and ordering of a
   value of mixed or container kind go through one recursive key on ClickHouse
   (#1396, #1482, #1491, #1362), with a sortable form for ORDER BY.
