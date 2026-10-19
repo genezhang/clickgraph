@@ -368,6 +368,7 @@ impl Query<'_> {
             map_keys: HashMap::new(),
             list_nulls: HashMap::new(),
             held_items: RefCell::new(HashMap::new()),
+            no_column_kinds: std::cell::Cell::new(false),
             kinds: HashMap::new(),
             never_boolean: HashSet::new(),
             local_kinds: RefCell::new(HashMap::new()),
@@ -814,6 +815,10 @@ struct Lowerer<'s> {
     /// its WHERE / ORDER BY read it (`null_list.rs`): when it is NULL and
     /// the list held so, of its group where it groups.
     held_items: RefCell<HashMap<VarId, null_list::NullList>>,
+    /// While set, a property's kind is not read from its column's type
+    /// (VALUE_TYPES.md T2a): what a check written before the column types
+    /// were known asks ([`Self::kind_before_column_types`]).
+    no_column_kinds: std::cell::Cell<bool>,
     /// What each projected or unwound value is (`unwind.rs`).
     kinds: HashMap<VarId, unwind::Kind>,
     /// Projected values that are never a boolean (`Lowerer::never_boolean`).
@@ -6016,9 +6021,9 @@ impl<'s> Lowerer<'s> {
             // `Variant`, which ClickHouse groups no more than `Dynamic`;
             // LDBC IC 1's `[uni.name, studyAt.classYear, …]`), by the same
             // key (`[1]` and `[1.0]` are one group, as in Cypher).
-            // An `Array` column's property that is never NULL is of one
-            // type, and groups as itself (VALUE_TYPES.md T2a; review
-            // finding: it was keyed as a list of mixed values).
+            // A property never NULL whose column is an `Array` of one scalar
+            // type groups as itself (VALUE_TYPES.md T2a; review finding: it
+            // was keyed as a list of mixed values).
             let one_typed = matches!(&it.expr, LogicalExpr::PropertyAccessExp(_))
                 && matches!(&list_null, Some(None))
                 && matches!(
@@ -6577,12 +6582,14 @@ impl<'s> Lowerer<'s> {
             }
             // A list or map would read `[]` / `{}` where the row is missing
             // (ClickHouse holds no NULL array, #1454).
-            // An `Array` column's property (VALUE_TYPES.md T2a) reads as it
-            // did before it was known to be a list: its missing row is NULL
-            // (review finding: refused once the kind was known).
-            if matches!(self.kind(v), unwind::Kind::List(_) | unwind::Kind::Map(_))
-                && !matches!(v, LogicalExpr::PropertyAccessExp(_))
-            {
+            // A value made of `Array` columns' properties (VALUE_TYPES.md
+            // T2a) reads as it did before they were known to be lists: its
+            // missing row is NULL (review findings: refused once the kind
+            // was known).
+            if matches!(
+                self.kind_before_column_types(v),
+                unwind::Kind::List(_) | unwind::Kind::Map(_)
+            ) {
                 return unsupported("a list or map in a collected map");
             }
             names.push(k.clone());

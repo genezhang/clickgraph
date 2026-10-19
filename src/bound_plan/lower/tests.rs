@@ -8860,8 +8860,8 @@ graph_schema:
       database: db
       table: person
       node_id: id
-      column_types: {id: Int64, tags: 'Array(String)', m: 'Array(Map(String, Int64))'}
-      property_mappings: {id: id, tags: tags, m: m}
+      column_types: {id: Int64, tags: 'Array(String)', m: 'Array(Map(String, Int64))', ad: 'Array(Dynamic)'}
+      property_mappings: {id: id, tags: tags, m: m, ad: ad}
   edges:
     - type: KNOWS
       database: db
@@ -8890,4 +8890,18 @@ graph_schema:
     );
     let grouped = sql("MATCH (p:Person) RETURN p.tags, count(*)");
     assert!(grouped.contains("GROUP BY v0.tags"), "{grouped}");
+    // Lists made of such a property read as before too (round 2).
+    for e in [
+        "p.tags + ['z']",
+        "tail(p.tags)",
+        "coalesce(p.tags, [])",
+        "p.tags[0..1]",
+    ] {
+        sql(&format!(
+            "MATCH (p:Person) WITH p ORDER BY p.id WITH collect({{t: {e}}})[0] AS m RETURN m.t"
+        ));
+    }
+    // An `Array(Dynamic)` is not of one type: keyed, as before.
+    let dynamic = sql("MATCH (p:Person) RETURN p.ad, count(*)");
+    assert!(!dynamic.contains("GROUP BY v0.ad"), "{dynamic}");
 }

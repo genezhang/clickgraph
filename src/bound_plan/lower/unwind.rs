@@ -202,13 +202,33 @@ pub(super) enum Kind {
 /// The kind of a value of a column of type `t` (T2): a list of its
 /// element's kind, a boolean, or another value.
 fn column_kind(t: &KeyPartType) -> Kind {
-    let container = |prefix: &str| t.raw.to_ascii_lowercase().starts_with(prefix);
+    let scalar = |t: &KeyPartType| {
+        let raw = t.raw.to_ascii_lowercase();
+        [
+            "int",
+            "uint",
+            "float",
+            "bfloat",
+            "decimal",
+            "string",
+            "fixedstring",
+            "uuid",
+            "date",
+            "enum",
+            "ipv4",
+            "ipv6",
+        ]
+        .iter()
+        .any(|p| raw.starts_with(p))
+    };
     match t.array_element() {
         Some(e) => Kind::List(Box::new(column_kind(&e))),
         None if t.raw.eq_ignore_ascii_case("Bool") => Kind::Boolean,
-        // A map's or tuple's entries are not known here (review finding).
-        None if container("map(") || container("tuple(") => Kind::Unknown,
-        None => Kind::Scalar,
+        // A value of one scalar type; anything else (a map's or tuple's
+        // entries, a `Dynamic` / `Variant` / `JSON`) is not known here
+        // (review findings).
+        None if scalar(t) => Kind::Scalar,
+        None => Kind::Unknown,
     }
 }
 
@@ -447,11 +467,23 @@ impl<'s> Lowerer<'s> {
         }
     }
 
+    /// The kind of `e` with properties' column types left unread: what a
+    /// check written before they were read (T2a) decides on.
+    pub(super) fn kind_before_column_types(&self, e: &LogicalExpr) -> Kind {
+        let before = self.no_column_kinds.replace(true);
+        let kind = self.kind(e);
+        self.no_column_kinds.set(before);
+        kind
+    }
+
     /// VALUE_TYPES.md T2 (#1485): a property not declared typed whose
     /// column is an `Array(T)` in every label / type of `v` is a list of
     /// `T`'s kind; else `Unknown`, as before. Only a list: what a scalar
     /// column's kind would change is a later slice's.
     fn column_list_kind(&self, v: VarId, p: &str) -> Kind {
+        if self.no_column_kinds.get() {
+            return Kind::Unknown;
+        }
         let columns = self.property_columns(v, p);
         let elements: Option<Vec<Kind>> = columns
             .iter()
