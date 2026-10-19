@@ -65,10 +65,17 @@ impl Lowerer<'_> {
             .or_else(|| self.local_kinds.borrow().get(&v).cloned())
     }
 
-    /// Record `kind`, the kind of `expr`, as variable `v`'s, and, where it
-    /// differs, its kind with properties' column types left unread.
+    /// Record `kind`, the kind of `expr`, as variable `v`'s
+    /// ([`Self::set_kind`]).
     pub(super) fn record_kind(&mut self, v: VarId, expr: &LogicalExpr, kind: Kind) {
         let before = self.kind_before_column_types(expr);
+        self.set_kind(v, kind, before);
+    }
+
+    /// Variable `v` is of `kind`, and of `before` with properties' column
+    /// types left unread (`kind_before_column_types`). Every variable's kind
+    /// is set here, so the two never disagree on which variables they know.
+    pub(super) fn set_kind(&mut self, v: VarId, kind: Kind, before: Kind) {
         match before != kind {
             true => self.kinds_before.insert(v, before),
             false => self.kinds_before.remove(&v),
@@ -667,11 +674,7 @@ impl<'s> Lowerer<'s> {
         };
         let kind = self.kind(expr);
         let before = self.kind_before_column_types(expr).element();
-        match before != kind.element() {
-            true => self.kinds_before.insert(var, before),
-            false => self.kinds_before.remove(&var),
-        };
-        self.kinds.insert(var, kind.element());
+        self.set_kind(var, kind.element(), before);
         // A list of no elements, or NULL: no rows.
         let empty = match (expr, &kind) {
             (LogicalExpr::List(xs), _) => xs.is_empty(),

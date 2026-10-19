@@ -8906,6 +8906,11 @@ graph_schema:
         "MATCH (p:Person) WITH p, p.tags AS t ORDER BY p.id WITH collect({x: t})[0] AS m RETURN m.x",
         "MATCH (p:Person) WITH p.id AS i, tail(p.tags) AS t ORDER BY i WITH collect({x: t})[1] AS m RETURN m.x",
         "MATCH (p:Person) UNWIND [p.tags] AS n WITH p, n ORDER BY p.id WITH collect({x: n})[0] AS m RETURN m.x",
+        // A pattern comprehension's / COLLECT { }'s list (round 4).
+        "MATCH (p:Person) WITH p ORDER BY p.id \
+         WITH collect({x: head([(p)-[:KNOWS]->(q:Person) | q.tags])})[0] AS m RETURN m.x",
+        "MATCH (p:Person) WITH p, [(p)-[:KNOWS]->(q:Person) | q.tags] AS l ORDER BY p.id \
+         WITH collect({x: head(l)})[0] AS m RETURN m.x",
     ] {
         sql(q);
     }

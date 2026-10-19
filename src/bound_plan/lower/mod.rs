@@ -823,8 +823,8 @@ struct Lowerer<'s> {
     /// What each projected or unwound value is (`unwind.rs`).
     kinds: HashMap<VarId, unwind::Kind>,
     /// [`Self::kinds`] as it was with properties' column types left
-    /// unread, where it differs (`kind_before_column_types` follows a
-    /// variable through it; review finding).
+    /// unread, where it differs: what `kind_before_column_types` reads of a
+    /// variable. Both are set together, by `set_kind` only.
     kinds_before: HashMap<VarId, unwind::Kind>,
     /// Projected values that are never a boolean (`Lowerer::never_boolean`).
     never_boolean: HashSet<VarId>,
@@ -5893,7 +5893,15 @@ impl<'s> Lowerer<'s> {
                     })
                     .collect();
                 kinds.sort_by(|a, b| a.0.cmp(&b.0));
-                self.kinds.insert(it.var, unwind::Kind::Map(kinds));
+                let mut before: Vec<(String, unwind::Kind)> = keys
+                    .iter()
+                    .map(|(k, _)| match entries.iter().find(|(e, _)| e == k) {
+                        Some((_, v)) => (k.clone(), self.kind_before_column_types(v)),
+                        None => (k.clone(), unwind::Kind::Unknown),
+                    })
+                    .collect();
+                before.sort_by(|a, b| a.0.cmp(&b.0));
+                self.set_kind(it.var, unwind::Kind::Map(kinds), unwind::Kind::Map(before));
                 self.map_keys.insert(it.var, keys.clone());
                 let keys = export_map_keys(it.var, keys, alias, &mut body);
                 exports.maps.push((it.var, keys));
