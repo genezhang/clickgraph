@@ -8784,3 +8784,137 @@ fn function_arity_1413() {
         sql(q);
     }
 }
+/// VALUE_TYPES.md T2 (#1485): a property whose column is an `Array` is a
+/// list, so an OPTIONAL MATCH's unmatched node reads it as NULL (its source)
+/// rather than as the `[]` ClickHouse holds; without the column's type it
+/// reads as before.
+#[test]
+fn an_array_column_property_is_a_list_1485() {
+    const YAML: &str = r#"
+name: lower_array_property
+graph_schema:
+  nodes:
+    - label: Person
+      database: db
+      table: person
+      node_id: id
+      column_types: {id: Int64, tags: 'Array(String)', name: 'Nullable(String)'}
+      property_mappings: {id: id, tags: tags, name: name}
+  edges:
+    - type: KNOWS
+      database: db
+      table: knows
+      from_id: a
+      to_id: b
+      from_node: Person
+      to_node: Person
+      property_mappings: {}
+"#;
+    let schema = |yaml: &str| {
+        crate::graph_catalog::config::GraphSchemaConfig::from_yaml_str(yaml)
+            .unwrap()
+            .to_graph_schema()
+            .unwrap()
+    };
+    let options = crate::bound_plan::lower::LowerOptions::default();
+    let q = "MATCH (p:Person) OPTIONAL MATCH (p)-[:KNOWS]->(q:Person) \
+             RETURN q.tags IS NULL AS n, size(q.tags) AS s";
+    let typed = lowered(q, &schema(YAML), &options);
+    assert!(
+        typed.contains(r#"CAST(o1.v2__id IS NULL AS Nullable(Bool)) AS "n""#),
+        "{typed}"
+    );
+    assert!(
+        typed.contains("CASE WHEN o1.v2__id IS NULL THEN NULL ELSE length(o1.p2_v2_tags) END"),
+        "{typed}"
+    );
+    // A scalar column's property keeps its kind (unknown) and its SQL.
+    let scalar = "MATCH (p:Person) OPTIONAL MATCH (p)-[:KNOWS]->(q:Person) RETURN q.name IS NULL";
+    let untyped_yaml = YAML.replace(
+        "      column_types: {id: Int64, tags: 'Array(String)', name: 'Nullable(String)'}\n",
+        "",
+    );
+    assert_eq!(
+        lowered(scalar, &schema(YAML), &options),
+        lowered(scalar, &schema(&untyped_yaml), &options)
+    );
+    // Without the column's type: as before (the list unknown).
+    let untyped = lowered(q, &schema(&untyped_yaml), &options);
+    assert!(
+        !untyped.contains("o1.v2__id IS NULL AS Nullable(Bool)"),
+        "{untyped}"
+    );
+}
+
+/// T2a review findings: an `Array` column's property in a collected map
+/// reads as before (not refused), `isEmpty()` of one an OPTIONAL MATCH may
+/// leave NULL is a boolean, and one never NULL groups as its column.
+#[test]
+fn array_column_properties_keep_what_they_did_1485() {
+    let schema = crate::graph_catalog::config::GraphSchemaConfig::from_yaml_str(
+        r#"
+name: lower_array_property_review
+graph_schema:
+  nodes:
+    - label: Person
+      database: db
+      table: person
+      node_id: id
+      column_types: {id: Int64, tags: 'Array(String)', m: 'Array(Map(String, Int64))', ad: 'Array(Dynamic)'}
+      property_mappings: {id: id, tags: tags, m: m, ad: ad}
+  edges:
+    - type: KNOWS
+      database: db
+      table: knows
+      from_id: a
+      to_id: b
+      from_node: Person
+      to_node: Person
+      property_mappings: {}
+"#,
+    )
+    .unwrap()
+    .to_graph_schema()
+    .unwrap();
+    let options = crate::bound_plan::lower::LowerOptions::default();
+    let sql = |q: &str| lowered(q, &schema, &options);
+    sql(
+        "MATCH (p:Person) WITH p ORDER BY p.id WITH collect({t: p.tags, i: p.id})[0] AS m \
+         RETURN m.t, m.i",
+    );
+    let empty =
+        sql("MATCH (p:Person) OPTIONAL MATCH (p)-[:KNOWS]->(q:Person) RETURN isEmpty(q.tags) AS e");
+    assert!(
+        empty.contains("ELSE CAST(empty(o1.p2_v2_tags) AS Nullable(Bool)) END"),
+        "{empty}"
+    );
+    let grouped = sql("MATCH (p:Person) RETURN p.tags, count(*)");
+    assert!(grouped.contains("GROUP BY v0.tags"), "{grouped}");
+    // Lists made of such a property read as before too (round 2).
+    for e in [
+        "p.tags + ['z']",
+        "tail(p.tags)",
+        "coalesce(p.tags, [])",
+        "p.tags[0..1]",
+    ] {
+        sql(&format!(
+            "MATCH (p:Person) WITH p ORDER BY p.id WITH collect({{t: {e}}})[0] AS m RETURN m.t"
+        ));
+    }
+    // So do they carried through a WITH or an UNWIND (round 3).
+    for q in [
+        "MATCH (p:Person) WITH p, p.tags AS t ORDER BY p.id WITH collect({x: t})[0] AS m RETURN m.x",
+        "MATCH (p:Person) WITH p.id AS i, tail(p.tags) AS t ORDER BY i WITH collect({x: t})[1] AS m RETURN m.x",
+        "MATCH (p:Person) UNWIND [p.tags] AS n WITH p, n ORDER BY p.id WITH collect({x: n})[0] AS m RETURN m.x",
+        // A pattern comprehension's / COLLECT { }'s list (round 4).
+        "MATCH (p:Person) WITH p ORDER BY p.id \
+         WITH collect({x: head([(p)-[:KNOWS]->(q:Person) | q.tags])})[0] AS m RETURN m.x",
+        "MATCH (p:Person) WITH p, [(p)-[:KNOWS]->(q:Person) | q.tags] AS l ORDER BY p.id \
+         WITH collect({x: head(l)})[0] AS m RETURN m.x",
+    ] {
+        sql(q);
+    }
+    // An `Array(Dynamic)` is not of one type: keyed, as before.
+    let dynamic = sql("MATCH (p:Person) RETURN p.ad, count(*)");
+    assert!(!dynamic.contains("GROUP BY v0.ad"), "{dynamic}");
+}

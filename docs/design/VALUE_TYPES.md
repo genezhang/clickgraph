@@ -79,15 +79,35 @@ and is verified live against ClickHouse and the Neo4j oracle.
   item 1). `node_id.dtype` (Bolt `id()` decoding) is unchanged.
 - [ ] **T1b — freeze.** `cg schema` writes discovered `column_types` into the
   YAML.
-- [ ] **T2 — list and map properties.** A property whose column type is
-  `Array(T)` / `Map(K, V)` gets `Kind::List` / a map kind, so a NULL list
-  reads by its source (#1485) and the union arms of an embedded node type
-  their absent side (#1430, #1490). Prerequisite for #504 (ARRAY JOIN of an
-  array-valued edge column).
-- [ ] **T3 — union arms meet in one type.** `both_directions` (#1358) and
-  `label_union`'s key (#1390, #1393) cast each arm to the folded target; where
-  no target exists, the label-union key is carried as text in every arm, the
-  way walk keys and element ids already spell it.
+- [x] **T2a — array properties are lists** (#1485). Nodes and
+  relationships keep their table's column types (`column_types`); a property
+  not declared typed whose column is an `Array(T)` in every label / type of
+  its element is a list of `T`'s kind (`Lowerer::column_list_kind`), and such
+  a property is NULL where an OPTIONAL MATCH left its element NULL
+  (`Lowerer::list_null`), so `IS NULL`, `size()`, `coalesce()`, `count()`,
+  `collect()` and `+` read it as Neo4j does. Scalar columns keep their
+  unknown kind: what knowing it would change (#1419's UNWIND of a scalar
+  property, booleans) is a later slice. Not covered (they read `[]` as on
+  main): such a property inside a map or list literal, a CASE or a
+  `coalesce()` with a non-list, and a node from `UNWIND [q]` (its binding is
+  not nullable).
+- [ ] **T2c — map columns.** A property whose column is a `Map(K, V)` as a
+  map of `V`'s kind (its keys are the rows', not the schema's).
+- [ ] **T2b — the absent side of an embedded node's union** (#1430, #1490):
+  the sources that do not hold a property spell a NULL of its column's type.
+  Prerequisite for #504 (ARRAY JOIN of an array-valued edge column).
+- [ ] **T3 — node identities meet in one comparable type** (#1358, #1390,
+  #1393). A first, site-by-site attempt (branch
+  `fix/1358-undirected-mixed-signedness`: cast ids of a `UInt64` / signed
+  pair to `Int128` where a tie, a union of ends or a walk meets them) was
+  parked after review: it broke undirected relationships whose end can be
+  several labels, and missed the sites that compare identities on their own
+  (OPTIONAL / pattern-predicate correlation, edge-constraint joins,
+  denormalized walks, mixed-id walks). Every one of them compares a node's
+  identity columns, so the fix is one spelling of an identity for comparison
+  (its key parts in the label's comparable type) next to its spelling for
+  output: cluster 2, element identity. The several-labels key (`'01'` read as
+  `1`, a `Variant`) is the same representation.
 - [ ] **T4 — one value key.** Equality, DISTINCT, grouping and ordering of a
   value of mixed or container kind go through one recursive key on ClickHouse
   (#1396, #1482, #1491, #1362), with a sortable form for ORDER BY.

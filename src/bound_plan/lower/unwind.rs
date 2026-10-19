@@ -26,7 +26,7 @@
 use std::collections::{BTreeSet, HashMap};
 
 use crate::graph_catalog::expression_parser::PropertyValue;
-use crate::graph_catalog::schema_types::SchemaType;
+use crate::graph_catalog::schema_types::{KeyPartType, SchemaType};
 use crate::query_planner::logical_expr::{self as lx, LogicalExpr};
 use crate::render_plan::render_expr::{Literal, RenderCase, RenderExpr, TableAlias};
 use crate::render_plan::RenderPlan;
@@ -55,10 +55,32 @@ const ONE_ROW: &str = "__cg_one";
 impl Lowerer<'_> {
     /// What a projected, unwound or comprehension variable is.
     pub(super) fn var_kind(&self, v: VarId) -> Option<Kind> {
-        self.kinds
-            .get(&v)
-            .cloned()
+        let before = self
+            .no_column_kinds
+            .get()
+            .then(|| self.kinds_before.get(&v).cloned())
+            .flatten();
+        before
+            .or_else(|| self.kinds.get(&v).cloned())
             .or_else(|| self.local_kinds.borrow().get(&v).cloned())
+    }
+
+    /// Record `kind`, the kind of `expr`, as variable `v`'s
+    /// ([`Self::set_kind`]).
+    pub(super) fn record_kind(&mut self, v: VarId, expr: &LogicalExpr, kind: Kind) {
+        let before = self.kind_before_column_types(expr);
+        self.set_kind(v, kind, before);
+    }
+
+    /// Variable `v` is of `kind`, and of `before` with properties' column
+    /// types left unread (`kind_before_column_types`). Every variable's kind
+    /// is set here, so the two never disagree on which variables they know.
+    pub(super) fn set_kind(&mut self, v: VarId, kind: Kind, before: Kind) {
+        match before != kind {
+            true => self.kinds_before.insert(v, before),
+            false => self.kinds_before.remove(&v),
+        };
+        self.kinds.insert(v, kind);
     }
 
     /// `nodes(p)` / `relationships(p)` (`f`) whose elements are all of one
@@ -197,6 +219,39 @@ pub(super) enum Kind {
     Map(Vec<(String, Kind)>),
     /// Not known here.
     Unknown,
+}
+
+/// The kind of a value of a column of type `t` (T2): a list of its
+/// element's kind, a boolean, a scalar of a known scalar type, else unknown.
+fn column_kind(t: &KeyPartType) -> Kind {
+    let scalar = |t: &KeyPartType| {
+        let raw = t.raw.to_ascii_lowercase();
+        [
+            "int",
+            "uint",
+            "float",
+            "bfloat",
+            "decimal",
+            "string",
+            "fixedstring",
+            "uuid",
+            "date",
+            "enum",
+            "ipv4",
+            "ipv6",
+        ]
+        .iter()
+        .any(|p| raw.starts_with(p))
+    };
+    match t.array_element() {
+        Some(e) => Kind::List(Box::new(column_kind(&e))),
+        None if t.raw.eq_ignore_ascii_case("Bool") => Kind::Boolean,
+        // A value of one scalar type; anything else (a map's or tuple's
+        // entries, a `Dynamic` / `Variant` / `JSON`) is not known here
+        // (review findings).
+        None if scalar(t) => Kind::Scalar,
+        None => Kind::Unknown,
+    }
 }
 
 impl Kind {
@@ -430,7 +485,76 @@ impl<'s> Lowerer<'s> {
             [] => Kind::Unknown,
             ts if ts.iter().all(|t| t == &Some(&SchemaType::Boolean)) => Kind::Boolean,
             ts if ts.iter().all(Option::is_some) => Kind::Scalar,
+            _ => self.column_list_kind(v, p),
+        }
+    }
+
+    /// The kind of `e` with properties' column types left unread: what a
+    /// check written before they were read (T2a) decides on.
+    pub(super) fn kind_before_column_types(&self, e: &LogicalExpr) -> Kind {
+        let before = self.no_column_kinds.replace(true);
+        let kind = self.kind(e);
+        self.no_column_kinds.set(before);
+        kind
+    }
+
+    /// VALUE_TYPES.md T2 (#1485): a property not declared typed whose
+    /// column is an `Array(T)` in every label / type of `v` is a list of
+    /// `T`'s kind; else `Unknown`, as before. Only a list: what a scalar
+    /// column's kind would change is a later slice's.
+    fn column_list_kind(&self, v: VarId, p: &str) -> Kind {
+        if self.no_column_kinds.get() {
+            return Kind::Unknown;
+        }
+        let columns = self.property_columns(v, p);
+        let elements: Option<Vec<Kind>> = columns
+            .iter()
+            .map(|t| {
+                t.and_then(KeyPartType::array_element)
+                    .map(|e| column_kind(&e))
+            })
+            .collect();
+        match elements {
+            Some(kinds) if !kinds.is_empty() => {
+                let first = kinds[0].clone();
+                let element = match kinds.iter().all(|k| *k == first) {
+                    true => first,
+                    false => Kind::Unknown,
+                };
+                Kind::List(Box::new(element))
+            }
             _ => Kind::Unknown,
+        }
+    }
+
+    /// The column type of property `p` in each label / type of node or
+    /// relationship `v` (`None`: not known there,
+    /// `NodeSchema::property_column_type`).
+    fn property_columns(&self, v: VarId, p: &str) -> Vec<Option<&KeyPartType>> {
+        match &self.binding(v).kind {
+            BindingKind::Node { labels } => labels
+                .iter()
+                .map(|l| {
+                    self.schema
+                        .node_schema_opt(l)
+                        .and_then(|s| s.property_column_type(p))
+                })
+                .collect(),
+            BindingKind::Rel {
+                types,
+                length: None,
+            } => types
+                .iter()
+                .flat_map(|t| {
+                    let defs = self.schema.rel_schemas_for_type(t);
+                    if defs.is_empty() {
+                        vec![None]
+                    } else {
+                        defs.iter().map(|s| s.property_column_type(p)).collect()
+                    }
+                })
+                .collect(),
+            _ => vec![None],
         }
     }
 
@@ -549,7 +673,8 @@ impl<'s> Lowerer<'s> {
             return unsupported("UNWIND in this SQL dialect");
         };
         let kind = self.kind(expr);
-        self.kinds.insert(var, kind.element());
+        let before = self.kind_before_column_types(expr).element();
+        self.set_kind(var, kind.element(), before);
         // A list of no elements, or NULL: no rows.
         let empty = match (expr, &kind) {
             (LogicalExpr::List(xs), _) => xs.is_empty(),

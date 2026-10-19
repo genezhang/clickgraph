@@ -368,7 +368,9 @@ impl Query<'_> {
             map_keys: HashMap::new(),
             list_nulls: HashMap::new(),
             held_items: RefCell::new(HashMap::new()),
+            no_column_kinds: std::cell::Cell::new(false),
             kinds: HashMap::new(),
+            kinds_before: HashMap::new(),
             never_boolean: HashSet::new(),
             local_kinds: RefCell::new(HashMap::new()),
             local_lists: RefCell::new(HashMap::new()),
@@ -814,8 +816,17 @@ struct Lowerer<'s> {
     /// its WHERE / ORDER BY read it (`null_list.rs`): when it is NULL and
     /// the list held so, of its group where it groups.
     held_items: RefCell<HashMap<VarId, null_list::NullList>>,
-    /// What each projected or unwound value is (`unwind.rs`).
+    /// While set, a property's kind is not read from its column's type
+    /// (VALUE_TYPES.md T2a): what a check written before the column types
+    /// were known asks ([`Self::kind_before_column_types`]).
+    no_column_kinds: std::cell::Cell<bool>,
+    /// What each projected, unwound, subquery or collected-map value is
+    /// (`unwind.rs`, set by `set_kind` only).
     kinds: HashMap<VarId, unwind::Kind>,
+    /// [`Self::kinds`] as it was with properties' column types left
+    /// unread, where it differs: what `kind_before_column_types` reads of a
+    /// variable. Both are set together, by `set_kind` only.
+    kinds_before: HashMap<VarId, unwind::Kind>,
     /// Projected values that are never a boolean (`Lowerer::never_boolean`).
     never_boolean: HashSet<VarId>,
     /// What each comprehension parameter is: an element of its list. Filled
@@ -1201,7 +1212,7 @@ impl<'s> Lowerer<'s> {
                 self.finish_relation()?;
                 for item in &projection.items {
                     let kind = self.kind(&item.expr);
-                    self.kinds.insert(item.var, kind);
+                    self.record_kind(item.var, &item.expr, kind);
                     if self.never_boolean(&item.expr) {
                         self.never_boolean.insert(item.var);
                     }
@@ -5822,7 +5833,7 @@ impl<'s> Lowerer<'s> {
         // next segment's reads of a WITH's).
         for it in &p.items {
             let kind = self.kind(&it.expr);
-            self.kinds.insert(it.var, kind);
+            self.record_kind(it.var, &it.expr, kind);
             if self.never_boolean(&it.expr) {
                 self.never_boolean.insert(it.var);
             }
@@ -5883,7 +5894,15 @@ impl<'s> Lowerer<'s> {
                     })
                     .collect();
                 kinds.sort_by(|a, b| a.0.cmp(&b.0));
-                self.kinds.insert(it.var, unwind::Kind::Map(kinds));
+                let mut before: Vec<(String, unwind::Kind)> = keys
+                    .iter()
+                    .map(|(k, _)| match entries.iter().find(|(e, _)| e == k) {
+                        Some((_, v)) => (k.clone(), self.kind_before_column_types(v)),
+                        None => (k.clone(), unwind::Kind::Unknown),
+                    })
+                    .collect();
+                before.sort_by(|a, b| a.0.cmp(&b.0));
+                self.set_kind(it.var, unwind::Kind::Map(kinds), unwind::Kind::Map(before));
                 self.map_keys.insert(it.var, keys.clone());
                 let keys = export_map_keys(it.var, keys, alias, &mut body);
                 exports.maps.push((it.var, keys));
@@ -6016,10 +6035,21 @@ impl<'s> Lowerer<'s> {
             // `Variant`, which ClickHouse groups no more than `Dynamic`;
             // LDBC IC 1's `[uni.name, studyAt.classYear, …]`), by the same
             // key (`[1]` and `[1.0]` are one group, as in Cypher).
-            let value_list = matches!(
-                self.kind(&it.expr),
-                unwind::Kind::List(inner) if !matches!(*inner, unwind::Kind::Element(_))
-            );
+            // A property never NULL whose column is an `Array` of one scalar
+            // type groups as itself (VALUE_TYPES.md T2a; review finding: it
+            // was keyed as a list of mixed values).
+            let one_typed = matches!(&it.expr, LogicalExpr::PropertyAccessExp(_))
+                && matches!(&list_null, Some(None))
+                && matches!(
+                    self.kind(&it.expr),
+                    unwind::Kind::List(inner)
+                        if matches!(*inner, unwind::Kind::Scalar | unwind::Kind::Boolean)
+                );
+            let value_list = !one_typed
+                && matches!(
+                    self.kind(&it.expr),
+                    unwind::Kind::List(inner) if !matches!(*inner, unwind::Kind::Element(_))
+                );
             let map_key = match (self.holds_maps(&it.expr) || value_list) && !it.aggregate {
                 true => match current_function_mapper().cypher_union() {
                     Some(u) => Some(RenderExpr::Raw((u.distinct_key)(
@@ -6566,7 +6596,14 @@ impl<'s> Lowerer<'s> {
             }
             // A list or map would read `[]` / `{}` where the row is missing
             // (ClickHouse holds no NULL array, #1454).
-            if matches!(self.kind(v), unwind::Kind::List(_) | unwind::Kind::Map(_)) {
+            // A value made of `Array` columns' properties (VALUE_TYPES.md
+            // T2a) reads as it did before they were known to be lists: its
+            // missing row is NULL (review findings: refused once the kind
+            // was known).
+            if matches!(
+                self.kind_before_column_types(v),
+                unwind::Kind::List(_) | unwind::Kind::Map(_)
+            ) {
                 return unsupported("a list or map in a collected map");
             }
             names.push(k.clone());

@@ -2602,6 +2602,7 @@ mod tests {
         schema.insert_relationship_schema(
             "FOLLOWS".to_string(),
             RelationshipSchema {
+                column_types: Default::default(),
                 from_node_id_part_types: Vec::new(),
                 to_node_id_part_types: Vec::new(),
                 closed_properties: false,
@@ -2698,6 +2699,7 @@ mod tests {
         // interaction type names — mirrors build_polymorphic_edge_schemas().
         let mut schema = GraphSchema::build(1, "test".to_string(), HashMap::new(), HashMap::new());
         let make_poly_rel = || RelationshipSchema {
+            column_types: Default::default(),
             from_node_id_part_types: Vec::new(),
             to_node_id_part_types: Vec::new(),
             closed_properties: false,
@@ -2844,6 +2846,7 @@ mod tests {
         schema.insert_relationship_schema(
             "REQUESTED".to_string(),
             RelationshipSchema {
+                column_types: Default::default(),
                 from_node_id_part_types: Vec::new(),
                 to_node_id_part_types: Vec::new(),
                 closed_properties: false,

@@ -436,8 +436,12 @@ impl<'s> Lowerer<'s> {
             }
         };
         self.values.insert(sq.var, value);
-        if let Some(k) = list {
-            self.kinds.insert(sq.var, Kind::List(Box::new(k)));
+        if let Some((k, before)) = list {
+            self.set_kind(
+                sq.var,
+                Kind::List(Box::new(k)),
+                Kind::List(Box::new(before)),
+            );
         }
         Ok(())
     }
@@ -615,7 +619,7 @@ impl<'s> Lowerer<'s> {
         predicate: Option<&LogicalExpr>,
         correlation: &[Correlated],
         sq: &Subquery,
-    ) -> Result<Option<(RenderPlan, Option<Kind>)>, LowerError> {
+    ) -> Result<Option<(RenderPlan, Option<ListKinds>)>, LowerError> {
         self.lower_match(pattern, predicate)?;
         if let SubqueryKind::Collect(p) = &sq.kind {
             // Nested subqueries of the projection, per match.
@@ -667,7 +671,7 @@ impl<'s> Lowerer<'s> {
                     self.in_fixed_order(RenderExpr::Raw((spelling.collect_all)(
                         &render_expr_to_sql_plain(&e),
                     )))?,
-                    Some(kind),
+                    Some((kind, self.kind_before_column_types(p))),
                 )
             }
             // Each matched node's label and identity, once, as
@@ -846,6 +850,10 @@ struct MembersAnchor<'s> {
     label: String,
     schema: &'s NodeSchema,
 }
+
+/// A subquery's list element kind, and that kind with properties' column
+/// types left unread (`Lowerer::set_kind`).
+type ListKinds = (Kind, Kind);
 
 /// What a subquery's placeholder is, for `Lowerer::kind`: a list's element
 /// kind is known once the subquery is applied.
