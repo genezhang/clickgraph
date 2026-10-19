@@ -293,17 +293,23 @@ pub fn translate_text_read(
 /// translated as `/query` would (the bound plan; text only the clause-list
 /// parser reads included, S10b). It is read through the statement front end
 /// (comments, a prelude), and a `USE` in it naming another graph is refused
-/// (it was ignored). Errors are messages prefixed `Inner Cypher …`.
+/// (it was ignored). Error messages are prefixed `Inner Cypher …`; a
+/// syntax error is [`TranslateError::Invalid`].
 pub fn translate_inner_read(
     cypher: &str,
     schema: &GraphSchema,
     graph: &str,
-) -> Result<String, String> {
+) -> Result<String, TranslateError> {
     let prepared = PreparedStatement::parse(cypher)
         .and_then(|p| p.targets.within(graph).map(|()| p))
-        .map_err(|e| format!("Inner Cypher query error: {e}"))?;
+        .map_err(|e| match e {
+            PrepareError::TooLarge(e) => TranslateError::Unsupported(format!("Inner Cypher: {e}")),
+            e => TranslateError::Invalid(format!("Inner Cypher query error: {e}")),
+        })?;
     if prepared.prelude.mode != prepared::ExecutionMode::Run {
-        return Err("Inner Cypher not supported: EXPLAIN / PROFILE".to_string());
+        return Err(TranslateError::Unsupported(
+            "Inner Cypher not supported: EXPLAIN / PROFILE".to_string(),
+        ));
     }
     let cypher = prepared.text();
     // Stateless for export: no IdMapper scope.
@@ -314,16 +320,22 @@ pub fn translate_inner_read(
         ..Default::default()
     };
     let message = |e: TranslateError| match e {
-        TranslateError::Invalid(e) => format!("Inner Cypher query error: {}", e),
-        TranslateError::Unsupported(e) => format!("Inner Cypher not supported: {}", e),
-        TranslateError::Internal(e) => format!("Inner Cypher internal error: {}", e),
+        TranslateError::Invalid(e) => {
+            TranslateError::Invalid(format!("Inner Cypher query error: {}", e))
+        }
+        TranslateError::Unsupported(e) => {
+            TranslateError::Unsupported(format!("Inner Cypher not supported: {}", e))
+        }
+        TranslateError::Internal(e) => {
+            TranslateError::Internal(format!("Inner Cypher internal error: {}", e))
+        }
     };
     match crate::open_cypher_parser::parse_cypher_statement(cypher) {
         Ok((_, statement)) => translate_read(statement, schema, options())
             .map(|t| t.sql)
             .map_err(message),
         Err(e) => {
-            let parse_error = format!("Inner Cypher parse error: {}", e);
+            let parse_error = TranslateError::Invalid(format!("Inner Cypher parse error: {}", e));
             match translate_text_read(cypher, schema, options()) {
                 Ok(Some(t)) => Ok(t.sql),
                 Ok(None) => Err(parse_error),
@@ -787,10 +799,11 @@ mod tests {
         );
         let read = "MATCH (a:User) RETURN a.name";
         assert_eq!(
-            super::translate_inner_read(read, &schema, "g"),
+            super::translate_inner_read(read, &schema, "g").map_err(|e| e.to_string()),
             crate::clickhouse_query_generator::cypher_to_sql(read, &schema)
         );
-        let err = super::translate_inner_read("MATCH (a:User) RETRUN a", &schema, "g");
+        let err = super::translate_inner_read("MATCH (a:User) RETRUN a", &schema, "g")
+            .map_err(|e| e.to_string());
         assert!(
             matches!(&err, Err(e) if e.starts_with("Inner Cypher parse error")),
             "{err:?}"
@@ -799,7 +812,8 @@ mod tests {
             "MATCH (a:User) ORDER BY a.name LIMIT 1 RETURN z.name",
             &schema,
             "g",
-        );
+        )
+        .map_err(|e| e.to_string());
         assert!(
             matches!(&err, Err(e) if e.starts_with("Inner Cypher query error")),
             "{err:?}"
@@ -807,7 +821,8 @@ mod tests {
         // It runs on the statement's graph: a USE naming another is refused
         // (it was ignored); naming the statement's graph, or a prelude and
         // comments, are read.
-        let err = super::translate_inner_read("USE h MATCH (a:User) RETURN a.name", &schema, "g");
+        let err = super::translate_inner_read("USE h MATCH (a:User) RETURN a.name", &schema, "g")
+            .map_err(|e| e.to_string());
         assert!(
             matches!(&err, Err(e) if e.contains("Multiple graphs")),
             "{err:?}"
@@ -817,7 +832,8 @@ mod tests {
                 "// note\nCYPHER replan=force USE g MATCH (a:User) RETURN a.name",
                 &schema,
                 "g"
-            ),
+            )
+            .map_err(|e| e.to_string()),
             crate::clickhouse_query_generator::cypher_to_sql(read, &schema)
         );
     }

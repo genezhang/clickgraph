@@ -40,6 +40,8 @@ fn record_query_with(
     schema: Option<&str>,
     has_phase_breakdown: bool,
 ) {
+    // `query_handler` records the requests no site recorded (#1500).
+    let _ = REQUEST_RECORD.try_with(|r| r.borrow_mut().recorded = true);
     if let Some(reg) = GLOBAL_SERVER_METRICS.get() {
         reg.record_query(&QuerySample {
             metrics,
@@ -374,39 +376,82 @@ pub async fn query_handler(
     } else {
         String::new()
     };
-    let result = query_handler_body(app_state, payload, start_time).await;
-
-    // Successful queries are recorded with full phase breakdown at the inner
-    // finalization sites; here we capture the error outcomes. Every `Err` this
-    // handler returns — parse-error 400s, schema errors, and the inner
-    // handler's failures alike — carries an HTTP status we can classify, and
-    // we still know the total wall time, so failures land in the slow-query
-    // ring with latency too, just without a per-phase breakdown. One record
-    // per query: this catch is the only one. (Axum extractor rejections —
-    // malformed JSON, the body cap — fail before this handler runs, so they
-    // sit outside the one-span-per-query promise.)
-    if let Err((status, _)) = &result {
-        if let Some(reg) = GLOBAL_SERVER_METRICS.get() {
-            let m = QueryPerformanceMetrics {
-                total_time: start_time.elapsed().as_secs_f64(),
-                query_type: "other".to_string(),
-                ..QueryPerformanceMetrics::default()
-            };
-            reg.record_query(&QuerySample {
-                metrics: &m,
-                outcome: Outcome::Err(ErrorClass::from_status(status.as_u16())),
-                has_phase_breakdown: false,
-                query_text: Some(&raw_query),
-                // Errors can occur before or after schema resolution, so the
-                // schema label is unknowable here and no schema attribute is
-                // emitted at all (an omitted attribute, not an "unknown"
-                // value in the attribute set).
-                schema: None,
-                ch: metrics::current_ch_stats(),
-            });
-        }
+    let Some(reg) = GLOBAL_SERVER_METRICS.get() else {
+        return query_handler_body(app_state, payload, start_time).await;
+    };
+    // The request's one record (#1500). Queries that run the pipeline are
+    // recorded at the inner finalization sites, with their phase breakdown;
+    // every other answer — a procedure, SHOW DATABASES, COPY TO, an export,
+    // a capacity rejection, any `Err` — is recorded here, from the status it
+    // returns. The flag in `REQUEST_RECORD` keeps it to one record. (Axum
+    // extractor rejections — malformed JSON, the body cap — fail before this
+    // handler runs, so they sit outside the one-record-per-request promise.)
+    let (result, record, ch) = REQUEST_RECORD
+        .scope(
+            std::cell::RefCell::new(RequestRecord::default()),
+            metrics::with_ch_stats_scope(async {
+                let result = query_handler_body(app_state, payload, start_time).await;
+                let record = REQUEST_RECORD.with(|r| std::mem::take(&mut *r.borrow_mut()));
+                (result, record, metrics::current_ch_stats())
+            }),
+        )
+        .await;
+    if !record.recorded {
+        let status = match &result {
+            Ok(response) => response.status(),
+            Err((status, _)) => *status,
+        };
+        let outcome = if status.is_success() {
+            Outcome::Ok
+        } else {
+            Outcome::Err(ErrorClass::from_status(status.as_u16()))
+        };
+        let m = QueryPerformanceMetrics {
+            total_time: start_time.elapsed().as_secs_f64(),
+            query_type: record.query_type.unwrap_or("other").to_string(),
+            ..QueryPerformanceMetrics::default()
+        };
+        reg.record_query(&QuerySample {
+            metrics: &m,
+            outcome,
+            has_phase_breakdown: false,
+            query_text: Some(&raw_query),
+            // A failure can come before or after the schema is resolved (and
+            // can name one that does not exist): no schema attribute for it
+            // (an omitted attribute, not an "unknown" value).
+            schema: match outcome {
+                Outcome::Ok => record.schema.as_deref(),
+                Outcome::Err(_) => None,
+            },
+            ch,
+        });
     }
     result
+}
+
+/// What [`query_handler`] knows of the request it records (#1500): whether
+/// an inner finalization site recorded it, and the type and schema of a
+/// request answered before those sites.
+#[derive(Default)]
+struct RequestRecord {
+    recorded: bool,
+    query_type: Option<&'static str>,
+    schema: Option<String>,
+}
+
+tokio::task_local! {
+    static REQUEST_RECORD: std::cell::RefCell<RequestRecord>;
+}
+
+/// Note the type of the request (for its record when no finalization site
+/// records it).
+fn note_request_type(query_type: &'static str) {
+    let _ = REQUEST_RECORD.try_with(|r| r.borrow_mut().query_type = Some(query_type));
+}
+
+/// Note the schema the request runs on.
+fn note_request_schema(schema: &str) {
+    let _ = REQUEST_RECORD.try_with(|r| r.borrow_mut().schema = Some(schema.to_string()));
 }
 
 async fn query_handler_body(
@@ -423,9 +468,7 @@ async fn query_handler_body(
                     "Query rejected: max concurrent queries ({}) reached",
                     app_state.config.max_concurrent_queries
                 );
-                if let Some(reg) = GLOBAL_SERVER_METRICS.get() {
-                    reg.record_error(ErrorClass::Capacity);
-                }
+                // Recorded by `query_handler` (a 503: `capacity`).
                 return Ok((
                     StatusCode::SERVICE_UNAVAILABLE,
                     Json(serde_json::json!({
@@ -477,11 +520,13 @@ async fn query_handler_body(
         .targets
         .graph(schema_name_param.as_deref())
         .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    note_request_schema(&graph_name);
     let clean_query = prepared.prelude.text;
 
     // Handle SHOW DATABASES early (special case for Neo4j browser compatibility)
     let clean_upper = clean_query.trim().to_uppercase();
     if clean_upper.starts_with("SHOW DATABASES") {
+        note_request_type("procedure");
         log::info!("📊 SHOW DATABASES query detected - returning available schemas");
 
         // Use shared SHOW DATABASES implementation
@@ -507,6 +552,7 @@ async fn query_handler_body(
     // (UNWIND keys(value) AS key WITH key, value[key] ...) cannot be parsed/executed.
     // Simple CALL apoc.meta.schema() falls through to the normal procedure dispatch below.
     if clean_upper.contains("APOC.META.SCHEMA") && clean_upper.contains("UNWIND") {
+        note_request_type("procedure");
         log::info!("Detected apoc.meta.schema MCP query — short-circuiting with unwound results");
 
         let schema_name = graph_name.clone();
@@ -574,6 +620,7 @@ async fn query_handler_body(
     };
 
     if let Some((inner_query, destination, ch_format, config)) = copy_to_params {
+        note_request_type("read");
         log::info!("Detected COPY TO: destination={}", destination);
         let export_start = Instant::now();
 
@@ -591,8 +638,7 @@ async fn query_handler_body(
             crate::server::query_context::set_current_schema(Arc::new(graph_schema.clone()));
 
             let inner_sql =
-                translate_cypher_to_sql(&inner_query, &graph_schema, &schema_name_for_export)
-                    .map_err(|e| (inner_read_status(&e), e))?;
+                translate_cypher_to_sql(&inner_query, &graph_schema, &schema_name_for_export)?;
 
             crate::procedures::apoc_export::build_export_sql(
                 &inner_sql,
@@ -687,6 +733,9 @@ async fn query_handler_body(
             (false, false, None)
         };
 
+    if is_union || proc_name_opt.is_some() {
+        note_request_type("procedure");
+    }
     if is_union {
         log::info!("Executing UNION ALL of procedures");
 
@@ -811,8 +860,7 @@ async fn query_handler_body(
                     &export_args.cypher_query,
                     &graph_schema,
                     &schema_name_for_export,
-                )
-                .map_err(|e| (inner_read_status(&e), e))?;
+                )?;
                 crate::procedures::apoc_export::build_export_sql(
                     &inner_sql,
                     &export_args.destination,
@@ -2250,22 +2298,19 @@ fn translate_cypher_to_sql(
     cypher: &str,
     graph_schema: &GraphSchema,
     schema_name: &str,
-) -> Result<String, String> {
+) -> Result<String, (StatusCode, String)> {
     log::debug!(
         "Translating inner Cypher query for schema '{}'",
         schema_name
     );
-    crate::translate::translate_inner_read(cypher, graph_schema, schema_name)
-}
-
-/// The status of an inner query's translation error: a broken invariant is
-/// the server's (500), anything else the query's (400).
-fn inner_read_status(e: &str) -> StatusCode {
-    if e.starts_with("Inner Cypher internal error") {
-        StatusCode::INTERNAL_SERVER_ERROR
-    } else {
-        StatusCode::BAD_REQUEST
-    }
+    // A broken invariant is the server's (500), anything else the query's.
+    crate::translate::translate_inner_read(cypher, graph_schema, schema_name).map_err(|e| {
+        let status = match e {
+            crate::translate::TranslateError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            _ => StatusCode::BAD_REQUEST,
+        };
+        (status, e.to_string())
+    })
 }
 
 fn extract_result_count(_response: &axum::response::Response) -> Option<usize> {

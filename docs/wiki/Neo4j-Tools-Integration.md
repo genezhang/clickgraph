@@ -334,6 +334,28 @@ See [Cypher Language Reference - Graph Algorithms](Cypher-Language-Reference.md#
    python3 -c "import yaml; yaml.safe_load(open('schemas/your_schema.yaml'))"
    ```
 
+### Error Codes
+
+A failed query's FAILURE carries the Neo4j status code of what went wrong, so drivers raise the matching exception:
+
+| Failure | Code |
+|---|---|
+| Invalid Cypher (a parse error, an undefined variable, a procedure's unknown YIELD output) | `Neo.ClientError.Statement.SyntaxError` |
+| An invalid `CYPHER` option, export format or destination | `Neo.ClientError.Statement.ArgumentError` |
+| A parameter the query uses was not sent | `Neo.ClientError.Statement.ParameterMissing` |
+| The graph (database) is not loaded | `Neo.ClientError.Database.DatabaseNotFound` |
+| No procedure of that name | `Neo.ClientError.Procedure.ProcedureNotFound` |
+| A procedure failed (an unknown index, an invalid argument value) | `Neo.ClientError.Procedure.ProcedureCallFailed` |
+| A form ClickGraph does not translate, PROFILE, a write | `Neo.ClientError.Statement.FeatureNotSupported` |
+| ClickHouse (or chdb, Databricks) failed to run the SQL | `Neo.DatabaseError.Statement.ExecutionFailed` |
+| An internal error | `Neo.DatabaseError.General.UnknownError` |
+
+Before #1399 every query failure was a `SyntaxError`.
+
+### "UnsupportedServerProduct" from Older Drivers
+
+The Python drivers before 6.0 (4.4.x, 5.x) refuse a server whose agent does not start with `Neo4j/` (`UnsupportedServerProduct: ClickGraph/…`). Start ClickGraph with `--neo4j-compat-mode` (or `CLICKGRAPH_NEO4J_COMPAT_MODE=true`): the server then identifies as `Neo4j/5.8.0`. Compat mode also reads an undeclared property as NULL, as Neo4j does, instead of the same-named column. The 6.x drivers connect either way.
+
 ### Procedures Not Working
 
 **Symptom:** `CALL db.labels()` returns error
