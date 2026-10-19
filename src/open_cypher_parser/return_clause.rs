@@ -12,7 +12,7 @@ use super::{
     ast::{ReturnClause, ReturnItem},
     common::ws,
     errors::OpenCypherParsingError,
-    expression::{parse_expression, parse_identifier},
+    expression::parse_expression,
 };
 
 fn parse_return_item(input: &'_ str) -> IResult<&'_ str, ReturnItem<'_>> {
@@ -22,7 +22,11 @@ fn parse_return_item(input: &'_ str) -> IResult<&'_ str, ReturnItem<'_>> {
     // Parse the expression again to get the AST (recognize consumes but doesn't parse)
     let (_, expression) = parse_expression.parse(expr_text)?;
 
-    let (input, alias) = opt(preceded(ws(tag_no_case("AS")), ws(parse_identifier))).parse(input)?;
+    let (input, alias) = opt(preceded(
+        ws(tag_no_case("AS")),
+        ws(super::common::symbolic_name),
+    ))
+    .parse(input)?;
 
     // Only store original_text when no explicit alias is provided
     let original_text = if alias.is_none() {
@@ -90,7 +94,7 @@ mod tests {
             Ok((remaining, return_item)) => {
                 assert_eq!(remaining, "");
                 let expected = ReturnItem {
-                    expression: Expression::Variable("a"),
+                    expression: Expression::Variable("a".into()),
                     alias: None,
                     original_text: Some("a"),
                 };
@@ -108,8 +112,8 @@ mod tests {
             Ok((remaining, return_item)) => {
                 assert_eq!(remaining, "");
                 let expected = ReturnItem {
-                    expression: Expression::Variable("a"),
-                    alias: Some("alias"),
+                    expression: Expression::Variable("a".into()),
+                    alias: Some("alias".into()),
                     original_text: None, // No original_text when explicit alias is provided
                 };
                 assert_eq!(&return_item, &expected);
@@ -155,7 +159,7 @@ mod tests {
                 assert_eq!(remaining, "");
                 assert_eq!(return_clause.return_items.len(), 1);
                 let expected_item = ReturnItem {
-                    expression: Expression::Variable("a"),
+                    expression: Expression::Variable("a".into()),
                     alias: None,
                     original_text: Some("a"),
                 };
@@ -174,17 +178,17 @@ mod tests {
                 assert_eq!(remaining, "");
                 assert_eq!(return_clause.return_items.len(), 3);
                 let expected_item1 = ReturnItem {
-                    expression: Expression::Variable("a"),
+                    expression: Expression::Variable("a".into()),
                     alias: None,
                     original_text: Some("a"),
                 };
                 let expected_item2 = ReturnItem {
-                    expression: Expression::Variable("b"),
-                    alias: Some("aliasB"),
+                    expression: Expression::Variable("b".into()),
+                    alias: Some("aliasB".into()),
                     original_text: None,
                 };
                 let expected_item3 = ReturnItem {
-                    expression: Expression::Variable("c"),
+                    expression: Expression::Variable("c".into()),
                     alias: None,
                     original_text: Some("c"),
                 };
@@ -205,18 +209,18 @@ mod tests {
                 assert_eq!(remaining, "");
                 assert_eq!(return_clause.return_items.len(), 3);
                 let expected_item1 = ReturnItem {
-                    expression: Expression::Variable("a"),
-                    alias: Some("a_alias"),
+                    expression: Expression::Variable("a".into()),
+                    alias: Some("a_alias".into()),
                     original_text: None,
                 };
                 let expected_item2 = ReturnItem {
-                    expression: Expression::Variable("b"),
+                    expression: Expression::Variable("b".into()),
                     alias: None,
                     original_text: Some("b"),
                 };
                 let expected_item3 = ReturnItem {
-                    expression: Expression::Variable("c"),
-                    alias: Some("c_alias"),
+                    expression: Expression::Variable("c".into()),
+                    alias: Some("c_alias".into()),
                     original_text: None,
                 };
                 assert_eq!(&return_clause.return_items[0], &expected_item1);
@@ -258,7 +262,7 @@ mod tests {
                 assert_eq!(remaining, "");
                 assert_eq!(return_clause.return_items.len(), 1);
                 let item = &return_clause.return_items[0];
-                assert_eq!(item.alias, Some("d"));
+                assert_eq!(item.alias.as_deref(), Some("d"));
                 if let Expression::MapLiteral(entries) = &item.expression {
                     assert_eq!(entries.len(), 1);
                     assert_eq!(entries[0].0, "days");
@@ -368,7 +372,7 @@ mod tests {
                 assert_eq!(return_clause.return_items.len(), 1);
                 let item = &return_clause.return_items[0];
                 assert_eq!(item.original_text, None); // No original_text when explicit alias provided
-                assert_eq!(item.alias, Some("airport_code"));
+                assert_eq!(item.alias.as_deref(), Some("airport_code"));
             }
             Err(e) => panic!("Parsing failed unexpectedly: {:?}", e),
         }
@@ -395,7 +399,10 @@ mod tests {
 
                 // Third item: explicit alias, no original_text
                 assert_eq!(return_clause.return_items[2].original_text, None);
-                assert_eq!(return_clause.return_items[2].alias, Some("airport_name"));
+                assert_eq!(
+                    return_clause.return_items[2].alias.as_deref(),
+                    Some("airport_name")
+                );
             }
             Err(e) => panic!("Parsing failed unexpectedly: {:?}", e),
         }

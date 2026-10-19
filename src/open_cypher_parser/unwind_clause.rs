@@ -1,10 +1,10 @@
 use nom::{bytes::complete::tag_no_case, combinator::cut, error::context, IResult, Parser};
 
 use super::{
-    ast::{Expression, UnwindClause},
+    ast::{Expression, Name, UnwindClause},
     common::ws,
     errors::OpenCypherParsingError,
-    expression::{parse_expression, parse_identifier},
+    expression::parse_expression,
 };
 
 /// Wrapper to convert parse_expression errors to OpenCypherParsingError
@@ -16,9 +16,9 @@ fn expression_parser(input: &str) -> IResult<&str, Expression<'_>, OpenCypherPar
     })
 }
 
-/// Wrapper to convert parse_identifier errors to OpenCypherParsingError
-fn identifier_parser(input: &str) -> IResult<&str, &str, OpenCypherParsingError<'_>> {
-    parse_identifier(input).map_err(|e| match e {
+/// Wrapper to convert symbolic-name errors to OpenCypherParsingError
+fn identifier_parser(input: &str) -> IResult<&str, Name<'_>, OpenCypherParsingError<'_>> {
+    super::common::symbolic_name::<nom::error::Error<&str>>(input).map_err(|e| match e {
         nom::Err::Incomplete(needed) => nom::Err::Incomplete(needed),
         nom::Err::Error(err) => nom::Err::Failure(OpenCypherParsingError::from(err)),
         nom::Err::Failure(err) => nom::Err::Failure(OpenCypherParsingError::from(err)),

@@ -298,14 +298,20 @@ impl Binder {
             }
             match clause {
                 Clause::Match(m) => {
-                    let parts: Vec<(Option<&str>, &PathPattern<'_>)> =
-                        m.path_patterns.iter().map(|(v, p)| (*v, p)).collect();
+                    let parts: Vec<(Option<&str>, &PathPattern)> = m
+                        .path_patterns
+                        .iter()
+                        .map(|(v, p)| (v.as_deref(), p))
+                        .collect();
                     let where_ = m.where_clause.as_ref().map(|w| &w.conditions);
                     (op, scope) = self.bind_match(op, scope, &parts, where_, false, idx)?;
                 }
                 Clause::OptionalMatch(o) => {
-                    let parts: Vec<(Option<&str>, &PathPattern<'_>)> =
-                        o.path_patterns.iter().map(|(v, p)| (*v, p)).collect();
+                    let parts: Vec<(Option<&str>, &PathPattern)> = o
+                        .path_patterns
+                        .iter()
+                        .map(|(v, p)| (v.as_deref(), p))
+                        .collect();
                     let where_ = o.where_clause.as_ref().map(|w| &w.conditions);
                     (op, scope) = self.bind_match(op, scope, &parts, where_, true, idx)?;
                 }
@@ -316,16 +322,16 @@ impl Binder {
                         "Can't use aggregating expressions inside of expressions executing \
                          over lists",
                     )?;
-                    if scope.lookup(u.alias).is_some() {
+                    if scope.lookup(&u.alias).is_some() {
                         return Err(BindError::AlreadyDeclared(u.alias.to_string()));
                     }
                     let var = self.new_binding(
-                        Some(u.alias),
+                        Some(&u.alias),
                         BindingKind::Value,
                         false,
                         BindingSource::Unwind { clause: idx },
                     );
-                    scope.insert(u.alias, var);
+                    scope.insert(&u.alias, var);
                     op = BoundOp::Unwind {
                         input: Box::new(op),
                         expr,
@@ -338,7 +344,7 @@ impl Binder {
                         .iter()
                         .map(|i| RawItem {
                             expr: &i.expression,
-                            alias: i.alias,
+                            alias: i.alias.as_deref(),
                             text: None,
                         })
                         .collect();
@@ -370,9 +376,7 @@ impl Binder {
                     scope = out_scope;
                 }
                 Clause::Return(r) => {
-                    let is_star = |i: &&crate::open_cypher_parser::ast::ReturnItem<'_>| {
-                        matches!(i.expression, Expression::Variable("*"))
-                    };
+                    let is_star = |i: &&crate::open_cypher_parser::ast::ReturnItem<'_>| matches!(&i.expression, Expression::Variable(v) if v == "*");
                     let star = r.clause.return_items.iter().any(|i| is_star(&i));
                     if r.clause.return_items.iter().skip(1).any(|i| is_star(&i)) {
                         return Err(BindError::Invalid(
@@ -383,10 +387,10 @@ impl Binder {
                         .clause
                         .return_items
                         .iter()
-                        .filter(|i| !matches!(i.expression, Expression::Variable("*")))
+                        .filter(|i| !matches!(&i.expression, Expression::Variable(v) if v == "*"))
                         .map(|i| RawItem {
                             expr: &i.expression,
-                            alias: i.alias,
+                            alias: i.alias.as_deref(),
                             text: i.original_text,
                         })
                         .collect();
@@ -498,7 +502,12 @@ impl Binder {
                             "a SET item other than `v.property = value`".to_string(),
                         ));
                     };
-                    let var = node(self, target.base, "SET")?;
+                    let var = node(self, &target.base, "SET")?;
+                    if let Some(why) =
+                        crate::query_planner::logical_expr::unreadable_property_key(&target.key)
+                    {
+                        return Err(BindError::Unsupported(why));
+                    }
                     let value = self.expr(value, &[scope])?;
                     no_aggregate(&value, "Invalid use of aggregating function in SET")?;
                     ops.push(BoundWrite::Set {
@@ -511,7 +520,12 @@ impl Binder {
             }
             Clause::Remove(remove) => {
                 for item in &remove.remove_items {
-                    let var = node(self, item.base, "REMOVE")?;
+                    let var = node(self, &item.base, "REMOVE")?;
+                    if let Some(why) =
+                        crate::query_planner::logical_expr::unreadable_property_key(&item.key)
+                    {
+                        return Err(BindError::Unsupported(why));
+                    }
                     ops.push(BoundWrite::Remove {
                         var,
                         property: item.key.to_string(),
@@ -549,7 +563,7 @@ impl Binder {
                             ))
                         }
                     };
-                    if let Some(name) = n.name {
+                    if let Some(name) = n.name.as_deref() {
                         if scope.lookup(name).is_some() || self.created.iter().any(|c| c == name) {
                             return Err(BindError::AlreadyDeclared(name.to_string()));
                         }
@@ -562,10 +576,15 @@ impl Binder {
                                 "CREATE with a parameter map".to_string(),
                             ));
                         };
+                        if let Some(why) =
+                            crate::query_planner::logical_expr::unreadable_property_key(&kv.key)
+                        {
+                            return Err(BindError::Unsupported(why));
+                        }
                         let value = self.expr(&kv.value, &[scope])?;
                         no_aggregate(&value, "Invalid use of aggregating function in CREATE")?;
                         // A key given twice: the last.
-                        properties.retain(|(k, _)| k != kv.key);
+                        properties.retain(|(k, _)| *k != kv.key);
                         properties.push((kv.key.to_string(), value));
                     }
                     ops.push(BoundWrite::Create {
@@ -765,6 +784,13 @@ impl Binder {
                     _ => return Err(BindError::MissingAlias(what)),
                 },
             };
+            if name.is_empty() {
+                // The escaped empty name (`` AS `` ``) is a name in Neo4j; no
+                // SQL dialect has an empty column name.
+                return Err(BindError::Unsupported(
+                    "an empty name (``) as a column".to_string(),
+                ));
+            }
             if explicit.iter().any(|i| i.name == name) {
                 return Err(BindError::DuplicateColumn(name));
             }
@@ -1169,7 +1195,7 @@ fn parse_var(generated: &str) -> Option<VarId> {
 
 struct RawItem<'q, 'a> {
     expr: &'q Expression<'a>,
-    alias: Option<&'a str>,
+    alias: Option<&'q str>,
     /// RETURN's original text, its default column name.
     text: Option<&'a str>,
 }
@@ -1244,6 +1270,11 @@ fn bind_props(
     for p in props.into_iter().flatten() {
         match p {
             Property::PropertyKV(kv) => {
+                if let Some(why) =
+                    crate::query_planner::logical_expr::unreadable_property_key(&kv.key)
+                {
+                    return Err(BindError::Unsupported(why));
+                }
                 if has_subquery(&kv.value) {
                     return Err(BindError::Unsupported(
                         "a subquery expression in a property map".to_string(),
@@ -1357,7 +1388,7 @@ impl<'s> PatternBuilder<'s> {
                 }
             }
         }
-        let (var, bound_before) = match np.name {
+        let (var, bound_before) = match np.name.as_deref() {
             Some(name) => self.named(b, name, "node", || BindingKind::Node {
                 labels: BTreeSet::new(),
             })?,
@@ -1413,7 +1444,7 @@ impl<'s> PatternBuilder<'s> {
             Direction::Incoming => RelDirection::Left,
             Direction::Either => RelDirection::Either,
         };
-        let (var, bound_before) = match rp.name {
+        let (var, bound_before) = match rp.name.as_deref() {
             Some(name) => {
                 let (v, before) = self.named(b, name, "relationship", || BindingKind::Rel {
                     types: BTreeSet::new(),

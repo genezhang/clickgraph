@@ -19,7 +19,7 @@
 //! local variable) is `Unsupported`.
 
 use crate::graph_catalog::expression_parser::PropertyValue;
-use crate::open_cypher_parser::ast::{self, Expression, PathPattern};
+use crate::open_cypher_parser::ast::{self, Expression, Name, PathPattern};
 use crate::query_planner::logical_expr::{
     AggregateFnCall, LambdaExpr, Literal, LogicalCase, LogicalExpr, OperatorApplication,
     PropertyAccess, ReduceExpr, ScalarFnCall, TableAlias,
@@ -130,6 +130,7 @@ fn ast_children<'e, 'a>(e: &'e Expression<'a>) -> Vec<&'e Expression<'a>> {
             v.extend(lc.projection.iter().map(|b| &**b));
             v
         }
+        Expression::PropertyOf { base, .. } => vec![&**base],
         Expression::ArraySubscript { array, index } => vec![&**array, &**index],
         Expression::ArraySlicing { array, from, to } => {
             let mut v = vec![&**array];
@@ -176,9 +177,9 @@ fn hoist_subqueries<'a>(
     if raw {
         let mut used = Vec::new();
         ast_names(e, &mut used);
-        let mut read: Vec<&str> = locals
+        let mut read: Vec<Name<'a>> = locals
             .iter()
-            .map(|l| l.name)
+            .map(|l| l.name.clone())
             .filter(|l| used.contains(l))
             .collect();
         read.dedup();
@@ -193,7 +194,7 @@ fn hoist_subqueries<'a>(
             sq.elements = locals
                 .iter()
                 .rev()
-                .find(|l| l.name == x)
+                .find(|l| *l.name == *x)
                 .and_then(|l| l.list.clone());
             let var = env.subquery(sq)?;
             *e = Expression::OperatorApplicationExp(ast::OperatorApplication {
@@ -263,10 +264,10 @@ fn hoist_subqueries<'a>(
         *e = placeholder(var);
         return Ok(());
     }
-    let with = |names: &[&'a str], list: Option<Expression<'a>>| -> Vec<Local<'a>> {
+    let with = |names: &[Name<'a>], list: Option<Expression<'a>>| -> Vec<Local<'a>> {
         let mut inner = locals.to_vec();
-        inner.extend(names.iter().map(|&name| Local {
-            name,
+        inner.extend(names.iter().map(|name| Local {
+            name: name.clone(),
             list: list.clone(),
         }));
         inner
@@ -275,7 +276,7 @@ fn hoist_subqueries<'a>(
         Expression::ReduceExp(r) => {
             hoist_subqueries(&mut r.initial_value, env, locals)?;
             hoist_subqueries(&mut r.list, env, locals)?;
-            let inner = with(&[r.accumulator, r.variable], None);
+            let inner = with(&[r.accumulator.clone(), r.variable.clone()], None);
             hoist_subqueries(&mut r.expression, env, &inner)
         }
         Expression::Lambda(l) => {
@@ -290,7 +291,7 @@ fn hoist_subqueries<'a>(
                 && !locals.iter().any(|l| names.contains(&l.name)))
             .then(|| (*lc.list_expr).clone());
             hoist_subqueries(&mut lc.list_expr, env, locals)?;
-            let inner = with(&[lc.variable], list);
+            let inner = with(std::slice::from_ref(&lc.variable), list);
             if let Some(w) = lc.where_clause.as_mut() {
                 hoist_subqueries(w, env, &inner)?;
             }
@@ -326,6 +327,7 @@ fn hoist_subqueries<'a>(
         Expression::MapLiteral(entries) => entries
             .iter_mut()
             .try_for_each(|(_, v)| hoist_subqueries(v, env, locals)),
+        Expression::PropertyOf { base, .. } => hoist_subqueries(base, env, locals),
         Expression::ArraySubscript { array, index } => {
             hoist_subqueries(array, env, locals)?;
             hoist_subqueries(index, env, locals)
@@ -356,7 +358,7 @@ fn hoist_subqueries<'a>(
 /// subquery ([`RawSubquery::elements`]).
 #[derive(Clone)]
 struct Local<'a> {
-    name: &'a str,
+    name: Name<'a>,
     list: Option<Expression<'a>>,
 }
 
@@ -370,8 +372,8 @@ pub(crate) const MEMBER: &str = "__cg_member";
 /// (`(m)-[…]->(…)`, `m`: [`MEMBER`]) whose value `x IN` reads.
 fn element_membership<'a>(
     e: &Expression<'a>,
-    read: &[&'a str],
-) -> Option<(&'a str, RawSubquery<'a>)> {
+    read: &[Name<'a>],
+) -> Option<(Name<'a>, RawSubquery<'a>)> {
     let [x] = read else {
         return None;
     };
@@ -404,7 +406,7 @@ fn element_membership<'a>(
     };
     let mut seen = false;
     for step in steps {
-        if step.relationship.name == Some(*x)
+        if step.relationship.name.as_ref() == Some(x)
             || property_names(step.relationship.properties.as_ref()).contains(x)
         {
             return None;
@@ -414,12 +416,12 @@ fn element_membership<'a>(
             if property_names(n.properties.as_ref()).contains(x) {
                 return None;
             }
-            seen |= n.name == Some(*x);
+            seen |= n.name.as_ref() == Some(x);
         }
     }
     let mut names = Vec::new();
     ast_names(e, &mut names);
-    if !seen || names.contains(&MEMBER) {
+    if !seen || names.iter().any(|n| n == MEMBER) {
         return None;
     }
     // A copy of the pattern, `x` named `m` (its nodes are shared between
@@ -434,8 +436,8 @@ fn element_membership<'a>(
             return c.clone();
         }
         let mut node = n.borrow().clone();
-        if node.name == Some(*x) {
-            node.name = Some(MEMBER);
+        if node.name.as_ref() == Some(x) {
+            node.name = Some(MEMBER.into());
         }
         let c = std::rc::Rc::new(std::cell::RefCell::new(node));
         copied.push((key, c.clone()));
@@ -450,12 +452,12 @@ fn element_membership<'a>(
         })
         .collect();
     Some((
-        x,
+        x.clone(),
         RawSubquery {
             kind: RawKind::Members { predicate },
             pattern: PathPattern::ConnectedPattern(renamed),
             where_,
-            projection: Some(Expression::Variable(MEMBER)),
+            projection: Some(Expression::Variable(MEMBER.into())),
             elements: None,
         },
     ))
@@ -470,7 +472,7 @@ fn placeholder<'a>(var: VarId) -> Expression<'a> {
 }
 
 /// The names a property map's values read.
-fn property_names<'a>(props: Option<&Vec<ast::Property<'a>>>) -> Vec<&'a str> {
+fn property_names<'a>(props: Option<&Vec<ast::Property<'a>>>) -> Vec<Name<'a>> {
     let mut out = Vec::new();
     for p in props.into_iter().flatten() {
         if let ast::Property::PropertyKV(kv) = p {
@@ -481,10 +483,10 @@ fn property_names<'a>(props: Option<&Vec<ast::Property<'a>>>) -> Vec<&'a str> {
 }
 
 /// Every variable name an AST expression reads, its patterns' included.
-fn ast_names<'a>(e: &Expression<'a>, out: &mut Vec<&'a str>) {
-    fn pattern<'a>(p: &PathPattern<'a>, out: &mut Vec<&'a str>) {
-        let node = |n: &ast::NodePattern<'a>, out: &mut Vec<&'a str>| {
-            out.extend(n.name);
+fn ast_names<'a>(e: &Expression<'a>, out: &mut Vec<Name<'a>>) {
+    fn pattern<'a>(p: &PathPattern<'a>, out: &mut Vec<Name<'a>>) {
+        let node = |n: &ast::NodePattern<'a>, out: &mut Vec<Name<'a>>| {
+            out.extend(n.name.clone());
             out.extend(property_names(n.properties.as_ref()));
         };
         match p {
@@ -493,7 +495,7 @@ fn ast_names<'a>(e: &Expression<'a>, out: &mut Vec<&'a str>) {
                 for s in steps {
                     node(&s.start_node.borrow(), out);
                     node(&s.end_node.borrow(), out);
-                    out.extend(s.relationship.name);
+                    out.extend(s.relationship.name.clone());
                     out.extend(property_names(s.relationship.properties.as_ref()));
                 }
             }
@@ -505,9 +507,9 @@ fn ast_names<'a>(e: &Expression<'a>, out: &mut Vec<&'a str>) {
         }
     }
     match e {
-        Expression::Variable(n) => out.push(n),
-        Expression::PropertyAccessExp(pa) => out.push(pa.base),
-        Expression::LabelExpression { variable, .. } => out.push(variable),
+        Expression::Variable(n) => out.push(n.clone()),
+        Expression::PropertyAccessExp(pa) => out.push(pa.base.clone()),
+        Expression::LabelExpression { variable, .. } => out.push(variable.clone()),
         Expression::PathPattern(p) => pattern(p, out),
         Expression::ExistsExpression(x) => {
             pattern(&x.pattern, out);

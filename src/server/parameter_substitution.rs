@@ -101,10 +101,69 @@ fn is_valid_parameter_name(name: &str) -> bool {
     !name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '_')
 }
 
+/// A `$name` placeholder of `sql`, or a run of text: a placeholder is read
+/// only outside string literals and quoted identifiers. A `$` inside one is
+/// text — a Cypher string (`'cost $x'`) or a name (`` `a$b` ``, an alias
+/// `"k$x"`) is no parameter, and putting a value there would end the literal
+/// or the identifier (#1489 review).
+enum SqlPiece<'s> {
+    Text(&'s str),
+    Placeholder(&'s str),
+}
+
+/// The pieces of `sql`, in order. Quoting as the SQL printer writes it:
+/// `'…'` with `\` escapes and `''`; `"…"` (double-quoted identifiers) with `\`
+/// escapes and `""`; `` `…` `` (backtick-quoted identifiers) with a doubled
+/// backtick and no escapes.
+fn sql_pieces(sql: &str) -> Vec<SqlPiece<'_>> {
+    let mut pieces = Vec::new();
+    let mut text_start = 0;
+    let mut chars = sql.char_indices().peekable();
+    while let Some((i, c)) = chars.next() {
+        match c {
+            '\'' | '"' | '`' => {
+                // Skip to the closing quote.
+                while let Some((_, d)) = chars.next() {
+                    if d == '\\' && c != '`' {
+                        chars.next();
+                    } else if d == c {
+                        if chars.peek().is_some_and(|&(_, e)| e == c) {
+                            chars.next(); // a doubled quote
+                        } else {
+                            break;
+                        }
+                    }
+                }
+            }
+            '$' => {
+                let start = i + 1;
+                let mut end = start;
+                while let Some(&(j, d)) = chars.peek() {
+                    if d.is_alphanumeric() || d == '_' {
+                        end = j + d.len_utf8();
+                        chars.next();
+                    } else {
+                        break;
+                    }
+                }
+                if end > start {
+                    pieces.push(SqlPiece::Text(&sql[text_start..i]));
+                    pieces.push(SqlPiece::Placeholder(&sql[start..end]));
+                    text_start = end;
+                }
+            }
+            _ => {}
+        }
+    }
+    pieces.push(SqlPiece::Text(&sql[text_start..]));
+    pieces
+}
+
 /// Check if SQL contains unsubstituted $param placeholders
 ///
 /// Returns Some(param_name) if an unsubstituted placeholder is found,
-/// None if the SQL is clean.
+/// None if the SQL is clean. A `$` inside a string literal or a quoted
+/// identifier is no placeholder.
 ///
 /// # Example
 /// ```ignore
@@ -112,34 +171,16 @@ fn is_valid_parameter_name(name: &str) -> bool {
 /// assert_eq!(find_unsubstituted_parameter("SELECT * FROM t(x = $foo)"), Some("foo".to_string()));
 /// ```
 pub fn find_unsubstituted_parameter(sql: &str) -> Option<String> {
-    let mut chars = sql.chars().peekable();
-
-    while let Some(ch) = chars.next() {
-        if ch == '$' {
-            let mut param_name = String::new();
-
-            // Collect parameter name (alphanumeric + underscore)
-            while let Some(&next_ch) = chars.peek() {
-                if next_ch.is_alphanumeric() || next_ch == '_' {
-                    param_name.push(next_ch);
-                    chars.next();
-                } else {
-                    break;
-                }
-            }
-
-            if !param_name.is_empty() && is_valid_parameter_name(&param_name) {
-                return Some(param_name);
-            }
-        }
-    }
-
-    None
+    sql_pieces(sql).into_iter().find_map(|p| match p {
+        SqlPiece::Placeholder(name) if is_valid_parameter_name(name) => Some(name.to_string()),
+        _ => None,
+    })
 }
 
 /// Substitute parameters in SQL string
 ///
-/// Replaces all $paramName placeholders with properly escaped values.
+/// Replaces all $paramName placeholders with properly escaped values. A
+/// `$` inside a string literal or a quoted identifier is left as it is.
 ///
 /// # Arguments
 /// * `sql` - SQL string with $paramName placeholders
@@ -171,48 +212,26 @@ pub fn substitute_parameters(
     parameters: &HashMap<String, Value>,
 ) -> Result<String, ParameterSubstitutionError> {
     let mut result = String::with_capacity(sql.len() * 2); // Pre-allocate
-    let mut chars = sql.chars().peekable();
-
-    while let Some(ch) = chars.next() {
-        if ch == '$' {
-            // Found potential parameter
-            let mut param_name = String::new();
-
-            // Collect parameter name (alphanumeric + underscore)
-            while let Some(&next_ch) = chars.peek() {
-                if next_ch.is_alphanumeric() || next_ch == '_' {
-                    param_name.push(next_ch);
-                    chars.next();
-                } else {
-                    break;
+    for piece in sql_pieces(sql) {
+        match piece {
+            SqlPiece::Text(t) => result.push_str(t),
+            SqlPiece::Placeholder(name) => {
+                if !is_valid_parameter_name(name) {
+                    return Err(ParameterSubstitutionError::InvalidParameterName(
+                        name.to_string(),
+                    ));
                 }
-            }
-
-            if param_name.is_empty() {
-                // Just a lone $ character
-                result.push('$');
-            } else {
-                // Validate parameter name
-                if !is_valid_parameter_name(&param_name) {
-                    return Err(ParameterSubstitutionError::InvalidParameterName(param_name));
-                }
-
-                // Look up parameter value
-                match parameters.get(&param_name) {
-                    Some(value) => {
-                        let formatted = format_parameter(value)?;
-                        result.push_str(&formatted);
-                    }
+                match parameters.get(name) {
+                    Some(value) => result.push_str(&format_parameter(value)?),
                     None => {
-                        return Err(ParameterSubstitutionError::MissingParameter(param_name));
+                        return Err(ParameterSubstitutionError::MissingParameter(
+                            name.to_string(),
+                        ));
                     }
                 }
             }
-        } else {
-            result.push(ch);
         }
     }
-
     Ok(result)
 }
 
@@ -364,5 +383,45 @@ mod tests {
             result,
             "SELECT price * 1.1 AS price_with_tax WHERE currency = '$'"
         );
+    }
+
+    /// A `$` inside a string literal or a quoted identifier is no
+    /// placeholder: a value put there would end the literal or the name and
+    /// run as SQL (#1489 review: `{`k$x`: 1}`, `RETURN 1 AS a$b`,
+    /// `'cost $x'`).
+    #[test]
+    fn a_dollar_inside_quotes_is_no_placeholder_1489() {
+        let mut params = HashMap::new();
+        params.insert(
+            "x".to_string(),
+            json!(" , 1) AS m0, currentUser() AS i, map("),
+        );
+        params.insert("b".to_string(), json!("zz"));
+        params.insert("p".to_string(), json!(7));
+        for sql in [
+            r#"SELECT map('k$x', 1) AS "m""#,
+            r#"SELECT 1 AS "a$b""#,
+            "SELECT 'cost $x' AS c",
+            r"SELECT 'it\'s $x' AS c",
+            "SELECT 'it''s $x' AS c",
+            r#"SELECT 1 AS "a\"$x""#,
+            r#"SELECT 1 AS "a""$x""#,
+            "SELECT 1 AS `a$b`, 2 AS `c``$x`",
+        ] {
+            assert_eq!(substitute_parameters(sql, &params).unwrap(), sql, "{sql}");
+            assert_eq!(find_unsubstituted_parameter(sql), None, "{sql}");
+        }
+        // Outside the quotes a placeholder is one, also right after them.
+        assert_eq!(
+            substitute_parameters(r#"SELECT 'a$x' AS "b$x", $p AS q, '\\'||$p"#, &params).unwrap(),
+            r#"SELECT 'a$x' AS "b$x", 7 AS q, '\\'||7"#
+        );
+        assert_eq!(
+            find_unsubstituted_parameter(r#"SELECT 'a$x' AS "b", $p"#),
+            Some("p".to_string())
+        );
+        // An unterminated literal hides the rest (no placeholder is read
+        // inside it).
+        assert_eq!(find_unsubstituted_parameter("SELECT 'a $p"), None);
     }
 }

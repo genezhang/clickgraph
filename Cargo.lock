@@ -545,6 +545,7 @@ dependencies = [
  "tokio-tungstenite",
  "tower",
  "tower-http",
+ "unicode-ident",
  "uuid",
  "validator",
  "wiremock",

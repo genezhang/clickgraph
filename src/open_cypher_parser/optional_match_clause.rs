@@ -87,7 +87,7 @@ mod tests {
         assert_eq!(optional_match_clause.path_patterns.len(), 1);
 
         if let PathPattern::Node(node) = &optional_match_clause.path_patterns[0].1 {
-            assert_eq!(node.name, Some("a"));
+            assert_eq!(node.name.as_deref(), Some("a"));
         } else {
             panic!("Expected OPTIONAL MATCH clause to contain a Node pattern");
         }

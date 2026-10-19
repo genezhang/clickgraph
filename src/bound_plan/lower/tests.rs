@@ -8352,3 +8352,161 @@ graph_schema:
         "the Date part is folded with the DateTime ends:\n{got}"
     );
 }
+
+/// An escaped (backtick-quoted) name is the name: at every place a query
+/// names something it lowers as the plain spelling does (#1489, #1421,
+/// #1381).
+#[test]
+fn escaped_names_lower_as_the_names_1489() {
+    for (escaped, plain) in [
+        (
+            "MATCH (a:`User`) RETURN a.name AS n",
+            "MATCH (a:User) RETURN a.name AS n",
+        ),
+        (
+            "MATCH (a:User)-[r:`FOLLOWS`]->(b) RETURN count(*) AS c",
+            "MATCH (a:User)-[r:FOLLOWS]->(b) RETURN count(*) AS c",
+        ),
+        (
+            "MATCH (a:User)-[r:`FOLLOWS`|`LIKED`]->(b) RETURN count(*) AS c",
+            "MATCH (a:User)-[r:FOLLOWS|LIKED]->(b) RETURN count(*) AS c",
+        ),
+        (
+            "MATCH (`my node`:User)-[`r`:FOLLOWS]->(b) \
+             RETURN `my node`.`name` AS `x`, `r`.follow_date AS d",
+            "MATCH (a:User)-[r:FOLLOWS]->(b) RETURN a.name AS x, r.follow_date AS d",
+        ),
+        (
+            "MATCH (a:User {`name`: 'Alice'}) RETURN a.user_id AS u",
+            "MATCH (a:User {name: 'Alice'}) RETURN a.user_id AS u",
+        ),
+        (
+            "MATCH `p` = (a:User)-[:FOLLOWS]->(b) RETURN length(`p`) AS l",
+            "MATCH p = (a:User)-[:FOLLOWS]->(b) RETURN length(p) AS l",
+        ),
+        (
+            "MATCH (a:User) WITH a.age AS `the age` WHERE `the age` > 30 RETURN `the age` AS x",
+            "MATCH (a:User) WITH a.age AS t WHERE t > 30 RETURN t AS x",
+        ),
+        (
+            "UNWIND [1, 2] AS `x` RETURN `x` AS y",
+            "UNWIND [1, 2] AS x RETURN x AS y",
+        ),
+        (
+            "RETURN [`x y` IN [1, 2] WHERE `x y` > 1 | `x y` * 2] AS z",
+            "RETURN [x IN [1, 2] WHERE x > 1 | x * 2] AS z",
+        ),
+        (
+            "RETURN reduce(`s` = 0, `x` IN [1, 2] | `s` + `x`) AS z",
+            "RETURN reduce(s = 0, x IN [1, 2] | s + x) AS z",
+        ),
+        (
+            "MATCH (a:User) WHERE a:`User` RETURN `toUpper`(a.name) AS n",
+            "MATCH (a:User) WHERE a:User RETURN toUpper(a.name) AS n",
+        ),
+        (
+            "MATCH (a:User) WHERE a.user_id = $`id` RETURN a.name AS n",
+            "MATCH (a:User) WHERE a.user_id = $id RETURN a.name AS n",
+        ),
+        // A keyword is a name where a name is expected; escaped, the
+        // literals `true` / `null` are variables.
+        (
+            "WITH 1 AS `true`, 2 AS `null` RETURN `true` + `null` AS s",
+            "WITH 1 AS t, 2 AS n RETURN t + n AS s",
+        ),
+        // A name may start with `_` in a pattern too.
+        (
+            "MATCH (_n:User)-[_r:FOLLOWS]->(b) RETURN _n.name AS n",
+            "MATCH (n:User)-[r:FOLLOWS]->(b) RETURN n.name AS n",
+        ),
+        // `a.b.c` is `(a.b).c`: a variable's key path, as before.
+        (
+            "MATCH (a:User) RETURN a.`name`.`x` AS n",
+            "MATCH (a:User) RETURN a.name.x AS n",
+        ),
+    ] {
+        assert_eq!(sql(escaped), sql(plain), "{escaped}");
+    }
+}
+
+/// An escaped name may hold any character; in the SQL a column or alias is
+/// always quoted unless plain, a quote or backslash escaped (#1489).
+#[test]
+fn escaped_names_are_quoted_in_the_sql_1489() {
+    has(
+        "RETURN 1 AS `a\\`, 2 AS `c\"d`, 3 AS `e``f`, {`it's`: 1, `k``l`: 2} AS m",
+        &[
+            r#"1 AS "a\\""#,
+            r#"2 AS "c""d""#,
+            r#"3 AS "e`f""#,
+            r"'it\'s', CAST(1, 'Dynamic')",
+            r"'k`l', CAST(2, 'Dynamic')",
+        ],
+    );
+    // Undeclared properties read the same-named column, quoted.
+    has(
+        "MATCH (a:User) WHERE a.`q x` = 1 RETURN a.`é` AS e, a.`x;y` AS s",
+        &[r#"v0."é" AS "e""#, r#"v0."x;y" AS "s""#, r#"v0."q x" = 1"#],
+    );
+}
+
+/// What an escaped name can name that ClickGraph cannot carry is refused,
+/// never read as another name (#1489).
+#[test]
+fn escaped_names_that_are_refused_1489() {
+    // `v.k1.k2` is carried as the key path `k1.k2`.
+    not_lowered(
+        "MATCH (a:User) RETURN a.`q.x` AS q",
+        "a property key containing '.'",
+    );
+    not_lowered(
+        "WITH {a: {b: 1}} AS m RETURN m.a.`b.c` AS q",
+        "a property key containing '.'",
+    );
+    // A parameter's value is put in its place by a plain name.
+    not_lowered("RETURN $`p q` AS p", "a parameter named `p q`");
+}
+
+/// A property of a list's element, of a call, of a parenthesized
+/// expression (#1381): its key of the value, as `e['key']`.
+#[test]
+fn a_property_of_any_value_1381() {
+    assert_eq!(
+        sql("WITH [{name: 'x'}, {name: 'y'}] AS ms RETURN ms[0].name AS n, ms[-1].name AS m"),
+        sql("WITH [{name: 'x'}, {name: 'y'}] AS ms RETURN ms[0]['name'] AS n, ms[-1]['name'] AS m"),
+    );
+    assert_eq!(
+        sql("WITH [[{name: 'a'}]] AS nss RETURN [x IN nss | x[-1].name] AS l, nss[0][0].name AS m"),
+        sql("WITH [[{name: 'a'}]] AS nss RETURN [x IN nss | x[-1]['name']] AS l, nss[0][0]['name'] AS m"),
+    );
+    assert_eq!(
+        sql("MATCH (a:User) RETURN (a).name AS n"),
+        sql("MATCH (a:User) RETURN a.name AS n"),
+    );
+    // Of a list of nodes: not lowered (#1378), as `bs[0]` is not.
+    not_lowered(
+        "MATCH (a:User)-[:FOLLOWS]->(b:User) WITH a, collect(b) AS bs RETURN bs[0].name AS f",
+        "an element or slice of a list of nodes or relationships",
+    );
+}
+
+/// Review of #1489: the empty name, dotted keys in a pattern map, a
+/// parameter's property.
+#[test]
+fn escaped_names_review_1489() {
+    not_lowered("RETURN 1 AS `` ", "an empty name (``) as a column");
+    not_lowered("MATCH (a:User) RETURN a.`` AS x", "an empty property key");
+    not_lowered(
+        "MATCH (a:User {`q.x`: 1}) RETURN a.name AS n",
+        "a property key containing '.'",
+    );
+    // `$p.year` is the accessor; `$p.days` a property, no parse error.
+    has(
+        "RETURN $p.year AS y",
+        &["toYear(fromUnixTimestamp64Milli($p))"],
+    );
+    if let Err(e) = translate_bound_plan("RETURN $p.days AS d", &social(), &ReadOptions::default())
+    {
+        assert!(!e.contains("Parse error"), "{e}");
+    }
+}

@@ -185,8 +185,10 @@ impl FunctionMapper for ClickhouseFunctionMapper {
         // CH escapes `"` inside a double-quoted identifier by doubling it.
         // Aliases inferred from raw return text can contain quotes
         // (e.g., `RETURN 'a"b'` derives an alias from the literal),
-        // and naive wrapping would produce malformed SQL.
-        format!("\"{}\"", name.replace('"', "\"\""))
+        // and naive wrapping would produce malformed SQL. A backslash
+        // escapes the next character there too, so it is doubled: bare,
+        // `"a\"` would not end the identifier (#1489: `` AS `a\` ``).
+        format!("\"{}\"", name.replace('\\', "\\\\").replace('"', "\"\""))
     }
 
     fn array_slice(&self, arr: &str, offset: &str, length: Option<&str>) -> String {
@@ -476,6 +478,9 @@ mod tests {
         let m = ClickhouseFunctionMapper;
         assert_eq!(m.quote_alias("b.id"), "\"b.id\"");
         assert_eq!(m.quote_alias("x\"y"), "\"x\"\"y\"");
+        // A backslash is doubled: `"a\"` would not end the identifier.
+        assert_eq!(m.quote_alias(r"a\"), r#""a\\""#);
+        assert_eq!(m.quote_alias(r#"a\"b"#), r#""a\\""b""#);
     }
 
     /// #1432: a date is not a string of its text, nor an interval a number;

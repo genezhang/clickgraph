@@ -72,7 +72,7 @@ mod tests {
             Ok((remaining, order_by_item)) => {
                 assert_eq!(remaining, "");
                 let expected = OrderByItem {
-                    expression: Expression::Variable("a"),
+                    expression: Expression::Variable("a".into()),
                     order: OrerByOrder::Asc,
                 };
                 assert_eq!(&order_by_item, &expected);
@@ -89,7 +89,7 @@ mod tests {
             Ok((remaining, order_by_item)) => {
                 assert_eq!(remaining, "");
                 let expected = OrderByItem {
-                    expression: Expression::Variable("b"),
+                    expression: Expression::Variable("b".into()),
                     order: OrerByOrder::Desc,
                 };
                 assert_eq!(&order_by_item, &expected);
@@ -106,7 +106,7 @@ mod tests {
             Ok((remaining, order_by_item)) => {
                 assert_eq!(remaining, "");
                 let expected = OrderByItem {
-                    expression: Expression::Variable("c"),
+                    expression: Expression::Variable("c".into()),
                     order: OrerByOrder::Asc,
                 };
                 assert_eq!(&order_by_item, &expected);
@@ -125,7 +125,7 @@ mod tests {
                 // Expect one item in the clause.
                 assert_eq!(order_by_clause.order_by_items.len(), 1);
                 let expected_item = OrderByItem {
-                    expression: Expression::Variable("a"),
+                    expression: Expression::Variable("a".into()),
                     order: OrerByOrder::Desc,
                 };
                 assert_eq!(&order_by_clause.order_by_items[0], &expected_item);
@@ -144,17 +144,17 @@ mod tests {
                 assert_eq!(order_by_clause.order_by_items.len(), 3);
 
                 let expected_item1 = OrderByItem {
-                    expression: Expression::Variable("a"),
+                    expression: Expression::Variable("a".into()),
                     order: OrerByOrder::Asc,
                 };
 
                 let expected_item2 = OrderByItem {
-                    expression: Expression::Variable("b"),
+                    expression: Expression::Variable("b".into()),
                     order: OrerByOrder::Asc,
                 };
 
                 let expected_item3 = OrderByItem {
-                    expression: Expression::Variable("c"),
+                    expression: Expression::Variable("c".into()),
                     order: OrerByOrder::Desc,
                 };
                 assert_eq!(&order_by_clause.order_by_items[0], &expected_item1);
@@ -174,11 +174,11 @@ mod tests {
                 assert_eq!(remaining, "");
                 assert_eq!(order_by_clause.order_by_items.len(), 2);
                 let expected_item1 = OrderByItem {
-                    expression: Expression::Variable("a"),
+                    expression: Expression::Variable("a".into()),
                     order: OrerByOrder::Desc,
                 };
                 let expected_item2 = OrderByItem {
-                    expression: Expression::Variable("b"),
+                    expression: Expression::Variable("b".into()),
                     order: OrerByOrder::Asc,
                 };
                 assert_eq!(&order_by_clause.order_by_items[0], &expected_item1);

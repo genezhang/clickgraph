@@ -6,10 +6,10 @@ use nom::{
     sequence::delimited, IResult, Parser,
 };
 
-use super::ast::{MatchClause, PathPattern};
+use super::ast::{MatchClause, Name, PathPattern};
+use super::common::symbolic_name;
 use super::common::ws;
 use super::errors::OpenCypherParsingError;
-use super::expression::parse_identifier;
 use super::path_pattern;
 use super::where_clause;
 
@@ -43,12 +43,12 @@ pub fn parse_match_clause(
 /// Parse optional "varname = " followed by pattern
 pub(super) fn parse_pattern_with_optional_variable(
     input: &str,
-) -> IResult<&str, (Option<&str>, PathPattern<'_>), OpenCypherParsingError<'_>> {
+) -> IResult<&str, (Option<Name<'_>>, PathPattern<'_>), OpenCypherParsingError<'_>> {
     let mut input_after_var = input;
     let mut path_variable = None;
 
     // Try to parse "varname = "
-    if let Ok((rest, name)) = parse_identifier(input) {
+    if let Ok((rest, name)) = symbolic_name::<nom::error::Error<&str>>(input) {
         let (rest, _) = multispace0(rest)?;
         if let Ok((rest, _)) = char::<_, nom::error::Error<_>>('=')(rest) {
             let (rest, _) = multispace0(rest)?;
@@ -181,7 +181,7 @@ mod tests {
         match result {
             Ok((remaining, clause)) => {
                 assert_eq!(remaining.trim(), "");
-                assert_eq!(clause.path_patterns[0].0, Some("p"));
+                assert_eq!(clause.path_patterns[0].0.as_deref(), Some("p"));
                 assert_eq!(clause.path_patterns.len(), 1);
             }
             Err(e) => panic!("Parsing failed unexpectedly: {:?}", e),
@@ -195,7 +195,7 @@ mod tests {
         match result {
             Ok((remaining, clause)) => {
                 assert_eq!(remaining.trim(), "");
-                assert_eq!(clause.path_patterns[0].0, Some("p"));
+                assert_eq!(clause.path_patterns[0].0.as_deref(), Some("p"));
                 assert_eq!(clause.path_patterns.len(), 1);
                 match &clause.path_patterns[0] {
                     (_, PathPattern::ShortestPath(_)) => {

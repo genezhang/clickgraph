@@ -65,7 +65,10 @@ mod tests {
                 assert_eq!(remaining, "");
                 assert!(!delete_clause.is_detach);
                 assert_eq!(delete_clause.delete_items.len(), 1);
-                assert_eq!(&delete_clause.delete_items[0], &Expression::Variable("a"));
+                assert_eq!(
+                    &delete_clause.delete_items[0],
+                    &Expression::Variable("a".into())
+                );
             }
             Err(e) => {
                 panic!("Parsing failed unexpectedly: {:?}", e);
@@ -82,8 +85,14 @@ mod tests {
                 assert_eq!(remaining, "");
                 assert!(delete_clause.is_detach);
                 assert_eq!(delete_clause.delete_items.len(), 2);
-                assert_eq!(&delete_clause.delete_items[0], &Expression::Variable("a"));
-                assert_eq!(&delete_clause.delete_items[1], &Expression::Variable("b"));
+                assert_eq!(
+                    &delete_clause.delete_items[0],
+                    &Expression::Variable("a".into())
+                );
+                assert_eq!(
+                    &delete_clause.delete_items[1],
+                    &Expression::Variable("b".into())
+                );
             }
             Err(e) => {
                 panic!("Parsing failed unexpectedly: {:?}", e);
@@ -100,9 +109,18 @@ mod tests {
                 assert_eq!(remaining, "");
                 assert!(delete_clause.is_detach);
                 assert_eq!(delete_clause.delete_items.len(), 3);
-                assert_eq!(&delete_clause.delete_items[0], &Expression::Variable("a"));
-                assert_eq!(&delete_clause.delete_items[1], &Expression::Variable("b"));
-                assert_eq!(&delete_clause.delete_items[2], &Expression::Variable("c"));
+                assert_eq!(
+                    &delete_clause.delete_items[0],
+                    &Expression::Variable("a".into())
+                );
+                assert_eq!(
+                    &delete_clause.delete_items[1],
+                    &Expression::Variable("b".into())
+                );
+                assert_eq!(
+                    &delete_clause.delete_items[2],
+                    &Expression::Variable("c".into())
+                );
             }
             Err(e) => {
                 panic!("Parsing failed unexpectedly: {:?}", e);

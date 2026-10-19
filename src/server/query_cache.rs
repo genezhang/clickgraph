@@ -148,6 +148,46 @@ pub struct QueryCacheKey {
     pub route: &'static str,
 }
 
+/// `query` with each run of whitespace outside quotes one space, trimmed. A
+/// string literal or an escaped name is kept as written: `'Alice  Johnson'`
+/// and `'Alice Johnson'`, `` `x  y` `` and `` `x y` `` are different queries
+/// (#1489 review). Cypher's quoting: `'…'` and `"…"` with `\` escapes,
+/// `` `…` `` with a doubled backtick and no escapes.
+fn normalize_whitespace(query: &str) -> String {
+    let mut out = String::with_capacity(query.len());
+    let mut chars = query.chars().peekable();
+    let mut pending_space = false;
+    while let Some(c) = chars.next() {
+        if c.is_whitespace() {
+            pending_space = !out.is_empty();
+            continue;
+        }
+        if pending_space {
+            out.push(' ');
+            pending_space = false;
+        }
+        out.push(c);
+        if matches!(c, '\'' | '"' | '`') {
+            while let Some(d) = chars.next() {
+                out.push(d);
+                if d == '\\' && c != '`' {
+                    if let Some(e) = chars.next() {
+                        out.push(e);
+                    }
+                } else if d == c {
+                    if c == '`' && chars.peek() == Some(&'`') {
+                        out.push('`');
+                        chars.next();
+                    } else {
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
 impl QueryCacheKey {
     pub fn new(query: &str, schema_name: &str) -> Self {
         Self::with_view_scope(query, schema_name, None, None)
@@ -163,7 +203,9 @@ impl QueryCacheKey {
         let stripped = ReplanOption::strip_prefix(query);
 
         // Normalize whitespace: collapse multiple spaces/tabs/newlines into single space
-        let normalized = stripped.split_whitespace().collect::<Vec<&str>>().join(" ");
+        // (of the query without its comments: a quote inside one opens no
+        // string, `// it's`)
+        let normalized = normalize_whitespace(&crate::open_cypher_parser::strip_comments(stripped));
 
         // Build a scope string from tenant_id and view_parameters
         let view_scope = match (tenant_id, view_parameters) {
@@ -658,5 +700,28 @@ mod tests {
         assert_eq!(metrics.misses, 1);
         assert_eq!(metrics.hit_rate(), 2.0 / 3.0);
         assert_eq!(metrics.size, 1);
+    }
+
+    /// Whitespace inside a string or an escaped name is part of the query
+    /// (#1489 review): such keys differ; outside quotes it is normalized.
+    #[test]
+    fn whitespace_inside_quotes_is_kept_in_the_key_1489() {
+        let key = |q: &str| QueryCacheKey::new(q, "s").normalized_query;
+        assert_ne!(
+            key("MATCH (u) WHERE u.name = 'Alice  Johnson' RETURN u"),
+            key("MATCH (u) WHERE u.name = 'Alice Johnson' RETURN u")
+        );
+        assert_ne!(key("RETURN 1 AS `x  y`"), key("RETURN 1 AS `x y`"));
+        assert_ne!(key("RETURN u.`a  b`"), key("RETURN u.`a b`"));
+        assert_ne!(key(r#"RETURN "a  b""#), key(r#"RETURN "a b""#));
+        // A quote inside a comment opens no string (review).
+        assert_ne!(
+            key("MATCH (u) // it's\nWHERE u.name = 'Alice  Johnson' RETURN u"),
+            key("MATCH (u) // it's\nWHERE u.name = 'Alice Johnson' RETURN u")
+        );
+        assert_eq!(
+            key("  MATCH (u)\n\tRETURN   u.`a  b` , 'it\\'s  x' , `c``  d`  "),
+            "MATCH (u) RETURN u.`a  b` , 'it\\'s  x' , `c``  d`"
+        );
     }
 }

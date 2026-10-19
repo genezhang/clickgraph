@@ -52,7 +52,7 @@ Shared infrastructure:
 | ast.rs | 706 | All AST type definitions — the contract between parser and downstream modules |
 | expression.rs | 1,596 | Expression parsing: precedence climbing, operators, functions, CASE, EXISTS, reduce, pattern comprehension, lambda, map/list literals, property access, label expressions |
 | path_pattern.rs | 1,537 | Node/relationship/connected pattern parsing, variable-length specs (`*1..3`), `shortestPath()`/`allShortestPaths()`, multi-label support, inline properties, depth limit (50 hops) |
-| common.rs | 481 | `strip_comments()` (comment removal respecting strings/relationship patterns), `ws()` combinator, identifier parsers |
+| common.rs | 481 | `strip_comments()` (comment removal respecting strings/relationship patterns), `ws()` combinator, `symbolic_name` (every name) |
 | return_clause.rs | 403 | RETURN item parsing with `original_text` capture for Neo4j-compatible default aliases |
 | with_clause.rs | 332 | WITH clause with ORDER BY/SKIP/LIMIT/WHERE, recursive nesting (subsequent MATCH, UNWIND, WITH) |
 | match_clause.rs | 282 | MATCH clause parsing with optional path variable (`p = ...`), WHERE per MATCH |
@@ -130,9 +130,10 @@ OpenCypherQueryAst
 
 Expression (recursive)
 ├── Literal(Integer|Float|Boolean|String|Null)
-├── Variable(&str)
-├── Parameter(&str)                         $param
-├── PropertyAccessExp { base, key }         n.name
+├── Variable(Name)                          x, `my var`
+├── Parameter(Name)                         $param
+├── PropertyAccessExp { base, key }         n.name (a variable's property)
+├── PropertyOf { base, key }               m.a.b, xs[1].name, head(l).name (any other value's)
 ├── FunctionCallExp { name, args }          count(*), toUpper(n.name)
 ├── OperatorApplicationExp { op, operands } a + b, NOT x, x IS NULL
 ├── List(Vec<Expression>)                   [1, 2, 3]
@@ -150,10 +151,14 @@ Expression (recursive)
 
 ## Critical Invariants
 
-### 1. Zero-Copy Parsing
+### 1. Zero-Copy Parsing and Names
 All `&'a str` references in the AST borrow from the original input string.
 **Never** modify or deallocate the input string while the AST is alive.
-`FunctionCall.name` is the exception — it's `String` (owned) because dotted names like `ch.arrayFilter` are joined from parts.
+Every name (variable, label, type, key, alias, parameter) is a `Name<'a>` (`Cow<'a, str>`), parsed by
+`common::symbolic_name` and nothing else: plain, or backtick-quoted with a doubled backtick read as one
+(#1489). It borrows from the input unless the quoted name held a doubled backtick. A new name site must
+use `symbolic_name`. `FunctionCall.name` is `String` (owned) because dotted names like `ch.arrayFilter`
+are joined from parts.
 
 ### 2. Operator Precedence (expression.rs)
 The expression parser implements standard precedence via recursive descent:
@@ -212,7 +217,7 @@ When populated, this takes precedence over the legacy `match_clauses` / `optiona
 | AS keyword consumed by expression | `RETURN x AS alias` — `AS` treated as variable | Expression parser must stop at clause boundary keywords; keyword sensitivity is managed by what the callers (return_clause, with_clause) handle |
 | STARTS WITH/ENDS WITH | Multi-word operators misparsed | Must be parsed before single-word `IN` in the `alt()` chain |
 | NOT IN vs IN | `NOT IN` parsed as NOT + IN separately | `NOT IN` must appear before `IN` in operator alternatives |
-| Identifiers starting with keywords | `ORDER_date` parsed as ORDER keyword | Identifiers use `take_while1(is_identifier_char)` which includes `_`, so `ORDER_date` is consumed as one token, but `ORDER ` triggers the keyword |
+| Identifiers starting with keywords | `ORDER_date` parsed as ORDER keyword | Names use `common::symbolic_name`, which includes `_`, so `ORDER_date` is consumed as one token, but `ORDER ` triggers the keyword |
 
 ## Dependencies
 

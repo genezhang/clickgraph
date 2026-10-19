@@ -3,7 +3,7 @@
 use super::{ProcedureRegistry, ProcedureResult};
 use crate::graph_catalog::graph_schema::GraphSchema;
 use crate::open_cypher_parser;
-use crate::open_cypher_parser::ast::{CypherStatement, StandaloneProcedureCall};
+use crate::open_cypher_parser::ast::{CypherStatement, Expression, StandaloneProcedureCall};
 use std::collections::HashMap;
 
 /// Execute a standalone procedure call by name
@@ -362,11 +362,11 @@ fn output_columns(
         Some(r) => Some(
             r.return_items
                 .iter()
-                .map(|item| {
-                    item.alias
-                        .or(item.original_text)
-                        .unwrap_or("?column?")
-                        .to_string()
+                .map(|item| match (&item.alias, &item.expression) {
+                    (Some(alias), _) => alias.to_string(),
+                    // A variable's column is its name (`` RETURN `label` ``: label).
+                    (None, Expression::Variable(v)) => v.to_string(),
+                    (None, _) => item.original_text.unwrap_or("?column?").to_string(),
                 })
                 .collect(),
         ),

@@ -400,15 +400,43 @@ fn browser_show_stub_fields(query_upper: &str) -> Option<&'static [&'static str]
 fn substitute_cypher_parameters(query: &str, parameters: &HashMap<String, Value>) -> String {
     use regex::Regex;
 
-    // Helper to check if position is inside a string literal
+    // Is `pos` inside a string literal or a backtick-quoted name? Cypher's
+    // quoting: `'…'` and `"…"` with `\` escapes, `` `…` `` with a doubled
+    // backtick (a name such as `` `it's` `` holds no string, #1489); a
+    // quote inside a `//` or `/* */` comment opens none either.
     fn is_inside_string(query: &str, pos: usize) -> bool {
-        let before = &query[..pos];
-        let single_quotes = before.matches('\'').count();
-        let double_quotes = before.matches('"').count();
-
-        // Odd number of quotes means we're inside a string
-        // This is simplified - doesn't handle escaped quotes perfectly
-        (single_quotes % 2 == 1) || (double_quotes % 2 == 1)
+        let mut quote: Option<char> = None;
+        let mut chars = query[..pos].chars().peekable();
+        while let Some(c) = chars.next() {
+            match quote {
+                None if c == '/' && chars.peek() == Some(&'/') => {
+                    for d in chars.by_ref() {
+                        if d == '\n' {
+                            break;
+                        }
+                    }
+                }
+                None if c == '/' && chars.peek() == Some(&'*') => {
+                    chars.next();
+                    let mut star = false;
+                    for d in chars.by_ref() {
+                        if star && d == '/' {
+                            break;
+                        }
+                        star = d == '*';
+                    }
+                }
+                None if matches!(c, '\'' | '"' | '`') => quote = Some(c),
+                None => {}
+                Some(q) if c == '\\' && q != '`' => {
+                    chars.next();
+                }
+                // A doubled backtick reopens the name at the next one.
+                Some(q) if c == q => quote = None,
+                Some(_) => {}
+            }
+        }
+        quote.is_some()
     }
 
     fn escape_cypher_string(s: &str) -> String {
@@ -3734,5 +3762,33 @@ mod tests {
             msg.contains("Statement parsing failed") || msg.contains("Unexpected tokens"),
             "expected a parse-stage error for genuine trailing garbage, got: {msg}"
         );
+    }
+
+    /// A quote inside a backtick-quoted name opens no string: the `id()`
+    /// parameter after `` `it's` `` is still substituted (#1489 review); one
+    /// inside a string is not.
+    #[test]
+    fn a_quote_in_an_escaped_name_opens_no_string_1489() {
+        let mut params: HashMap<String, Value> = HashMap::new();
+        params.insert("p".to_string(), serde_json::json!(7));
+        let q = "MATCH (u) WITH u AS `it's` MATCH (m) WHERE id(m) = $p RETURN m";
+        let out = substitute_cypher_parameters(q, &params);
+        assert!(out.contains("id(m) = 7"), "got: {out}");
+        let q = "MATCH (u) WITH u AS `a``'` MATCH (m) WHERE id(m) = $p RETURN m";
+        assert!(substitute_cypher_parameters(q, &params).contains("id(m) = 7"));
+        let q = "RETURN 'it\\'s id(m) = $p' AS s";
+        assert_eq!(substitute_cypher_parameters(q, &params), q);
+        let q = "RETURN \"a `b\" AS s, 1 AS x WHERE id(m) = $p";
+        assert!(substitute_cypher_parameters(q, &params).contains("id(m) = 7"));
+        // Nor does one inside a comment (review).
+        for q in [
+            "MATCH (m) // it's a comment\nWHERE id(m) = $p RETURN m",
+            "MATCH (m) /* it's */ WHERE id(m) = $p RETURN m",
+        ] {
+            assert!(
+                substitute_cypher_parameters(q, &params).contains("id(m) = 7"),
+                "{q}"
+            );
+        }
     }
 }

@@ -1,15 +1,16 @@
 use nom::{
     branch::alt,
-    bytes::complete::{tag, take_until, take_while1},
-    character::complete::{alpha1, alphanumeric1, digit1, multispace0},
+    character::complete::{digit1, multispace0},
     combinator::{opt, recognize},
     error::ParseError,
-    multi::many0,
     sequence::{delimited, pair},
     IResult, Parser,
 };
 
 use nom::character::complete::char;
+use std::borrow::Cow;
+
+use super::ast::Name;
 
 /// Strip SQL-style comments from input before parsing
 /// This handles both line comments (--) and block comments (/* */)
@@ -33,8 +34,9 @@ pub fn strip_comments(input: &str) -> String {
             continue;
         }
 
-        // Check for escape character in strings/identifiers
-        if in_string.is_some() && ch == '\\' {
+        // Check for escape character in strings (a backtick-quoted name reads
+        // no backslash escapes: `a\` is the name `a\`)
+        if matches!(in_string, Some('\'' | '"')) && ch == '\\' {
             result.push(ch);
             escape_next = true;
             continue;
@@ -157,56 +159,129 @@ where
     delimited(multispace0, inner, multispace0)
 }
 
-// This parsed multuple dots as well. Keep it for now here
-// pub fn parse_alphanumeric_with_underscore_dot_star(input: &str) -> IResult<&str, &str> {
-
-//     alt((
-//         // Single-quoted string: returns the inner content.
-//         recognize((char('\''), take_until("\'"), char('\''))),
-//         // Double-quoted string.
-//         recognize((char('"'), take_until("\""), char('"'))),
-//         // The star token, e.g. COUNT(*)
-//         tag("*"),
-//         // Otherwise, the usual unquoted identifier pattern.
-//         recognize((
-//             many0(tag("$")),
-//             alphanumeric1,        // Must start with alphanumeric.
-//             many0(tag("_")),      // Allow underscores.
-//             many0(tag(".")),      // Allow dots.
-//             many0(alphanumeric1), // And more alphanumerics.
-//         )),
-//     ))
-//     .parse(input)
-// }
-
-// One or more alphanumerics/underscores forming a valid identifier.
-// Allows leading underscores (e.g., "__expand", "_name") per OpenCypher spec.
-// e.g., it will match "account", "creation", "foo_bar", "_name", "__expand".
-fn identifier_core(input: &str) -> IResult<&str, &str> {
-    recognize(pair(
-        alt((alpha1, tag("_"))),
-        many0(alt((alphanumeric1, tag("_")))),
-    ))
-    .parse(input)
+/// A symbolic name (Neo4j 5's `symbolicNameString`), used at every place a
+/// query names something: variables, labels, relationship types, property
+/// and map keys, aliases, parameters, function names.
+///
+/// * Unescaped: Neo4j's classes ([`is_name_start`], [`is_name_continue`]):
+///   a Unicode identifier start or `_`, then identifier characters and
+///   currency symbols (`a$b`, `a€`, `é`, `_n`; not `1a`, `€a`, `x²`).
+///   Keywords are names too where the grammar expects a name; the callers
+///   that read an expression keep their keyword checks.
+/// * Escaped: any characters between backticks, a doubled backtick standing
+///   for one (`` `it``s` `` is the name ``it`s``). Neo4j reads no backslash
+///   escapes in it (`` `a\nb` `` is the four characters `a\nb`), and an empty
+///   escaped name is a name.
+///
+/// The name borrows from the input, except for an escaped name that holds a
+/// doubled backtick.
+pub fn symbolic_name<'a, E: ParseError<&'a str>>(input: &'a str) -> IResult<&'a str, Name<'a>, E> {
+    let Some(body) = input.strip_prefix('`') else {
+        return unescaped_symbolic_name(input).map(|(rest, s)| (rest, Cow::Borrowed(s)));
+    };
+    let mut from = 0;
+    let mut doubled = false;
+    while let Some(i) = body[from..].find('`').map(|i| from + i) {
+        if body[i + 1..].starts_with('`') {
+            doubled = true;
+            from = i + 2;
+            continue;
+        }
+        let text = &body[..i];
+        let name = if doubled {
+            Cow::Owned(text.replace("``", "`"))
+        } else {
+            Cow::Borrowed(text)
+        };
+        return Ok((&body[i + 1..], name));
+    }
+    // An unterminated escaped name.
+    Err(nom::Err::Error(E::from_error_kind(
+        input,
+        nom::error::ErrorKind::Char,
+    )))
 }
 
-// identifier with optional leading '$'s and at most one dot.
-// e.g. "$$foo_bar" (without any dot), or "$foo_bar.baz" (with exactly one dot)
-fn unquoted_identifier(input: &str) -> IResult<&str, &str> {
-    recognize(pair(
-        many0(tag("$")),
-        pair(
-            identifier_core,
-            // Optionally match a dot and a second identifier_core.
-            opt(pair(tag("."), identifier_core)),
-        ),
-    ))
-    .parse(input)
+/// Is the symbolic name at the start of `input` an escaped one?
+pub fn is_escaped_name(input: &str) -> bool {
+    input.starts_with('`')
+}
+
+/// An unescaped symbolic name (see [`symbolic_name`]).
+fn unescaped_symbolic_name<'a, E: ParseError<&'a str>>(
+    input: &'a str,
+) -> IResult<&'a str, &'a str, E> {
+    let mut chars = input.char_indices();
+    match chars.next() {
+        Some((_, c)) if is_name_start(c) => {}
+        _ => {
+            return Err(nom::Err::Error(E::from_error_kind(
+                input,
+                nom::error::ErrorKind::Alpha,
+            )))
+        }
+    }
+    let end = chars
+        .find(|(_, c)| !is_name_continue(*c))
+        .map_or(input.len(), |(i, _)| i);
+    Ok((&input[end..], &input[..end]))
+}
+
+/// Unicode connector punctuation (general category Pc): `_` and its kin.
+const CONNECTOR_PUNCTUATION: [(char, char); 6] = [
+    ('_', '_'),
+    ('\u{203F}', '\u{2040}'),
+    ('\u{2054}', '\u{2054}'),
+    ('\u{FE33}', '\u{FE34}'),
+    ('\u{FE4D}', '\u{FE4F}'),
+    ('\u{FF3F}', '\u{FF3F}'),
+];
+
+/// Unicode currency symbols (general category Sc): `$`, `€`, ….
+const CURRENCY_SYMBOLS: [(char, char); 21] = [
+    ('$', '$'),
+    ('\u{A2}', '\u{A5}'),
+    ('\u{58F}', '\u{58F}'),
+    ('\u{60B}', '\u{60B}'),
+    ('\u{7FE}', '\u{7FF}'),
+    ('\u{9F2}', '\u{9F3}'),
+    ('\u{9FB}', '\u{9FB}'),
+    ('\u{AF1}', '\u{AF1}'),
+    ('\u{BF9}', '\u{BF9}'),
+    ('\u{E3F}', '\u{E3F}'),
+    ('\u{17DB}', '\u{17DB}'),
+    ('\u{20A0}', '\u{20C0}'),
+    ('\u{A838}', '\u{A838}'),
+    ('\u{FDFC}', '\u{FDFC}'),
+    ('\u{FE69}', '\u{FE69}'),
+    ('\u{FF04}', '\u{FF04}'),
+    ('\u{FFE0}', '\u{FFE1}'),
+    ('\u{FFE5}', '\u{FFE6}'),
+    ('\u{11FDD}', '\u{11FE0}'),
+    ('\u{1E2FF}', '\u{1E2FF}'),
+    ('\u{1ECB0}', '\u{1ECB0}'),
+];
+
+fn in_ranges(c: char, ranges: &[(char, char)]) -> bool {
+    ranges.iter().any(|&(lo, hi)| (lo..=hi).contains(&c))
+}
+
+/// The first character of an unescaped name, as in Neo4j 5: a Unicode
+/// identifier start or connector punctuation (`_`, `‿`).
+pub fn is_name_start(c: char) -> bool {
+    unicode_ident::is_xid_start(c) || in_ranges(c, &CONNECTOR_PUNCTUATION)
+}
+
+/// A later character of an unescaped name, as in Neo4j 5: a Unicode
+/// identifier character (letters, digits, marks, connector punctuation) or a
+/// currency symbol (`a$b`, `a€`). Not `²` (`x²` is no name there).
+pub fn is_name_continue(c: char) -> bool {
+    unicode_ident::is_xid_continue(c) || in_ranges(c, &CURRENCY_SYMBOLS)
 }
 
 /// Parse a numeric literal (integer or float with optional scientific notation)
 /// Matches: 123, -123, 3.14, -3.14, .5, -.5, 1.5e10, -2.3e-5, 1e10
-fn parse_numeric_literal(input: &str) -> IResult<&str, &str> {
+pub(super) fn parse_numeric_literal(input: &str) -> IResult<&str, &str> {
     recognize(pair(
         opt(char('-')),
         pair(
@@ -226,37 +301,6 @@ fn parse_numeric_literal(input: &str) -> IResult<&str, &str> {
         ),
     ))
     .parse(input)
-}
-
-pub fn parse_alphanumeric_with_underscore_dot_star(input: &str) -> IResult<&str, &str> {
-    alt((
-        // Single-quoted string: returns the whole thing including quotes.
-        recognize(pair(char('\''), pair(take_until("'"), char('\'')))),
-        // Double-quoted string.
-        recognize(pair(char('"'), pair(take_until("\""), char('"')))),
-        // The star token, e.g. COUNT(*)
-        tag("*"),
-        // Numeric literals: 123, -456, 3.14, -0.5
-        parse_numeric_literal,
-        // Unquoted identifier pattern.
-        unquoted_identifier,
-    ))
-    .parse(input)
-}
-
-fn underscore1(input: &str) -> IResult<&str, &str> {
-    take_while1(|c| c == '_')(input)
-}
-
-pub fn parse_alphanumeric_with_underscore(input: &str) -> IResult<&str, &str> {
-    // recognize((
-    //     alphanumeric1,        // First part must be alphanumeric
-    //     many0(is_a("_")),     // Allow multiple underscores anywhere
-    //     many0(alphanumeric1), // Allow more alphanumeric parts
-    // ))
-    // .parse(input)
-
-    recognize(pair(alphanumeric1, many0(pair(underscore1, alphanumeric1)))).parse(input)
 }
 
 #[cfg(test)]
@@ -289,82 +333,83 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_alphanumeric_with_underscore_dot_star() {
-        // single-quoted string input.
-        assert_eq!(
-            parse_alphanumeric_with_underscore_dot_star("'hello'"),
-            Ok(("", "'hello'"))
-        );
-        // double-quoted string input.
-        assert_eq!(
-            parse_alphanumeric_with_underscore_dot_star("\"world\""),
-            Ok(("", "\"world\""))
-        );
-        // the star token.
-        assert_eq!(
-            parse_alphanumeric_with_underscore_dot_star("*"),
-            Ok(("", "*"))
-        );
-        // a simple unquoted identifier.
-        assert_eq!(
-            parse_alphanumeric_with_underscore_dot_star("abc.def.a"),
-            Ok((".a", "abc.def"))
-        );
-        // when extra characters follow a valid identifier.
-        assert_eq!(
-            parse_alphanumeric_with_underscore_dot_star("abc123!"),
-            Ok(("!", "abc123"))
-        );
-        // a failure case (input not matching any pattern).
-        assert!(parse_alphanumeric_with_underscore_dot_star("!abc").is_err());
+    fn test_parse_numeric_literal() {
+        assert_eq!(parse_numeric_literal("123"), Ok(("", "123")));
+        assert_eq!(parse_numeric_literal("-456"), Ok(("", "-456")));
+        assert_eq!(parse_numeric_literal("3.14"), Ok(("", "3.14")));
+        assert_eq!(parse_numeric_literal("-0.5"), Ok(("", "-0.5")));
+        assert_eq!(parse_numeric_literal("1e10 x"), Ok((" x", "1e10")));
+        // `1..3` is a range: the integer only.
+        assert_eq!(parse_numeric_literal("1..3"), Ok(("..3", "1")));
+        assert!(parse_numeric_literal("abc").is_err());
+    }
 
-        // Numeric literals
-        assert_eq!(
-            parse_alphanumeric_with_underscore_dot_star("123"),
-            Ok(("", "123"))
-        );
-        assert_eq!(
-            parse_alphanumeric_with_underscore_dot_star("-456"),
-            Ok(("", "-456"))
-        );
-        assert_eq!(
-            parse_alphanumeric_with_underscore_dot_star("3.14"),
-            Ok(("", "3.14"))
-        );
-        assert_eq!(
-            parse_alphanumeric_with_underscore_dot_star("-0.5"),
-            Ok(("", "-0.5"))
-        );
+    fn name(input: &str) -> IResult<&str, Name<'_>> {
+        symbolic_name(input)
     }
 
     #[test]
-    fn test_parse_alphanumeric_with_underscore() {
-        // Valid identifiers.
-        assert_eq!(parse_alphanumeric_with_underscore("abc"), Ok(("", "abc")));
-        assert_eq!(
-            parse_alphanumeric_with_underscore("abc_def"),
-            Ok(("", "abc_def"))
-        );
-        assert_eq!(
-            parse_alphanumeric_with_underscore("abc___def"),
-            Ok(("", "abc___def"))
-        );
-        // starting with digits.
-        assert_eq!(
-            parse_alphanumeric_with_underscore("123abc"),
-            Ok(("", "123abc"))
-        );
-        // with trailing digits.
-        assert_eq!(
-            parse_alphanumeric_with_underscore("account_creation_date"),
-            Ok(("", "account_creation_date"))
-        );
-        // with a mix of letters and numbers.
-        assert_eq!(parse_alphanumeric_with_underscore("A1B2"), Ok(("", "A1B2")));
-        // failure: starting with an underscore should be rejected.
-        assert!(parse_alphanumeric_with_underscore("_abc").is_err());
+    fn symbolic_name_unescaped_1489() {
+        for (input, rest, text) in [
+            ("abc", "", "abc"),
+            ("abc_def rest", " rest", "abc_def"),
+            ("_name", "", "_name"),
+            ("__expand", "", "__expand"),
+            ("a1B2", "", "a1B2"),
+            ("a$b", "", "a$b"),
+            ("é_x", "", "é_x"),
+            ("abc123!", "!", "abc123"),
+            ("abc.def", ".def", "abc"),
+            // Neo4j 5: currency symbols continue a name, connector
+            // punctuation starts one, `²` (no identifier character) ends it.
+            ("a€b", "", "a€b"),
+            ("‿x", "", "‿x"),
+            ("a١", "", "a١"),
+            ("x²", "²", "x"),
+        ] {
+            let (r, n) = name(input).unwrap_or_else(|e| panic!("{input}: {e:?}"));
+            assert_eq!((r, &*n), (rest, text), "{input}");
+            assert!(matches!(n, Cow::Borrowed(_)), "{input}");
+        }
+        // A name does not start with a digit, `$` or a symbol.
+        for input in ["123abc", "$x", "€a", "!abc", "", " a"] {
+            assert!(name(input).is_err(), "{input}");
+        }
     }
 
+    #[test]
+    fn symbolic_name_escaped_1489() {
+        for (input, rest, text) in [
+            ("`my node` x", " x", "my node"),
+            ("`q?`", "", "q?"),
+            ("`q.x`.y", ".y", "q.x"),
+            ("`it's`", "", "it's"),
+            ("`a]b|c WHERE`", "", "a]b|c WHERE"),
+            // No backslash escapes: `a\nb` is four characters.
+            (r"`a\nb`", "", r"a\nb"),
+            (r"`a\`", "", r"a\"),
+            // The empty name.
+            ("`` AS x", " AS x", ""),
+        ] {
+            let (r, n) = name(input).unwrap_or_else(|e| panic!("{input}: {e:?}"));
+            assert_eq!((r, &*n), (rest, text), "{input}");
+            assert!(matches!(n, Cow::Borrowed(_)), "{input}");
+        }
+        // A doubled backtick is one: the name is unescaped, not a slice.
+        for (input, rest, text) in [
+            ("`a``b`", "", "a`b"),
+            ("`````` x", " x", "``"),
+            ("`a````b```", "", "a``b`"),
+        ] {
+            let (r, n) = name(input).unwrap_or_else(|e| panic!("{input}: {e:?}"));
+            assert_eq!((r, &*n), (rest, text), "{input}");
+            assert!(matches!(n, Cow::Owned(_)), "{input}");
+        }
+        // Unterminated.
+        for input in ["`abc", "`a``", "`"] {
+            assert!(name(input).is_err(), "{input}");
+        }
+    }
     #[test]
     fn test_strip_comments() {
         use super::strip_comments;
@@ -456,6 +501,13 @@ mod tests {
         assert_eq!(
             strip_comments("WHERE n.`prop-with-dashes` = 1 RETURN n"),
             "WHERE n.`prop-with-dashes` = 1 RETURN n"
+        );
+
+        // A backslash inside backticks escapes nothing (#1489): `a\` ends at
+        // its second backtick, and the comment after it is one.
+        assert_eq!(
+            strip_comments("RETURN 1 AS `a\\` // c\n, 2 AS `b``--c`"),
+            "RETURN 1 AS `a\\` \n, 2 AS `b``--c`"
         );
 
         // Undirected relationship patterns (should NOT be treated as comments!)

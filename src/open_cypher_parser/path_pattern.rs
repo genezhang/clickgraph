@@ -17,21 +17,21 @@ use nom::{
 };
 
 use super::ast::{
-    ConnectedPattern, Direction, Expression, NodePattern, PathPattern, Property, PropertyKVPair,
+    ConnectedPattern, Direction, Name, NodePattern, PathPattern, Property, PropertyKVPair,
     RelationshipPattern, VariableLengthSpec,
 };
 use super::common::ws;
-use super::expression::parse_parameter;
+use super::expression::parse_parameter_name;
 use super::{common, expression};
 use nom::character::complete::digit1;
 
 /// Type alias for node label/property parsing result to reduce complexity
-type NodeLabelPropertyResult<'a> = (Option<Vec<&'a str>>, Option<Vec<Property<'a>>>);
+type NodeLabelPropertyResult<'a> = (Option<Vec<Name<'a>>>, Option<Vec<Property<'a>>>);
 
 /// Type alias for relationship internals parsing result to reduce complexity
 type RelInternalsResult<'a> = (
-    Option<&'a str>,
-    Option<Vec<&'a str>>,
+    Option<Name<'a>>,
+    Option<Vec<Name<'a>>>,
     Option<Vec<Property<'a>>>,
     Option<VariableLengthSpec>,
 );
@@ -277,8 +277,8 @@ pub fn parse_properties(input: &'_ str) -> IResult<&'_ str, Vec<Property<'_>>> {
                 delimited(space0, char(','), space0),
                 map(
                     separated_pair(
-                        // Property key: alphanumeric with underscores (e.g., user_id)
-                        delimited(space0, common::parse_alphanumeric_with_underscore, space0),
+                        // Property key: a symbolic name (user_id, `my key`)
+                        delimited(space0, common::symbolic_name, space0),
                         delimited(space0, char(':'), space0),
                         // Use the full expression parser for values - supports:
                         // - Strings: 'hello', "world"
@@ -301,26 +301,15 @@ pub fn parse_properties(input: &'_ str) -> IResult<&'_ str, Vec<Property<'_>>> {
             delimited(space0, char('}'), space0),
         ),
         // Parameter variant: no curly braces are expected.
-        map(ws(parse_parameter), |expr| {
-            match expr {
-                Expression::Parameter(s) => vec![Property::Param(s)],
-                Expression::FunctionCallExp(_) => {
-                    // Parameters with temporal accessors ($param.year) are converted to function calls
-                    // These shouldn't be used as node properties, but handle gracefully
-                    vec![]
-                }
-                _ => unreachable!("parse_parameter returned unexpected expression type"),
-            }
-        }),
+        map(ws(parse_parameter_name), |name| vec![Property::Param(name)]),
     ))
     .parse(input)
 }
 
 fn parse_name_or_label_with_properties(
     input: &'_ str,
-) -> IResult<&'_ str, (Option<&'_ str>, Option<Vec<Property<'_>>>)> {
-    let (remainder, node_label) =
-        ws(opt(common::parse_alphanumeric_with_underscore)).parse(input)?;
+) -> IResult<&'_ str, (Option<Name<'_>>, Option<Vec<Property<'_>>>)> {
+    let (remainder, node_label) = ws(opt(common::symbolic_name)).parse(input)?;
     let (remainder, node_properties) = opt(parse_properties).parse(remainder)?;
     Ok((remainder, (node_label, node_properties)))
 }
@@ -339,9 +328,8 @@ fn parse_name_or_labels_with_properties(
 /// they share identical syntax: `Label1|Label2|Label3`
 ///
 /// Returns None if no labels are found, Some(vec![...]) otherwise
-fn parse_multi_labels_or_types(input: &'_ str) -> IResult<&'_ str, Option<Vec<&'_ str>>> {
-    let (remainder, first_label) =
-        ws(opt(common::parse_alphanumeric_with_underscore)).parse(input)?;
+fn parse_multi_labels_or_types(input: &'_ str) -> IResult<&'_ str, Option<Vec<Name<'_>>>> {
+    let (remainder, first_label) = ws(opt(common::symbolic_name)).parse(input)?;
 
     if first_label.is_none() {
         return Ok((remainder, None));
@@ -358,8 +346,7 @@ fn parse_multi_labels_or_types(input: &'_ str) -> IResult<&'_ str, Option<Vec<&'
             break;
         }
 
-        let (new_input, additional_label) =
-            ws(common::parse_alphanumeric_with_underscore).parse(new_input)?;
+        let (new_input, additional_label) = ws(common::symbolic_name).parse(new_input)?;
         labels.push(additional_label);
         current_input = new_input;
     }
@@ -369,18 +356,18 @@ fn parse_multi_labels_or_types(input: &'_ str) -> IResult<&'_ str, Option<Vec<&'
 
 /// Parse relationship types (e.g., :FOLLOWS, :FOLLOWS|LIKES)
 /// Thin wrapper around parse_multi_labels_or_types for semantic clarity
-fn parse_relationship_labels(input: &'_ str) -> IResult<&'_ str, Option<Vec<&'_ str>>> {
+fn parse_relationship_labels(input: &'_ str) -> IResult<&'_ str, Option<Vec<Name<'_>>>> {
     parse_multi_labels_or_types(input)
 }
 
 /// Parse node labels (e.g., :User, :User|Person)
 /// Thin wrapper around parse_multi_labels_or_types for semantic clarity
-fn parse_node_labels(input: &'_ str) -> IResult<&'_ str, Option<Vec<&'_ str>>> {
+fn parse_node_labels(input: &'_ str) -> IResult<&'_ str, Option<Vec<Name<'_>>>> {
     parse_multi_labels_or_types(input)
 }
 
-type NameOrLabelWithProperties<'a> = (Option<&'a str>, Option<Vec<Property<'a>>>);
-type NameOrLabelsWithProperties<'a> = (Option<Vec<&'a str>>, Option<Vec<Property<'a>>>);
+type NameOrLabelWithProperties<'a> = (Option<Name<'a>>, Option<Vec<Property<'a>>>);
+type NameOrLabelsWithProperties<'a> = (Option<Vec<Name<'a>>>, Option<Vec<Property<'a>>>);
 
 // Parse node name and labels (with multi-label support)
 fn parse_name_labels(
@@ -439,7 +426,7 @@ fn parse_relationship_internals_with_multiple_labels(
     let (input, _) = multispace0(input)?;
 
     // Parse relationship name (optional)
-    let (input, rel_name) = ws(opt(common::parse_alphanumeric_with_underscore)).parse(input)?;
+    let (input, rel_name) = ws(opt(common::symbolic_name)).parse(input)?;
 
     // Parse : separator
     let (input, _) = opt(ws(char(':'))).parse(input)?;
@@ -649,7 +636,7 @@ fn parse_relationship_pattern(input: &'_ str) -> IResult<&'_ str, Option<Relatio
 
 #[cfg(test)]
 mod tests {
-    use crate::open_cypher_parser::ast::Literal;
+    use crate::open_cypher_parser::ast::{Expression, Literal};
 
     use super::*;
     use nom::{
@@ -723,8 +710,8 @@ mod tests {
 
         match pattern {
             PathPattern::Node(node) => {
-                assert_eq!(node.name, Some("n"));
-                assert_eq!(node.labels, Some(vec!["User"]));
+                assert_eq!(node.name.as_deref(), Some("n"));
+                assert_eq!(node.labels, Some(vec!["User".into()]));
                 assert!(node.properties.is_some(), "Should have properties");
             }
             _ => panic!("Expected Node pattern"),
@@ -750,8 +737,8 @@ mod tests {
 
         match pattern {
             PathPattern::Node(node) => {
-                assert_eq!(node.name, Some("u"));
-                assert_eq!(node.labels, Some(vec!["User"]));
+                assert_eq!(node.name.as_deref(), Some("u"));
+                assert_eq!(node.labels, Some(vec!["User".into()]));
                 assert!(node.properties.is_some(), "Should have properties");
             }
             _ => panic!("Expected Node pattern"),
@@ -955,41 +942,41 @@ mod tests {
                 assert_eq!(connected_patterns.len(), 2);
 
                 let expected_node_a = Rc::new(RefCell::new(NodePattern {
-                    name: Some("a"),
-                    labels: Some(vec!["IamA"]),
+                    name: Some("a".into()),
+                    labels: Some(vec!["IamA".into()]),
                     properties: Some(vec![Property::PropertyKV(PropertyKVPair {
-                        key: "name",
+                        key: "name".into(),
                         value: Expression::Literal(Literal::String("IamA")),
                     })]),
                 }));
 
                 let expected_node_b = Rc::new(RefCell::new(NodePattern {
-                    name: Some("b"),
+                    name: Some("b".into()),
                     labels: None,
                     properties: None,
                 }));
 
                 let expected_node_c = Rc::new(RefCell::new(NodePattern {
                     name: None,
-                    labels: Some(vec!["IamC"]),
+                    labels: Some(vec!["IamC".into()]),
                     properties: None,
                 }));
 
                 let expected_relationship_1 = RelationshipPattern {
                     direction: Direction::Outgoing,
                     name: None,
-                    labels: Some(vec!["Pointing"]),
+                    labels: Some(vec!["Pointing".into()]),
                     properties: None,
                     variable_length: None,
                 };
 
                 let expected_relationship_2 = RelationshipPattern {
                     direction: Direction::Incoming,
-                    name: Some("pointing"),
+                    name: Some("pointing".into()),
                     labels: None,
                     properties: Some(vec![Property::PropertyKV(PropertyKVPair {
-                        key: "what",
-                        value: Expression::Parameter("dontKnow"),
+                        key: "what".into(),
+                        value: Expression::Parameter("dontKnow".into()),
                     })]),
                     variable_length: None,
                 };
@@ -1207,7 +1194,7 @@ mod tests {
                     PathPattern::ConnectedPattern(connected) => {
                         assert_eq!(connected.len(), 1);
                         // Verify relationship has KNOWS label
-                        assert_eq!(connected[0].relationship.labels, Some(vec!["KNOWS"]));
+                        assert_eq!(connected[0].relationship.labels, Some(vec!["KNOWS".into()]));
                     }
                     _ => panic!("Expected ConnectedPattern inside ShortestPath"),
                 }
@@ -1304,7 +1291,7 @@ mod tests {
                 let expected_relationship = RelationshipPattern {
                     direction: Direction::Outgoing,
                     name: None,
-                    labels: Some(vec!["TYPE1", "TYPE2"]),
+                    labels: Some(vec!["TYPE1".into(), "TYPE2".into()]),
                     properties: None,
                     variable_length: None,
                 };
@@ -1346,10 +1333,10 @@ mod tests {
 
         match path_pattern {
             PathPattern::Node(node) => {
-                assert_eq!(node.name, Some("x"), "Node name should be 'x'");
+                assert_eq!(node.name.as_deref(), Some("x"), "Node name should be 'x'");
                 assert_eq!(
                     node.labels,
-                    Some(vec!["User", "Post"]),
+                    Some(vec!["User".into(), "Post".into()]),
                     "Should have both User and Post labels"
                 );
                 assert!(node.properties.is_none(), "Should have no properties");
@@ -1374,8 +1361,8 @@ mod tests {
 
         match path_pattern {
             PathPattern::Node(node) => {
-                assert_eq!(node.name, Some("x"));
-                assert_eq!(node.labels, Some(vec!["User", "Post"]));
+                assert_eq!(node.name.as_deref(), Some("x"));
+                assert_eq!(node.labels, Some(vec!["User".into(), "Post".into()]));
                 assert!(node.properties.is_some(), "Should have properties");
             }
             _ => panic!("Expected Node pattern"),
@@ -1398,10 +1385,10 @@ mod tests {
 
         match path_pattern {
             PathPattern::Node(node) => {
-                assert_eq!(node.name, Some("x"));
+                assert_eq!(node.name.as_deref(), Some("x"));
                 assert_eq!(
                     node.labels,
-                    Some(vec!["Person", "User", "Admin"]),
+                    Some(vec!["Person".into(), "User".into(), "Admin".into()]),
                     "Should have all three labels"
                 );
             }
@@ -1429,15 +1416,15 @@ mod tests {
 
                 // Check start node
                 let start_node = connected[0].start_node.borrow();
-                assert_eq!(start_node.name, Some("u"));
-                assert_eq!(start_node.labels, Some(vec!["User"]));
+                assert_eq!(start_node.name.as_deref(), Some("u"));
+                assert_eq!(start_node.labels, Some(vec!["User".into()]));
 
                 // Check end node has multiple labels
                 let end_node = connected[0].end_node.borrow();
-                assert_eq!(end_node.name, Some("x"));
+                assert_eq!(end_node.name.as_deref(), Some("x"));
                 assert_eq!(
                     end_node.labels,
-                    Some(vec!["User", "Post"]),
+                    Some(vec!["User".into(), "Post".into()]),
                     "End node should have both User and Post labels"
                 );
             }
