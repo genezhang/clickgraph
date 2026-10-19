@@ -1462,11 +1462,7 @@ impl BoltHandler {
                         .clone()
                         .or_else(|| self.context.lock().ok().and_then(|c| c.schema_name.clone()));
                     match name {
-                        Some(name)
-                            if graph_catalog::get_graph_schema_by_name(&name).await.is_ok() =>
-                        {
-                            Some(name)
-                        }
+                        Some(name) if graph_catalog::schema_exists(&name).await => Some(name),
                         _ => None,
                     }
                 }

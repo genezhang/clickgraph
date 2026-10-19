@@ -397,14 +397,6 @@ pub async fn query_handler(
         )
         .await;
     if !record.recorded {
-        // A schema label only for a schema that is loaded: the request can
-        // name one that does not exist.
-        let schema = match &record.schema {
-            Some(name) if graph_catalog::get_graph_schema_by_name(name).await.is_ok() => {
-                Some(name.as_str())
-            }
-            _ => None,
-        };
         let status = match &result {
             Ok(response) => response.status(),
             Err((status, _)) => *status,
@@ -413,6 +405,16 @@ pub async fn query_handler(
             Outcome::Ok
         } else {
             Outcome::Err(ErrorClass::from_status(status.as_u16()))
+        };
+        // A schema label (only spans read it) for a success, on a schema
+        // that is loaded: the request can name one that does not exist.
+        let schema = match (&record.schema, outcome) {
+            (Some(name), Outcome::Ok)
+                if reg.tracing_enabled() && graph_catalog::schema_exists(name).await =>
+            {
+                Some(name.as_str())
+            }
+            _ => None,
         };
         let m = QueryPerformanceMetrics {
             total_time: start_time.elapsed().as_secs_f64(),
@@ -427,10 +429,7 @@ pub async fn query_handler(
             // A failure can come before or after the schema is resolved (and
             // can name one that does not exist): no schema attribute for it
             // (an omitted attribute, not an "unknown" value).
-            schema: match outcome {
-                Outcome::Ok => schema,
-                Outcome::Err(_) => None,
-            },
+            schema,
             ch,
         });
     }

@@ -587,6 +587,14 @@ pub async fn get_graph_schema_by_name(schema_name: &str) -> Result<GraphSchema, 
         .ok_or(format!("Schema '{}' not found", schema_name))
 }
 
+/// Whether a schema of that name is loaded (without copying it).
+pub async fn schema_exists(schema_name: &str) -> bool {
+    match GLOBAL_SCHEMAS.get() {
+        Some(schemas) => schemas.read().await.contains_key(schema_name),
+        None => false,
+    }
+}
+
 pub async fn get_view_config_by_name(schema_name: &str) -> Result<GraphSchemaConfig, String> {
     let configs_guard = GLOBAL_SCHEMA_CONFIGS
         .get()
