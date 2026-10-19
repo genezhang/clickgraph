@@ -6016,10 +6016,21 @@ impl<'s> Lowerer<'s> {
             // `Variant`, which ClickHouse groups no more than `Dynamic`;
             // LDBC IC 1's `[uni.name, studyAt.classYear, …]`), by the same
             // key (`[1]` and `[1.0]` are one group, as in Cypher).
-            let value_list = matches!(
-                self.kind(&it.expr),
-                unwind::Kind::List(inner) if !matches!(*inner, unwind::Kind::Element(_))
-            );
+            // An `Array` column's property that is never NULL is of one
+            // type, and groups as itself (VALUE_TYPES.md T2a; review
+            // finding: it was keyed as a list of mixed values).
+            let one_typed = matches!(&it.expr, LogicalExpr::PropertyAccessExp(_))
+                && matches!(&list_null, Some(None))
+                && matches!(
+                    self.kind(&it.expr),
+                    unwind::Kind::List(inner)
+                        if matches!(*inner, unwind::Kind::Scalar | unwind::Kind::Boolean)
+                );
+            let value_list = !one_typed
+                && matches!(
+                    self.kind(&it.expr),
+                    unwind::Kind::List(inner) if !matches!(*inner, unwind::Kind::Element(_))
+                );
             let map_key = match (self.holds_maps(&it.expr) || value_list) && !it.aggregate {
                 true => match current_function_mapper().cypher_union() {
                     Some(u) => Some(RenderExpr::Raw((u.distinct_key)(
@@ -6566,7 +6577,12 @@ impl<'s> Lowerer<'s> {
             }
             // A list or map would read `[]` / `{}` where the row is missing
             // (ClickHouse holds no NULL array, #1454).
-            if matches!(self.kind(v), unwind::Kind::List(_) | unwind::Kind::Map(_)) {
+            // An `Array` column's property (VALUE_TYPES.md T2a) reads as it
+            // did before it was known to be a list: its missing row is NULL
+            // (review finding: refused once the kind was known).
+            if matches!(self.kind(v), unwind::Kind::List(_) | unwind::Kind::Map(_))
+                && !matches!(v, LogicalExpr::PropertyAccessExp(_))
+            {
                 return unsupported("a list or map in a collected map");
             }
             names.push(k.clone());

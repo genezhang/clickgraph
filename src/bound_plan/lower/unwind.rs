@@ -202,9 +202,12 @@ pub(super) enum Kind {
 /// The kind of a value of a column of type `t` (T2): a list of its
 /// element's kind, a boolean, or another value.
 fn column_kind(t: &KeyPartType) -> Kind {
+    let container = |prefix: &str| t.raw.to_ascii_lowercase().starts_with(prefix);
     match t.array_element() {
         Some(e) => Kind::List(Box::new(column_kind(&e))),
         None if t.raw.eq_ignore_ascii_case("Bool") => Kind::Boolean,
+        // A map's or tuple's entries are not known here (review finding).
+        None if container("map(") || container("tuple(") => Kind::Unknown,
         None => Kind::Scalar,
     }
 }

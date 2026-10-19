@@ -8845,3 +8845,49 @@ graph_schema:
         "{untyped}"
     );
 }
+
+/// T2a review findings: an `Array` column's property in a collected map
+/// reads as before (not refused), `isEmpty()` of one an OPTIONAL MATCH may
+/// leave NULL is a boolean, and one never NULL groups as its column.
+#[test]
+fn array_column_properties_keep_what_they_did_1485() {
+    let schema = crate::graph_catalog::config::GraphSchemaConfig::from_yaml_str(
+        r#"
+name: lower_array_property_review
+graph_schema:
+  nodes:
+    - label: Person
+      database: db
+      table: person
+      node_id: id
+      column_types: {id: Int64, tags: 'Array(String)', m: 'Array(Map(String, Int64))'}
+      property_mappings: {id: id, tags: tags, m: m}
+  edges:
+    - type: KNOWS
+      database: db
+      table: knows
+      from_id: a
+      to_id: b
+      from_node: Person
+      to_node: Person
+      property_mappings: {}
+"#,
+    )
+    .unwrap()
+    .to_graph_schema()
+    .unwrap();
+    let options = crate::bound_plan::lower::LowerOptions::default();
+    let sql = |q: &str| lowered(q, &schema, &options);
+    sql(
+        "MATCH (p:Person) WITH p ORDER BY p.id WITH collect({t: p.tags, i: p.id})[0] AS m \
+         RETURN m.t, m.i",
+    );
+    let empty =
+        sql("MATCH (p:Person) OPTIONAL MATCH (p)-[:KNOWS]->(q:Person) RETURN isEmpty(q.tags) AS e");
+    assert!(
+        empty.contains("ELSE CAST(empty(o1.p2_v2_tags) AS Nullable(Bool)) END"),
+        "{empty}"
+    );
+    let grouped = sql("MATCH (p:Person) RETURN p.tags, count(*)");
+    assert!(grouped.contains("GROUP BY v0.tags"), "{grouped}");
+}

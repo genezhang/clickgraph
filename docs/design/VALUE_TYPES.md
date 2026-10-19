@@ -87,7 +87,12 @@ and is verified live against ClickHouse and the Neo4j oracle.
   (`Lowerer::list_null`), so `IS NULL`, `size()`, `coalesce()`, `count()`,
   `collect()` and `+` read it as Neo4j does. Scalar columns keep their
   unknown kind: what knowing it would change (#1419's UNWIND of a scalar
-  property, booleans) is a later slice.
+  property, booleans) is a later slice. Not covered (they read `[]` as on
+  main): such a property inside a map or list literal, a CASE or a
+  `coalesce()` with a non-list, and a node from `UNWIND [q]` (its binding is
+  not nullable).
+- [ ] **T2c — map columns.** A property whose column is a `Map(K, V)` as a
+  map of `V`'s kind (its keys are the rows', not the schema's).
 - [ ] **T2b — the absent side of an embedded node's union** (#1430, #1490):
   the sources that do not hold a property spell a NULL of its column's type.
   Prerequisite for #504 (ARRAY JOIN of an array-valued edge column).

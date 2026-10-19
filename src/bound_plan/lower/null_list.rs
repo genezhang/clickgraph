@@ -372,6 +372,17 @@ impl Lowerer<'_> {
             // holds no NULL: it is NULL where an OPTIONAL MATCH left its node
             // or relationship NULL.
             LogicalExpr::PropertyAccessExp(pa) => match parse_var(&pa.table_alias.0) {
+                // Of a node or relationship only: a map's missing key is NULL
+                // too (review finding).
+                Some(v)
+                    if !matches!(
+                        self.binding(v).kind,
+                        crate::bound_plan::types::BindingKind::Node { .. }
+                            | crate::bound_plan::types::BindingKind::Rel { .. }
+                    ) =>
+                {
+                    ListNull::Unknown
+                }
                 Some(v) if !self.binding(v).nullable => ListNull::Never,
                 Some(_) => ListNull::When(self.expr(
                     &LogicalExpr::OperatorApplicationExp(LOp {
@@ -464,10 +475,16 @@ impl Lowerer<'_> {
             {
                 let value = self.scalar_fn(f, items)?;
                 Ok(match self.list_null(&f.args[0], items)? {
+                    // A boolean inside the CASE: the emitter casts a
+                    // predicate it sees, not one a CASE holds (review
+                    // finding: `isEmpty(q.tags)` showed 0 / 1).
                     ListNull::When(c) => RenderExpr::Case(RenderCase {
                         expr: None,
                         when_then: vec![(c, RenderExpr::Literal(Literal::Null))],
-                        else_expr: Some(Box::new(value)),
+                        else_expr: Some(Box::new(RenderExpr::Raw(
+                            crate::sql_generator::function_mapper::current_function_mapper()
+                                .cast_bool(&crate::sql_generator::emitters::clickhouse::to_sql_query::render_expr_to_sql_plain(&value)),
+                        ))),
                     }),
                     _ => value,
                 })
