@@ -140,6 +140,7 @@ Expression (recursive)
 ├── MapLiteral(Vec<(key, Expression)>)      {days: 5}
 ├── Case { expr, when_then, else_expr }
 ├── ExistsExpression(ExistsSubquery)        EXISTS { (n)-[:REL]->() }
+├── CountOrCollect(CountOrCollect)          COUNT { (n)-->() }, COLLECT { MATCH … RETURN e } (body or the refusal)
 ├── ReduceExp(ReduceExpression)             reduce(acc=0, x IN list | acc+x)
 ├── LabelExpression { variable, label }     n:Person
 ├── Lambda(LambdaExpression)                x -> x > 5

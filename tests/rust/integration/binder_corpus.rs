@@ -110,8 +110,9 @@ fn the_corpus_lowers_on_databricks() {
 
 /// How many corpus queries lower, on each dialect (P-4c S14c0): the legacy
 /// pipeline's deletion must not change it. A slice that lowers more raises
-/// it (with the corpus goldens, `corpus_sweep.rs`).
-const LOWERED: usize = 1477;
+/// it (with the corpus goldens, `corpus_sweep.rs`). #1413: `COUNT()` (no
+/// argument), `test_invalid_aggregation`, is refused as in Neo4j.
+const LOWERED: usize = 1476;
 
 /// The census of the corpus (not of `CENSUS_CORPUS`) lowers [`LOWERED`].
 fn locked(lowered: usize) {

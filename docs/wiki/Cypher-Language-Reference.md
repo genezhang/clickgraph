@@ -407,6 +407,26 @@ WHERE NOT (a)-[:FOLLOWS]->(b)
 WHERE (a)-[:FOLLOWS*1..2]->(b)
 ```
 
+### Subquery Expressions: EXISTS, COUNT, COLLECT
+
+```cypher
+-- Does a match exist?
+WHERE EXISTS { (a)-[:FOLLOWS]->(:User) }
+-- How many matches (anywhere an expression goes)
+RETURN a.name, COUNT { (a)-[:FOLLOWS]->(b) WHERE b.age > 30 } AS older_followed
+WHERE COUNT { MATCH (a)-[:FOLLOWS]->() } > 1
+-- The list of one value per match (as [(a)-[:FOLLOWS]->(b) WHERE … | b.name])
+RETURN COLLECT { MATCH (a)-[:FOLLOWS]->(b) WHERE b.age > 30 RETURN b.name } AS names
+```
+
+`COUNT { }` takes a pattern (with or without `MATCH`) and its WHERE, or one
+MATCH and a RETURN of no aggregate; `COLLECT { }` one MATCH (and WHERE) and a
+RETURN of one column. Not supported yet (a "Not supported" error): several
+MATCH clauses, WITH, UNWIND, UNION, a path variable, DISTINCT / ORDER BY /
+SKIP / LIMIT, or an aggregate inside; a COLLECT of nodes or relationships
+(as for pattern comprehensions, #1378). A COLLECT's list is in no particular
+order.
+
 ---
 
 ## RETURN Clause

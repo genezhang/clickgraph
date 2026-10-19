@@ -194,16 +194,17 @@ class TestInvalidSyntax:
         assert "error" in response or "errors" in response or response.get("status") == "error"
     
     def test_invalid_aggregation(self, simple_graph):
-        """Test invalid aggregation syntax - COUNT() now handled."""
+        """COUNT() without an argument is refused, as in Neo4j (#1413)."""
         response = execute_cypher(
             """
             MATCH (a:TestUser)
             RETURN COUNT()
             """,
             schema_name=simple_graph["schema_name"], raise_on_error=False)
-        
-        # COUNT() without argument now defaults to COUNT(*)
-        assert_query_success(response)
+
+        # Neo4j: "Insufficient parameters for function 'count'"
+        assert "error" in response or "errors" in response or response.get("status") == "error"
+        assert "Insufficient parameters for function" in str(response)
 
 
 class TestTypeMismatches:
