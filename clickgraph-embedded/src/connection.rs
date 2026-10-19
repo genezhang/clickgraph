@@ -86,7 +86,7 @@ impl<'db> Connection<'db> {
     /// }
     /// ```
     pub fn query(&self, cypher: &str) -> Result<QueryResult, EmbeddedError> {
-        self.on_translation_stack(cypher, || {
+        self.on_query_thread(cypher, || {
             self.db
                 .runtime
                 .block_on(self.with_timeout(self.query_async(cypher)))
@@ -146,7 +146,7 @@ impl<'db> Connection<'db> {
         output_path: &str,
         options: ExportOptions,
     ) -> Result<(), EmbeddedError> {
-        self.on_translation_stack(cypher, || {
+        self.on_query_thread(cypher, || {
             self.db
                 .runtime
                 .block_on(self.export_async(cypher, output_path, options))
@@ -181,7 +181,7 @@ impl<'db> Connection<'db> {
     /// Returns an error if no remote executor is configured.
     pub fn query_remote(&self, cypher: &str) -> Result<QueryResult, EmbeddedError> {
         let remote = self.get_remote_executor()?;
-        self.on_translation_stack(cypher, || {
+        self.on_query_thread(cypher, || {
             self.db
                 .runtime
                 .block_on(self.with_timeout(self.query_with_executor_async(cypher, remote)))
@@ -193,7 +193,7 @@ impl<'db> Connection<'db> {
     /// Uses `cypher_to_sql_with_metadata()` to get plan metadata, then
     /// transforms the result rows into `GraphNode`s and `GraphEdge`s.
     pub fn query_graph(&self, cypher: &str) -> Result<GraphResult, EmbeddedError> {
-        self.on_translation_stack(cypher, || {
+        self.on_query_thread(cypher, || {
             self.db
                 .runtime
                 .block_on(self.with_timeout(self.query_graph_async(cypher, &self.executor)))
@@ -206,7 +206,7 @@ impl<'db> Connection<'db> {
     /// `GraphResult` can be passed to `store_subgraph()` to persist locally.
     pub fn query_remote_graph(&self, cypher: &str) -> Result<GraphResult, EmbeddedError> {
         let remote = self.get_remote_executor()?;
-        self.on_translation_stack(cypher, || {
+        self.on_query_thread(cypher, || {
             self.db
                 .runtime
                 .block_on(self.with_timeout(self.query_graph_async(cypher, remote)))
@@ -1105,18 +1105,31 @@ impl<'db> Connection<'db> {
         Ok(QueryResult::new(columns, rows))
     }
 
-    /// Run `f`, which parses or translates Cypher, on a thread with the
-    /// servers' stack (`CLICKGRAPH_THREAD_STACK_MB`, default 128 MB): on the
+    /// Run `f`, which only translates Cypher, with the servers' stack
+    /// (`CLICKGRAPH_THREAD_STACK_MB`, default 128 MB), on a translation pool
+    /// worker (`clickgraph::translate::on_translation_stack`): on the
     /// caller's thread (8 MB for a main thread, 2 MB for a spawned Rust
     /// thread) a long statement overflowed it and aborted the caller's
-    /// process (#1373). Every Cypher entry point of the connection, and so
-    /// FFI, Go, Python and `cg`, runs through it.
+    /// process (#1373). A short statement runs inline.
     fn on_translation_stack<T: Send>(
         &self,
         cypher: &str,
         f: impl FnOnce() -> Result<T, EmbeddedError> + Send,
     ) -> Result<T, EmbeddedError> {
         clickgraph::translate::on_translation_stack(cypher, f).map_err(EmbeddedError::Query)?
+    }
+
+    /// [`Self::on_translation_stack`] for an entry point that also runs the
+    /// SQL: on a thread of its own (`translate::on_translation_thread`), so
+    /// a long-running query never holds a pool worker. Every Cypher entry
+    /// point of the connection, and so FFI, Go, Python and `cg`, runs
+    /// through one of the two.
+    fn on_query_thread<T: Send>(
+        &self,
+        cypher: &str,
+        f: impl FnOnce() -> Result<T, EmbeddedError> + Send,
+    ) -> Result<T, EmbeddedError> {
+        clickgraph::translate::on_translation_thread(cypher, f).map_err(EmbeddedError::Query)?
     }
 
     /// Wrap a future with the configured query timeout (if any).

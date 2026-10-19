@@ -259,16 +259,16 @@ RETURN name, follows
 
 **Safety Limit**: Max 4 types can be inferred automatically. More requires explicit label specification.
 
-### 3. Statement Size Limits (1,000 clauses, brackets 500 deep)
+### 3. Statement Size Limits (1,000 clauses, nesting 500 deep)
 
 **Status**: By design
 **Severity**: LOW
 
-A statement may have at most 1,000 clauses, all UNION arms together (`MATCH`, `WITH`, `UNWIND`, a free-standing `ORDER BY` / `SKIP` / `OFFSET` / `LIMIT`, `RETURN`, …), and nest brackets (`(`, `[`, `{`) at most 500 deep. A larger one is refused before it is parsed: "Not supported: a statement of N clauses (at most 1000)" or "… brackets nested N deep (at most 500)" (HTTP 400, Bolt `Neo.ClientError.Statement.FeatureNotSupported`, an `Err` in the library). Translation recurses once per clause and once per bracket, and a stack overflow aborts the whole process: before these limits, a 255 KB request of 15,000 `WITH a LIMIT 100`, or a 40 KB one of 20,000 nested parentheses, aborted a (debug-build) server, and 800 `WITH`s aborted `cg`. The limits are set for the default 128 MB stack (`CLICKGRAPH_THREAD_STACK_MB`; a smaller one is not taken into account). Real queries have tens of clauses and a few levels of nesting. Neo4j has no such limits.
+A statement may have at most 1,000 clauses, all UNION arms together (`MATCH`, `WITH`, `UNWIND`, a free-standing `ORDER BY` / `SKIP` / `OFFSET` / `LIMIT`, `RETURN`, …), and nest brackets (`(`, `[`, `{`, and `CASE … END`) at most 500 deep. A larger one is refused before it is parsed: "Not supported: a statement of N clauses (at most 1000)" or "… brackets nested N deep (at most 500)" (HTTP 400, Bolt `Neo.ClientError.Statement.FeatureNotSupported`, an `Err` in the library). Translation recurses once per clause and once per bracket, and a stack overflow aborts the whole process: before these limits, a 255 KB request of 15,000 `WITH a LIMIT 100`, or a 40 KB one of 20,000 nested parentheses, or 5,000 nested CASEs, aborted a (debug-build) server, and 800 `WITH`s aborted `cg`. The limits are set for the default 128 MB stack (`CLICKGRAPH_THREAD_STACK_MB`; a smaller one is not taken into account). Real queries have tens of clauses and a few levels of nesting. Neo4j has no such limits.
 
-**Not covered:** a long chain of operators (`1 + 1 + …`) recurses once per operator in the expression parser, and 20,000 terms (40 KB) still overflow a server worker's stack.
+**Not covered:** a long chain of operators recurses once per operator in the expression parser: `1 + 1 + …` with 20,000 terms (40 KB), or `NOT NOT …` 20,000 deep (80 KB), still overflows a server worker's stack.
 
-The library entry points (embedded `Connection`, FFI, Go, Python, `cg`) translate a statement of more than 64 tokens, or nesting brackets more than 8 deep, on a thread with the servers' stack (`CLICKGRAPH_THREAD_STACK_MB`, default 128 MB), whatever thread the caller is on; shorter ones run on the caller's thread. A caller thread smaller than 2 MB (musl's default is 128 KB) may still be too small for those.
+The library entry points (embedded `Connection`, FFI, Go, Python, `cg`) translate a statement of more than 64 tokens, or nesting brackets more than 8 deep, with the servers' stack (`CLICKGRAPH_THREAD_STACK_MB`, default 128 MB), whatever thread the caller is on: on a pool of translation threads for translation (`query_to_sql`), on a thread of its own for a query that also runs (`query`). Shorter ones run on the caller's thread. A caller thread smaller than 2 MB (musl's default is 128 KB) may still be too small for those.
 
 ### Integration Test Status
 

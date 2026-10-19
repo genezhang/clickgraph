@@ -579,21 +579,34 @@ fn the_translation_stack_carries_the_query_context() {
     };
     use clickgraph::sql_generator::SqlDialect;
     let long = format!("MATCH (a) {}RETURN a", "WITH a ".repeat(100));
-    let (inside, after) = with_query_context_sync(QueryContext::new(None), || {
-        set_current_dialect(SqlDialect::Databricks);
-        let inside = clickgraph::translate::on_translation_stack(&long, || {
-            let hopped = std::thread::current().name() == Some("clickgraph-translate");
-            set_current_schema_name(Some("set_on_the_hop".to_string()));
-            (hopped, get_current_dialect())
-        })
-        .unwrap();
-        (inside, get_current_schema_name())
-    });
-    assert_eq!(inside, (true, SqlDialect::Databricks));
-    assert_eq!(after.as_deref(), Some("set_on_the_hop"));
+    // On a pool worker (translation) and on a thread of its own (a query
+    // that also runs its SQL).
+    for pool in [true, false] {
+        let (inside, after) = with_query_context_sync(QueryContext::new(None), || {
+            set_current_dialect(SqlDialect::Databricks);
+            let f = || {
+                let hopped = std::thread::current()
+                    .name()
+                    .is_some_and(|n| n.starts_with("clickgraph-translate"));
+                set_current_schema_name(Some("set_on_the_hop".to_string()));
+                (hopped, get_current_dialect())
+            };
+            let inside = if pool {
+                clickgraph::translate::on_translation_stack(&long, f)
+            } else {
+                clickgraph::translate::on_translation_thread(&long, f)
+            }
+            .unwrap();
+            (inside, get_current_schema_name())
+        });
+        assert_eq!(inside, (true, SqlDialect::Databricks), "pool: {pool}");
+        assert_eq!(after.as_deref(), Some("set_on_the_hop"), "pool: {pool}");
+    }
     // A short statement runs inline.
     let hopped = clickgraph::translate::on_translation_stack("MATCH (a) RETURN a", || {
-        std::thread::current().name() == Some("clickgraph-translate")
+        std::thread::current()
+            .name()
+            .is_some_and(|n| n.starts_with("clickgraph-translate"))
     });
     assert_eq!(hopped, Ok(false));
 }

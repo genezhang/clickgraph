@@ -83,12 +83,15 @@ UNION arm to the write planner (`StatementTargets::is_write`, #1447).
 
 Every Cypher entry point of `Connection` (`query`, `query_to_sql`,
 `query_graph`, `query_remote`, `query_remote_graph`, `export`) runs through
-`Connection::on_translation_stack` (`clickgraph::translate::on_translation_stack`,
-#1373): a statement of more than `INLINE_TOKENS` (64) tokens, or nesting
-brackets more than `INLINE_DEPTH` (8) deep, is parsed and translated on a
-thread with the servers' stack (`CLICKGRAPH_THREAD_STACK_MB`, default
-128 MB), so a long one cannot overflow the caller's stack (8 MB main thread,
-2 MB spawned Rust thread) and abort the caller's process. The query context
+`Connection::on_translation_stack` (`query_to_sql`: the translation pool,
+`clickgraph::translate::on_translation_stack`) or `Connection::on_query_thread`
+(the entry points that also run the SQL: a thread of their own,
+`translate::on_translation_thread`, so a long query never holds a pool
+worker), #1373: a statement of more than `INLINE_TOKENS` (64) tokens, or
+nesting brackets more than `INLINE_DEPTH` (8) deep, is parsed and translated
+with the servers' stack (`CLICKGRAPH_THREAD_STACK_MB`, default 128 MB), so a
+long one cannot overflow the caller's stack (8 MB main thread, 2 MB spawned
+Rust thread) and abort the caller's process. The query context
 is carried over and back. A statement of more than
 `translate::prepared::MAX_CLAUSES` (1000) clauses, or nesting brackets more
 than `MAX_NESTING` (500) deep, is refused.

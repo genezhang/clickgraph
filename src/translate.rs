@@ -350,62 +350,121 @@ pub fn translation_stack_bytes() -> usize {
 }
 
 thread_local! {
-    /// This thread is one [`on_translation_stack`] started.
+    /// This thread has [`translation_stack_bytes`] of stack: a translation
+    /// pool worker, or a thread [`on_translation_thread`] started.
     static ON_TRANSLATION_STACK: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// A statement runs on the caller's thread ([`on_translation_stack`]) when it
 /// has at most [`INLINE_TOKENS`] tokens and nests brackets at most
 /// [`INLINE_DEPTH`] deep ([`prepared::StatementShape`]): it needs a few
-/// hundred KB of stack at most, which a spawned Rust thread (2 MB) has, and
-/// a hop costs more than translating it (a release build translates a short
-/// query in 10-30 µs; a hop adds about 30 µs, more while its fresh stack
-/// pages fault in). The parsers and the lowering recurse per clause, per
-/// bracket and per operator of a chain (`1 + 1 + …`): anything longer hops.
+/// hundred KB of stack at most, which a spawned Rust thread (2 MB) has. The
+/// parsers and the lowering recurse per clause, per bracket and per
+/// operator of a chain (`1 + 1 + …`): anything longer moves.
 pub const INLINE_TOKENS: usize = 64;
 
 /// See [`INLINE_TOKENS`].
 pub const INLINE_DEPTH: usize = 8;
 
-/// Run `f`, which parses or translates the statement `cypher`, on a thread
-/// with [`translation_stack_bytes`] of stack, and wait for it: the library
-/// entry points (the embedded connection, and through it FFI, Go, Python
-/// and `cg`) translate on the caller's thread otherwise, whose stack a long
+/// Whether `cypher` needs no more stack than the caller's thread has
+/// ([`INLINE_TOKENS`]), or the caller's thread is one with
+/// [`translation_stack_bytes`].
+fn runs_inline(cypher: &str) -> bool {
+    ON_TRANSLATION_STACK.with(|on| on.get()) || {
+        let shape =
+            prepared::StatementShape::of(&crate::open_cypher_parser::strip_comments(cypher));
+        shape.tokens <= INLINE_TOKENS && shape.depth <= INLINE_DEPTH
+    }
+}
+
+/// The translation pool: one worker per CPU, each with
+/// [`translation_stack_bytes`] of stack, started on first use. Its workers
+/// stay, so a translation sent to one costs a few µs, not a thread start
+/// and the faults of a fresh stack (about 100 µs). Only CPU-bound work goes
+/// to it ([`on_translation_stack`]): work that waits on a backend gets a
+/// thread of its own ([`on_translation_thread`]).
+fn translation_pool() -> Result<&'static rayon::ThreadPool, String> {
+    static POOL: std::sync::OnceLock<Result<rayon::ThreadPool, String>> =
+        std::sync::OnceLock::new();
+    POOL.get_or_init(|| {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(std::thread::available_parallelism().map_or(4, |n| n.get()))
+            .stack_size(translation_stack_bytes())
+            .thread_name(|i| format!("clickgraph-translate-{i}"))
+            .start_handler(|_| ON_TRANSLATION_STACK.with(|on| on.set(true)))
+            .build()
+            .map_err(|e| format!("could not start the translation pool: {e}"))
+    })
+    .as_ref()
+    .map_err(String::clone)
+}
+
+/// Run `f` with the caller's query context (schema, dialect, counters) as
+/// its own, and hand back `f`'s result and the context's final state: what
+/// moving `f` to another thread needs to be invisible to `f` and the caller.
+fn with_carried_context<T, F>(
+    context: Option<crate::server::query_context::QueryContext>,
+    f: F,
+) -> (T, Option<crate::server::query_context::QueryContext>)
+where
+    F: FnOnce() -> T,
+{
+    use crate::server::query_context::{snapshot_query_context, with_query_context_sync};
+    match context {
+        Some(context) => with_query_context_sync(context, || {
+            let result = f();
+            (result, snapshot_query_context())
+        }),
+        None => (f(), None),
+    }
+}
+
+/// Run `f`, which parses or translates the statement `cypher` (CPU-bound:
+/// no waiting on a backend), on a translation pool worker with
+/// [`translation_stack_bytes`] of stack, and wait for it: the library entry
+/// points (the embedded connection, and through it FFI, Go, Python and
+/// `cg`) translate on the caller's thread otherwise, whose stack a long
 /// statement overflows, aborting the caller's process (#1373). A short
-/// statement ([`INLINE_TOKENS`]) runs inline, as do nested calls.
-/// The caller's query context (schema, dialect, counters) is carried over
-/// and its final state handed back, so the hop is not visible to `f` or the
-/// caller. `Err`: the thread could not be started.
+/// statement ([`INLINE_TOKENS`]) runs inline, as do nested calls. The
+/// caller's query context is carried over and its final state handed back;
+/// a panic is the caller's. `Err`: the pool could not be started.
 pub fn on_translation_stack<T, F>(cypher: &str, f: F) -> Result<T, String>
 where
     T: Send,
     F: FnOnce() -> T + Send,
 {
-    use crate::server::query_context::{
-        restore_query_context, snapshot_query_context, with_query_context_sync,
-    };
-    let short = || {
-        let shape =
-            prepared::StatementShape::of(&crate::open_cypher_parser::strip_comments(cypher));
-        shape.tokens <= INLINE_TOKENS && shape.depth <= INLINE_DEPTH
-    };
-    if ON_TRANSLATION_STACK.with(|on| on.get()) || short() {
+    if runs_inline(cypher) {
         return Ok(f());
     }
-    let context = snapshot_query_context();
+    let context = crate::server::query_context::snapshot_query_context();
+    let (result, context) = translation_pool()?.install(move || with_carried_context(context, f));
+    if let Some(context) = context {
+        crate::server::query_context::restore_query_context(context);
+    }
+    Ok(result)
+}
+
+/// [`on_translation_stack`] for work that also waits on a backend (the
+/// embedded connection's `query`, which runs the SQL): on a thread of its
+/// own with [`translation_stack_bytes`] of stack, so a long-running query
+/// never holds a pool worker. Starting it costs about 100 µs, little next to
+/// running a query. `Err`: the thread could not be started.
+pub fn on_translation_thread<T, F>(cypher: &str, f: F) -> Result<T, String>
+where
+    T: Send,
+    F: FnOnce() -> T + Send,
+{
+    if runs_inline(cypher) {
+        return Ok(f());
+    }
+    let context = crate::server::query_context::snapshot_query_context();
     let (result, context) = std::thread::scope(|scope| -> Result<_, String> {
         let handle = std::thread::Builder::new()
             .name("clickgraph-translate".to_string())
             .stack_size(translation_stack_bytes())
             .spawn_scoped(scope, move || {
                 ON_TRANSLATION_STACK.with(|on| on.set(true));
-                match context {
-                    Some(context) => with_query_context_sync(context, || {
-                        let result = f();
-                        (result, snapshot_query_context())
-                    }),
-                    None => (f(), None),
-                }
+                with_carried_context(context, f)
             })
             .map_err(|e| format!("could not start a translation thread: {e}"))?;
         // A panic is the caller's, as if `f` had run on its thread.
@@ -415,7 +474,7 @@ where
         }
     })?;
     if let Some(context) = context {
-        restore_query_context(context);
+        crate::server::query_context::restore_query_context(context);
     }
     Ok(result)
 }
