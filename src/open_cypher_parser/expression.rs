@@ -252,8 +252,9 @@ fn parse_exists_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
 /// The forms read: `COUNT { [MATCH] pattern [WHERE c] }`, and with one
 /// MATCH (and its WHERE) then RETURN: `COUNT { MATCH … RETURN items }` (its
 /// rows: the matches, the items read no aggregate), `COLLECT { MATCH … RETURN
-/// e }` (`e` for each match, as `[pattern WHERE c | e]`). Another body
-/// parses, to be refused when bound ([`CountOrCollect::body`]); `count(…)` /
+/// e }` (`e` for each match, as `[pattern WHERE c | e]`). Another body is
+/// read to its closing brace, to be refused when bound
+/// ([`CountOrCollect::body`]); `count(…)` /
 /// `collect(…)` stay the functions.
 fn parse_count_or_collect(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
     let (input, kind) = alt((
@@ -284,11 +285,54 @@ fn parse_count_or_collect(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
     }
 
     // A query.
-    let (rest, query) = super::clause_list::parse_clause_query(input)
-        .map_err(|_| nom::Err::Error(Error::new(input, ErrorKind::Verify)))?;
-    let (rest, _) = ws(char('}')).parse(rest)?;
-    let body = subquery_match(kind, query);
-    Ok((rest, count_or_collect(kind, body)))
+    if let Ok((rest, query)) = super::clause_list::parse_clause_query(input) {
+        if let Ok((rest, _)) = ws(char::<_, Error<&str>>('}')).parse(rest) {
+            let body = subquery_match(kind, query);
+            return Ok((rest, count_or_collect(kind, body)));
+        }
+    }
+
+    // Another body (several MATCH or patterns, OPTIONAL MATCH, a path
+    // variable, UNION, CALL, …, with or without RETURN): to its closing
+    // brace, refused when bound.
+    let rest = past_closing_brace(input)
+        .ok_or_else(|| nom::Err::Error(Error::new(input, ErrorKind::Verify)))?;
+    Ok((
+        rest,
+        count_or_collect(
+            kind,
+            Err(
+                "a COUNT { } / COLLECT { } of other than one pattern or one MATCH (and its WHERE) \
+                 and RETURN",
+            ),
+        ),
+    ))
+}
+
+/// The input after the `}` that closes a `{` already read: braces nest, and
+/// a string or an escaped name holds none (`'…'`, `"…"` with `\` escapes,
+/// `` `…` `` without).
+fn past_closing_brace(input: &str) -> Option<&str> {
+    let mut depth = 0usize;
+    let mut chars = input.char_indices();
+    while let Some((i, c)) = chars.next() {
+        match c {
+            '\'' | '"' | '`' => {
+                while let Some((_, d)) = chars.next() {
+                    if d == '\\' && c != '`' {
+                        chars.next();
+                    } else if d == c {
+                        break;
+                    }
+                }
+            }
+            '{' => depth += 1,
+            '}' if depth == 0 => return Some(&input[i + 1..]),
+            '}' => depth -= 1,
+            _ => {}
+        }
+    }
+    None
 }
 
 fn count_or_collect<'a>(
@@ -328,7 +372,38 @@ fn subquery_match<'a>(
         return Err("an aggregate in the RETURN of a COUNT { } / COLLECT { }");
     }
     let projection = match kind {
-        CountOrCollectKind::Count => None,
+        // The rows of a COUNT do not depend on its RETURN items, but they are
+        // bound (for their errors: an undefined variable, an arity, an
+        // aggregate) as a pattern comprehension's projection is.
+        CountOrCollectKind::Count => {
+            let items = r.clause.return_items;
+            if items
+                .iter()
+                .any(|i| matches!(&i.expression, Expression::Variable(v) if v == "*"))
+            {
+                return Err("a RETURN * in a COUNT { }");
+            }
+            let mut names: Vec<&str> = Vec::new();
+            for i in &items {
+                let name = match (&i.alias, &i.expression) {
+                    (Some(a), _) => Some(&**a),
+                    (None, Expression::Variable(v)) => Some(&**v),
+                    (None, _) => i.original_text,
+                };
+                if let Some(n) = name {
+                    if names.contains(&n) {
+                        return Err("several RETURN columns of one name in a COUNT { }");
+                    }
+                    names.push(n);
+                }
+            }
+            let mut exprs: Vec<Expression<'a>> = items.into_iter().map(|i| i.expression).collect();
+            Some(if exprs.len() == 1 {
+                exprs.remove(0)
+            } else {
+                Expression::List(exprs)
+            })
+        }
         CountOrCollectKind::Collect => match <[_; 1]>::try_from(r.clause.return_items) {
             Ok([item]) if !matches!(&item.expression, Expression::Variable(v) if v == "*") => {
                 Some(item.expression)
@@ -2753,7 +2828,8 @@ mod tests {
             let (kind, b) = body(input);
             assert_eq!(kind, CountOrCollectKind::Count, "{input}");
             let m = b.unwrap_or_else(|e| panic!("{input}: {e}"));
-            assert!(m.projection.is_none(), "{input}");
+            // A COUNT's RETURN items are kept to be bound (for their errors).
+            assert_eq!(m.projection.is_some(), input.contains("RETURN"), "{input}");
         }
         let (kind, b) = body("COLLECT { MATCH (a)-[:R]->(b) WHERE b.x > 1 RETURN b.name }");
         assert_eq!(kind, CountOrCollectKind::Collect);
@@ -2776,6 +2852,14 @@ mod tests {
             "COUNT { MATCH (a)-[:R]->(b) MATCH (b)-[:R]->(c) RETURN c }",
             "COUNT { MATCH (a)-[:R]->(b) WITH b RETURN b }",
             "COUNT { MATCH p = (a)-[:R]->(b) RETURN p }",
+            "COUNT { MATCH (a)-[:R]->(b) RETURN * }",
+            "COUNT { MATCH (a)-[:R]->(b) RETURN b.x AS y, b.z AS y }",
+            // Without RETURN: to the closing brace (strings and names may
+            // hold one).
+            "COUNT { MATCH (a)-[:R]->(b) MATCH (b)-[:R]->(c) }",
+            "COUNT { (a)-[:R]->(b), (b)-[:R]->(c) }",
+            "COUNT { MATCH p = (a)-[:R]->(b) WHERE length(p) = 1 }",
+            "COUNT { OPTIONAL MATCH (a)-[:R]->(b {k: \u{27}}\u{27}}) WHERE b.`}` = 1 }",
         ] {
             assert!(body(input).1.is_err(), "{input}");
         }

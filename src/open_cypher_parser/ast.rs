@@ -657,9 +657,11 @@ pub enum CountOrCollectKind {
 
 /// `COUNT { [MATCH] pattern [WHERE c] }`, `COUNT { MATCH pattern [WHERE c]
 /// RETURN … }`, `COLLECT { MATCH pattern [WHERE c] RETURN e }` (#1492): its
-/// one pattern, filter and (COLLECT) value. A body of another shape (several
-/// MATCH, WITH, UNWIND, UNION, DISTINCT, ORDER BY, SKIP, LIMIT, an aggregate)
-/// is kept as the reason it is not supported, refused when bound.
+/// one pattern, filter and value (a COLLECT's; a COUNT's RETURN items, bound
+/// for their errors only). A body of another shape (several MATCH or
+/// patterns, OPTIONAL MATCH, WITH, UNWIND, UNION, a path variable, DISTINCT,
+/// ORDER BY, SKIP, LIMIT, an aggregate, `RETURN *`) is read to its closing
+/// brace and kept as the reason it is not supported, refused when bound.
 #[derive(Debug, PartialEq, Clone)]
 pub struct CountOrCollect<'a> {
     pub kind: CountOrCollectKind,

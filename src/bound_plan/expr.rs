@@ -135,6 +135,10 @@ const FUNCTION_ARITIES: &[(&str, usize, usize)] = &[
     ("right", 2, 2),
     ("replace", 3, 3),
     ("split", 2, 2),
+    // (Neo4j reads `trim(…)` by its own grammar: only none is refused.)
+    ("trim", 1, usize::MAX),
+    ("ltrim", 1, 2),
+    ("rtrim", 1, 2),
     // conversion
     ("tointeger", 1, 1),
     ("tofloat", 1, 1),

@@ -8720,6 +8720,14 @@ fn count_and_collect_subqueries_1492() {
             "MATCH (a:User) RETURN COLLECT { (a)-[:FOLLOWS]->(b) } AS c",
             "a COLLECT { } without RETURN",
         ),
+        (
+            "MATCH (a:User) RETURN COUNT { MATCH (a)-[:FOLLOWS]->(b) MATCH (b)-[:FOLLOWS]->(c) } AS c",
+            "of other than one pattern or one MATCH",
+        ),
+        (
+            "MATCH (a:User) RETURN COUNT { (a)-[:FOLLOWS]->(b), (b)-[:FOLLOWS]->(c) } AS c",
+            "of other than one pattern or one MATCH",
+        ),
     ] {
         not_lowered(q, why);
     }
@@ -8753,6 +8761,15 @@ fn function_arity_1413() {
         (
             "MATCH (a:User) WITH a WHERE size([x IN [1] WHERE toUpper() = 'A']) > 0 RETURN a",
             "Insufficient parameters for function 'toUpper'",
+        ),
+        // A COUNT { }'s RETURN items are bound for their errors.
+        (
+            "MATCH (a:User) RETURN COUNT { MATCH (a)-[:FOLLOWS]->(b) RETURN size() } AS c",
+            "Insufficient parameters for function 'size'",
+        ),
+        (
+            "MATCH (a:User) RETURN COUNT { MATCH (a)-[:FOLLOWS]->(b) RETURN nope } AS c",
+            "Variable `nope` not defined",
         ),
     ] {
         match translate_bound_plan(q, &social(), &ReadOptions::default()) {

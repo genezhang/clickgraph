@@ -419,13 +419,14 @@ WHERE COUNT { MATCH (a)-[:FOLLOWS]->() } > 1
 RETURN COLLECT { MATCH (a)-[:FOLLOWS]->(b) WHERE b.age > 30 RETURN b.name } AS names
 ```
 
-`COUNT { }` takes a pattern (with or without `MATCH`) and its WHERE, or one
-MATCH and a RETURN of no aggregate; `COLLECT { }` one MATCH (and WHERE) and a
-RETURN of one column. Not supported yet (a "Not supported" error): several
-MATCH clauses, WITH, UNWIND, UNION, a path variable, DISTINCT / ORDER BY /
-SKIP / LIMIT, or an aggregate inside; a COLLECT of nodes or relationships
-(as for pattern comprehensions, #1378). A COLLECT's list is in no particular
-order.
+`COUNT { }` takes one pattern (with or without `MATCH`) and its WHERE, or one
+MATCH and a RETURN (its items are checked as Neo4j does, and do not change
+the count); `COLLECT { }` one MATCH (and WHERE) and a RETURN of one column.
+Not supported yet (a "Not supported" error): several MATCH clauses or
+comma-separated patterns, OPTIONAL MATCH, WITH, UNWIND, UNION, CALL, a path
+variable, DISTINCT / ORDER BY / SKIP / LIMIT, `RETURN *` or an aggregate
+inside; a COLLECT of nodes, relationships or maps (as for pattern
+comprehensions, #1378). A COLLECT's list is in no particular order.
 
 ---
 
