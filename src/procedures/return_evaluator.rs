@@ -526,6 +526,14 @@ fn evaluate_operator(op: &OperatorApplication, context: &EvalContext) -> EvalRes
                 JsonValue::Bool(other)
             })
         }
+        Operator::Xor => {
+            let truths = operands.iter().map(truth).collect::<Result<Vec<_>, _>>()?;
+            Ok(match truths.as_slice() {
+                [Some(a), Some(b)] => JsonValue::Bool(a != b),
+                [_, _] => JsonValue::Null,
+                _ => return Err("XOR takes two operands".to_string()),
+            })
+        }
         Operator::Not => Ok(value(truth(unary()?)?.map(|b| !b))),
         Operator::IsNull => Ok(JsonValue::Bool(unary()?.is_null())),
         Operator::IsNotNull => Ok(JsonValue::Bool(!unary()?.is_null())),

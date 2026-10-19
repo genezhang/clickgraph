@@ -19,10 +19,13 @@ use super::{
 pub fn parse_order_by_item(input: &'_ str) -> IResult<&'_ str, OrderByItem<'_>> {
     let (input, expression) = parse_expression(input)?;
 
-    let (input, order_opt) = opt(ws(alt((
-        map(tag_no_case("ASC"), |_| OrerByOrder::Asc),
-        map(tag_no_case("DESC"), |_| OrerByOrder::Desc),
-    ))))
+    // Words, as in Neo4j: ASC, ASCENDING, DESC, DESCENDING (`ASCx` is none).
+    let (input, order_opt) = opt(alt((
+        map(super::common::keyword("ASCENDING"), |_| OrerByOrder::Asc),
+        map(super::common::keyword("ASC"), |_| OrerByOrder::Asc),
+        map(super::common::keyword("DESCENDING"), |_| OrerByOrder::Desc),
+        map(super::common::keyword("DESC"), |_| OrerByOrder::Desc),
+    )))
     .parse(input)?;
 
     // Default to ASCE if no order keyword is provided.

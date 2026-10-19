@@ -166,6 +166,13 @@ impl FunctionMapper for DatabricksFunctionMapper {
         format!("({a} <=> {b})")
     }
 
+    fn logical_xor(&self, a: &str, b: &str) -> String {
+        // Spark has no boolean XOR; of two booleans it is `<>`, which is
+        // NULL with a NULL operand. Each side is cast to BOOLEAN, so a
+        // number reads as ClickHouse's `xor` reads it (nonzero is true).
+        format!("(CAST({a} AS BOOLEAN) <> CAST({b} AS BOOLEAN))")
+    }
+
     fn cast_bool(&self, expr: &str) -> String {
         // Spark BOOLEAN is already nullable and prints true/false, so a plain
         // ANSI cast suffices — no OrNull dance needed. #1057.

@@ -47,7 +47,7 @@ pub fn parse_unwind_clause(
     // Parse AS keyword
     let (input, _) = context(
         "Expected AS keyword after UNWIND expression",
-        cut(ws(tag_no_case("AS"))),
+        cut(super::common::keyword("AS")),
     )
     .parse(input)?;
 

@@ -42,7 +42,7 @@ fn parse_with_item(input: &'_ str) -> IResult<&'_ str, WithItem<'_>> {
     };
 
     let (input, alias) = opt(preceded(
-        ws(tag_no_case("AS")),
+        super::common::keyword("AS"),
         ws(super::common::symbolic_name),
     ))
     .parse(input)?;
@@ -62,7 +62,8 @@ pub(crate) fn parse_with_head(
     let (input, _) = ws(tag_no_case("WITH")).parse(input)?;
 
     // Parse optional DISTINCT modifier
-    let (input, distinct) = opt(ws(tag_no_case("DISTINCT"))).parse(input)?;
+    // (a word: `WITH distinctx` is no DISTINCT)
+    let (input, distinct) = opt(super::common::keyword("DISTINCT")).parse(input)?;
     let distinct = distinct.is_some();
 
     // Try parsing `WITH *` (star projection) before attempting regular items.

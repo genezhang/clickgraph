@@ -23,7 +23,7 @@ fn parse_return_item(input: &'_ str) -> IResult<&'_ str, ReturnItem<'_>> {
     let (_, expression) = parse_expression.parse(expr_text)?;
 
     let (input, alias) = opt(preceded(
-        ws(tag_no_case("AS")),
+        super::common::keyword("AS"),
         ws(super::common::symbolic_name),
     ))
     .parse(input)?;
@@ -51,7 +51,8 @@ pub fn parse_return_clause(
     let (input, _) = ws(tag_no_case("RETURN")).parse(input)?;
 
     // Check for optional DISTINCT keyword
-    let (input, distinct) = opt(ws(tag_no_case("DISTINCT"))).parse(input)?;
+    // (a word: `RETURN distinctcountry` is no DISTINCT)
+    let (input, distinct) = opt(super::common::keyword("DISTINCT")).parse(input)?;
     let distinct = distinct.is_some();
 
     let (input, return_items) = context(

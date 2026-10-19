@@ -645,12 +645,21 @@ mod tests {
     #[test]
     fn a_subquery_in_a_pattern_property_map_is_not_supported() {
         let schema = social();
+        // A lone node in an expression is no pattern (#1398): Neo4j reads
+        // `(a {name: …})` as the map projection `a {…}`, a type error there.
         for q in [
             "MATCH (a:User) WHERE (a {name: EXISTS { (a)-[:FOLLOWS]->() }}) RETURN a.name",
             "MATCH (a:User) RETURN size((a {name: (a)-[:FOLLOWS]->()})) AS n",
             "MATCH (a:User) WHERE NOT (a {name: EXISTS { (a)-[:FOLLOWS]->() }}) RETURN a.name",
+        ] {
+            let got = crate::clickhouse_query_generator::cypher_to_sql(q, &schema);
+            assert!(got.is_err(), "{q}: {got:?}");
+        }
+        for q in [
             "MATCH (a:User), (b:User) \
              RETURN shortestPath((a)-[:FOLLOWS {x: EXISTS { (a)-[:FOLLOWS]->() }}]-(b))",
+            "MATCH (a:User) WHERE (a)-[:FOLLOWS {x: EXISTS { (a)-[:FOLLOWS]->() }}]->() \
+             RETURN a.name",
         ] {
             let got = crate::clickhouse_query_generator::cypher_to_sql(q, &schema);
             assert!(

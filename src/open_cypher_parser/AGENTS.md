@@ -161,19 +161,26 @@ use `symbolic_name`. `FunctionCall.name` is `String` (owned) because dotted name
 are joined from parts.
 
 ### 2. Operator Precedence (expression.rs)
-The expression parser implements standard precedence via recursive descent:
+The levels follow Neo4j 5's grammar (`expression` … `expression2`, #1398):
 ```
-Lowest  → parse_logical_or      (OR)
-          parse_logical_and     (AND)
-          parse_not_expression  (NOT)
-          parse_comparison      (= <> < > <= >= =~ IN STARTS WITH ENDS WITH CONTAINS)
-          parse_additive        (+ -)
-          parse_multiplicative  (* / %)
-          parse_unary           (unary - , DISTINCT)
-Highest → parse_postfix         (IS NULL, IS NOT NULL, [index], [from..to])
-          parse_primary         (literals, variables, function calls, CASE, EXISTS, reduce, etc.)
+Lowest  → parse_logical_or           (OR)
+          parse_logical_xor          (XOR)
+          parse_logical_and          (AND)
+          parse_not_expression       (NOT, repeated)
+          parse_comparison           (= <> != < > <= >=: a chain is the AND of adjacent pairs)
+          parse_predicate            (one of =~ STARTS WITH ENDS WITH CONTAINS IN NOT IN IS [NOT] NULL)
+          parse_additive             (+ -)
+          parse_multiplicative       (* / %)
+          parse_exponent             (^, left-associative)
+          parse_unary                (unary - , DISTINCT)
+Highest → parse_postfix              ([index], [from..to], .key — any number)
+          atoms                      (literals, variables, calls, CASE, EXISTS, reduce, comprehensions,
+                                      relationship patterns, (expr))
 ```
-**OR must not consume ORDER**: `parse_logical_or` uses `terminated(tag_no_case("OR"), not(peek(alphanumeric1)))` to avoid matching the "OR" in "ORDER".
+**Keywords are words**: every keyword goes through `keyword()` (`tag_no_case` not followed by a name
+character), so `OR` never matches `ORDER`, `NOT` never `nothing`, `IN` never `index`.
+**A lone node is no pattern in an expression**: `(a)` is the parenthesized variable, `(a:L)` a label
+test, `(NOT x)` a negation; only a relationship pattern or shortestPath is a pattern expression.
 
 ### 3. ConnectedPattern Node Sharing
 In multi-hop patterns like `(a)-[]->(b)-[]->(c)`, the intermediate node `(b)` is shared between consecutive `ConnectedPattern` entries via `Rc<RefCell<NodePattern>>`. The second pattern's `start_node` is `clone()` of the first pattern's `end_node`.

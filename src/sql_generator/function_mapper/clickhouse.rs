@@ -141,6 +141,11 @@ impl FunctionMapper for ClickhouseFunctionMapper {
         format!("isNotDistinctFrom({a}, {b})")
     }
 
+    fn logical_xor(&self, a: &str, b: &str) -> String {
+        // `xor` is three-valued: NULL with a NULL operand.
+        format!("xor({a}, {b})")
+    }
+
     fn cast_bool(&self, expr: &str) -> String {
         // Nullable(Bool) preserves NULL (bare `CAST(NULL>2 AS Bool)` throws
         // Code 70) and is physically UInt8, so this changes only the wire

@@ -8510,3 +8510,99 @@ fn escaped_names_review_1489() {
         assert!(!e.contains("Parse error"), "{e}");
     }
 }
+
+/// Comparison chains and predicate binding as in Neo4j (#1398): a chain of
+/// any length, `<>` included, is the conjunction of its adjacent
+/// comparisons; IN and IS NULL bind tighter than `=` and apply to an
+/// additive operand.
+#[test]
+fn comparison_chains_and_predicates_1398() {
+    has(
+        "MATCH (a:User), (b:User) RETURN a.age <> b.age <> a.age AS x",
+        &["(v0.age <> v1.age AND v1.age <> v0.age)"],
+    );
+    has(
+        "MATCH (a:User), (b:User), (c:User) RETURN a.age < b.age < c.age < b.age AS x",
+        &["((v0.age < v1.age AND v1.age < v2.age) AND v2.age < v1.age)"],
+    );
+    has(
+        "MATCH (a:User) RETURN true = a.age IN [25, 30] AS x, a.age + 1 IS NULL AS y",
+        &["true = (v0.age IN [25, 30])", "v0.age + 1 IS NULL"],
+    );
+    // A parenthesized NOT is no node pattern.
+    has(
+        "WITH true AS x RETURN (NOT false) = x AS y",
+        &["(NOT false) = true"],
+    );
+}
+
+/// XOR (#1398): between AND and OR, three-valued; ClickHouse `xor`, Spark
+/// `<>` of the two booleans.
+#[test]
+fn xor_1398() {
+    has(
+        "MATCH (a:User) WHERE a.age > 30 XOR a.country = 'USA' OR a.age < 20 RETURN a.name AS n",
+        &["(xor(v0.age > 30, v0.country = 'USA') OR v0.age < 20)"],
+    );
+    let got = squash(
+        &databricks_sql(
+            "MATCH (a:User) WHERE a.age > 30 XOR a.country = 'USA' RETURN a.name AS n",
+            &social(),
+        )
+        .unwrap(),
+    );
+    assert!(
+        got.contains("(CAST(v0.age > 30 AS BOOLEAN) <> CAST(v0.country = 'USA' AS BOOLEAN))"),
+        "{got}"
+    );
+}
+
+/// Review of #1507: clause keywords are words too (`RETURN distinctcountry`
+/// read as `RETURN DISTINCT country`), ASCENDING / DESCENDING, and an
+/// operator without an operand leaves the error at the operator.
+#[test]
+fn keywords_are_words_in_clauses_1398() {
+    assert_eq!(
+        sql("MATCH (n:User) WITH n.country AS country, n.user_id AS distinctcountry \
+             RETURN distinctcountry"),
+        sql("MATCH (n:User) WITH n.country AS country, n.user_id AS dc RETURN dc AS distinctcountry"),
+    );
+    assert!(
+        !sql("MATCH (n:User) WITH n.user_id AS distinctx RETURN distinctx").contains("DISTINCT")
+    );
+    assert_eq!(
+        sql("MATCH (n:User) RETURN n.age AS a ORDER BY a DESCENDING"),
+        sql("MATCH (n:User) RETURN n.age AS a ORDER BY a DESC"),
+    );
+    assert_eq!(
+        sql("MATCH (n:User) RETURN n.age AS a ORDER BY a ASCENDING"),
+        sql("MATCH (n:User) RETURN n.age AS a ORDER BY a"),
+    );
+    let err = translate_bound_plan(
+        "MATCH (u:User) WHERE u.name = 'x' AND u.age > ? RETURN u",
+        &social(),
+        &ReadOptions::default(),
+    )
+    .unwrap_err();
+    assert!(
+        err.contains("> ? RETURN u") && !err.contains("at `MATCH"),
+        "{err}"
+    );
+    let err = translate_bound_plan(
+        "MATCH (u:User) WHERE u.age IN ? RETURN u",
+        &social(),
+        &ReadOptions::default(),
+    )
+    .unwrap_err();
+    assert!(
+        err.contains("IN ? RETURN u") && !err.contains("at `MATCH"),
+        "{err}"
+    );
+    // `AS` is a word: `ASage` is no alias.
+    assert!(translate_bound_plan(
+        "MATCH (n:User) RETURN n.age ASage",
+        &social(),
+        &ReadOptions::default()
+    )
+    .is_err());
+}
