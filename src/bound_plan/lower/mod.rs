@@ -820,7 +820,8 @@ struct Lowerer<'s> {
     /// (VALUE_TYPES.md T2a): what a check written before the column types
     /// were known asks ([`Self::kind_before_column_types`]).
     no_column_kinds: std::cell::Cell<bool>,
-    /// What each projected or unwound value is (`unwind.rs`).
+    /// What each projected, unwound, subquery or collected-map value is
+    /// (`unwind.rs`, set by `set_kind` only).
     kinds: HashMap<VarId, unwind::Kind>,
     /// [`Self::kinds`] as it was with properties' column types left
     /// unread, where it differs: what `kind_before_column_types` reads of a

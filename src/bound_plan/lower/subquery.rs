@@ -851,11 +851,11 @@ struct MembersAnchor<'s> {
     schema: &'s NodeSchema,
 }
 
-/// What a subquery's placeholder is, for `Lowerer::kind`: a list's element
 /// A subquery's list element kind, and that kind with properties' column
 /// types left unread (`Lowerer::set_kind`).
 type ListKinds = (Kind, Kind);
 
+/// What a subquery's placeholder is, for `Lowerer::kind`: a list's element
 /// kind is known once the subquery is applied.
 pub(super) fn placeholder_kind(lowerer: &Lowerer<'_>, e: &LogicalExpr) -> Option<Kind> {
     let v = subquery_var(e)?;
