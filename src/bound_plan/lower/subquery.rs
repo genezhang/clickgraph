@@ -619,7 +619,7 @@ impl<'s> Lowerer<'s> {
         predicate: Option<&LogicalExpr>,
         correlation: &[Correlated],
         sq: &Subquery,
-    ) -> Result<Option<(RenderPlan, Option<(Kind, Kind)>)>, LowerError> {
+    ) -> Result<Option<(RenderPlan, Option<ListKinds>)>, LowerError> {
         self.lower_match(pattern, predicate)?;
         if let SubqueryKind::Collect(p) = &sq.kind {
             // Nested subqueries of the projection, per match.
@@ -852,6 +852,10 @@ struct MembersAnchor<'s> {
 }
 
 /// What a subquery's placeholder is, for `Lowerer::kind`: a list's element
+/// A subquery's list element kind, and that kind with properties' column
+/// types left unread (`Lowerer::set_kind`).
+type ListKinds = (Kind, Kind);
+
 /// kind is known once the subquery is applied.
 pub(super) fn placeholder_kind(lowerer: &Lowerer<'_>, e: &LogicalExpr) -> Option<Kind> {
     let v = subquery_var(e)?;
