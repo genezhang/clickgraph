@@ -8606,3 +8606,35 @@ fn keywords_are_words_in_clauses_1398() {
     )
     .is_err());
 }
+
+/// The list predicates (#1420) lower as their list comprehensions do, over
+/// values and over a list of nodes, on both dialects; a NULL list is NULL.
+#[test]
+fn list_predicates_1420() {
+    has(
+        "MATCH (u:User) WHERE any(x IN [1, 2] WHERE x = u.user_id) RETURN u.name AS n",
+        &[
+            "CASE WHEN length([1, 2]) IS NULL THEN NULL",
+            "WHEN length(arrayFilter(v1 -> v1 = v0.user_id, [1, 2])) > 0 THEN true",
+            "WHEN length(arrayFilter(v2 -> (v2 = v0.user_id) IS NULL, [1, 2])) > 0 THEN NULL \
+             ELSE false END",
+        ],
+    );
+    for q in [
+        "MATCH (a:User)-[:FOLLOWS]->(b:User) WITH a, collect(b) AS bs \
+         RETURN all(x IN bs WHERE x.age > 30) AS l, single(x IN bs WHERE x.age > 30) AS s",
+        "MATCH p = (a:User)-[:FOLLOWS*1..2]->(b:User) \
+         RETURN none(n IN nodes(p) WHERE n.age > 30) AS x",
+        "WITH [[1, 2], [3]] AS nss RETURN all(x IN nss WHERE size(x) > 0) AS a",
+    ] {
+        sql(q);
+        databricks_sql(q, &social()).unwrap_or_else(|e| panic!("{q}: {e}"));
+    }
+    let got = squash(
+        &databricks_sql("RETURN single(x IN [1, null] WHERE x > 0) AS s", &social()).unwrap(),
+    );
+    assert!(
+        got.contains("CASE WHEN array_size(array(1, NULL)) IS NULL THEN NULL"),
+        "{got}"
+    );
+}

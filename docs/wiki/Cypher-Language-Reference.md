@@ -1838,6 +1838,19 @@ RETURN last([1, 2, 3])               -- 3
 RETURN range(1, 10)                  -- [1,2,3,4,5,6,7,8,9,10]
 ```
 
+#### List Predicates
+
+`all`, `any`, `none`, `single` (`x IN list WHERE predicate`, WHERE required),
+three-valued as in Neo4j: `any(x IN [1, null] WHERE x > 1)` is NULL,
+`all(x IN [] WHERE …)` true, of a NULL list NULL. Over values, collected nodes,
+`nodes(p)` and lists of lists; see [Cypher Functions](Cypher-Functions.md#list-predicate-functions).
+
+```cypher
+MATCH p = (a:User)-[:FOLLOWS*1..3]->(b:User)
+WHERE all(n IN nodes(p) WHERE n.is_active) AND single(n IN nodes(p) WHERE n.country = 'UK')
+RETURN b.name
+```
+
 ---
 
 ## Names
