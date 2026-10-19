@@ -1418,6 +1418,7 @@ async fn query_handler_inner(
                 // plan/render/sqlgen times are zeros), the type comes from
                 // the cached template, and the total and execution times are
                 // this call's real ones.
+                metrics.sql_queries_count = 1;
                 record_cache_hit(
                     &mut metrics,
                     &payload.query,

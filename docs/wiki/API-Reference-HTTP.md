@@ -731,10 +731,13 @@ curl "http://localhost:8080/stats/queries?recent=10&slowest=10" | jq
 
 ### OTLP query spans (opt-in)
 
-Every HTTP and Bolt query can emit one OTLP/HTTP trace span
-(`resource.name` `cypher.query`) to a collector — the span shape (attributes,
-bounds on what can appear in the span text) is specified in
-`specs/SPEC-otlp-spans.md`. Configuration:
+Every Bolt query and every HTTP `/query` request that is translated or fails
+emits one OTLP/HTTP trace span named `cypher.query` (resource
+`service.name=clickgraph`; successful procedure calls, `SHOW DATABASES` and
+`COPY TO` on HTTP are not traced). Attributes: `db.system`,
+`cypher.query.type`, `cypher.outcome`, `cypher.schema`, `cypher.sql_queries`,
+`cypher.result_rows`, `cypher.phase.*_s` timings, and `cypher.query.text` only
+when enabled below. Configuration:
 
 | Var | Default | Purpose |
 |-----|---------|---------|

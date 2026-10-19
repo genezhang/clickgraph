@@ -89,6 +89,27 @@ fn redact_literals(input: &str) -> String {
             }
             continue;
         }
+        // Comments are dropped here too, not only by `strip_comments`: the
+        // two passes split quotes differently (inside backticks a backslash
+        // escapes for `strip_comments`, not here), so a comment it kept as
+        // identifier text (``(n:`a\`) // secret``) must not survive this pass.
+        let next = chars.get(i + 1).copied();
+        let rel_dash =
+            matches!(chars.get(i + 2), Some('>' | '(' | '[')) || (i > 0 && chars[i - 1] == '<');
+        if (c == '/' && next == Some('/')) || (c == '-' && next == Some('-') && !rel_dash) {
+            while i < chars.len() && chars[i] != '\n' {
+                i += 1;
+            }
+            continue;
+        }
+        if c == '/' && next == Some('*') {
+            i += 2;
+            while i < chars.len() && !(chars[i] == '*' && chars.get(i + 1) == Some(&'/')) {
+                i += 1;
+            }
+            i = (i + 2).min(chars.len());
+            continue;
+        }
         if let Some(len) = number_len(&chars, i) {
             out.push('?');
             i += len;
@@ -335,14 +356,16 @@ pub fn parse_headers(spec: &str) -> reqwest::header::HeaderMap {
             log::warn!("OTLP: header entry {entry} has no '=' and is ignored (content withheld)");
             continue;
         };
-        if v.trim().is_empty() {
+        // `==` padding leaves a value of only '='; a '%' in a name is a
+        // percent-encoded credential (`Basic%20…`), never a real header.
+        if v.trim().trim_matches('=').is_empty() || k.contains('%') {
             // An empty value usually means the '=' that ended the entry was
             // a credential's own padding (`Basic%20…=`): the "name" half is
             // then the credential text itself — percent-encoded names pass
             // the header-name check (`%` is a token character) and would be
             // sent silently. Skip it and say only where it happened.
             log::warn!(
-                "OTLP: header entry {entry} has an empty value and is ignored (content withheld)"
+                "OTLP: header entry {entry} has an empty value or an encoded name and is ignored (content withheld)"
             );
             continue;
         }
@@ -918,6 +941,27 @@ mod tests {
         let got = sanitize_query(r#"USE `db\` MATCH (x) WHERE x.p = 'x`secret'"#);
         assert!(!got.contains("secret"), "leak: {got}");
         assert_eq!(got, "USE `?` MATCH (x) WHERE x.p = '?'");
+        // `strip_comments` reads `\`` inside backticks as an escape and keeps
+        // the comment behind it; this pass must still drop it.
+        for q in [
+            "MATCH (n:`a\\`) // password hunter2",
+            "MATCH (n:`a\\`) /* token=hunter2 */ RETURN n",
+            "MATCH (n:`a\\`) -- hunter2\nRETURN n",
+        ] {
+            let got = sanitize_query(q);
+            assert!(!got.contains("hunter2"), "comment leak: {got}");
+        }
+        assert_eq!(
+            sanitize_query("MATCH (a)-->(b)<--(c)--(d)"),
+            "MATCH (a)-->(b)<--(c)--(d)"
+        );
+    }
+
+    #[test]
+    fn double_padded_keyless_credential_is_not_sent() {
+        assert!(parse_headers("YWI6Yw==").is_empty());
+        assert!(parse_headers("Basic%20YWI6Yw==").is_empty());
+        assert_eq!(parse_headers("x-k=abc=")["x-k"], "abc=");
     }
 
     #[test]
