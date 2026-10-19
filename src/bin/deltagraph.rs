@@ -133,14 +133,9 @@ fn main() {
     // Same tokio runtime tuning as `clickgraph` — recursive plan
     // traversal needs the larger thread stack, and the threshold is
     // dialect-independent.
-    let stack_mb: usize = std::env::var("CLICKGRAPH_THREAD_STACK_MB")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(128);
-
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
-        .thread_stack_size(stack_mb * 1024 * 1024)
+        .thread_stack_size(clickgraph::translate::translation_stack_bytes())
         .build()
         .expect("Failed to create tokio runtime");
 

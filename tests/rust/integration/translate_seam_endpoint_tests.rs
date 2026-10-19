@@ -567,3 +567,33 @@ async fn too_many_clauses_are_refused() {
         assert!(body.contains("clauses"), "{body}");
     }
 }
+
+/// A hop to the translation stack carries the caller's query context
+/// over (the dialect, the schema) and hands its final state back
+/// (review of #1506).
+#[test]
+fn the_translation_stack_carries_the_query_context() {
+    use clickgraph::server::query_context::{
+        get_current_dialect, get_current_schema_name, set_current_dialect, set_current_schema_name,
+        with_query_context_sync, QueryContext,
+    };
+    use clickgraph::sql_generator::SqlDialect;
+    let long = format!("MATCH (a) {}RETURN a", "WITH a ".repeat(100));
+    let (inside, after) = with_query_context_sync(QueryContext::new(None), || {
+        set_current_dialect(SqlDialect::Databricks);
+        let inside = clickgraph::translate::on_translation_stack(&long, || {
+            let hopped = std::thread::current().name() == Some("clickgraph-translate");
+            set_current_schema_name(Some("set_on_the_hop".to_string()));
+            (hopped, get_current_dialect())
+        })
+        .unwrap();
+        (inside, get_current_schema_name())
+    });
+    assert_eq!(inside, (true, SqlDialect::Databricks));
+    assert_eq!(after.as_deref(), Some("set_on_the_hop"));
+    // A short statement runs inline.
+    let hopped = clickgraph::translate::on_translation_stack("MATCH (a) RETURN a", || {
+        std::thread::current().name() == Some("clickgraph-translate")
+    });
+    assert_eq!(hopped, Ok(false));
+}

@@ -105,14 +105,9 @@ fn main() {
     // Build tokio runtime with larger worker thread stacks to handle
     // deep recursive logical plan traversal (e.g., bidirectional + WITH chains).
     // Default 128 MB covers all known query patterns; override via CLICKGRAPH_THREAD_STACK_MB.
-    let stack_mb: usize = std::env::var("CLICKGRAPH_THREAD_STACK_MB")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(128);
-
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
-        .thread_stack_size(stack_mb * 1024 * 1024)
+        .thread_stack_size(clickgraph::translate::translation_stack_bytes())
         .build()
         .expect("Failed to create tokio runtime");
 

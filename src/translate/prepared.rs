@@ -30,6 +30,12 @@ use crate::open_cypher_parser::clause_list::{parse_clause_statement, Clause, Cla
 /// queries have tens of clauses (the LDBC ones at most about 30).
 pub const MAX_CLAUSES: usize = 1000;
 
+/// The deepest nesting of brackets (`(`, `[`, `{`) a statement may have
+/// (#1373 review): the expression parser and the lowering recurse once per
+/// level, so 20,000 nested parentheses (a 40 KB request) aborted a
+/// (debug-build) server. Real queries nest a few levels.
+pub const MAX_NESTING: usize = 500;
+
 /// The graph a statement runs on when neither the statement (`USE`) nor the
 /// request names one: the schema registered as `default` (the configured
 /// `default_schema`, else the first schema loaded).
@@ -239,6 +245,13 @@ impl StatementTargets {
     /// A statement of more than [`MAX_CLAUSES`] clauses is refused here,
     /// before a parser that recurses per clause reads it.
     pub fn of(text: &str) -> Result<StatementTargets, PrepareError> {
+        // Before any parser reads it: they recurse once per bracket.
+        let depth = StatementShape::of(text).depth;
+        if depth > MAX_NESTING {
+            return Err(PrepareError::TooLarge(format!(
+                "Not supported: brackets nested {depth} deep (at most {MAX_NESTING})"
+            )));
+        }
         if let Ok((_, stmt)) = parse_clause_statement(text) {
             let arms: Vec<&ClauseQuery<'_>> = std::iter::once(&stmt.first)
                 .chain(stmt.unions.iter().map(|(_, q)| q))
@@ -386,52 +399,86 @@ fn check_clause_keywords(text: &str) -> Result<(), PrepareError> {
 }
 
 /// The clause keywords of `text` (comments stripped), without parsing it:
-/// an upper bound of its clauses (`STARTS WITH` counts too). Strings and
-/// backticked names are skipped, and a property key (`n.limit`).
+/// an upper bound of its clauses ([`StatementShape::clause_keywords`]).
 pub fn clause_keywords(text: &str) -> usize {
-    const KEYWORDS: [&str; 14] = [
-        "MATCH", "UNWIND", "WITH", "RETURN", "CALL", "CREATE", "MERGE", "SET", "REMOVE", "DELETE",
-        "LIMIT", "SKIP", "ORDER", "UNION",
-    ];
-    let mut count = 0usize;
-    let mut chars = text.char_indices().peekable();
-    let mut previous = ' ';
-    while let Some((i, c)) = chars.next() {
-        match c {
-            '\'' | '"' | '`' => {
-                // To the closing quote (a backslash escapes in strings).
-                while let Some((_, d)) = chars.next() {
-                    if d == '\\' && c != '`' {
+    StatementShape::of(text).clause_keywords
+}
+
+/// How big a statement is, read without parsing it (one pass over the
+/// characters; comments already stripped): what decides whether a library
+/// caller translates it on its own thread (`translate::on_translation_stack`)
+/// and bounds what a parser that recurses reads ([`MAX_CLAUSES`],
+/// [`MAX_NESTING`]).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct StatementShape {
+    /// Clause keywords: an upper bound of the clauses (`STARTS WITH` counts
+    /// too). Strings, backticked names and property keys (`n.limit`) are
+    /// skipped.
+    pub clause_keywords: usize,
+    /// Tokens: names, numbers, strings, and each other character that is
+    /// not white space.
+    pub tokens: usize,
+    /// The deepest nesting of `(`, `[` and `{`.
+    pub depth: usize,
+}
+
+impl StatementShape {
+    pub fn of(text: &str) -> StatementShape {
+        const KEYWORDS: [&str; 15] = [
+            "MATCH", "UNWIND", "WITH", "RETURN", "CALL", "CREATE", "MERGE", "SET", "REMOVE",
+            "DELETE", "LIMIT", "SKIP", "OFFSET", "ORDER", "UNION",
+        ];
+        let mut shape = StatementShape::default();
+        let mut depth = 0usize;
+        let mut chars = text.char_indices().peekable();
+        let mut previous = ' ';
+        while let Some((i, c)) = chars.next() {
+            match c {
+                '\'' | '"' | '`' => {
+                    // To the closing quote (a backslash escapes in strings).
+                    while let Some((_, d)) = chars.next() {
+                        if d == '\\' && c != '`' {
+                            chars.next();
+                        } else if d == c {
+                            break;
+                        }
+                    }
+                    shape.tokens += 1;
+                    previous = c;
+                }
+                c if c.is_alphanumeric() || c == '_' => {
+                    let mut end = i + c.len_utf8();
+                    while let Some(&(j, d)) = chars.peek() {
+                        if !is_identifier_char(d) {
+                            break;
+                        }
+                        end = j + d.len_utf8();
                         chars.next();
-                    } else if d == c {
-                        break;
                     }
-                }
-                previous = c;
-            }
-            c if c.is_alphabetic() || c == '_' => {
-                let mut end = i + c.len_utf8();
-                while let Some(&(j, d)) = chars.peek() {
-                    if !is_identifier_char(d) {
-                        break;
+                    let word = &text[i..end];
+                    if previous != '.' && KEYWORDS.iter().any(|k| word.eq_ignore_ascii_case(k)) {
+                        shape.clause_keywords += 1;
                     }
-                    end = j + d.len_utf8();
-                    chars.next();
+                    shape.tokens += 1;
+                    previous = 'a';
                 }
-                let word = &text[i..end];
-                if previous != '.' && KEYWORDS.iter().any(|k| word.eq_ignore_ascii_case(k)) {
-                    count += 1;
-                }
-                previous = 'a';
-            }
-            c => {
-                if !c.is_whitespace() {
+                c if c.is_whitespace() => {}
+                c => {
+                    match c {
+                        '(' | '[' | '{' => {
+                            depth += 1;
+                            shape.depth = shape.depth.max(depth);
+                        }
+                        ')' | ']' | '}' => depth = depth.saturating_sub(1),
+                        _ => {}
+                    }
+                    shape.tokens += 1;
                     previous = c;
                 }
             }
         }
+        shape
     }
-    count
 }
 
 /// Whether two graph names name the same graph: the same name, or on a
@@ -699,6 +746,33 @@ mod tests {
             2
         );
         assert_eq!(clause_keywords("match (n) with n Return n"), 3);
+        // A free-standing OFFSET is a clause (review of #1506).
+        assert_eq!(clause_keywords("MATCH (n) OFFSET 1 OFFSET 2 RETURN n"), 4);
+        let shape = StatementShape::of("MATCH (n) WHERE n.x IN [1, (2 + 3)] RETURN 'a(b'");
+        assert_eq!((shape.depth, shape.tokens), (2, 20));
+        let nested = format!(
+            "RETURN {}1{} AS x",
+            "(".repeat(MAX_NESTING + 1),
+            ")".repeat(MAX_NESTING + 1)
+        );
+        assert!(matches!(
+            StatementTargets::of(&nested),
+            Err(PrepareError::TooLarge(_))
+        ));
+        // At the limit it parses, on the stack of a server worker (128 MB;
+        // a debug build needs more than a test thread's 2 MB).
+        let nested = format!(
+            "RETURN {}1{} AS x",
+            "(".repeat(MAX_NESTING),
+            ")".repeat(MAX_NESTING)
+        );
+        let parsed = std::thread::Builder::new()
+            .stack_size(128 * 1024 * 1024)
+            .spawn(move || StatementTargets::of(&nested).is_ok())
+            .unwrap()
+            .join()
+            .unwrap();
+        assert!(parsed);
     }
 
     /// #1447: an update in any arm makes the statement a write.

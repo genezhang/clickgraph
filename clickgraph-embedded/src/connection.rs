@@ -2086,16 +2086,38 @@ graph_schema:
                         conn.query_to_sql(&chain(900)).map(|_| ()),
                         conn.query(&chain(900)).map(|_| ()),
                         conn.query_to_sql(&chain(1500)).map(|_| ()),
+                        // A free-standing OFFSET chain, a long operator
+                        // chain and deep brackets recurse too (review of
+                        // #1506): they hop by their tokens and nesting.
+                        conn.query_to_sql(&format!(
+                            "MATCH (u:User) {}RETURN u.name",
+                            "OFFSET 1 ".repeat(900)
+                        ))
+                        .map(|_| ()),
+                        conn.query_to_sql(&format!(
+                            "MATCH (u:User) RETURN 1{} AS x",
+                            " + 1".repeat(2000)
+                        ))
+                        .map(|_| ()),
+                        conn.query_to_sql(&format!(
+                            "MATCH (u:User) RETURN {}1{} AS x",
+                            "[".repeat(300),
+                            "]".repeat(300)
+                        ))
+                        .map(|_| ()),
                     ]
                 })
                 .unwrap()
                 .join()
                 .unwrap()
         });
-        let [short, long, executed, too_long] = results;
+        let [short, long, executed, too_long, offsets, operators, brackets] = results;
         short.unwrap();
         long.unwrap();
         executed.unwrap();
+        offsets.unwrap();
+        operators.unwrap();
+        brackets.unwrap();
         let err = too_long.unwrap_err().to_string();
         assert!(
             err.contains("a statement of 1502 clauses (at most 1000)"),
