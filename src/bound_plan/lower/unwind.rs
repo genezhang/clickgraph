@@ -55,10 +55,25 @@ const ONE_ROW: &str = "__cg_one";
 impl Lowerer<'_> {
     /// What a projected, unwound or comprehension variable is.
     pub(super) fn var_kind(&self, v: VarId) -> Option<Kind> {
-        self.kinds
-            .get(&v)
-            .cloned()
+        let before = self
+            .no_column_kinds
+            .get()
+            .then(|| self.kinds_before.get(&v).cloned())
+            .flatten();
+        before
+            .or_else(|| self.kinds.get(&v).cloned())
             .or_else(|| self.local_kinds.borrow().get(&v).cloned())
+    }
+
+    /// Record `kind`, the kind of `expr`, as variable `v`'s, and, where it
+    /// differs, its kind with properties' column types left unread.
+    pub(super) fn record_kind(&mut self, v: VarId, expr: &LogicalExpr, kind: Kind) {
+        let before = self.kind_before_column_types(expr);
+        match before != kind {
+            true => self.kinds_before.insert(v, before),
+            false => self.kinds_before.remove(&v),
+        };
+        self.kinds.insert(v, kind);
     }
 
     /// `nodes(p)` / `relationships(p)` (`f`) whose elements are all of one
@@ -200,7 +215,7 @@ pub(super) enum Kind {
 }
 
 /// The kind of a value of a column of type `t` (T2): a list of its
-/// element's kind, a boolean, or another value.
+/// element's kind, a boolean, a scalar of a known scalar type, else unknown.
 fn column_kind(t: &KeyPartType) -> Kind {
     let scalar = |t: &KeyPartType| {
         let raw = t.raw.to_ascii_lowercase();
@@ -651,6 +666,11 @@ impl<'s> Lowerer<'s> {
             return unsupported("UNWIND in this SQL dialect");
         };
         let kind = self.kind(expr);
+        let before = self.kind_before_column_types(expr).element();
+        match before != kind.element() {
+            true => self.kinds_before.insert(var, before),
+            false => self.kinds_before.remove(&var),
+        };
         self.kinds.insert(var, kind.element());
         // A list of no elements, or NULL: no rows.
         let empty = match (expr, &kind) {

@@ -8901,6 +8901,14 @@ graph_schema:
             "MATCH (p:Person) WITH p ORDER BY p.id WITH collect({{t: {e}}})[0] AS m RETURN m.t"
         ));
     }
+    // So do they carried through a WITH or an UNWIND (round 3).
+    for q in [
+        "MATCH (p:Person) WITH p, p.tags AS t ORDER BY p.id WITH collect({x: t})[0] AS m RETURN m.x",
+        "MATCH (p:Person) WITH p.id AS i, tail(p.tags) AS t ORDER BY i WITH collect({x: t})[1] AS m RETURN m.x",
+        "MATCH (p:Person) UNWIND [p.tags] AS n WITH p, n ORDER BY p.id WITH collect({x: n})[0] AS m RETURN m.x",
+    ] {
+        sql(q);
+    }
     // An `Array(Dynamic)` is not of one type: keyed, as before.
     let dynamic = sql("MATCH (p:Person) RETURN p.ad, count(*)");
     assert!(!dynamic.contains("GROUP BY v0.ad"), "{dynamic}");

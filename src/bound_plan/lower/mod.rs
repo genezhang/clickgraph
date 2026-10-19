@@ -370,6 +370,7 @@ impl Query<'_> {
             held_items: RefCell::new(HashMap::new()),
             no_column_kinds: std::cell::Cell::new(false),
             kinds: HashMap::new(),
+            kinds_before: HashMap::new(),
             never_boolean: HashSet::new(),
             local_kinds: RefCell::new(HashMap::new()),
             local_lists: RefCell::new(HashMap::new()),
@@ -821,6 +822,10 @@ struct Lowerer<'s> {
     no_column_kinds: std::cell::Cell<bool>,
     /// What each projected or unwound value is (`unwind.rs`).
     kinds: HashMap<VarId, unwind::Kind>,
+    /// [`Self::kinds`] as it was with properties' column types left
+    /// unread, where it differs (`kind_before_column_types` follows a
+    /// variable through it; review finding).
+    kinds_before: HashMap<VarId, unwind::Kind>,
     /// Projected values that are never a boolean (`Lowerer::never_boolean`).
     never_boolean: HashSet<VarId>,
     /// What each comprehension parameter is: an element of its list. Filled
@@ -1206,7 +1211,7 @@ impl<'s> Lowerer<'s> {
                 self.finish_relation()?;
                 for item in &projection.items {
                     let kind = self.kind(&item.expr);
-                    self.kinds.insert(item.var, kind);
+                    self.record_kind(item.var, &item.expr, kind);
                     if self.never_boolean(&item.expr) {
                         self.never_boolean.insert(item.var);
                     }
@@ -5827,7 +5832,7 @@ impl<'s> Lowerer<'s> {
         // next segment's reads of a WITH's).
         for it in &p.items {
             let kind = self.kind(&it.expr);
-            self.kinds.insert(it.var, kind);
+            self.record_kind(it.var, &it.expr, kind);
             if self.never_boolean(&it.expr) {
                 self.never_boolean.insert(it.var);
             }
