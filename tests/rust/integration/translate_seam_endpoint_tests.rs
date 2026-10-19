@@ -504,3 +504,66 @@ async fn an_export_query_runs_on_the_statements_graph() {
         assert_eq!(status, StatusCode::OK, "{inner}: {body}");
     }
 }
+
+/// #1373: a statement of more than `MAX_CLAUSES` clauses is refused before
+/// anything parses it. Translation recurses per clause, and a long enough
+/// chain overflowed a server worker's stack, aborting the server (15,000
+/// `WITH a LIMIT 100`, a 255 KB request, on a debug build). Run on a thread
+/// with the server workers' stack (128 MB): a statement at the limit needs
+/// more than a test thread's 2 MB.
+#[test]
+fn a_statement_of_too_many_clauses_is_refused() {
+    std::thread::Builder::new()
+        .stack_size(128 * 1024 * 1024)
+        .spawn(|| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(too_many_clauses_are_refused())
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+async fn too_many_clauses_are_refused() {
+    ensure_default_schema_registered().await;
+    let long = format!(
+        "MATCH (u:User) {}RETURN u.name",
+        "WITH u LIMIT 10 ".repeat(1500)
+    );
+    let at_cap = format!(
+        "MATCH (u:User) {}RETURN u.name",
+        "WITH u LIMIT 10 ".repeat(998)
+    );
+    for uri in ["/query", "/query/sql"] {
+        let body = json!({ "query": long, "sql_only": true, "target_database": "clickhouse" });
+        let (status, body) = post_text(uri, body).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{uri}");
+        assert!(
+            body.contains("a statement of 1502 clauses (at most 1000)"),
+            "{uri}: {body}"
+        );
+        let body = json!({ "query": at_cap, "sql_only": true, "target_database": "clickhouse" });
+        let (status, body) = post_text(uri, body).await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "{uri}: {}",
+            &body[..body.len().min(300)]
+        );
+    }
+    // Inside an export's query argument (not read by the outer parse), and
+    // in text the clause-list parser does not read (its clause keywords).
+    let export = format!("CALL apoc.export.csv.query(\"{long}\", \"/tmp/g4_x.csv\", {{}})");
+    let unparsed = format!(
+        "MATCH (u:User) {}RETURN u.name GARBAGE",
+        "WITH u ".repeat(1500)
+    );
+    for text in [export, unparsed] {
+        let (status, body) = post_text("/query", json!({ "query": text, "sql_only": true })).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(body.contains("clauses"), "{body}");
+    }
+}

@@ -259,6 +259,15 @@ RETURN name, follows
 
 **Safety Limit**: Max 4 types can be inferred automatically. More requires explicit label specification.
 
+### 3. Statement Size Limit (1,000 clauses)
+
+**Status**: By design
+**Severity**: LOW
+
+A statement may have at most 1,000 clauses, all UNION arms together (`MATCH`, `WITH`, `UNWIND`, a free-standing `ORDER BY` / `SKIP` / `LIMIT`, `RETURN`, …). A longer one is refused before it is parsed: "Not supported: a statement of N clauses (at most 1000)" (HTTP 400, Bolt `Neo.ClientError.Statement.FeatureNotSupported`, an `Err` in the library). Translation recurses once per clause, and a stack overflow aborts the whole process: before this limit, a 255 KB request of 15,000 `WITH a LIMIT 100` aborted a (debug-build) server, and 800 aborted `cg`. Real queries have tens of clauses. Neo4j has no such limit.
+
+The library entry points (embedded `Connection`, FFI, Go, Python, `cg`) translate a statement of more than 32 clause keywords on a thread with the servers' stack (`CLICKGRAPH_THREAD_STACK_MB`, default 128 MB), whatever thread the caller is on; shorter ones run on the caller's thread.
+
 ### Integration Test Status
 
 **100% Pass Rate (1,378/1,378)**

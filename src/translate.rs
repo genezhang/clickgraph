@@ -333,6 +333,85 @@ pub fn translate_inner_read(
     }
 }
 
+/// The stack a library translation runs on (#1373), in bytes:
+/// `CLICKGRAPH_THREAD_STACK_MB` (default 128), as the servers' worker
+/// threads, so a statement translates in a library as it does on a server
+/// whatever thread the caller is on (the main thread's 8 MB, a spawned
+/// Rust thread's 2 MB, a cgo or Python thread's).
+pub fn translation_stack_bytes() -> usize {
+    std::env::var("CLICKGRAPH_THREAD_STACK_MB")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|mb| *mb > 0)
+        .unwrap_or(128)
+        * 1024
+        * 1024
+}
+
+thread_local! {
+    /// This thread is one [`on_translation_stack`] started.
+    static ON_TRANSLATION_STACK: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Statements of at most this many clause keywords run on the caller's
+/// thread ([`on_translation_stack`]): they need a few hundred KB of stack at
+/// most (32 `WITH`s, about 0.35 MB in a debug build), which any thread has
+/// (2 MB for a spawned Rust thread), and a hop costs more than translating
+/// them (a release build translates a short query in 10-30 µs; a hop adds
+/// about 30 µs, more while its fresh stack pages fault in).
+pub const INLINE_CLAUSE_KEYWORDS: usize = 32;
+
+/// Run `f`, which parses or translates the statement `cypher`, on a thread
+/// with [`translation_stack_bytes`] of stack, and wait for it: the library
+/// entry points (the embedded connection, and through it FFI, Go, Python
+/// and `cg`) translate on the caller's thread otherwise, whose stack a long
+/// statement overflows, aborting the caller's process (#1373). A short
+/// statement ([`INLINE_CLAUSE_KEYWORDS`]) runs inline, as do nested calls.
+/// The caller's query context (schema, dialect, counters) is carried over
+/// and its final state handed back, so the hop is not visible to `f` or the
+/// caller. `Err`: the thread could not be started.
+pub fn on_translation_stack<T, F>(cypher: &str, f: F) -> Result<T, String>
+where
+    T: Send,
+    F: FnOnce() -> T + Send,
+{
+    use crate::server::query_context::{
+        restore_query_context, snapshot_query_context, with_query_context_sync,
+    };
+    if ON_TRANSLATION_STACK.with(|on| on.get())
+        || prepared::clause_keywords(&crate::open_cypher_parser::strip_comments(cypher))
+            <= INLINE_CLAUSE_KEYWORDS
+    {
+        return Ok(f());
+    }
+    let context = snapshot_query_context();
+    let (result, context) = std::thread::scope(|scope| -> Result<_, String> {
+        let handle = std::thread::Builder::new()
+            .name("clickgraph-translate".to_string())
+            .stack_size(translation_stack_bytes())
+            .spawn_scoped(scope, move || {
+                ON_TRANSLATION_STACK.with(|on| on.set(true));
+                match context {
+                    Some(context) => with_query_context_sync(context, || {
+                        let result = f();
+                        (result, snapshot_query_context())
+                    }),
+                    None => (f(), None),
+                }
+            })
+            .map_err(|e| format!("could not start a translation thread: {e}"))?;
+        // A panic is the caller's, as if `f` had run on its thread.
+        match handle.join() {
+            Ok(done) => Ok(done),
+            Err(panic) => std::panic::resume_unwind(panic),
+        }
+    })?;
+    if let Some(context) = context {
+        restore_query_context(context);
+    }
+    Ok(result)
+}
+
 /// Whether the clause-list parser reads `cypher` (a statement without its
 /// prelude): entry points route text the legacy parser rejects to the bound
 /// plan when it does (S10b).
@@ -751,6 +830,7 @@ mod tests {
         // The text-only statement's USE is the statement's graph.
         assert_eq!(
             super::StatementTargets::of("USE g MATCH (a) ORDER BY a.x LIMIT 1 RETURN a")
+                .unwrap()
                 .use_graph(),
             Some("g")
         );

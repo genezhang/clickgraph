@@ -1356,12 +1356,14 @@ impl BoltHandler {
 
     /// The statement front end's refusal as a FAILURE, with Neo4j's codes:
     /// an invalid `CYPHER` option is an `ArgumentError`, UNION arms on
-    /// different graphs a `SyntaxError`.
+    /// different graphs a `SyntaxError`; a statement of too many clauses
+    /// (#1373, no Neo4j counterpart) is not supported.
     fn prepare_failure(&self, error: crate::translate::PrepareError) -> Vec<BoltMessage> {
         use crate::translate::PrepareError;
         let code = match error {
             PrepareError::InvalidOption(_) => "Neo.ClientError.Statement.ArgumentError",
             PrepareError::MultipleGraphs(_) => "Neo.ClientError.Statement.SyntaxError",
+            PrepareError::TooLarge(_) => "Neo.ClientError.Statement.FeatureNotSupported",
         };
         vec![BoltMessage::failure(
             code.to_string(),
@@ -1496,11 +1498,14 @@ impl BoltHandler {
         // USE, else the session's database, else the default schema (a later
         // arm's USE naming another graph is refused, #1370). Read from the
         // text after parameter substitution, which is what is parsed.
-        let schema_name =
-            match crate::translate::StatementTargets::of(&query).graph(session_graph.as_deref()) {
-                Ok(graph) => graph,
-                Err(e) => return Ok(self.prepare_failure(e)),
-            };
+        // A statement of too many clauses is refused here, before anything
+        // parses it (#1373).
+        let schema_name = match crate::translate::StatementTargets::of(&query)
+            .and_then(|targets| targets.graph(session_graph.as_deref()))
+        {
+            Ok(graph) => graph,
+            Err(e) => return Ok(self.prepare_failure(e)),
+        };
 
         // Store tenant_id on context (needed for execute_cypher_query fallback)
         if let Some(ref tid) = tenant_id {

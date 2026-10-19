@@ -81,6 +81,16 @@ dropped, EXPLAIN / PROFILE are refused (nothing runs), and UNION arms whose
 does not choose). `query()` dispatches a statement with a write clause in any
 UNION arm to the write planner (`StatementTargets::is_write`, #1447).
 
+Every Cypher entry point of `Connection` (`query`, `query_to_sql`,
+`query_graph`, `query_remote`, `query_remote_graph`, `export`) runs through
+`Connection::on_translation_stack` (`clickgraph::translate::on_translation_stack`,
+#1373): a statement of more than `INLINE_CLAUSE_KEYWORDS` (32) clause
+keywords is parsed and translated on a thread with the servers' stack
+(`CLICKGRAPH_THREAD_STACK_MB`, default 128 MB), so a long one cannot overflow
+the caller's stack (8 MB main thread, 2 MB spawned Rust thread) and abort the
+caller's process. The query context is carried over and back. A statement of
+more than `translate::prepared::MAX_CLAUSES` (1000) clauses is refused.
+
 ### Remote Mode (no chdb)
 `Database::new_remote(schema_path, RemoteConfig)` connects to an external ClickHouse
 cluster without starting a chdb session. Cypher is translated locally and executed
