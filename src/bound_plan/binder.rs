@@ -503,6 +503,11 @@ impl Binder {
                         ));
                     };
                     let var = node(self, &target.base, "SET")?;
+                    if let Some(why) =
+                        crate::query_planner::logical_expr::unreadable_property_key(&target.key)
+                    {
+                        return Err(BindError::Unsupported(why));
+                    }
                     let value = self.expr(value, &[scope])?;
                     no_aggregate(&value, "Invalid use of aggregating function in SET")?;
                     ops.push(BoundWrite::Set {
@@ -516,6 +521,11 @@ impl Binder {
             Clause::Remove(remove) => {
                 for item in &remove.remove_items {
                     let var = node(self, &item.base, "REMOVE")?;
+                    if let Some(why) =
+                        crate::query_planner::logical_expr::unreadable_property_key(&item.key)
+                    {
+                        return Err(BindError::Unsupported(why));
+                    }
                     ops.push(BoundWrite::Remove {
                         var,
                         property: item.key.to_string(),
@@ -566,6 +576,11 @@ impl Binder {
                                 "CREATE with a parameter map".to_string(),
                             ));
                         };
+                        if let Some(why) =
+                            crate::query_planner::logical_expr::unreadable_property_key(&kv.key)
+                        {
+                            return Err(BindError::Unsupported(why));
+                        }
                         let value = self.expr(&kv.value, &[scope])?;
                         no_aggregate(&value, "Invalid use of aggregating function in CREATE")?;
                         // A key given twice: the last.
@@ -769,6 +784,13 @@ impl Binder {
                     _ => return Err(BindError::MissingAlias(what)),
                 },
             };
+            if name.is_empty() {
+                // The escaped empty name (`` AS `` ``) is a name in Neo4j; no
+                // SQL dialect has an empty column name.
+                return Err(BindError::Unsupported(
+                    "an empty name (``) as a column".to_string(),
+                ));
+            }
             if explicit.iter().any(|i| i.name == name) {
                 return Err(BindError::DuplicateColumn(name));
             }
@@ -1248,6 +1270,11 @@ fn bind_props(
     for p in props.into_iter().flatten() {
         match p {
             Property::PropertyKV(kv) => {
+                if let Some(why) =
+                    crate::query_planner::logical_expr::unreadable_property_key(&kv.key)
+                {
+                    return Err(BindError::Unsupported(why));
+                }
                 if has_subquery(&kv.value) {
                     return Err(BindError::Unsupported(
                         "a subquery expression in a property map".to_string(),

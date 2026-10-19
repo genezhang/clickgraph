@@ -1845,9 +1845,10 @@ RETURN range(1, 10)                  -- [1,2,3,4,5,6,7,8,9,10]
 Variables, labels, relationship types, property keys, map keys, aliases,
 parameters and function names are **symbolic names**, as in Neo4j:
 
-- **Unescaped**: a letter or `_`, then letters, digits, `_` and `$`
-  (`user_id`, `_tmp`, `é`, `a$b`). A keyword is a name wherever the
-  grammar expects one (`RETURN 1 AS count`).
+- **Unescaped**: as in Neo4j 5, a Unicode identifier start (a letter) or
+  `_`, then identifier characters (letters, digits, `_`) and currency
+  symbols (`user_id`, `_tmp`, `é`, `a$b`, `a€`; not `1a`, `€a`, `x²`). A
+  keyword is a name wherever the grammar expects one (`RETURN 1 AS count`).
 - **Escaped**: any characters between backticks. A doubled backtick stands
   for one; a backslash is an ordinary character (`` `a\nb` `` is the four
   characters `a\nb`).
@@ -1866,8 +1867,10 @@ A column RETURN names by its expression keeps the text as written
 column is its name (`` RETURN `x y` `` is the column `x y`).
 
 Not supported (an error, never another name):
-- a property key holding a `.` (`` n.`q.x` ``): `v.a.b` is carried as the
-  key path `a.b`, so the two would read alike;
+- a property key holding a `.` (`` n.`q.x` ``, `` (n {`q.x`: 1}) ``, `SET`):
+  `v.a.b` is carried as the key path `a.b`, so the two would read alike;
+- the empty name `` `` `` as a column (`` RETURN 1 AS `` ``) or a property
+  key: no SQL dialect has an empty column name;
 - a parameter name other than letters, digits and `_` (`` $`p q` ``): a
   parameter's value is put in its place by name;
 - a function name other than letters, digits and `_` (`` `foo bar`(x) ``),

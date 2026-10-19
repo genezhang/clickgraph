@@ -130,8 +130,8 @@ OpenCypherQueryAst
 
 Expression (recursive)
 ├── Literal(Integer|Float|Boolean|String|Null)
-├── Variable(&str)
-├── Parameter(&str)                         $param
+├── Variable(Name)                          x, `my var`
+├── Parameter(Name)                         $param
 ├── PropertyAccessExp { base, key }         n.name (a variable's property)
 ├── PropertyOf { base, key }               m.a.b, xs[1].name, head(l).name (any other value's)
 ├── FunctionCallExp { name, args }          count(*), toUpper(n.name)

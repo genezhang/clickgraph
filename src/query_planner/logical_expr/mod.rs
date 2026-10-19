@@ -20,6 +20,7 @@ use crate::utils::serde_arc;
 // =============================================================================
 
 mod ast_conversion; // AST to LogicalExpr conversions (From/TryFrom impls)
+pub(crate) use ast_conversion::unreadable_property_key;
 pub mod errors;
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]

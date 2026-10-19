@@ -88,7 +88,6 @@ pub fn apply_return_clause(
     }
 }
 
-/// Check if an expression contains aggregation functions
 /// A RETURN item's column: its alias, a variable's name (`` RETURN `label` ``
 /// is `label`), else the expression as written.
 fn column_name(item: &ReturnItem) -> String {
@@ -99,6 +98,7 @@ fn column_name(item: &ReturnItem) -> String {
     }
 }
 
+/// Check if an expression contains aggregation functions
 fn has_aggregation_in_expr(expr: &Expression) -> bool {
     match expr {
         Expression::FunctionCallExp(func) => {
@@ -121,6 +121,7 @@ fn has_aggregation_in_expr(expr: &Expression) -> bool {
             // PropertyAccess has base and key as strings, not expressions
             false
         }
+        Expression::PropertyOf { base, .. } => has_aggregation_in_expr(base),
         Expression::OperatorApplicationExp(op) => {
             // Check all operands
             op.operands.iter().any(has_aggregation_in_expr)
@@ -141,6 +142,7 @@ fn has_aggregation_in_expr(expr: &Expression) -> bool {
 fn reads_row_outside_aggregate(expr: &Expression) -> bool {
     match expr {
         Expression::Variable(_) | Expression::PropertyAccessExp(_) => true,
+        Expression::PropertyOf { base, .. } => reads_row_outside_aggregate(base),
         Expression::FunctionCallExp(func) => {
             !matches!(
                 func.name.to_uppercase().as_str(),
@@ -769,5 +771,42 @@ mod tests {
         } else {
             panic!("Expected Query statement");
         }
+    }
+
+    /// A property of a value beside an aggregate is a grouping key too, not
+    /// read from the first record (#1489 review: `{l: label}.l` with
+    /// `count(*)` answered one row).
+    #[test]
+    fn a_property_of_a_value_beside_an_aggregate_is_refused_1489() {
+        let (_, stmt) =
+            open_cypher_parser::parse_cypher_statement("RETURN {l: label}.l AS x, count(*) AS c")
+                .unwrap();
+        let crate::open_cypher_parser::ast::CypherStatement::Query { query, .. } = stmt else {
+            panic!("Expected Query statement");
+        };
+        let input = vec![
+            HashMap::from([("label".to_string(), JsonValue::String("User".to_string()))]),
+            HashMap::from([("label".to_string(), JsonValue::String("Post".to_string()))]),
+        ];
+        let got = apply_return_clause(input.clone(), query.return_clause.as_ref().unwrap());
+        assert!(
+            matches!(&got, Err(e) if e.contains("grouping key")),
+            "{got:?}"
+        );
+        // Without an aggregate it is each record's.
+        let (_, stmt) =
+            open_cypher_parser::parse_cypher_statement("RETURN {l: label}.l AS x").unwrap();
+        let crate::open_cypher_parser::ast::CypherStatement::Query { query, .. } = stmt else {
+            panic!("Expected Query statement");
+        };
+        let rows = apply_return_clause(input, query.return_clause.as_ref().unwrap()).unwrap();
+        let xs: Vec<_> = rows.iter().map(|r| r.get("x").cloned()).collect();
+        assert_eq!(
+            xs,
+            [
+                Some(JsonValue::String("User".to_string())),
+                Some(JsonValue::String("Post".to_string()))
+            ]
+        );
     }
 }

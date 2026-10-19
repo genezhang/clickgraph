@@ -362,9 +362,9 @@ fn keyword<'a>(
 ) -> impl Parser<&'a str, Output = &'a str, Error = Error<&'a str>> {
     ws(terminated(
         tag_no_case(word),
-        not(peek(nom::character::complete::satisfy(|c: char| {
-            c.is_alphanumeric() || c == '_' || c == '$'
-        }))),
+        not(peek(nom::character::complete::satisfy(
+            common::is_name_continue,
+        ))),
     ))
 }
 
@@ -975,45 +975,22 @@ fn is_param_char(c: char) -> bool {
 }
 
 /// `$name`: a symbolic name (`` $`a b` ``) or a number (`$0`).
-pub fn parse_parameter(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
-    let (input, param) = preceded(
+/// `$name`: its name, a symbolic name (`` $`a b` ``) or a number (`$0`).
+pub fn parse_parameter_name(input: &'_ str) -> IResult<&'_ str, Name<'_>> {
+    preceded(
         tag("$"),
         alt((
             common::symbolic_name,
             map(take_while1(is_param_char), Name::Borrowed),
         )),
     )
-    .parse(input)?;
+    .parse(input)
+}
 
-    // Check for temporal property accessor after the parameter: $param.year
-    let (input, temporal_accessor) = opt(preceded(
-        char('.'),
-        alt((
-            map(tag_no_case("year"), |_| "year"),
-            map(tag_no_case("month"), |_| "month"),
-            map(tag_no_case("day"), |_| "day"),
-            map(tag_no_case("hour"), |_| "hour"),
-            map(tag_no_case("minute"), |_| "minute"),
-            map(tag_no_case("second"), |_| "second"),
-            map(tag_no_case("millisecond"), |_| "millisecond"),
-            map(tag_no_case("microsecond"), |_| "microsecond"),
-            map(tag_no_case("nanosecond"), |_| "nanosecond"),
-        )),
-    ))
-    .parse(input)?;
-
-    // If we found a temporal accessor, convert to function call
-    if let Some(accessor) = temporal_accessor {
-        Ok((
-            input,
-            Expression::FunctionCallExp(crate::open_cypher_parser::ast::FunctionCall {
-                name: accessor.to_string(),
-                args: vec![Expression::Parameter(param)],
-            }),
-        ))
-    } else {
-        Ok((input, Expression::Parameter(param)))
-    }
+/// A parameter. A property of it (`$p.year`, the temporal accessor; `$p.k`)
+/// is the postfix loop's, as of any value.
+pub fn parse_parameter(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
+    map(parse_parameter_name, Expression::Parameter).parse(input)
 }
 
 /// Check if a string is a reserved Cypher keyword that cannot be used as a variable

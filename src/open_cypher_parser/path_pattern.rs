@@ -17,11 +17,11 @@ use nom::{
 };
 
 use super::ast::{
-    ConnectedPattern, Direction, Expression, Name, NodePattern, PathPattern, Property,
-    PropertyKVPair, RelationshipPattern, VariableLengthSpec,
+    ConnectedPattern, Direction, Name, NodePattern, PathPattern, Property, PropertyKVPair,
+    RelationshipPattern, VariableLengthSpec,
 };
 use super::common::ws;
-use super::expression::parse_parameter;
+use super::expression::parse_parameter_name;
 use super::{common, expression};
 use nom::character::complete::digit1;
 
@@ -301,17 +301,7 @@ pub fn parse_properties(input: &'_ str) -> IResult<&'_ str, Vec<Property<'_>>> {
             delimited(space0, char('}'), space0),
         ),
         // Parameter variant: no curly braces are expected.
-        map(ws(parse_parameter), |expr| {
-            match expr {
-                Expression::Parameter(s) => vec![Property::Param(s)],
-                Expression::FunctionCallExp(_) => {
-                    // Parameters with temporal accessors ($param.year) are converted to function calls
-                    // These shouldn't be used as node properties, but handle gracefully
-                    vec![]
-                }
-                _ => unreachable!("parse_parameter returned unexpected expression type"),
-            }
-        }),
+        map(ws(parse_parameter_name), |name| vec![Property::Param(name)]),
     ))
     .parse(input)
 }
@@ -646,7 +636,7 @@ fn parse_relationship_pattern(input: &'_ str) -> IResult<&'_ str, Option<Relatio
 
 #[cfg(test)]
 mod tests {
-    use crate::open_cypher_parser::ast::Literal;
+    use crate::open_cypher_parser::ast::{Expression, Literal};
 
     use super::*;
     use nom::{

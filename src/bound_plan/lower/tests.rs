@@ -8489,3 +8489,24 @@ fn a_property_of_any_value_1381() {
         "an element or slice of a list of nodes or relationships",
     );
 }
+
+/// Review of #1489: the empty name, dotted keys in a pattern map, a
+/// parameter's property.
+#[test]
+fn escaped_names_review_1489() {
+    not_lowered("RETURN 1 AS `` ", "an empty name (``) as a column");
+    not_lowered("MATCH (a:User) RETURN a.`` AS x", "an empty property key");
+    not_lowered(
+        "MATCH (a:User {`q.x`: 1}) RETURN a.name AS n",
+        "a property key containing '.'",
+    );
+    // `$p.year` is the accessor; `$p.days` a property, no parse error.
+    has(
+        "RETURN $p.year AS y",
+        &["toYear(fromUnixTimestamp64Milli($p))"],
+    );
+    if let Err(e) = translate_bound_plan("RETURN $p.days AS d", &social(), &ReadOptions::default())
+    {
+        assert!(!e.contains("Parse error"), "{e}");
+    }
+}

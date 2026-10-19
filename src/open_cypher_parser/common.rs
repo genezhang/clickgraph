@@ -163,10 +163,11 @@ where
 /// query names something: variables, labels, relationship types, property
 /// and map keys, aliases, parameters, function names.
 ///
-/// * Unescaped: a letter or `_`, then letters, digits, `_` and `$`
-///   (`a$b` is a name in Neo4j). Keywords are names too where the grammar
-///   expects a name; the callers that read an expression keep their keyword
-///   checks.
+/// * Unescaped: Neo4j's classes ([`is_name_start`], [`is_name_continue`]):
+///   a Unicode identifier start or `_`, then identifier characters and
+///   currency symbols (`a$b`, `a€`, `é`, `_n`; not `1a`, `€a`, `x²`).
+///   Keywords are names too where the grammar expects a name; the callers
+///   that read an expression keep their keyword checks.
 /// * Escaped: any characters between backticks, a doubled backtick standing
 ///   for one (`` `it``s` `` is the name ``it`s``). Neo4j reads no backslash
 ///   escapes in it (`` `a\nb` `` is the four characters `a\nb`), and an empty
@@ -212,7 +213,7 @@ fn unescaped_symbolic_name<'a, E: ParseError<&'a str>>(
 ) -> IResult<&'a str, &'a str, E> {
     let mut chars = input.char_indices();
     match chars.next() {
-        Some((_, c)) if c.is_alphabetic() || c == '_' => {}
+        Some((_, c)) if is_name_start(c) => {}
         _ => {
             return Err(nom::Err::Error(E::from_error_kind(
                 input,
@@ -221,9 +222,61 @@ fn unescaped_symbolic_name<'a, E: ParseError<&'a str>>(
         }
     }
     let end = chars
-        .find(|(_, c)| !(c.is_alphanumeric() || *c == '_' || *c == '$'))
+        .find(|(_, c)| !is_name_continue(*c))
         .map_or(input.len(), |(i, _)| i);
     Ok((&input[end..], &input[..end]))
+}
+
+/// Unicode connector punctuation (general category Pc): `_` and its kin.
+const CONNECTOR_PUNCTUATION: [(char, char); 6] = [
+    ('_', '_'),
+    ('\u{203F}', '\u{2040}'),
+    ('\u{2054}', '\u{2054}'),
+    ('\u{FE33}', '\u{FE34}'),
+    ('\u{FE4D}', '\u{FE4F}'),
+    ('\u{FF3F}', '\u{FF3F}'),
+];
+
+/// Unicode currency symbols (general category Sc): `$`, `€`, ….
+const CURRENCY_SYMBOLS: [(char, char); 21] = [
+    ('$', '$'),
+    ('\u{A2}', '\u{A5}'),
+    ('\u{58F}', '\u{58F}'),
+    ('\u{60B}', '\u{60B}'),
+    ('\u{7FE}', '\u{7FF}'),
+    ('\u{9F2}', '\u{9F3}'),
+    ('\u{9FB}', '\u{9FB}'),
+    ('\u{AF1}', '\u{AF1}'),
+    ('\u{BF9}', '\u{BF9}'),
+    ('\u{E3F}', '\u{E3F}'),
+    ('\u{17DB}', '\u{17DB}'),
+    ('\u{20A0}', '\u{20C0}'),
+    ('\u{A838}', '\u{A838}'),
+    ('\u{FDFC}', '\u{FDFC}'),
+    ('\u{FE69}', '\u{FE69}'),
+    ('\u{FF04}', '\u{FF04}'),
+    ('\u{FFE0}', '\u{FFE1}'),
+    ('\u{FFE5}', '\u{FFE6}'),
+    ('\u{11FDD}', '\u{11FE0}'),
+    ('\u{1E2FF}', '\u{1E2FF}'),
+    ('\u{1ECB0}', '\u{1ECB0}'),
+];
+
+fn in_ranges(c: char, ranges: &[(char, char)]) -> bool {
+    ranges.iter().any(|&(lo, hi)| (lo..=hi).contains(&c))
+}
+
+/// The first character of an unescaped name, as in Neo4j 5: a Unicode
+/// identifier start or connector punctuation (`_`, `‿`).
+pub fn is_name_start(c: char) -> bool {
+    unicode_ident::is_xid_start(c) || in_ranges(c, &CONNECTOR_PUNCTUATION)
+}
+
+/// A later character of an unescaped name, as in Neo4j 5: a Unicode
+/// identifier character (letters, digits, marks, connector punctuation) or a
+/// currency symbol (`a$b`, `a€`). Not `²` (`x²` is no name there).
+pub fn is_name_continue(c: char) -> bool {
+    unicode_ident::is_xid_continue(c) || in_ranges(c, &CURRENCY_SYMBOLS)
 }
 
 /// Parse a numeric literal (integer or float with optional scientific notation)
@@ -307,13 +360,19 @@ mod tests {
             ("é_x", "", "é_x"),
             ("abc123!", "!", "abc123"),
             ("abc.def", ".def", "abc"),
+            // Neo4j 5: currency symbols continue a name, connector
+            // punctuation starts one, `²` (no identifier character) ends it.
+            ("a€b", "", "a€b"),
+            ("‿x", "", "‿x"),
+            ("a١", "", "a١"),
+            ("x²", "²", "x"),
         ] {
             let (r, n) = name(input).unwrap_or_else(|e| panic!("{input}: {e:?}"));
             assert_eq!((r, &*n), (rest, text), "{input}");
             assert!(matches!(n, Cow::Borrowed(_)), "{input}");
         }
         // A name does not start with a digit, `$` or a symbol.
-        for input in ["123abc", "$x", "!abc", "", " a"] {
+        for input in ["123abc", "$x", "€a", "!abc", "", " a"] {
             assert!(name(input).is_err(), "{input}");
         }
     }

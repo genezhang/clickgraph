@@ -89,18 +89,30 @@ impl<'a> From<open_cypher_parser::ast::PropertyAccess<'a>> for PropertyAccess {
     }
 }
 
-/// A property key holding a `.` (only an escaped one can, `` n.`q.x` ``) is
-/// refused: a variable's property path `v.k1.k2` is carried as the one key
-/// `k1.k2` (how the lowering reads a key of a map's value, S11o8), so the two
-/// would read alike.
-fn refuse_dotted_key(key: &str) -> Result<(), errors::LogicalExprError> {
-    if key.contains('.') {
-        return Err(errors::LogicalExprError::UnsupportedExpression(format!(
+/// Why a property key, written escaped, cannot be read, if it cannot:
+/// - one holding a `.` (`` n.`q.x` ``, `` {`q.x`: 1} ``): a variable's
+///   property path `v.k1.k2` is carried as the one key `k1.k2` (how the
+///   lowering reads a key of a map's value, S11o8), so the two would read
+///   alike;
+/// - the empty one (`` n.`` ``): no SQL dialect has an empty column name.
+pub(crate) fn unreadable_property_key(key: &str) -> Option<String> {
+    if key.is_empty() {
+        Some("an empty property key (``)".to_string())
+    } else if key.contains('.') {
+        Some(format!(
             "a property key containing '.' (`{}`)",
             key.replace('`', "``")
-        )));
+        ))
+    } else {
+        None
     }
-    Ok(())
+}
+
+fn refuse_dotted_key(key: &str) -> Result<(), errors::LogicalExprError> {
+    match unreadable_property_key(key) {
+        Some(why) => Err(errors::LogicalExprError::UnsupportedExpression(why)),
+        None => Ok(()),
+    }
 }
 
 /// `base.key` of a value other than a variable (`ast::Expression::PropertyOf`).
