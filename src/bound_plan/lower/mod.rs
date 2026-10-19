@@ -4131,31 +4131,55 @@ impl<'s> Lowerer<'s> {
         // not have: the CTE is built under the walk's variable, and the
         // shortest-path search ties `first`/`last` back to their own tables
         // after it. Those fall back to the label's fold, the same (label,
-        // arms) fold the CTE spelled; an endpoint read through its label CTE
-        // (`Scan::Labels`) needs no fold, since the CTE exports its identity
-        // already cast.
-        let targets = match self.key_targets.get(&v).cloned() {
-            Some(targets) => targets,
-            None => match self.scans.get(&v) {
-                Some(Scan::Node { label, .. }) => self
-                    .key_targets_by_label
-                    .get(label)
-                    .cloned()
-                    .unwrap_or_default(),
-                _ => Vec::new(),
-            },
+        // arms) fold the CTE spelled. An endpoint read through its label CTE
+        // (`Scan::Labels`, `label_union`) holds its raw id columns, so it
+        // spells each row by its own label's fold.
+        let fold = |label: &str| {
+            self.key_targets_by_label
+                .get(label)
+                .cloned()
+                .unwrap_or_default()
         };
-        let ids: Vec<String> = ids
-            .iter()
-            .enumerate()
-            .map(|(i, id)| {
-                value::cast_key_part(
-                    &render_expr_to_sql_plain(id),
-                    targets.get(i).and_then(|t| t.as_deref()),
-                )
-            })
-            .collect();
-        Ok(Some(RenderExpr::Raw(walk_key_sql(&g, &label, &ids))))
+        let spell = |targets: &[Option<String>]| {
+            let ids: Vec<String> = ids
+                .iter()
+                .enumerate()
+                .map(|(i, id)| {
+                    value::cast_key_part(
+                        &render_expr_to_sql_plain(id),
+                        targets.get(i).and_then(|t| t.as_deref()),
+                    )
+                })
+                .collect();
+            walk_key_sql(&g, &label, &ids)
+        };
+        let targets = match (self.key_targets.get(&v).cloned(), self.scans.get(&v)) {
+            (Some(targets), _) => targets,
+            (None, Some(Scan::Node { label, .. })) => fold(label),
+            (None, Some(Scan::Labels { arms, .. })) => {
+                let folds: Vec<(&String, Vec<Option<String>>)> =
+                    arms.iter().map(|(l, _)| (l, fold(l))).collect();
+                match folds.split_first() {
+                    Some(((_, first), rest)) if rest.iter().all(|(_, f)| f == first) => {
+                        first.clone()
+                    }
+                    _ => {
+                        let whens: Vec<String> = folds
+                            .iter()
+                            .map(|(l, f)| {
+                                format!("WHEN {label} = {} THEN {}", value::string(l), spell(f))
+                            })
+                            .collect();
+                        return Ok(Some(RenderExpr::Raw(format!(
+                            "CASE {} END",
+                            whens.join(" ")
+                        ))));
+                    }
+                }
+            }
+            (None, _) => Vec::new(),
+        };
+        Ok(Some(RenderExpr::Raw(spell(&targets))))
     }
 
     fn walk_nodes(

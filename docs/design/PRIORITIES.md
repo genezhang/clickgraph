@@ -844,10 +844,11 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
   recorded under a walk's own arms before any of its restrictions are spelled, and dropped
   when the walk returns (round 3; before, a filtered or bound end read a fold a previous
   walk over a shared label had left — or none — and its seed matched nothing, and queries
-  main gets right lost rows). Column types are read for **every** table's id parts now,
-  a declared `property_mappings` schema's too — without exposing any new property, and
-  without making the schema load depend on that read (a required `auto_discover_columns`
-  read keeps its error; the others warn and spell no casts). The lowerer takes the
+  main gets right lost rows). The id parts' types come from the columns
+  `auto_discover_columns` reads: a declared-`property_mappings` table has none, so its
+  keys spell no casts and stay as on main (not covered; reading its types too needs a
+  per-mode design — `cg sql`, Databricks and embedded chdb have no `system.columns` to
+  read, and `node_id.dtype` also decides Bolt `id()` decoding). The lowerer takes the
   casting dialect from the query context (round 3; it always used ClickHouse before).
   Covered spellings: the union walk's node CTE, its relationship ends, its filtered and
   bound walks' seed rows, and the tie-back that recovers a shortest path's ends — plus,

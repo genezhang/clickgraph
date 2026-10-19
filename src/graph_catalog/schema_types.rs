@@ -471,6 +471,11 @@ pub fn fold_common(parts: &[KeyPartType]) -> Option<KeyPartType> {
             widened = true;
         }
     }
+    // Every side is cast to the target, so it is nullable when ANY side is:
+    // `widen_to` skips a side whose spelling the target already has, and
+    // with it that side's `Nullable` (String + FixedString + Nullable(String)
+    // folded to a plain `String`, and the NULL end's CAST raised Code 349).
+    acc.nullable = parts.iter().any(|p| p.nullable);
     widened.then_some(acc)
 }
 
@@ -1040,6 +1045,19 @@ mod walk_key_lct_tests {
         let f = fold_common(&[kp("Date"), kp("Nullable(DateTime)")]).expect("folded");
         assert_eq!(f.raw, "DateTime64(3)");
         assert!(f.nullable, "a dangling end must not raise Code 349");
+        // ...also when the nullable side already has the target's spelling:
+        // `widen_to` skips it, and must not drop its Nullable with it.
+        for set in [
+            vec![kp("String"), kp("FixedString(3)"), kp("Nullable(String)")],
+            vec![
+                kp("DateTime64(3)"),
+                kp("Date"),
+                kp("Nullable(DateTime64(3))"),
+            ],
+        ] {
+            let f = fold_common(&set).expect("folded");
+            assert!(f.nullable, "{set:?}: a NULL end's CAST raises Code 349");
+        }
         // The fold is order-independent (round 3, "fold order"): with a pair
         // outside the lattice in the middle, one input order folded the
         // Date/DateTime pair and another folded nothing — the reach must be
