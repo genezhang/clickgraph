@@ -19,7 +19,8 @@ use clickgraph::executor::remote::RemoteClickHouseExecutor;
 use clickgraph::executor::source_resolver::resolve_source_uri;
 use clickgraph::executor::{ExecutorError, QueryExecutor};
 use clickgraph::graph_catalog::column_info::{
-    column_info_from_rows, describe_columns_sql, system_columns_sql, DiscoveredColumns,
+    column_info_from_rows, columns_by_table_from_rows, describe_columns_sql,
+    system_columns_of_tables_sql, system_columns_sql, DiscoveredColumns,
 };
 use clickgraph::graph_catalog::config::GraphSchemaConfig;
 use clickgraph::graph_catalog::graph_schema::GraphSchema;
@@ -146,6 +147,9 @@ pub struct Database {
     /// renderer routes through the right `FunctionMapper`. Default
     /// `ClickHouse`; `new_databricks()` sets it to `Databricks`.
     pub(crate) dialect: SqlDialect,
+    /// What loading the schema could not do but did without
+    /// ([`Database::load_warnings`]).
+    pub(crate) load_warnings: Vec<String>,
 }
 
 impl Database {
@@ -167,8 +171,14 @@ impl Database {
             sources: Some(&executor),
             tables: remote_executor.as_deref(),
         };
-        let graph_schema = build_graph_schema(&schema_config, readers, &runtime)?;
-        Self::finish_chdb(Arc::new(graph_schema), runtime, executor, remote_executor)
+        let (graph_schema, load_warnings) = build_graph_schema(&schema_config, readers, &runtime)?;
+        Self::finish_chdb(
+            Arc::new(graph_schema),
+            runtime,
+            executor,
+            remote_executor,
+            load_warnings,
+        )
     }
 
     /// Open an in-memory database using a YAML schema file (requires `embedded` feature).
@@ -196,7 +206,7 @@ impl Database {
     ) -> Result<Self, EmbeddedError> {
         let (runtime, executor) = open_chdb_session(&config)?;
         let remote_executor = Self::build_remote_executor(&runtime, config.remote.as_ref())?;
-        Self::finish_chdb(schema, runtime, executor, remote_executor)
+        Self::finish_chdb(schema, runtime, executor, remote_executor, Vec::new())
     }
 
     /// Create the schema's views and writable tables in a fresh chdb session.
@@ -206,6 +216,7 @@ impl Database {
         runtime: tokio::runtime::Runtime,
         executor: ChdbExecutor,
         remote_executor: Option<Arc<dyn QueryExecutor>>,
+        load_warnings: Vec<String>,
     ) -> Result<Self, EmbeddedError> {
         let view_count = clickgraph::executor::data_loader::load_schema_sources(&executor, &schema)
             .map_err(|e| EmbeddedError::Executor(e.to_string()))?;
@@ -233,6 +244,7 @@ impl Database {
             runtime,
             executor_kind: ExecutorKind::EmbeddedChdb,
             dialect: SqlDialect::ClickHouse,
+            load_warnings,
         })
     }
 
@@ -254,7 +266,7 @@ impl Database {
             sources: None,
             tables: Some(remote_executor.as_ref()),
         };
-        let graph_schema = build_graph_schema(&schema_config, readers, &runtime)?;
+        let (graph_schema, load_warnings) = build_graph_schema(&schema_config, readers, &runtime)?;
         Ok(Database {
             executor: Arc::new(NullExecutor),
             remote_executor: Some(remote_executor),
@@ -262,6 +274,7 @@ impl Database {
             runtime,
             executor_kind: ExecutorKind::Remote,
             dialect: SqlDialect::ClickHouse,
+            load_warnings,
         })
     }
 
@@ -298,6 +311,7 @@ impl Database {
             runtime,
             executor_kind: ExecutorKind::Remote,
             dialect: SqlDialect::Databricks,
+            load_warnings: Vec::new(),
         })
     }
 
@@ -330,6 +344,13 @@ impl Database {
         &self.schema
     }
 
+    /// What loading the schema could not do and did without: the column
+    /// types it could not read (docs/design/VALUE_TYPES.md T1), whose tables
+    /// then translate as with unknown types. Empty when nothing was skipped.
+    pub fn load_warnings(&self) -> &[String] {
+        &self.load_warnings
+    }
+
     /// Create a `Database` from a pre-built schema and executor.
     ///
     /// Primarily intended for testing -- allows injection of a custom executor
@@ -349,6 +370,7 @@ impl Database {
             // construct a chdb-backed Database via `new` instead.
             executor_kind: ExecutorKind::SqlOnly,
             dialect: SqlDialect::ClickHouse,
+            load_warnings: Vec::new(),
         })
     }
 
@@ -481,7 +503,7 @@ fn build_graph_schema(
     schema_config: &GraphSchemaConfig,
     readers: ColumnReaders<'_>,
     runtime: &tokio::runtime::Runtime,
-) -> Result<GraphSchema, EmbeddedError> {
+) -> Result<(GraphSchema, Vec<String>), EmbeddedError> {
     let mut columns = DiscoveredColumns::default();
     for target in schema_config.column_discovery_targets() {
         if columns.contains(&target.database, &target.table) {
@@ -519,9 +541,114 @@ fn build_graph_schema(
         let info = column_info_from_rows(&rows).map_err(read)?;
         columns.insert(&target.database, &target.table, info);
     }
-    schema_config
+    let warnings = read_column_types(
+        schema_config,
+        readers,
+        runtime,
+        &mut columns,
+        COLUMN_TYPES_TIMEOUT,
+    );
+    for w in &warnings {
+        log::warn!("{}", w);
+    }
+    let schema = schema_config
         .to_graph_schema_with_columns(&columns)
-        .map_err(schema_build_error)
+        .map_err(schema_build_error)?;
+    Ok((schema, warnings))
+}
+
+/// How long reading the column types from a server may take before loading
+/// goes on without them: they only refine the SQL, and an unreachable server
+/// would otherwise hold a translation for minutes (a TCP connect timeout).
+const COLUMN_TYPES_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Run `sql` on `executor`, within `timeout` if one is given.
+fn read_rows(
+    runtime: &tokio::runtime::Runtime,
+    executor: &dyn QueryExecutor,
+    sql: &str,
+    timeout: Option<std::time::Duration>,
+) -> Result<Vec<serde_json::Value>, String> {
+    let rows = match timeout {
+        Some(t) => runtime
+            .block_on(async { tokio::time::timeout(t, executor.execute_json(sql, None)).await })
+            .map_err(|_| format!("no answer within {:?}", t))?,
+        None => runtime.block_on(executor.execute_json(sql, None)),
+    };
+    rows.map_err(|e| e.to_string())
+}
+
+/// Read the column types of every table `columns` does not hold yet, where
+/// `readers` can (docs/design/VALUE_TYPES.md T1): a `source:` through its
+/// executor, the others in one `system.columns` read. With chdb (`sources`),
+/// an element without a `source:` is a table chdb creates, whose types no
+/// server holds: it is not read. A table that cannot be read keeps unknown
+/// types, which leaves its SQL as it was, so a failure is returned as a
+/// warning, not an error.
+fn read_column_types(
+    schema_config: &GraphSchemaConfig,
+    readers: ColumnReaders<'_>,
+    runtime: &tokio::runtime::Runtime,
+    columns: &mut DiscoveredColumns,
+    timeout: std::time::Duration,
+) -> Vec<String> {
+    let mut warnings = Vec::new();
+    let mut tables: Vec<(String, String)> = Vec::new();
+    for target in schema_config.type_discovery_targets() {
+        if columns.contains(&target.database, &target.table) {
+            continue;
+        }
+        match (&target.source, readers.sources, readers.tables) {
+            (Some(source), Some(executor), _) => {
+                let read = resolve_source_uri(source)
+                    .map_err(|e| e.to_string())
+                    // chdb's own session: a timeout would not stop the
+                    // DESCRIBE, whose session lock the next one waits for.
+                    .and_then(|uri| read_rows(runtime, executor, &describe_columns_sql(&uri), None))
+                    .and_then(|rows| column_info_from_rows(&rows));
+                match read {
+                    Ok(info) => columns.insert(&target.database, &target.table, info),
+                    Err(e) => warnings.push(format!(
+                        "could not read the column types of {}, so they are unknown: {}",
+                        target.owner, e
+                    )),
+                }
+            }
+            (None, Some(_), _) => {}
+            (_, _, Some(_)) => {
+                let key = (target.database, target.table);
+                if !tables.contains(&key) {
+                    tables.push(key);
+                }
+            }
+            (_, _, None) => {}
+        }
+    }
+    let Some(executor) = readers.tables else {
+        return warnings;
+    };
+    if tables.is_empty() {
+        return warnings;
+    }
+    let read = read_rows(
+        runtime,
+        executor,
+        &system_columns_of_tables_sql(&tables),
+        Some(timeout),
+    )
+    .and_then(|rows| columns_by_table_from_rows(&rows));
+    match read {
+        Ok(found) => {
+            for ((database, table), info) in found {
+                columns.insert(&database, &table, info);
+            }
+        }
+        Err(e) => warnings.push(format!(
+            "could not read the column types of the schema's tables, so they are unknown: {}",
+            e
+        )),
+    }
+    warnings
 }
 
 fn schema_build_error(e: impl std::fmt::Display) -> EmbeddedError {
@@ -724,7 +851,7 @@ graph_schema:
             sources: Some(&local),
             tables: Some(&remote),
         };
-        let schema = build_graph_schema(&config, readers, &runtime).unwrap();
+        let (schema, _) = build_graph_schema(&config, readers, &runtime).unwrap();
         assert_eq!(
             local.seen(),
             ["DESCRIBE TABLE file('/data/sourced.parquet', 'Parquet')"]
@@ -734,6 +861,248 @@ graph_schema:
             let node = schema.node_schema(label).unwrap();
             assert!(node.property_mappings.contains_key("city"), "{label}");
         }
+    }
+
+    /// Answers a source's DESCRIBE and the one `system.columns` read of
+    /// several tables, as a loader sees them.
+    struct TypesExecutor {
+        seen: std::sync::Mutex<Vec<String>>,
+    }
+
+    #[async_trait]
+    impl QueryExecutor for TypesExecutor {
+        async fn execute_json(
+            &self,
+            sql: &str,
+            _role: Option<&str>,
+        ) -> Result<Vec<serde_json::Value>, ExecutorError> {
+            self.seen.lock().unwrap().push(sql.to_string());
+            if sql.starts_with("DESCRIBE") {
+                return Ok(vec![serde_json::json!({"name": "id", "type": "Date"})]);
+            }
+            Ok(vec![
+                serde_json::json!({"database": "db", "table": "plain", "name": "id", "type": "String"}),
+                serde_json::json!({"database": "db", "table": "links", "name": "a", "type": "DateTime"}),
+                serde_json::json!({"database": "db", "table": "links", "name": "b", "type": "String"}),
+            ])
+        }
+
+        async fn execute_text(
+            &self,
+            _sql: &str,
+            _format: &str,
+            _role: Option<&str>,
+        ) -> Result<String, ExecutorError> {
+            Ok(String::new())
+        }
+    }
+
+    /// VALUE_TYPES.md T1: a schema that discovers nothing still has its
+    /// tables' column types read (remote: every table in one read; chdb: a
+    /// `source:` through DESCRIBE), without gaining properties.
+    #[test]
+    fn column_types_are_read_for_declared_elements() {
+        let config: GraphSchemaConfig = serde_yaml::from_str(
+            r#"
+graph_schema:
+  nodes:
+    - label: Sourced
+      database: db
+      table: sourced
+      node_id: id
+      source: "/data/sourced.parquet"
+      property_mappings: {}
+    - label: Plain
+      database: db
+      table: plain
+      node_id: id
+      property_mappings: {}
+  edges:
+    - type: LINK
+      database: db
+      table: links
+      from_node: Sourced
+      to_node: Plain
+      from_id: a
+      to_id: b
+      property_mappings: {}
+"#,
+        )
+        .unwrap();
+        let runtime = build_runtime().unwrap();
+        let fresh = || TypesExecutor {
+            seen: Default::default(),
+        };
+        // Remote: every table in one read (the sourced one too: a remote
+        // server reads its table, not its `source:`).
+        let remote = fresh();
+        let readers = ColumnReaders {
+            sources: None,
+            tables: Some(&remote),
+        };
+        let (schema, warnings) = build_graph_schema(&config, readers, &runtime).unwrap();
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(
+            *remote.seen.lock().unwrap(),
+            [system_columns_of_tables_sql(&[
+                ("db".to_string(), "sourced".to_string()),
+                ("db".to_string(), "plain".to_string()),
+                ("db".to_string(), "links".to_string()),
+            ])]
+        );
+        assert_eq!(
+            schema.node_schema("Plain").unwrap().node_id.part_types[0].raw,
+            "String"
+        );
+        let link = schema.get_rel_schema("LINK").unwrap();
+        assert_eq!(link.from_node_id_part_types[0].raw, "DateTime");
+        assert_eq!(link.to_node_id_part_types[0].raw, "String");
+        let plain = schema.node_schema("Plain").unwrap();
+        assert_eq!(plain.property_mappings.len(), 1);
+
+        // chdb: a `source:` through its DESCRIBE; the other elements are
+        // tables chdb creates, not read.
+        let (local, remote) = (fresh(), fresh());
+        let readers = ColumnReaders {
+            sources: Some(&local),
+            tables: Some(&remote),
+        };
+        let (schema, _) = build_graph_schema(&config, readers, &runtime).unwrap();
+        assert_eq!(
+            *local.seen.lock().unwrap(),
+            ["DESCRIBE TABLE file('/data/sourced.parquet', 'Parquet')"]
+        );
+        assert!(remote.seen.lock().unwrap().is_empty());
+        let sourced = schema.node_schema("Sourced").unwrap();
+        assert_eq!(sourced.node_id.part_types[0].raw, "Date");
+        assert_eq!(sourced.property_mappings.len(), 1);
+        assert!(schema
+            .node_schema("Plain")
+            .unwrap()
+            .node_id
+            .part_types
+            .is_empty());
+    }
+
+    /// Fails every query, as an unreachable server does.
+    struct FailingExecutor;
+
+    #[async_trait]
+    impl QueryExecutor for FailingExecutor {
+        async fn execute_json(
+            &self,
+            _sql: &str,
+            _role: Option<&str>,
+        ) -> Result<Vec<serde_json::Value>, ExecutorError> {
+            Err(ExecutorError::QueryFailed("connection refused".to_string()))
+        }
+
+        async fn execute_text(
+            &self,
+            _sql: &str,
+            _format: &str,
+            _role: Option<&str>,
+        ) -> Result<String, ExecutorError> {
+            Err(ExecutorError::QueryFailed("connection refused".to_string()))
+        }
+    }
+
+    /// A failed read of the types is not an error: they stay unknown, and
+    /// the database says why (`load_warnings`).
+    #[test]
+    fn unreadable_column_types_stay_unknown() {
+        let config: GraphSchemaConfig = serde_yaml::from_str(MINIMAL_SCHEMA).unwrap();
+        let runtime = build_runtime().unwrap();
+        // Rows without `database` / `table`: not a reply to the read.
+        let malformed = RecordingExecutor::new();
+        for executor in [&malformed as &dyn QueryExecutor, &FailingExecutor] {
+            let readers = ColumnReaders {
+                sources: None,
+                tables: Some(executor),
+            };
+            let (schema, warnings) = build_graph_schema(&config, readers, &runtime).unwrap();
+            assert!(schema
+                .node_schema("User")
+                .unwrap()
+                .node_id
+                .part_types
+                .is_empty());
+            assert_eq!(warnings.len(), 1, "{warnings:?}");
+            assert!(warnings[0].contains("column types"), "{warnings:?}");
+        }
+    }
+
+    /// Never answers, as an unroutable server does not.
+    struct SilentExecutor;
+
+    #[async_trait]
+    impl QueryExecutor for SilentExecutor {
+        async fn execute_json(
+            &self,
+            _sql: &str,
+            _role: Option<&str>,
+        ) -> Result<Vec<serde_json::Value>, ExecutorError> {
+            std::future::pending().await
+        }
+
+        async fn execute_text(
+            &self,
+            _sql: &str,
+            _format: &str,
+            _role: Option<&str>,
+        ) -> Result<String, ExecutorError> {
+            std::future::pending().await
+        }
+    }
+
+    /// A server that does not answer holds the load for the timeout only
+    /// (review finding: ~133 s for an unroutable `--clickhouse`).
+    #[test]
+    fn a_silent_server_holds_the_types_read_for_the_timeout_only() {
+        let config: GraphSchemaConfig = serde_yaml::from_str(MINIMAL_SCHEMA).unwrap();
+        let runtime = build_runtime().unwrap();
+        let readers = ColumnReaders {
+            sources: None,
+            tables: Some(&SilentExecutor),
+        };
+        let mut columns = DiscoveredColumns::default();
+        let started = std::time::Instant::now();
+        let warnings = read_column_types(
+            &config,
+            readers,
+            &runtime,
+            &mut columns,
+            std::time::Duration::from_millis(50),
+        );
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].contains("no answer within"), "{warnings:?}");
+        assert!(!columns.contains("test_db", "users"));
+    }
+
+    /// With chdb, an element without a `source:` is a table chdb creates:
+    /// a remote server's table of that name is another table, so its types
+    /// are not read (review finding).
+    #[test]
+    fn chdb_tables_get_no_types_from_the_remote_server() {
+        let config: GraphSchemaConfig = serde_yaml::from_str(MINIMAL_SCHEMA).unwrap();
+        let runtime = build_runtime().unwrap();
+        let (local, remote) = (
+            TypesExecutor {
+                seen: Default::default(),
+            },
+            TypesExecutor {
+                seen: Default::default(),
+            },
+        );
+        let readers = ColumnReaders {
+            sources: Some(&local),
+            tables: Some(&remote),
+        };
+        let (_, warnings) = build_graph_schema(&config, readers, &runtime).unwrap();
+        assert!(local.seen.lock().unwrap().is_empty());
+        assert!(remote.seen.lock().unwrap().is_empty());
+        assert!(warnings.is_empty());
     }
 
     #[test]

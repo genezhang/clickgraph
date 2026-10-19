@@ -536,6 +536,13 @@ pub struct NodeDefinition {
     #[serde(default)]
     pub property_types: HashMap<String, String>,
 
+    /// Optional: the backend type of each column, as the backend spells it
+    /// (`UInt64`, `DateTime64(3)`, `Array(String)`), keyed by column name.
+    /// Wins over the types read from the database at load; a column it leaves
+    /// out is read from there, or unknown (docs/design/VALUE_TYPES.md §2).
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub column_types: HashMap<String, String>,
+
     /// Optional: ID generation strategy for embedded-mode CREATE.
     /// Accepted values (case-insensitive): "uuid" (default), "provided", "snowflake".
     /// Server / source-backed schemas ignore this field — writes are rejected
@@ -663,6 +670,13 @@ pub struct RelationshipDefinition {
     /// Values are SchemaType strings: "integer", "float", "string", "boolean", "datetime", "date", "uuid"
     #[serde(default)]
     pub property_types: HashMap<String, String>,
+
+    /// Optional: the backend type of each column, as the backend spells it
+    /// (`UInt64`, `DateTime64(3)`, `Array(String)`), keyed by column name.
+    /// Wins over the types read from the database at load; a column it leaves
+    /// out is read from there, or unknown (docs/design/VALUE_TYPES.md §2).
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub column_types: HashMap<String, String>,
 }
 
 /// Edge definition - supporting both standard and polymorphic patterns
@@ -766,6 +780,13 @@ pub struct StandardEdgeDefinition {
     /// Values are SchemaType strings: "integer", "float", "string", "boolean", "datetime", "date", "uuid"
     #[serde(default)]
     pub property_types: HashMap<String, String>,
+
+    /// Optional: the backend type of each column, as the backend spells it
+    /// (`UInt64`, `DateTime64(3)`, `Array(String)`), keyed by column name.
+    /// Wins over the types read from the database at load; a column it leaves
+    /// out is read from there, or unknown (docs/design/VALUE_TYPES.md §2).
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub column_types: HashMap<String, String>,
 }
 
 /// Polymorphic edge definition
@@ -866,6 +887,13 @@ pub struct PolymorphicEdgeDefinition {
     /// Optional: Whether to use FINAL keyword
     #[serde(default)]
     pub use_final: Option<bool>,
+
+    /// Optional: the backend type of each column, as the backend spells it
+    /// (`UInt64`, `DateTime64(3)`, `Array(String)`), keyed by column name.
+    /// Wins over the types read from the database at load; a column it leaves
+    /// out is read from there, or unknown (docs/design/VALUE_TYPES.md §2).
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub column_types: HashMap<String, String>,
 
     /// Optional: SQL predicate filter applied to all queries on this edge
     /// Column references are prefixed with table alias at query time
@@ -982,6 +1010,11 @@ struct TableDiscovery {
     columns: Option<Vec<String>>,
     /// Auto-discovered column information (names + types)
     column_info: Option<HashMap<String, String>>, // column_name -> data_type
+    /// Every known column's type, whether or not the element discovers its
+    /// properties: the declared `column_types` over the ones read from the
+    /// database (docs/design/VALUE_TYPES.md §2). A column missing here has
+    /// an unknown type.
+    column_types: HashMap<String, KeyPartType>,
     /// Detected table engine type
     engine: Option<TableEngine>,
 }
@@ -1318,6 +1351,26 @@ fn build_node_schema(
         &node_def.label,
     )?;
 
+    // A node embedded in an edge table has one id column per role
+    // (`from_node_properties` / `to_node_properties`), not one physical id
+    // column: it keeps the discovered types read by id name, as before.
+    let part_types = if is_denormalized {
+        discovered_id_part_types(discovery, &node_def.node_id)
+    } else {
+        let physical: Vec<String> = node_def
+            .node_id
+            .columns()
+            .iter()
+            .map(|prop| {
+                property_mappings
+                    .get(*prop)
+                    .map(|pv| pv.raw().to_string())
+                    .unwrap_or_else(|| prop.to_string())
+            })
+            .collect();
+        id_part_types(discovery, &physical)
+    };
+
     let mut node_schema = NodeSchema {
         closed_properties: discovery.columns.is_some(),
         database: node_def.database.clone(),
@@ -1330,7 +1383,7 @@ fn build_node_schema(
         node_id: NodeIdSchema {
             id: node_def.node_id.clone(),
             dtype: node_id_dtype,
-            part_types: id_part_types(discovery, &node_def.node_id),
+            part_types,
         },
         property_mappings,
         view_parameters: node_def.view_parameters.clone(),
@@ -1373,16 +1426,39 @@ fn build_node_schema(
     Ok(node_schema)
 }
 
-/// Each id column's discovered type, per part (`RelationshipSchema` ends'
+/// Each id column's known type, per part (`RelationshipSchema` ends'
 /// `*_node_id_part_types`, the nodes' `NodeIdSchema.part_types`),
-/// #1360.
+/// #1360: declared in `column_types` or read from the database, for every
+/// element (VALUE_TYPES.md T1).
 ///
-/// Empty when discovery did not run or the column is invisible, which the walk
-/// key reads as "unknown" and leaves the SQL exactly as it was before. A mixed
-/// set does NOT collapse to one `Integer` the way the old `edge_end_id_dtype`
-/// did: each part keeps its own type, so a composite id like `[k String,
-/// v Date]` can be compared in the right type per part.
-fn id_part_types(discovery: &TableDiscovery, id: &Identifier) -> Vec<KeyPartType> {
+/// Empty when no part's type is known, which the walk key reads as
+/// "unknown" and leaves the SQL exactly as it was before. A mixed set does
+/// NOT collapse to one `Integer` the way the old `edge_end_id_dtype` did: each
+/// part keeps its own type, so a composite id like `[k String, v Date]` can
+/// be compared in the right type per part.
+fn id_part_types(discovery: &TableDiscovery, columns: &[impl AsRef<str>]) -> Vec<KeyPartType> {
+    let types: Vec<KeyPartType> = columns
+        .iter()
+        .map(|col| {
+            discovery
+                .column_types
+                .get(col.as_ref())
+                .cloned()
+                .unwrap_or_default()
+        })
+        .collect();
+    // Nothing resolved: report "unknown" rather than a row of wrong defaults.
+    if types.iter().all(|t| t.raw.is_empty()) {
+        return Vec::new();
+    }
+    types
+}
+
+/// Each id column's type as `auto_discover_columns` read it, per part: what
+/// the `*_dtype` fields (Bolt `id()` decoding) and the ids of nodes embedded
+/// in edge tables are built from. Empty for an element that does not
+/// discover its columns.
+fn discovered_id_part_types(discovery: &TableDiscovery, id: &Identifier) -> Vec<KeyPartType> {
     let Some(col_info) = &discovery.column_info else {
         return Vec::new();
     };
@@ -1551,10 +1627,10 @@ fn build_relationship_schema(
         to_node_table,   // 🔵 RELATIONAL: Resolved table name
         from_id: rel_def.from_id.clone(),
         to_id: rel_def.to_id.clone(),
-        from_node_id_dtype: parts_dtype(&id_part_types(discovery, &rel_def.from_id)),
-        to_node_id_dtype: parts_dtype(&id_part_types(discovery, &rel_def.to_id)),
-        from_node_id_part_types: id_part_types(discovery, &rel_def.from_id),
-        to_node_id_part_types: id_part_types(discovery, &rel_def.to_id),
+        from_node_id_dtype: parts_dtype(&discovered_id_part_types(discovery, &rel_def.from_id)),
+        to_node_id_dtype: parts_dtype(&discovered_id_part_types(discovery, &rel_def.to_id)),
+        from_node_id_part_types: id_part_types(discovery, &rel_def.from_id.columns()),
+        to_node_id_part_types: id_part_types(discovery, &rel_def.to_id.columns()),
         property_mappings,
         view_parameters: rel_def.view_parameters.clone(),
         engine: discovery.engine.clone(),
@@ -1766,10 +1842,10 @@ fn build_standard_edge_schema(
         to_node_table: resolved_to_node,       // 🔵 RELATIONAL: Resolved table name
         from_id: std_edge.from_id.clone(),
         to_id: std_edge.to_id.clone(),
-        from_node_id_dtype: parts_dtype(&id_part_types(discovery, &std_edge.from_id)),
-        to_node_id_dtype: parts_dtype(&id_part_types(discovery, &std_edge.to_id)),
-        from_node_id_part_types: id_part_types(discovery, &std_edge.from_id),
-        to_node_id_part_types: id_part_types(discovery, &std_edge.to_id),
+        from_node_id_dtype: parts_dtype(&discovered_id_part_types(discovery, &std_edge.from_id)),
+        to_node_id_dtype: parts_dtype(&discovered_id_part_types(discovery, &std_edge.to_id)),
+        from_node_id_part_types: id_part_types(discovery, &std_edge.from_id.columns()),
+        to_node_id_part_types: id_part_types(discovery, &std_edge.to_id.columns()),
         property_mappings,
         view_parameters: std_edge.view_parameters.clone(),
         engine: discovery.engine.clone(),
@@ -1849,10 +1925,13 @@ fn build_polymorphic_edge_schemas(
             to_node_table: to_node.clone(), // 🔵 RELATIONAL: Same as label for polymorphic
             from_id: poly_edge.from_id.clone(),
             to_id: poly_edge.to_id.clone(),
-            from_node_id_dtype: parts_dtype(&id_part_types(discovery, &poly_edge.from_id)),
-            to_node_id_dtype: parts_dtype(&id_part_types(discovery, &poly_edge.to_id)),
-            from_node_id_part_types: id_part_types(discovery, &poly_edge.from_id),
-            to_node_id_part_types: id_part_types(discovery, &poly_edge.to_id),
+            from_node_id_dtype: parts_dtype(&discovered_id_part_types(
+                discovery,
+                &poly_edge.from_id,
+            )),
+            to_node_id_dtype: parts_dtype(&discovered_id_part_types(discovery, &poly_edge.to_id)),
+            from_node_id_part_types: id_part_types(discovery, &poly_edge.from_id.columns()),
+            to_node_id_part_types: id_part_types(discovery, &poly_edge.to_id.columns()),
             property_mappings: property_mappings.clone(),
             view_parameters: poly_edge.view_parameters.clone(),
             engine: discovery.engine.clone(),
@@ -2272,11 +2351,27 @@ impl GraphSchemaConfig {
     /// The tables whose columns this schema asks to discover
     /// (`auto_discover_columns: true`), in definition order.
     pub fn column_discovery_targets(&self) -> Vec<ColumnDiscoveryTarget> {
+        self.discovery_targets(true)
+    }
+
+    /// Every table the schema reads, once each, in definition order: the
+    /// tables whose column *types* a loader reads where it can
+    /// (docs/design/VALUE_TYPES.md T1). Reading a table's types does not
+    /// make its columns properties; only `auto_discover_columns` does.
+    pub fn type_discovery_targets(&self) -> Vec<ColumnDiscoveryTarget> {
+        let mut seen = std::collections::HashSet::new();
+        self.discovery_targets(false)
+            .into_iter()
+            .filter(|t| seen.insert((t.database.clone(), t.table.clone(), t.source.clone())))
+            .collect()
+    }
+
+    fn discovery_targets(&self, only_discovering: bool) -> Vec<ColumnDiscoveryTarget> {
         let gs = &self.graph_schema;
         let nodes = gs
             .nodes
             .iter()
-            .filter(|n| n.auto_discover_columns)
+            .filter(|n| !only_discovering || n.auto_discover_columns)
             .map(|n| {
                 (
                     format!("node '{}'", n.label),
@@ -2288,7 +2383,7 @@ impl GraphSchemaConfig {
         let relationships = gs
             .relationships
             .iter()
-            .filter(|r| r.auto_discover_columns)
+            .filter(|r| !only_discovering || r.auto_discover_columns)
             .map(|r| {
                 (
                     format!("relationship '{}'", r.type_name),
@@ -2298,13 +2393,13 @@ impl GraphSchemaConfig {
                 )
             });
         let edges = gs.edges.iter().filter_map(|e| match e {
-            EdgeDefinition::Standard(e) if e.auto_discover_columns => Some((
+            EdgeDefinition::Standard(e) if !only_discovering || e.auto_discover_columns => Some((
                 format!("edge '{}'", e.type_name),
                 &e.database,
                 &e.table,
                 &e.source,
             )),
-            EdgeDefinition::Polymorphic(e) if e.auto_discover_columns => {
+            EdgeDefinition::Polymorphic(e) if !only_discovering || e.auto_discover_columns => {
                 Some((polymorphic_edge_owner(e), &e.database, &e.table, &None))
             }
             _ => None,
@@ -2359,7 +2454,7 @@ impl GraphSchemaConfig {
         &self,
         client: &clickhouse::Client,
     ) -> Result<GraphSchema, GraphSchemaError> {
-        use super::column_info::query_table_column_info;
+        use super::column_info::{query_table_column_info, query_tables_column_info};
         use super::engine_detection::detect_table_engine;
 
         self.validate()?;
@@ -2375,6 +2470,29 @@ impl GraphSchemaConfig {
                     error: format!("Failed to query columns for {}: {}", target.owner, e),
                 })?;
             columns.insert(&target.database, &target.table, info);
+        }
+
+        // VALUE_TYPES.md T1: the column types of every other table, in one
+        // read. A table that cannot be read keeps unknown types (today's SQL),
+        // so a failure here is logged, not an error.
+        let mut others: Vec<(String, String)> = Vec::new();
+        for target in self.type_discovery_targets() {
+            let key = (target.database, target.table);
+            if !columns.contains(&key.0, &key.1) && !others.contains(&key) {
+                others.push(key);
+            }
+        }
+        match query_tables_column_info(client, &others).await {
+            Ok(found) => {
+                for ((database, table), info) in found {
+                    columns.insert(&database, &table, info);
+                }
+            }
+            Err(e) => log::warn!(
+                "Could not read the column types of the schema's tables; \
+                 they stay unknown: {}",
+                e
+            ),
         }
 
         let mut engines = HashMap::new();
@@ -2410,12 +2528,14 @@ impl GraphSchemaConfig {
     }
 
     /// The discovery data for one schema element's table.
+    #[allow(clippy::too_many_arguments)]
     fn table_discovery(
         owner: &str,
         database: &str,
         table: &str,
         auto_discover: bool,
         view_parameters: &Option<Vec<String>>,
+        declared_types: &HashMap<String, String>,
         columns: Columns<'_>,
         engines: &HashMap<(String, String), TableEngine>,
     ) -> Result<TableDiscovery, GraphSchemaError> {
@@ -2455,10 +2575,44 @@ impl GraphSchemaConfig {
             }
             Columns::Discovered(_) | Columns::DeclaredOnly => None,
         };
-        // #1360: only an `auto_discover_columns` element keeps the column
-        // types (its id parts' too). A declared element whose table another
-        // element reads stays as on main: no types, no casts, and the
-        // `node_id.dtype` Bolt `id()` decoding reads unchanged.
+        // The column types are kept for every element (VALUE_TYPES.md T1),
+        // but only an `auto_discover_columns` element gets its properties,
+        // and its `node_id.dtype` (Bolt `id()` decoding), from them.
+        let mut column_types: HashMap<String, KeyPartType> = match columns {
+            Columns::Discovered(columns) => columns
+                .get(database, table)
+                .unwrap_or_default()
+                .iter()
+                .map(|c| (c.name.clone(), KeyPartType::parse(&c.data_type)))
+                .collect(),
+            Columns::DeclaredOnly => HashMap::new(),
+        };
+        // Declared types: a type spelling each; a column of the table where
+        // its columns were read (offline, a typo cannot be told from a
+        // column).
+        let read = !column_types.is_empty();
+        let mut declared: Vec<(&String, &String)> = declared_types.iter().collect();
+        declared.sort();
+        for (column, ty) in declared {
+            if !crate::graph_catalog::schema_types::is_column_type_spelling(ty) {
+                return Err(GraphSchemaError::InvalidConfig {
+                    message: format!(
+                        "{} declares column_types '{}' for column '{}', which is not a \
+                         column type (e.g. UInt64, String, Date, DateTime64(3))",
+                        owner, ty, column
+                    ),
+                });
+            }
+            if read && !column_types.contains_key(column) {
+                return Err(GraphSchemaError::InvalidConfig {
+                    message: format!(
+                        "{} declares column_types for '{}', which `{}`.`{}` has no column of",
+                        owner, column, database, table
+                    ),
+                });
+            }
+            column_types.insert(column.clone(), KeyPartType::parse(ty));
+        }
         Ok(TableDiscovery {
             columns: discovered.map(|c| c.iter().map(|c| c.name.clone()).collect()),
             column_info: discovered.map(|c| {
@@ -2466,6 +2620,7 @@ impl GraphSchemaConfig {
                     .map(|c| (c.name.clone(), c.data_type.clone()))
                     .collect()
             }),
+            column_types,
             engine,
         })
     }
@@ -2488,6 +2643,7 @@ impl GraphSchemaConfig {
                 &node_def.table,
                 node_def.auto_discover_columns,
                 &node_def.view_parameters,
+                &node_def.column_types,
                 columns,
                 engines,
             )?;
@@ -2517,6 +2673,7 @@ impl GraphSchemaConfig {
                 &rel_def.table,
                 rel_def.auto_discover_columns,
                 &rel_def.view_parameters,
+                &rel_def.column_types,
                 columns,
                 engines,
             )?;
@@ -2540,6 +2697,7 @@ impl GraphSchemaConfig {
                         &std_edge.table,
                         std_edge.auto_discover_columns,
                         &std_edge.view_parameters,
+                        &std_edge.column_types,
                         columns,
                         engines,
                     )?;
@@ -2563,6 +2721,7 @@ impl GraphSchemaConfig {
                         &poly_edge.table,
                         poly_edge.auto_discover_columns,
                         &poly_edge.view_parameters,
+                        &poly_edge.column_types,
                         columns,
                         engines,
                     )?;
@@ -3067,6 +3226,7 @@ graph_schema:
                     types: None,
                     source: None,
                     property_types: HashMap::new(),
+                    column_types: HashMap::new(),
                     id_generation: None,
                 }],
                 relationships: vec![],
@@ -3097,6 +3257,7 @@ graph_schema:
                     id_types: None,
                     source: None,
                     property_types: HashMap::new(),
+                    column_types: HashMap::new(),
                 })],
                 vector_indexes: Vec::new(),
                 fulltext_indexes: Vec::new(),
@@ -3139,6 +3300,7 @@ graph_schema:
                     types: None,
                     source: None,
                     property_types: HashMap::new(),
+                    column_types: HashMap::new(),
                     id_generation: None,
                 }],
                 relationships: vec![],
@@ -3163,6 +3325,7 @@ graph_schema:
                     id_types: None,
                     source: None,
                     property_types: HashMap::new(),
+                    column_types: HashMap::new(),
                 })],
                 vector_indexes: Vec::new(),
                 fulltext_indexes: Vec::new(),
@@ -3220,6 +3383,7 @@ graph_schema:
                     types: None,
                     source: None,
                     property_types: HashMap::new(),
+                    column_types: HashMap::new(),
                     id_generation: None,
                 }],
                 relationships: vec![],
@@ -3244,6 +3408,7 @@ graph_schema:
                     id_types: None,
                     source: None,
                     property_types: HashMap::new(),
+                    column_types: HashMap::new(),
                 })],
                 vector_indexes: Vec::new(),
                 fulltext_indexes: Vec::new(),
@@ -3309,6 +3474,7 @@ graph_schema:
                     types: None,
                     source: None,
                     property_types: HashMap::new(),
+                    column_types: HashMap::new(),
                     id_generation: None,
                 }],
                 relationships: vec![],
@@ -3333,6 +3499,7 @@ graph_schema:
                     id_types: None,
                     source: None,
                     property_types: HashMap::new(),
+                    column_types: HashMap::new(),
                 })],
                 vector_indexes: Vec::new(),
                 fulltext_indexes: Vec::new(),
@@ -3398,6 +3565,7 @@ graph_schema:
                     types: None,
                     source: None,
                     property_types: HashMap::new(),
+                    column_types: HashMap::new(),
                     id_generation: None,
                 }],
                 relationships: vec![],
@@ -3429,6 +3597,7 @@ graph_schema:
                     use_final: None,
                     filter: None,
                     constraints: None,
+                    column_types: HashMap::new(),
                 })],
                 vector_indexes: Vec::new(),
                 fulltext_indexes: Vec::new(),
@@ -3466,6 +3635,7 @@ graph_schema:
                     types: None,
                     source: None,
                     property_types: HashMap::new(),
+                    column_types: HashMap::new(),
                     id_generation: None,
                 }],
                 relationships: vec![],
@@ -3492,6 +3662,7 @@ graph_schema:
                     use_final: None,
                     filter: None,
                     constraints: None,
+                    column_types: HashMap::new(),
                 })],
                 vector_indexes: Vec::new(),
                 fulltext_indexes: Vec::new(),
@@ -3536,6 +3707,7 @@ graph_schema:
                         types: None,
                         source: None,
                         property_types: HashMap::new(),
+                        column_types: HashMap::new(),
                         id_generation: None,
                     },
                     NodeDefinition {
@@ -3558,6 +3730,7 @@ graph_schema:
                         types: None,
                         source: None,
                         property_types: HashMap::new(),
+                        column_types: HashMap::new(),
                         id_generation: None,
                     },
                 ],
@@ -3588,6 +3761,7 @@ graph_schema:
                     use_final: None,
                     filter: None,
                     constraints: None,
+                    column_types: HashMap::new(),
                 })],
                 vector_indexes: Vec::new(),
                 fulltext_indexes: Vec::new(),
@@ -3631,6 +3805,7 @@ graph_schema:
                     types: None,
                     source: None,
                     property_types: HashMap::new(),
+                    column_types: HashMap::new(),
                     id_generation: None,
                 }],
                 relationships: vec![],
@@ -3657,6 +3832,7 @@ graph_schema:
                     use_final: None,
                     filter: None,
                     constraints: None,
+                    column_types: HashMap::new(),
                 })],
                 vector_indexes: Vec::new(),
                 fulltext_indexes: Vec::new(),
@@ -3705,6 +3881,7 @@ graph_schema:
                     types: None,
                     source: None,
                     property_types: HashMap::new(),
+                    column_types: HashMap::new(),
                     id_generation: None,
                 }],
                 relationships: vec![],
@@ -3731,6 +3908,7 @@ graph_schema:
                     use_final: None,
                     filter: None,
                     constraints: None,
+                    column_types: HashMap::new(),
                 })],
                 vector_indexes: Vec::new(),
                 fulltext_indexes: Vec::new(),
@@ -4155,6 +4333,7 @@ mod node_id_identity_mapping_tests {
             types: None,
             source: None,
             property_types: HashMap::new(),
+            column_types: HashMap::new(),
             id_generation: None,
         };
 
@@ -4162,6 +4341,7 @@ mod node_id_identity_mapping_tests {
             columns: None,
             column_info: None,
             engine: None,
+            column_types: HashMap::new(),
         };
 
         let node_schema =
@@ -4211,6 +4391,7 @@ mod node_id_identity_mapping_tests {
             types: None,
             source: None,
             property_types: HashMap::new(),
+            column_types: HashMap::new(),
             id_generation: None,
         };
 
@@ -4218,6 +4399,7 @@ mod node_id_identity_mapping_tests {
             columns: None,
             column_info: None,
             engine: None,
+            column_types: HashMap::new(),
         };
 
         let node_schema =
@@ -4268,6 +4450,7 @@ mod node_id_identity_mapping_tests {
             types: None,
             source: None,
             property_types: HashMap::new(),
+            column_types: HashMap::new(),
             id_generation: None,
         };
 
@@ -4275,6 +4458,7 @@ mod node_id_identity_mapping_tests {
             columns: None,
             column_info: None,
             engine: None,
+            column_types: HashMap::new(),
         };
 
         let node_schema =
@@ -5011,16 +5195,16 @@ graph_schema:
 }
 
 #[cfg(test)]
-mod declared_table_shared_with_auto_1360 {
+mod column_types_t1 {
+    //! VALUE_TYPES.md T1: every element keeps the column types a loader read
+    //! (or the YAML declares), while only `auto_discover_columns` makes
+    //! columns properties and sets `node_id.dtype` / `*_node_id_dtype`.
     use super::*;
-    use crate::graph_catalog::column_info::ColumnInfo;
+    use crate::graph_catalog::column_info::{
+        columns_by_table_from_rows, system_columns_of_tables_sql, ColumnInfo,
+    };
 
-    /// A declared node whose table an `auto_discover_columns` edge reads gets
-    /// no id types from that read: declared elements stay as on main (#1360),
-    /// including the `node_id.dtype` Bolt `id()` decoding reads.
-    #[test]
-    fn a_declared_node_sharing_an_auto_table_gets_no_types() {
-        let y = r#"
+    const SHARED: &str = r#"
 graph_schema:
   nodes:
     - label: Post
@@ -5046,26 +5230,269 @@ graph_schema:
       auto_discover_columns: true
       property_mappings: {}
 "#;
-        let c = GraphSchemaConfig::from_yaml_str(y).unwrap();
+
+    fn posts_columns() -> Vec<ColumnInfo> {
+        vec![
+            ColumnInfo::new("post_id".into(), "String".into()),
+            ColumnInfo::new("author_id".into(), "UInt64".into()),
+            ColumnInfo::new("content".into(), "String".into()),
+        ]
+    }
+
+    /// A declared node whose table was read gets its id's types (T1; before
+    /// it, only an `auto_discover_columns` element did, #1360 item 1), but
+    /// not its properties, and its `node_id.dtype` stays as it was.
+    #[test]
+    fn a_declared_node_gets_the_types_of_its_read_table() {
+        let c = GraphSchemaConfig::from_yaml_str(SHARED).unwrap();
         let mut d = DiscoveredColumns::default();
-        d.insert(
-            "db",
-            "posts",
-            vec![
-                ColumnInfo::new("post_id".into(), "String".into()),
-                ColumnInfo::new("author_id".into(), "UInt64".into()),
-                ColumnInfo::new("content".into(), "String".into()),
-            ],
-        );
+        d.insert("db", "posts", posts_columns());
         let s = c.to_graph_schema_with_columns(&d).unwrap();
         let p = s.node_schema("Post").unwrap();
-        let u = s.node_schema("User").unwrap();
         assert_eq!(p.node_id.dtype, SchemaType::Integer);
-        assert!(p.node_id.part_types.is_empty());
+        assert_eq!(p.node_id.part_types.len(), 1);
+        assert_eq!(p.node_id.part_types[0].raw, "String");
+        assert!(!p.closed_properties);
+        let mut props: Vec<&String> = p.property_mappings.keys().collect();
+        props.sort();
+        assert_eq!(props, ["content", "post_id"]);
+        // `users` was not read: unknown.
+        let u = s.node_schema("User").unwrap();
         assert!(u.node_id.part_types.is_empty());
         // The edge asked: its ends keep their types.
         let r = s.get_rel_schema("AUTHORED").unwrap();
         assert_eq!(r.to_node_id_part_types.len(), 1);
         assert_eq!(r.to_node_id_part_types[0].raw, "String");
+    }
+
+    /// A declared edge's ends get their types, while its `*_node_id_dtype`
+    /// stays the undiscovered default.
+    #[test]
+    fn a_declared_edge_gets_its_end_types_but_keeps_its_dtypes() {
+        let y = SHARED.replace("      auto_discover_columns: true\n", "");
+        let c = GraphSchemaConfig::from_yaml_str(&y).unwrap();
+        let mut d = DiscoveredColumns::default();
+        d.insert("db", "posts", posts_columns());
+        let s = c.to_graph_schema_with_columns(&d).unwrap();
+        let r = s.get_rel_schema("AUTHORED").unwrap();
+        assert_eq!(r.from_node_id_part_types[0].raw, "UInt64");
+        assert_eq!(r.to_node_id_part_types[0].raw, "String");
+        assert_eq!(r.from_node_id_dtype, SchemaType::Integer);
+        assert_eq!(r.to_node_id_dtype, SchemaType::Integer);
+        assert!(!r.closed_properties);
+    }
+
+    /// The id's type is the type of the column its property maps to.
+    #[test]
+    fn a_node_id_reads_the_type_of_its_mapped_column() {
+        let y = r#"
+graph_schema:
+  nodes:
+    - label: User
+      database: db
+      table: users
+      node_id: id
+      property_mappings:
+        id: uid
+  edges: []
+"#;
+        let c = GraphSchemaConfig::from_yaml_str(y).unwrap();
+        let mut d = DiscoveredColumns::default();
+        d.insert(
+            "db",
+            "users",
+            vec![
+                ColumnInfo::new("id".into(), "String".into()),
+                ColumnInfo::new("uid".into(), "Nullable(UInt32)".into()),
+            ],
+        );
+        let s = c.to_graph_schema_with_columns(&d).unwrap();
+        let t = &s.node_schema("User").unwrap().node_id.part_types;
+        assert_eq!(t.len(), 1);
+        assert_eq!(t[0].raw, "UInt32");
+        assert!(t[0].nullable);
+    }
+
+    /// Declared `column_types` win over the ones read, and work without any
+    /// read at all.
+    #[test]
+    fn declared_column_types_win_and_need_no_connection() {
+        let y = SHARED.replace(
+            "      node_id: post_id\n",
+            "      node_id: post_id\n      column_types:\n        post_id: FixedString(8)\n",
+        );
+        let c = GraphSchemaConfig::from_yaml_str(&y).unwrap();
+        let mut d = DiscoveredColumns::default();
+        d.insert("db", "posts", posts_columns());
+        let s = c.to_graph_schema_with_columns(&d).unwrap();
+        assert_eq!(
+            s.node_schema("Post").unwrap().node_id.part_types[0].raw,
+            "FixedString(8)"
+        );
+        let declared_only = y.replace("      auto_discover_columns: true\n", "");
+        let s = GraphSchemaConfig::from_yaml_str(&declared_only)
+            .unwrap()
+            .to_graph_schema()
+            .unwrap();
+        assert_eq!(
+            s.node_schema("Post").unwrap().node_id.part_types[0].raw,
+            "FixedString(8)"
+        );
+    }
+
+    #[test]
+    fn an_empty_declared_column_type_is_refused() {
+        let y = SHARED
+            .replace(
+                "      node_id: post_id\n",
+                "      node_id: post_id\n      column_types:\n        post_id: ''\n",
+            )
+            .replace("      auto_discover_columns: true\n", "");
+        let e = GraphSchemaConfig::from_yaml_str(&y)
+            .unwrap()
+            .to_graph_schema()
+            .unwrap_err();
+        assert!(
+            e.to_string()
+                .contains("'' for column 'post_id', which is not a column type"),
+            "{e}"
+        );
+    }
+
+    /// A declared type is a type spelling, and, where the table's columns
+    /// were read, names one of them (review findings: a typo was ignored; a
+    /// column the element reads only through the undeclared-property rule
+    /// or a `filter:` was refused offline).
+    #[test]
+    fn declared_column_types_are_checked() {
+        let yaml = |types: &str| {
+            SHARED
+                .replace(
+                    "      node_id: post_id\n",
+                    &format!("      node_id: post_id\n      column_types: {types}\n"),
+                )
+                .replace("      auto_discover_columns: true\n", "")
+        };
+        let offline = |types: &str| {
+            GraphSchemaConfig::from_yaml_str(&yaml(types))
+                .unwrap()
+                .to_graph_schema()
+        };
+        let read = |types: &str| {
+            let mut d = DiscoveredColumns::default();
+            d.insert("db", "posts", posts_columns());
+            GraphSchemaConfig::from_yaml_str(&yaml(types))
+                .unwrap()
+                .to_graph_schema_with_columns(&d)
+        };
+        let e = offline("{post_id: 'Array('}").unwrap_err().to_string();
+        assert!(e.contains("'Array(' for column 'post_id'"), "{e}");
+        // Offline, any column: it may be read by the undeclared-property
+        // rule or a filter.
+        assert!(offline("{age: UInt8}").is_ok());
+        // Read, a column of the table only.
+        let e = read("{postid: String}").unwrap_err().to_string();
+        assert!(
+            e.contains("'postid', which `db`.`posts` has no column of"),
+            "{e}"
+        );
+        for ok in [
+            "{post_id: UInt64}",
+            "{post_id: 'Nullable(DateTime64(3))', author_id: JSON}",
+            "{content: 'Array(String)'}",
+        ] {
+            assert!(read(ok).is_ok(), "{ok}");
+        }
+    }
+
+    /// A node embedded in an edge table keeps its id types as before T1:
+    /// read by id name, and only when it discovers its columns.
+    #[test]
+    fn an_embedded_node_keeps_its_id_types_as_before() {
+        let y = r#"
+graph_schema:
+  nodes:
+    - label: Airport
+      database: db
+      table: flights
+      node_id: code
+      property_mappings: {}
+      from_node_properties: {code: origin}
+      to_node_properties: {code: dest}
+  edges:
+    - type: FLIGHT
+      database: db
+      table: flights
+      from_node: Airport
+      to_node: Airport
+      from_id: origin
+      to_id: dest
+      property_mappings: {}
+"#;
+        let c = GraphSchemaConfig::from_yaml_str(y).unwrap();
+        let mut d = DiscoveredColumns::default();
+        d.insert(
+            "db",
+            "flights",
+            vec![
+                ColumnInfo::new("code".into(), "Date".into()),
+                ColumnInfo::new("origin".into(), "String".into()),
+                ColumnInfo::new("dest".into(), "FixedString(3)".into()),
+            ],
+        );
+        let s = c.to_graph_schema_with_columns(&d).unwrap();
+        assert!(s
+            .node_schema("Airport")
+            .unwrap()
+            .node_id
+            .part_types
+            .is_empty());
+        let r = s.get_rel_schema("FLIGHT").unwrap();
+        assert_eq!(r.from_node_id_part_types[0].raw, "String");
+        assert_eq!(r.to_node_id_part_types[0].raw, "FixedString(3)");
+    }
+
+    /// Each table is read once, whether or not it discovers its properties.
+    #[test]
+    fn type_discovery_targets_list_every_table_once() {
+        let c = GraphSchemaConfig::from_yaml_str(SHARED).unwrap();
+        let tables: Vec<(String, String)> = c
+            .type_discovery_targets()
+            .into_iter()
+            .map(|t| (t.database, t.table))
+            .collect();
+        assert_eq!(
+            tables,
+            [
+                ("db".to_string(), "posts".to_string()),
+                ("db".to_string(), "users".to_string())
+            ]
+        );
+        assert_eq!(c.column_discovery_targets().len(), 1);
+    }
+
+    #[test]
+    fn one_read_lists_several_tables_columns() {
+        let sql = system_columns_of_tables_sql(&[
+            ("db".into(), "posts".into()),
+            ("d'b".into(), "users".into()),
+        ]);
+        assert_eq!(
+            sql,
+            "SELECT database, table, name, type FROM system.columns \
+             WHERE (database, table) IN (('db', 'posts'), ('d\\'b', 'users')) \
+             ORDER BY database, table, position"
+        );
+        let rows: Vec<serde_json::Value> = vec![
+            serde_json::json!({"database": "db", "table": "posts", "name": "a", "type": "UInt64"}),
+            serde_json::json!({"database": "db", "table": "posts", "name": "b", "type": "Date"}),
+            serde_json::json!({"database": "db", "table": "users", "name": "c", "type": "String"}),
+        ];
+        let by_table = columns_by_table_from_rows(&rows).unwrap();
+        assert_eq!(by_table[&("db".to_string(), "posts".to_string())].len(), 2);
+        assert_eq!(
+            by_table[&("db".to_string(), "users".to_string())][0].data_type,
+            "String"
+        );
     }
 }

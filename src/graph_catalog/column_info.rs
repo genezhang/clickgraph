@@ -217,6 +217,81 @@ pub fn system_columns_sql(database: &str, table: &str) -> String {
     )
 }
 
+/// ClickHouse SQL listing the columns of several tables in one read, as rows
+/// of `database`, `table`, `name`, `type`, each table's columns in order.
+/// A table that does not exist yields no rows.
+pub fn system_columns_of_tables_sql(tables: &[(String, String)]) -> String {
+    let keys: Vec<String> = tables
+        .iter()
+        .map(|(database, table)| {
+            format!(
+                "('{}', '{}')",
+                escape_sql_string(database),
+                escape_sql_string(table)
+            )
+        })
+        .collect();
+    format!(
+        "SELECT database, table, name, type FROM system.columns \
+         WHERE (database, table) IN ({}) ORDER BY database, table, position",
+        keys.join(", ")
+    )
+}
+
+/// Reads the rows of [`system_columns_of_tables_sql`], executed as JSON
+/// objects, into each table's column infos.
+pub fn columns_by_table_from_rows(
+    rows: &[serde_json::Value],
+) -> std::result::Result<HashMap<(String, String), Vec<ColumnInfo>>, String> {
+    let mut tables: HashMap<(String, String), Vec<ColumnInfo>> = HashMap::new();
+    for row in rows {
+        let field = |key: &str| {
+            row.get(key)
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string)
+                .ok_or_else(|| format!("column metadata row has no string '{}': {}", key, row))
+        };
+        tables
+            .entry((field("database")?, field("table")?))
+            .or_default()
+            .push(ColumnInfo::new(field("name")?, field("type")?));
+    }
+    Ok(tables)
+}
+
+/// Query the columns of several tables in one read
+/// ([`system_columns_of_tables_sql`]), keyed by `(database, table)`. A table
+/// that does not exist, or that this user cannot see, is absent.
+pub async fn query_tables_column_info(
+    client: &Client,
+    tables: &[(String, String)],
+) -> std::result::Result<HashMap<(String, String), Vec<ColumnInfo>>, clickhouse::error::Error> {
+    #[derive(Debug, serde::Deserialize, clickhouse::Row)]
+    struct ColumnRow {
+        database: String,
+        table: String,
+        name: String,
+        #[serde(rename = "type")]
+        data_type: String,
+    }
+
+    let mut found: HashMap<(String, String), Vec<ColumnInfo>> = HashMap::new();
+    if tables.is_empty() {
+        return Ok(found);
+    }
+    let rows: Vec<ColumnRow> = client
+        .query(&system_columns_of_tables_sql(tables))
+        .fetch_all()
+        .await?;
+    for row in rows {
+        found
+            .entry((row.database, row.table))
+            .or_default()
+            .push(ColumnInfo::new(row.name, row.data_type));
+    }
+    Ok(found)
+}
+
 /// ClickHouse SQL listing the columns of a table expression (a table function
 /// such as `file('/data/users.parquet', 'Parquet')`), as rows with `name`, `type`.
 pub fn describe_columns_sql(table_expression: &str) -> String {

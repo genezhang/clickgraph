@@ -314,7 +314,11 @@ impl KeyPartType {
     /// Parse a discovered ClickHouse column type. An empty or unrecognised
     /// spelling maps to [`SchemaType::Integer`], which is the no-cast path.
     pub fn parse(ch_type: &str) -> Self {
-        let trimmed = ch_type.trim();
+        // `Nullable (String)` is ClickHouse's `Nullable(String)` (a declared
+        // `column_types` may spell it so; review finding: read as not
+        // nullable, and `DateTime64 (3)` without its scale).
+        let spelled = no_space_before_parens(ch_type);
+        let trimmed = spelled.trim();
         // Detect the wrappers case-insensitively but keep the spelling's own
         // casing: `DateTime64(3)` has to survive as itself. A `Nullable` may
         // sit inside a `LowCardinality` — `LowCardinality(Nullable(String))`
@@ -449,6 +453,24 @@ impl KeyPartType {
     }
 }
 
+/// `ty` with the spaces before each `(` removed (outside quotes).
+fn no_space_before_parens(ty: &str) -> String {
+    let mut out = String::with_capacity(ty.len());
+    let mut quoted = false;
+    for c in ty.chars() {
+        match c {
+            '\'' => quoted = !quoted,
+            '(' if !quoted => {
+                let kept = out.trim_end().len();
+                out.truncate(kept);
+            }
+            _ => {}
+        }
+        out.push(c);
+    }
+    out
+}
+
 /// A raw `Float32` / `Float64` spelling (`Decimal` is not: exact, and no
 /// table entry says how `=` sells it against a binary float).
 fn float_raw(raw: &str) -> bool {
@@ -509,6 +531,46 @@ pub fn fold_common(parts: &[KeyPartType]) -> Option<KeyPartType> {
     widened.then_some(acc)
 }
 
+/// Whether `ty` is spelled as a column type (`column_types:` in the YAML,
+/// VALUE_TYPES.md T1): a type name, with arguments in balanced parentheses
+/// (`DateTime64(3, 'UTC')`, `Map(String, Array(UInt8))`). The family is not
+/// checked: ClickGraph reads what it knows of it (`KeyPartType::parse`); the
+/// casts it spells are its own types (only a `DateTime64`'s scale comes from
+/// the column's, which ClickHouse checks).
+pub fn is_column_type_spelling(ty: &str) -> bool {
+    let ty = ty.trim();
+    let name_len = ty
+        .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        .unwrap_or(ty.len());
+    if name_len == 0 || !ty.starts_with(|c: char| c.is_ascii_alphabetic()) {
+        return false;
+    }
+    let args = ty[name_len..].trim();
+    if args.is_empty() {
+        return true;
+    }
+    if !(args.starts_with('(') && args.ends_with(')')) {
+        return false;
+    }
+    let mut depth = 0i32;
+    let mut quoted = false;
+    for (i, c) in args.char_indices() {
+        match c {
+            '\'' => quoted = !quoted,
+            '(' if !quoted => depth += 1,
+            ')' if !quoted => {
+                depth -= 1;
+                // Closed before the end: `Array(String) x`.
+                if depth == 0 && i + 1 != args.len() {
+                    return false;
+                }
+            }
+            _ => {}
+        }
+    }
+    depth == 0 && !quoted
+}
+
 pub fn map_clickhouse_type(ch_type: &str) -> SchemaType {
     // Normalize: lowercase, strip wrapper types
     let normalized = ch_type
@@ -542,6 +604,52 @@ pub fn map_clickhouse_type(ch_type: &str) -> SchemaType {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A space before a parenthesis is ClickHouse's same type.
+    #[test]
+    fn a_spaced_spelling_parses_as_its_type() {
+        let t = KeyPartType::parse("Nullable (String)");
+        assert_eq!((t.raw.as_str(), t.nullable), ("String", true));
+        assert_eq!(
+            KeyPartType::parse("DateTime64 (3)").datetime64_scale(),
+            Some(3)
+        );
+        let t = KeyPartType::parse("LowCardinality (Nullable (FixedString(2)))");
+        assert_eq!((t.raw.as_str(), t.nullable), ("FixedString(2)", true));
+        assert_eq!(
+            KeyPartType::parse("Enum8('a (b' = 1)").raw,
+            "Enum8('a (b' = 1)"
+        );
+    }
+
+    #[test]
+    fn column_type_spellings_are_recognized() {
+        for ok in [
+            "UInt64",
+            "String",
+            "FixedString(3)",
+            "DateTime('UTC')",
+            "DateTime64(3, 'Asia/Tokyo')",
+            "Decimal(10, 2)",
+            "LowCardinality(Nullable(String))",
+            "Map(String, Array(UInt64))",
+            "Enum8('a(' = 1)",
+            "JSON",
+            "INTEGER",
+        ] {
+            assert!(is_column_type_spelling(ok), "{ok}");
+        }
+        for bad in [
+            "",
+            "Array(",
+            "Array(String) x",
+            "(String)",
+            "1Int",
+            "Map(String))",
+        ] {
+            assert!(!is_column_type_spelling(bad), "{bad}");
+        }
+    }
 
     #[test]
     fn test_sql_type_name_dialect_aware() {

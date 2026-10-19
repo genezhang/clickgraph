@@ -590,6 +590,10 @@ impl Lowerer<'_> {
                 for side in sides {
                     set.extend(side.get(i).cloned());
                 }
+                // An unknown part (one of a partly known id) tells nothing:
+                // read as its `Integer` default, it would be cast by the
+                // `Bool` / `Integer` rule.
+                set.retain(|t| !t.raw.is_empty());
                 crate::graph_catalog::schema_types::fold_common(&set)
                     .map(|t| self.options.dialect.cast_target(&t))
             })
