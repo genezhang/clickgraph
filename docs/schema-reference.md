@@ -665,7 +665,9 @@ Today that is the id columns of a node and of its relationships' ends, which
 walks over several relationship types, shortest paths and composite ids
 compare in one common type (a `Date` node id against `DateTime` edge ends,
 `Bool` against `UInt8`, `FixedString` against `String`). With unknown types
-the SQL is as before, and such a walk can relate nothing.
+the SQL is as before, and such a walk can relate nothing. A property whose
+column is an `Array` is a list: where an OPTIONAL MATCH left its node or
+relationship NULL, it is NULL (with unknown types it reads as `[]`).
 
 `column_types` declares them in the YAML instead, and wins over the types
 read. It makes the SQL depend on the YAML alone, e.g. for `cg sql` without a

@@ -8784,3 +8784,64 @@ fn function_arity_1413() {
         sql(q);
     }
 }
+/// VALUE_TYPES.md T2 (#1485): a property whose column is an `Array` is a
+/// list, so an OPTIONAL MATCH's unmatched node reads it as NULL (its source)
+/// rather than as the `[]` ClickHouse holds; without the column's type it
+/// reads as before.
+#[test]
+fn an_array_column_property_is_a_list_1485() {
+    const YAML: &str = r#"
+name: lower_array_property
+graph_schema:
+  nodes:
+    - label: Person
+      database: db
+      table: person
+      node_id: id
+      column_types: {id: Int64, tags: 'Array(String)', name: 'Nullable(String)'}
+      property_mappings: {id: id, tags: tags, name: name}
+  edges:
+    - type: KNOWS
+      database: db
+      table: knows
+      from_id: a
+      to_id: b
+      from_node: Person
+      to_node: Person
+      property_mappings: {}
+"#;
+    let schema = |yaml: &str| {
+        crate::graph_catalog::config::GraphSchemaConfig::from_yaml_str(yaml)
+            .unwrap()
+            .to_graph_schema()
+            .unwrap()
+    };
+    let options = crate::bound_plan::lower::LowerOptions::default();
+    let q = "MATCH (p:Person) OPTIONAL MATCH (p)-[:KNOWS]->(q:Person) \
+             RETURN q.tags IS NULL AS n, size(q.tags) AS s";
+    let typed = lowered(q, &schema(YAML), &options);
+    assert!(
+        typed.contains(r#"CAST(o1.v2__id IS NULL AS Nullable(Bool)) AS "n""#),
+        "{typed}"
+    );
+    assert!(
+        typed.contains("CASE WHEN o1.v2__id IS NULL THEN NULL ELSE length(o1.p2_v2_tags) END"),
+        "{typed}"
+    );
+    // A scalar column's property keeps its kind (unknown) and its SQL.
+    let scalar = "MATCH (p:Person) OPTIONAL MATCH (p)-[:KNOWS]->(q:Person) RETURN q.name IS NULL";
+    let untyped_yaml = YAML.replace(
+        "      column_types: {id: Int64, tags: 'Array(String)', name: 'Nullable(String)'}\n",
+        "",
+    );
+    assert_eq!(
+        lowered(scalar, &schema(YAML), &options),
+        lowered(scalar, &schema(&untyped_yaml), &options)
+    );
+    // Without the column's type: as before (the list unknown).
+    let untyped = lowered(q, &schema(&untyped_yaml), &options);
+    assert!(
+        !untyped.contains("o1.v2__id IS NULL AS Nullable(Bool)"),
+        "{untyped}"
+    );
+}

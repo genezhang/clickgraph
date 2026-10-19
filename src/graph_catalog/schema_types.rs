@@ -421,6 +421,17 @@ impl KeyPartType {
         })
     }
 
+    /// The element type of an `Array(T)` column (VALUE_TYPES.md T2), or
+    /// `None` for any other.
+    pub fn array_element(&self) -> Option<KeyPartType> {
+        let inner = self
+            .raw
+            .strip_prefix("Array(")
+            .or_else(|| self.raw.strip_prefix("array("))?
+            .strip_suffix(')')?;
+        Some(KeyPartType::parse(inner))
+    }
+
     /// The scale of a `DateTime64` column, if that is what this is.
     fn datetime64_scale(&self) -> Option<u32> {
         let digits: String = self
@@ -604,6 +615,23 @@ pub fn map_clickhouse_type(ch_type: &str) -> SchemaType {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_array_column_has_its_element_type() {
+        let e = KeyPartType::parse("Array(Nullable(String))")
+            .array_element()
+            .unwrap();
+        assert_eq!((e.raw.as_str(), e.nullable), ("String", true));
+        let nested = KeyPartType::parse("Array(Array(UInt8))")
+            .array_element()
+            .unwrap();
+        assert_eq!(nested.array_element().unwrap().raw, "UInt8");
+        assert_eq!(
+            KeyPartType::parse("Map(String, UInt8)").array_element(),
+            None
+        );
+        assert_eq!(KeyPartType::parse("String").array_element(), None);
+    }
 
     /// A space before a parenthesis is ClickHouse's same type.
     #[test]

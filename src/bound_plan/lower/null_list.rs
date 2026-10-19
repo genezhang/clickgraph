@@ -368,6 +368,20 @@ impl Lowerer<'_> {
                     _ => ListNull::Unknown,
                 }
             }
+            // A list property (an `Array` column, VALUE_TYPES.md T2, #1485)
+            // holds no NULL: it is NULL where an OPTIONAL MATCH left its node
+            // or relationship NULL.
+            LogicalExpr::PropertyAccessExp(pa) => match parse_var(&pa.table_alias.0) {
+                Some(v) if !self.binding(v).nullable => ListNull::Never,
+                Some(_) => ListNull::When(self.expr(
+                    &LogicalExpr::OperatorApplicationExp(LOp {
+                        operator: O::IsNull,
+                        operands: vec![LogicalExpr::TableAlias(pa.table_alias.clone())],
+                    }),
+                    items,
+                )?),
+                None => ListNull::Unknown,
+            },
             _ => ListNull::Unknown,
         })
     }

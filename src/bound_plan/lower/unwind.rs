@@ -26,7 +26,7 @@
 use std::collections::{BTreeSet, HashMap};
 
 use crate::graph_catalog::expression_parser::PropertyValue;
-use crate::graph_catalog::schema_types::SchemaType;
+use crate::graph_catalog::schema_types::{KeyPartType, SchemaType};
 use crate::query_planner::logical_expr::{self as lx, LogicalExpr};
 use crate::render_plan::render_expr::{Literal, RenderCase, RenderExpr, TableAlias};
 use crate::render_plan::RenderPlan;
@@ -197,6 +197,16 @@ pub(super) enum Kind {
     Map(Vec<(String, Kind)>),
     /// Not known here.
     Unknown,
+}
+
+/// The kind of a value of a column of type `t` (T2): a list of its
+/// element's kind, a boolean, or another value.
+fn column_kind(t: &KeyPartType) -> Kind {
+    match t.array_element() {
+        Some(e) => Kind::List(Box::new(column_kind(&e))),
+        None if t.raw.eq_ignore_ascii_case("Bool") => Kind::Boolean,
+        None => Kind::Scalar,
+    }
 }
 
 impl Kind {
@@ -430,7 +440,64 @@ impl<'s> Lowerer<'s> {
             [] => Kind::Unknown,
             ts if ts.iter().all(|t| t == &Some(&SchemaType::Boolean)) => Kind::Boolean,
             ts if ts.iter().all(Option::is_some) => Kind::Scalar,
+            _ => self.column_list_kind(v, p),
+        }
+    }
+
+    /// VALUE_TYPES.md T2 (#1485): a property not declared typed whose
+    /// column is an `Array(T)` in every label / type of `v` is a list of
+    /// `T`'s kind; else `Unknown`, as before. Only a list: what a scalar
+    /// column's kind would change is a later slice's.
+    fn column_list_kind(&self, v: VarId, p: &str) -> Kind {
+        let columns = self.property_columns(v, p);
+        let elements: Option<Vec<Kind>> = columns
+            .iter()
+            .map(|t| {
+                t.and_then(KeyPartType::array_element)
+                    .map(|e| column_kind(&e))
+            })
+            .collect();
+        match elements {
+            Some(kinds) if !kinds.is_empty() => {
+                let first = kinds[0].clone();
+                let element = match kinds.iter().all(|k| *k == first) {
+                    true => first,
+                    false => Kind::Unknown,
+                };
+                Kind::List(Box::new(element))
+            }
             _ => Kind::Unknown,
+        }
+    }
+
+    /// The column type of property `p` in each label / type of node or
+    /// relationship `v` (`None`: not known there,
+    /// `NodeSchema::property_column_type`).
+    fn property_columns(&self, v: VarId, p: &str) -> Vec<Option<&KeyPartType>> {
+        match &self.binding(v).kind {
+            BindingKind::Node { labels } => labels
+                .iter()
+                .map(|l| {
+                    self.schema
+                        .node_schema_opt(l)
+                        .and_then(|s| s.property_column_type(p))
+                })
+                .collect(),
+            BindingKind::Rel {
+                types,
+                length: None,
+            } => types
+                .iter()
+                .flat_map(|t| {
+                    let defs = self.schema.rel_schemas_for_type(t);
+                    if defs.is_empty() {
+                        vec![None]
+                    } else {
+                        defs.iter().map(|s| s.property_column_type(p)).collect()
+                    }
+                })
+                .collect(),
+            _ => vec![None],
         }
     }
 

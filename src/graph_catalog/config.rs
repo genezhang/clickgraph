@@ -1403,6 +1403,7 @@ fn build_node_schema(
         node_id_types,
         source: node_def.source.clone(),
         property_types,
+        column_types: discovery.column_types.clone(),
         id_generation: parse_id_generation(&node_def.id_generation, &node_def.label)?,
     };
 
@@ -1649,6 +1650,7 @@ fn build_relationship_schema(
         edge_id_types,
         source: rel_def.source.clone(),
         property_types,
+        column_types: discovery.column_types.clone(),
     })
 }
 
@@ -1864,6 +1866,7 @@ fn build_standard_edge_schema(
         edge_id_types,
         source: std_edge.source.clone(),
         property_types,
+        column_types: discovery.column_types.clone(),
     })
 }
 
@@ -1912,6 +1915,7 @@ fn build_polymorphic_edge_schemas(
 
     for type_val in &poly_edge.type_values {
         let rel_schema = RelationshipSchema {
+            column_types: discovery.column_types.clone(),
             closed_properties: discovery.columns.is_some(),
             database: poly_edge.database.clone(),
             table_name: poly_edge.table.clone(),
@@ -4663,6 +4667,7 @@ graph_schema:
         nodes.insert(
             "Article".to_string(),
             NodeSchema {
+                column_types: Default::default(),
                 closed_properties: false,
                 database: "test_db".to_string(),
                 table_name: "articles".to_string(),
@@ -4812,6 +4817,7 @@ graph_schema:
         nodes.insert(
             "Article".to_string(),
             NodeSchema {
+                column_types: Default::default(),
                 closed_properties: false,
                 database: "test_db".to_string(),
                 table_name: "articles".to_string(),

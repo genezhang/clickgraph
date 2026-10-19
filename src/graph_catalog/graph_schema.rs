@@ -106,6 +106,13 @@ pub struct NodeSchema {
     #[serde(skip)]
     pub property_types: HashMap<String, SchemaType>,
 
+    /// The backend type of each of its table's columns where known (read
+    /// at load or declared, docs/design/VALUE_TYPES.md T1), by column name:
+    /// what a property mapped to a column is (T2: an `Array` column's
+    /// property is a list).
+    #[serde(skip)]
+    pub column_types: HashMap<String, crate::graph_catalog::schema_types::KeyPartType>,
+
     /// Optional: How the node ID column is filled when Cypher CREATE omits
     /// it (Decision 0.2 of the embedded-writes design). `None` is treated as
     /// `Uuid` — the DDL `DEFAULT generateUUIDv4()` fills the column. Other
@@ -116,6 +123,24 @@ pub struct NodeSchema {
 }
 
 impl NodeSchema {
+    /// The column type of property `p` where known ([`property_column_type`]).
+    /// A node embedded in edge tables reads its properties per role: not
+    /// known.
+    pub fn property_column_type(
+        &self,
+        p: &str,
+    ) -> Option<&crate::graph_catalog::schema_types::KeyPartType> {
+        if self.is_denormalized {
+            return None;
+        }
+        property_column_type(
+            &self.property_mappings,
+            self.closed_properties,
+            &self.column_types,
+            p,
+        )
+    }
+
     /// Determine if FINAL should be used for this node
     pub fn should_use_final(&self) -> bool {
         // 1. Check explicit override (user choice takes precedence)
@@ -271,6 +296,7 @@ impl NodeSchema {
         use_final: Option<bool>,
     ) -> Self {
         NodeSchema {
+            column_types: Default::default(),
             closed_properties: false,
             database,
             table_name,
@@ -442,9 +468,47 @@ pub struct RelationshipSchema {
     /// When present, DDL columns use the specified ClickHouse type instead of String
     #[serde(skip)]
     pub property_types: HashMap<String, SchemaType>,
+
+    /// The backend type of each of its table's columns where known (read
+    /// at load or declared, docs/design/VALUE_TYPES.md T1), by column name:
+    /// what a property mapped to a column is (T2: an `Array` column's
+    /// property is a list).
+    #[serde(skip)]
+    pub column_types: HashMap<String, crate::graph_catalog::schema_types::KeyPartType>,
+}
+
+/// The column type of property `p` of an element mapping properties by
+/// `mappings` (VALUE_TYPES.md T2): its mapped column's, or, undeclared where
+/// properties are not `closed`, the same-named column's; `None` when not
+/// known (an expression mapping, an unknown type).
+fn property_column_type<'a>(
+    mappings: &HashMap<String, PropertyValue>,
+    closed: bool,
+    types: &'a HashMap<String, crate::graph_catalog::schema_types::KeyPartType>,
+    p: &str,
+) -> Option<&'a crate::graph_catalog::schema_types::KeyPartType> {
+    match mappings.get(p) {
+        Some(PropertyValue::Column(c)) => types.get(c),
+        Some(_) => None,
+        None if closed => None,
+        None => types.get(p),
+    }
 }
 
 impl RelationshipSchema {
+    /// The column type of property `p` where known ([`property_column_type`]).
+    pub fn property_column_type(
+        &self,
+        p: &str,
+    ) -> Option<&crate::graph_catalog::schema_types::KeyPartType> {
+        property_column_type(
+            &self.property_mappings,
+            self.closed_properties,
+            &self.column_types,
+            p,
+        )
+    }
+
     /// True when the relationship is a plain (separate or polymorphic) edge
     /// table: NOT an FK-edge (edge = FK column on a node table) and with no
     /// embedded/denormalized node properties on either side. Schema-pattern
@@ -937,6 +1001,7 @@ impl GraphSchema {
         let name = format!("__cg_nodes_{label}");
         let first = defs[0];
         let node = NodeSchema {
+            column_types: Default::default(),
             database: String::new(),
             table_name: name,
             column_names: properties.clone(),
@@ -2621,6 +2686,7 @@ mod tests {
         to_props.insert("state".to_string(), "DestState".to_string());
 
         let flight_rel = RelationshipSchema {
+            column_types: Default::default(),
             from_node_id_part_types: Vec::new(),
             to_node_id_part_types: Vec::new(),
             closed_properties: false,
@@ -2707,6 +2773,7 @@ mod tests {
     fn test_rel_type_index_survives_serde_roundtrip() {
         let mut relationships = HashMap::new();
         let related_to = RelationshipSchema {
+            column_types: Default::default(),
             from_node_id_part_types: Vec::new(),
             to_node_id_part_types: Vec::new(),
             closed_properties: false,
@@ -2776,6 +2843,7 @@ mod tests {
         user_props.insert("name".to_string(), "author_name".to_string());
 
         let authored_rel = RelationshipSchema {
+            column_types: Default::default(),
             from_node_id_part_types: Vec::new(),
             to_node_id_part_types: Vec::new(),
             closed_properties: false,
@@ -2835,6 +2903,7 @@ mod tests {
                     to_tbl: &str,
                     from_np: Option<HashMap<String, String>>,
                     to_np: Option<HashMap<String, String>>| RelationshipSchema {
+            column_types: Default::default(),
             from_node_id_part_types: Vec::new(),
             to_node_id_part_types: Vec::new(),
             closed_properties: false,
@@ -2913,6 +2982,7 @@ mod tests {
         to_props.insert("city".to_string(), "dest_city".to_string());
 
         let airport = NodeSchema {
+            column_types: Default::default(),
             closed_properties: false,
             database: "test".to_string(),
             table_name: "flights".to_string(),
@@ -2937,6 +3007,7 @@ mod tests {
         };
 
         let flight_edge = RelationshipSchema {
+            column_types: Default::default(),
             from_node_id_part_types: Vec::new(),
             to_node_id_part_types: Vec::new(),
             closed_properties: false,
@@ -2988,6 +3059,7 @@ mod tests {
     fn test_detect_traditional_pattern() {
         // Pattern: Airport nodes have separate airports table (traditional)
         let airport = NodeSchema {
+            column_types: Default::default(),
             closed_properties: false,
             database: "test".to_string(),
             table_name: "airports".to_string(), // Different table
@@ -3023,6 +3095,7 @@ mod tests {
         };
 
         let flight_edge = RelationshipSchema {
+            column_types: Default::default(),
             from_node_id_part_types: Vec::new(),
             to_node_id_part_types: Vec::new(),
             closed_properties: false,
@@ -3078,6 +3151,7 @@ mod tests {
         from_props_airport.insert("city".to_string(), "origin_city".to_string());
 
         let airport = NodeSchema {
+            column_types: Default::default(),
             closed_properties: false,
             database: "test".to_string(),
             table_name: "flights".to_string(), // Same as edge
@@ -3102,6 +3176,7 @@ mod tests {
         };
 
         let user = NodeSchema {
+            column_types: Default::default(),
             closed_properties: false,
             database: "test".to_string(),
             table_name: "users".to_string(), // Different from edge
@@ -3141,6 +3216,7 @@ mod tests {
         from_props.insert("city".to_string(), "origin_city".to_string());
 
         let booked_edge = RelationshipSchema {
+            column_types: Default::default(),
             from_node_id_part_types: Vec::new(),
             to_node_id_part_types: Vec::new(),
             closed_properties: false,
@@ -3198,6 +3274,7 @@ mod tests {
     fn test_detect_mixed_pattern_to_denormalized() {
         // Pattern: User uses users table (traditional), Post uses posts table which is also edge table
         let user = NodeSchema {
+            column_types: Default::default(),
             closed_properties: false,
             database: "test".to_string(),
             table_name: "users".to_string(),
@@ -3233,6 +3310,7 @@ mod tests {
         to_props_post.insert("title".to_string(), "post_title".to_string());
 
         let post = NodeSchema {
+            column_types: Default::default(),
             closed_properties: false,
             database: "test".to_string(),
             table_name: "posts".to_string(), // Same as edge
@@ -3261,6 +3339,7 @@ mod tests {
         to_props.insert("title".to_string(), "post_title".to_string());
 
         let authored_edge = RelationshipSchema {
+            column_types: Default::default(),
             from_node_id_part_types: Vec::new(),
             to_node_id_part_types: Vec::new(),
             closed_properties: false,
@@ -3321,6 +3400,7 @@ mod tests {
         to_props_min.insert("code".to_string(), "dest_code".to_string());
 
         let airport = NodeSchema {
+            column_types: Default::default(),
             closed_properties: false,
             database: "test".to_string(),
             table_name: "flights".to_string(),
@@ -3360,6 +3440,7 @@ mod tests {
         to_props.insert("code".to_string(), "dest_code".to_string());
 
         let flight_edge = RelationshipSchema {
+            column_types: Default::default(),
             from_node_id_part_types: Vec::new(),
             to_node_id_part_types: Vec::new(),
             closed_properties: false,
@@ -3408,6 +3489,7 @@ mod tests {
         // Edge case: Node uses edge table BUT edge has no from/to_node_properties
         // This should NOT be detected as denormalized (misconfiguration)
         let airport = NodeSchema {
+            column_types: Default::default(),
             closed_properties: false,
             database: "test".to_string(),
             table_name: "flights".to_string(),
@@ -3432,6 +3514,7 @@ mod tests {
         };
 
         let flight_edge = RelationshipSchema {
+            column_types: Default::default(),
             from_node_id_part_types: Vec::new(),
             to_node_id_part_types: Vec::new(),
             closed_properties: false,
@@ -3484,6 +3567,7 @@ mod tests {
         // Edge case: Same table name but different databases
         // Should NOT be detected as denormalized
         let airport = NodeSchema {
+            column_types: Default::default(),
             closed_properties: false,
             database: "db1".to_string(),
             table_name: "flights".to_string(),
@@ -3511,6 +3595,7 @@ mod tests {
         from_props.insert("code".to_string(), "origin_code".to_string());
 
         let flight_edge = RelationshipSchema {
+            column_types: Default::default(),
             from_node_id_part_types: Vec::new(),
             to_node_id_part_types: Vec::new(),
             closed_properties: false,
@@ -3554,6 +3639,7 @@ mod tests {
         // Edge case: Node has many property_mappings (>2)
         // Should NOT be detected as denormalized
         let airport = NodeSchema {
+            column_types: Default::default(),
             closed_properties: false,
             database: "test".to_string(),
             table_name: "flights".to_string(),
@@ -3600,6 +3686,7 @@ mod tests {
         from_props.insert("code".to_string(), "origin_code".to_string());
 
         let flight_edge = RelationshipSchema {
+            column_types: Default::default(),
             from_node_id_part_types: Vec::new(),
             to_node_id_part_types: Vec::new(),
             closed_properties: false,
@@ -3683,6 +3770,7 @@ mod tests {
 
         let mut relationships = HashMap::new();
         let base_rel = || RelationshipSchema {
+            column_types: Default::default(),
             from_node_id_part_types: Vec::new(),
             to_node_id_part_types: Vec::new(),
             closed_properties: false,
