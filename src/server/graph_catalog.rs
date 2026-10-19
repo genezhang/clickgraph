@@ -39,6 +39,16 @@ pub(crate) fn set_default_schema_target(target: Option<String>) {
     }
 }
 
+/// After `name` is (re)loaded: when it is `default` or the schema `default`
+/// aliases, the two names no longer hold the same schema, so they are two
+/// graphs from now on (review of #1504: a UNION naming both read one copy).
+pub(crate) fn forget_default_alias_of(name: &str) {
+    let target = default_schema_target();
+    if name == crate::translate::DEFAULT_GRAPH || target.as_deref() == Some(name) {
+        set_default_schema_target(None);
+    }
+}
+
 /// Whether two schema names name the same graph: the same name, or
 /// `default` and the schema it aliases (a statement may name the default
 /// graph either way: `translate::StatementTargets::graph`).
@@ -652,6 +662,9 @@ pub async fn load_schema_from_content(
                 .ok_or("Global schemas not initialized")?;
             let mut schemas_guard = schemas_lock.write().await;
             schemas_guard.insert(schema_name.to_string(), schema.clone());
+            // Reloading `default` or the schema it aliases makes them two
+            // graphs: `default` keeps the copy it was registered with.
+            forget_default_alias_of(schema_name);
 
             let configs_lock = GLOBAL_SCHEMA_CONFIGS
                 .get()

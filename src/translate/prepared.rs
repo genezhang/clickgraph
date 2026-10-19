@@ -519,8 +519,25 @@ mod tests {
     /// statement may name it either way (review of #1370).
     #[test]
     fn the_default_alias_is_the_same_graph() {
-        use crate::server::graph_catalog::set_default_schema_target;
+        use crate::server::graph_catalog::{forget_default_alias_of, set_default_schema_target};
+        // The alias is process-wide: this is the only lib test that sets
+        // it, and only to names no other test uses.
         let q = "MATCH (a:User) RETURN a.name AS n";
+        // Reloading the aliased schema (or `default`) makes them two graphs.
+        set_default_schema_target(Some("alias_target_t".to_string()));
+        forget_default_alias_of("alias_unrelated_v");
+        let kept = graph(&format!("{q} UNION USE alias_target_t {q}"), None);
+        forget_default_alias_of("alias_target_t");
+        let reloaded = graph(&format!("{q} UNION USE alias_target_t {q}"), None);
+        set_default_schema_target(Some("alias_target_t".to_string()));
+        forget_default_alias_of("default");
+        let reloaded_default = graph(&format!("{q} UNION USE alias_target_t {q}"), None);
+        assert!(kept.is_ok(), "{kept:?}");
+        assert!(matches!(reloaded, Err(PrepareError::MultipleGraphs(_))));
+        assert!(matches!(
+            reloaded_default,
+            Err(PrepareError::MultipleGraphs(_))
+        ));
         set_default_schema_target(Some("alias_target_t".to_string()));
         let got = [
             graph(&format!("{q} UNION USE alias_target_t {q}"), None),
