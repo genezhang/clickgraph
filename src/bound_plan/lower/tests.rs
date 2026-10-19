@@ -8862,8 +8862,8 @@ graph_schema:
       database: db
       table: item
       node_id: id
-      column_types: {id: UInt64, k: Int64, u: UInt32}
-      property_mappings: {id: id, k: k, u: u, s: s}
+      column_types: {id: UInt64, k: Int64, u: UInt32, b: Bool}
+      property_mappings: {id: id, k: k, u: u, s: s, b: b}
   edges: []
 /// T2a review findings: an `Array` column's property in a collected map
 /// reads as before (not refused), `isEmpty()` of one an OPTIONAL MATCH may
@@ -8899,16 +8899,21 @@ graph_schema:
     let sql = |q: &str| lowered(q, &schema, &options);
     let mixed = sql("MATCH (n:Item) UNWIND [n.id, n.k] AS x RETURN count(DISTINCT x)");
     assert!(
-        mixed.contains("[CAST(v0.id AS Int128), CAST(v0.k AS Int128)]"),
+        mixed.contains("[CAST(v0.id AS Nullable(Int128)), CAST(v0.k AS Nullable(Int128))]"),
         "{mixed}"
     );
     // A negative literal is signed too.
     let literal = sql("MATCH (n:Item) RETURN [n.id, -1]");
-    assert!(literal.contains("CAST(v0.id AS Int128)"), "{literal}");
+    assert!(
+        literal.contains("CAST(v0.id AS Nullable(Int128))"),
+        "{literal}"
+    );
     for q in [
         "MATCH (n:Item) RETURN [n.id, 1]",
         "MATCH (n:Item) RETURN [n.u, n.k]",
         "MATCH (n:Item) RETURN [n.id, n.k, n.s]",
+        // A boolean is no integer: `[1, -20, true]`, not `[1, -20, 1]`.
+        "MATCH (n:Item) RETURN [n.id, n.k, n.b]",
     ] {
         assert!(!sql(q).contains("Int128"), "{q}:\n{}", sql(q));
     }

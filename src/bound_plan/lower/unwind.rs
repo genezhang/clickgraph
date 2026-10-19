@@ -604,7 +604,12 @@ impl<'s> Lowerer<'s> {
             }
         }
         let mut target = self.options.dialect.common_type_where_none(&known)?;
-        target.nullable |= nullable;
+        // A column may be NULL whatever its declared type says (a
+        // `column_types` entry without its `Nullable`): Nullable then too.
+        target.nullable |= nullable
+            || xs
+                .iter()
+                .any(|x| matches!(x, LogicalExpr::PropertyAccessExp(_)));
         Some(self.options.dialect.cast_target(&target))
     }
 

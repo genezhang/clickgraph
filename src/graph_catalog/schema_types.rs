@@ -470,12 +470,13 @@ impl KeyPartType {
 /// `UInt64` with a signed integer of at most 64 bits (an array of them is a
 /// `Variant`, in which `1` and `1` are two values; joins and `UNION ALL` of
 /// them fail, Code 386): `Int128` holds every value of each, and spells each
-/// as the same digits. Only a set of integers (booleans among them) is cast;
-/// a `UInt256` with a signed integer has no type to meet in, and is left.
+/// as the same digits. Only a set of integers is cast (a boolean is its own
+/// value, not `1`: review finding); a `UInt256` with a signed integer has no
+/// type to meet in, and is left.
 pub fn common_type_where_none(parts: &[KeyPartType]) -> Option<KeyPartType> {
     let integers = parts
         .iter()
-        .all(|p| matches!(p.schema, SchemaType::Integer | SchemaType::Boolean));
+        .all(|p| p.schema == SchemaType::Integer && !p.raw.eq_ignore_ascii_case("Bool"));
     let gap = parts
         .iter()
         .enumerate()
@@ -1081,6 +1082,7 @@ mod common_type_where_none_tests {
             vec![kp("UInt64"), kp("Int256")],
             vec![kp("UInt256"), kp("Int8")],
             vec![kp("UInt64"), kp("Bool")],
+            vec![kp("UInt64"), kp("Int64"), kp("Bool")],
             vec![kp("UInt64"), kp("Int64"), kp("String")],
             vec![kp("Date"), kp("DateTime")],
             vec![],

@@ -61,7 +61,7 @@ pub enum RenderExpr {
 
     /// `CAST(expr AS target)`, the target already spelled for the SQL
     /// flavor (`cast_target`): where values of differently typed columns
-    /// meet (docs/design/VALUE_TYPES.md T3).
+    /// meet (docs/design/VALUE_TYPES.md T4a).
     Cast {
         expr: Box<RenderExpr>,
         target: String,
