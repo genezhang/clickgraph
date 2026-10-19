@@ -16,8 +16,6 @@ pub enum QueryErrorKind {
     /// undefined variable, a procedure's unknown output or wrong arguments):
     /// Neo4j's `SyntaxError` for all of these.
     Syntax,
-    /// Another error of the statement (the default).
-    Semantic,
     /// An invalid argument (an option, an export format or destination).
     Argument,
     /// A parameter the query uses was not given.
@@ -38,7 +36,6 @@ impl QueryErrorKind {
     pub fn neo4j_code(self) -> &'static str {
         match self {
             QueryErrorKind::Syntax => "Neo.ClientError.Statement.SyntaxError",
-            QueryErrorKind::Semantic => "Neo.ClientError.Statement.SemanticError",
             QueryErrorKind::Argument => "Neo.ClientError.Statement.ArgumentError",
             QueryErrorKind::ParameterMissing => "Neo.ClientError.Statement.ParameterMissing",
             QueryErrorKind::DatabaseNotFound => "Neo.ClientError.Database.DatabaseNotFound",
@@ -139,12 +136,6 @@ impl BoltError {
         BoltError::InvalidMessage {
             message: message.into(),
         }
-    }
-
-    /// Create a new query error of the default kind
-    /// ([`QueryErrorKind::Semantic`]); a known kind through [`Self::query`].
-    pub fn query_error<S: Into<String>>(message: S) -> Self {
-        Self::query(QueryErrorKind::Semantic, message)
     }
 
     /// Create a query error of `kind`.
@@ -306,10 +297,6 @@ mod tests {
         // #1399: each kind its own code; a backend failure is a database
         // error, not the client's syntax.
         for (error, code) in [
-            (
-                BoltError::query_error("x"),
-                "Neo.ClientError.Statement.SemanticError",
-            ),
             (
                 BoltError::execution_failed("x"),
                 "Neo.DatabaseError.Statement.ExecutionFailed",

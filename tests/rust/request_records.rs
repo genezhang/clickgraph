@@ -96,15 +96,16 @@ async fn http(text: &str, sql_only: bool) -> StatusCode {
         .status()
 }
 
-async fn bolt_handler() -> BoltHandler {
+async fn bolt_handler(db: Option<&str>) -> BoltHandler {
     let context = Arc::new(Mutex::new(BoltContext::new()));
     context.lock().unwrap().set_version(BOLT_VERSION_5_1);
     let mut handler =
         BoltHandler::new(context, Arc::new(BoltConfig::default()), Arc::new(Executor));
-    let hello = BoltMessage::new(
-        signatures::HELLO,
-        vec![BoltValue::Json(json!({ "user_agent": "test/1" }))],
-    );
+    let mut extra = json!({ "user_agent": "test/1" });
+    if let Some(db) = db {
+        extra["db"] = json!(db);
+    }
+    let hello = BoltMessage::new(signatures::HELLO, vec![BoltValue::Json(extra)]);
     handler.handle_message(hello).await.unwrap();
     handler
         .handle_message(BoltMessage::new(signatures::LOGON, vec![]))
@@ -198,7 +199,7 @@ async fn every_request_is_recorded_once() {
     // Bolt: (text, FAILURE code, outcome). Before, the intercepts (SHOW
     // DATABASES, EXPLAIN, a refused prelude) were not recorded, and every
     // failure was `exec`; a ClickHouse failure was a SyntaxError (#1399).
-    let mut handler = bolt_handler().await;
+    let mut handler = bolt_handler(None).await;
     let cases: [(&str, Option<&str>, &str); 7] = [
         ("SHOW DATABASES ", None, "ok"),
         ("EXPLAIN MATCH (u:User) RETURN u", None, "ok"),
@@ -232,4 +233,18 @@ async fn every_request_is_recorded_once() {
             "Bolt {text}"
         );
     }
+
+    // A Browser intercept on a session database that is not loaded answers
+    // DatabaseNotFound, and the connection stays usable (it was reset).
+    let mut handler = bolt_handler(Some("rr_nosuch_session")).await;
+    let text = "CALL db.schema.visualization()";
+    assert_eq!(
+        bolt(&mut handler, text).await.as_deref(),
+        Some("Neo.ClientError.Database.DatabaseNotFound")
+    );
+    assert_eq!(
+        records_of(reg, text),
+        vec![("bolt".to_string(), "not_found")]
+    );
+    assert_eq!(bolt(&mut handler, "SHOW DATABASES  ").await, None);
 }

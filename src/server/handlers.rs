@@ -397,6 +397,14 @@ pub async fn query_handler(
         )
         .await;
     if !record.recorded {
+        // A schema label only for a schema that is loaded: the request can
+        // name one that does not exist.
+        let schema = match &record.schema {
+            Some(name) if graph_catalog::get_graph_schema_by_name(name).await.is_ok() => {
+                Some(name.as_str())
+            }
+            _ => None,
+        };
         let status = match &result {
             Ok(response) => response.status(),
             Err((status, _)) => *status,
@@ -420,7 +428,7 @@ pub async fn query_handler(
             // can name one that does not exist): no schema attribute for it
             // (an omitted attribute, not an "unknown" value).
             schema: match outcome {
-                Outcome::Ok => record.schema.as_deref(),
+                Outcome::Ok => schema,
                 Outcome::Err(_) => None,
             },
             ch,
@@ -801,6 +809,8 @@ async fn query_handler_body(
         // These need SQL execution (not just schema introspection), so they
         // bypass ProcedureRegistry and run the inner Cypher → SQL pipeline.
         if crate::procedures::apoc_export::is_export_procedure(&proc_name) {
+            // An export runs a read, as COPY TO does.
+            note_request_type("read");
             log::info!("Detected export procedure: {}", proc_name);
 
             let export_start = Instant::now();
@@ -1214,9 +1224,9 @@ async fn query_handler_body(
     // - Automatically cleaned up when the task completes
     let context = QueryContext::new(Some(schema_name.clone()));
 
-    // Scope a ClickHouse-stats slot around the whole inner run so the executor
-    // can record per-query CH stats that the finalization sites read back.
-    let result = metrics::with_ch_stats_scope(with_query_context(context, async move {
+    // The ClickHouse-stats slot the executor writes and the finalization
+    // sites read is `query_handler`'s, around the whole request.
+    let result = with_query_context(context, async move {
         query_handler_inner(
             app_state,
             payload,
@@ -1229,7 +1239,7 @@ async fn query_handler_body(
             metrics,
         )
         .await
-    }))
+    })
     .await;
 
     result

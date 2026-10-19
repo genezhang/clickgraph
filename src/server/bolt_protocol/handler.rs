@@ -1424,14 +1424,14 @@ impl BoltHandler {
     /// was recorded, every failure as `exec`.
     async fn handle_run(&mut self, message: BoltMessage) -> BoltResult<Vec<BoltMessage>> {
         let Some(reg) = GLOBAL_SERVER_METRICS.get() else {
-            return self.run_statement(message).await;
+            return self.answer_run(message).await;
         };
         let _inflight = reg.in_flight_guard();
         let start = std::time::Instant::now();
         let text = message.extract_query().unwrap_or_default().to_string();
         self.run_graph = None;
         metrics::with_ch_stats_scope(async {
-            let result = self.run_statement(message).await;
+            let result = self.answer_run(message).await;
             let outcome = match &result {
                 Ok(messages) => match messages.first() {
                     Some(m) if m.signature == signatures::FAILURE => {
@@ -1439,7 +1439,9 @@ impl BoltHandler {
                     }
                     _ => Outcome::Ok,
                 },
-                Err(e) => Outcome::Err(ErrorClass::from_neo4j_code(e.error_code())),
+                // What ends the connection (a protocol error, a poisoned
+                // lock): the server's.
+                Err(_) => Outcome::Err(ErrorClass::Internal),
             };
             let elapsed = start.elapsed().as_secs_f64();
             let m = QueryPerformanceMetrics {
@@ -1448,15 +1450,27 @@ impl BoltHandler {
                 query_type: "bolt".to_string(),
                 ..QueryPerformanceMetrics::default()
             };
-            // The statement's graph when it was resolved, else the session's
-            // (read only to label a span: a poisoned mutex degrades to no
-            // schema attribute rather than a failed query).
-            let schema = if reg.tracing_enabled() {
-                self.run_graph
-                    .clone()
-                    .or_else(|| self.context.lock().ok().and_then(|c| c.schema_name.clone()))
-            } else {
-                None
+            // The statement's graph when it was resolved, else the session's,
+            // when it is loaded and the RUN succeeded: a failure may name a
+            // graph that does not exist, which no span attribute carries (as
+            // on HTTP). Read only to label a span: a poisoned mutex degrades
+            // to no schema attribute rather than a failed query.
+            let schema = match (reg.tracing_enabled(), outcome) {
+                (true, Outcome::Ok) => {
+                    let name = self
+                        .run_graph
+                        .clone()
+                        .or_else(|| self.context.lock().ok().and_then(|c| c.schema_name.clone()));
+                    match name {
+                        Some(name)
+                            if graph_catalog::get_graph_schema_by_name(&name).await.is_ok() =>
+                        {
+                            Some(name)
+                        }
+                        _ => None,
+                    }
+                }
+                _ => None,
             };
             reg.record_query(&QuerySample {
                 metrics: &m,
@@ -1469,6 +1483,29 @@ impl BoltHandler {
             result
         })
         .await
+    }
+
+    /// Answer a RUN: a query error is a FAILURE, after which the client
+    /// RESETs and goes on; only what breaks the connection itself (a
+    /// protocol error, a poisoned lock) is returned as an `Err`, which ends
+    /// it (#1399 review: an intercept's unknown database reset the
+    /// connection instead of answering `DatabaseNotFound`).
+    async fn answer_run(&mut self, message: BoltMessage) -> BoltResult<Vec<BoltMessage>> {
+        match self.run_statement(message).await {
+            Err(
+                e @ (BoltError::QueryError { .. }
+                | BoltError::NotImplemented { .. }
+                | BoltError::Internal { .. }),
+            ) => {
+                log::error!("Query failed: {}", e);
+                Ok(vec![BoltMessage::failure(
+                    e.error_code().to_string(),
+                    e.to_string(),
+                    self.negotiated_version(),
+                )])
+            }
+            other => other,
+        }
     }
 
     /// Answer a RUN (not recorded: [`Self::handle_run`] records it).

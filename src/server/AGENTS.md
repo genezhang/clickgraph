@@ -327,7 +327,7 @@ The `bolt_protocol/` directory (7,986 lines, 11 files) implements the Neo4j Bolt
 | `id_mapper.rs` | 757 | Deterministic int↔elementId mapping (53-bit JS-safe, label-encoded, session-scoped); `resolve_node_id` for the bound plan's `id()` reads |
 | `messages.rs` | 562 | `BoltMessage`, `BoltValue`, message signatures (HELLO=0x01, RUN=0x10, SUCCESS=0x70, etc.) |
 | `auth.rs` | 401 | `AuthScheme` (None/Basic/Kerberos), `AuthToken`, `Authenticator` with SHA-256 |
-| `errors.rs` | 213 | `BoltError` enum with Neo4j-compatible error codes; `QueryErrorKind` (#1399) is a query failure's kind (syntax, argument, parameter missing, database / procedure not found, procedure failed, execution failed), whose `neo4j_code()` is its FAILURE code and whose metrics class is `ErrorClass::from_neo4j_code` |
+| `errors.rs` | 361 | `BoltError` enum with Neo4j-compatible error codes; `QueryErrorKind` (#1399) is a query failure's kind (syntax, argument, parameter missing, database / procedure not found, procedure failed, execution failed), whose `neo4j_code()` is its FAILURE code and whose metrics class is `ErrorClass::from_neo4j_code` |
 | `websocket.rs` | 156 | `WebSocketBoltAdapter` — wraps WebSocket as AsyncRead/AsyncWrite for Bolt-over-WS |
 
 ### Bolt Data Flow
