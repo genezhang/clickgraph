@@ -382,3 +382,125 @@ fn a_union_label_schema_does_not_fall_back() {
         "{got:?}"
     );
 }
+
+/// The benchmark schema also under `name`, beside "default".
+async fn register_schema_as(name: &str) {
+    ensure_default_schema_registered().await;
+    let schema = GLOBAL_SCHEMAS.get().unwrap().read().await["default"].clone();
+    GLOBAL_SCHEMAS
+        .get()
+        .unwrap()
+        .write()
+        .await
+        .entry(name.to_string())
+        .or_insert(schema);
+}
+
+/// The statement front end (`translate::prepared`) on both endpoints: the
+/// `CYPHER` prelude ends where the statement starts, so a `USE` after it
+/// chooses the schema (#1371: `/query` cut the text at its first `MATCH`,
+/// `/query/sql` dropped one word); a later UNION arm's `USE` naming another
+/// graph is refused (#1370: ignored, the arm returned no rows).
+#[tokio::test]
+async fn the_prelude_and_every_arms_use_choose_the_schema() {
+    register_schema_as("prelude_g").await;
+    let q = "MATCH (u:User) RETURN u.name AS n";
+    // The request names a schema that does not exist: only the statement's
+    // USE makes these translate.
+    for text in [
+        format!("CYPHER replan=force USE prelude_g {q}"),
+        format!("cypher 5 runtime=slotted replan=skip USE prelude_g {q}"),
+        format!("USE prelude_g {q} UNION USE prelude_g {q}"),
+        format!("USE prelude_g {q} UNION {q}"),
+    ] {
+        for uri in ["/query", "/query/sql"] {
+            let body = json!({
+                "query": text, "schema_name": "nosuch_g", "sql_only": true,
+                "target_database": "clickhouse",
+            });
+            let (status, body) = post(uri, body).await;
+            assert_eq!(status, StatusCode::OK, "{uri} {text}: {body}");
+        }
+    }
+    for (text, schema) in [
+        (format!("{q} UNION USE prelude_g {q}"), json!("default")),
+        (format!("{q} UNION ALL USE prelude_g {q}"), Value::Null),
+        (
+            format!("USE default {q} UNION USE prelude_g {q}"),
+            Value::Null,
+        ),
+    ] {
+        for uri in ["/query", "/query/sql"] {
+            let body = json!({
+                "query": text, "schema_name": schema, "sql_only": true,
+                "target_database": "clickhouse",
+            });
+            let (status, text_body) = post_text(uri, body).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{uri} {text}: {text_body}");
+            assert!(
+                text_body.contains("Multiple graphs in the same query not allowed"),
+                "{uri} {text}: {text_body}"
+            );
+        }
+    }
+    // A later arm naming the request's graph runs.
+    let body = json!({
+        "query": format!("{q} UNION USE prelude_g {q}"), "schema_name": "prelude_g",
+        "sql_only": true,
+    });
+    let (status, body) = post("/query", body).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+}
+
+/// An invalid `CYPHER` option is refused, as Neo4j refuses it; EXPLAIN and
+/// PROFILE are not run over HTTP.
+#[tokio::test]
+async fn invalid_prelude_options_and_explain_are_refused() {
+    ensure_default_schema_registered().await;
+    for (text, expected) in [
+        (
+            "CYPHER replan=bogus MATCH (u:User) RETURN u.name",
+            "not a valid option for replan",
+        ),
+        ("EXPLAIN MATCH (u:User) RETURN u.name", "EXPLAIN"),
+        (
+            "CYPHER replan=force PROFILE MATCH (u:User) RETURN u.name",
+            "PROFILE",
+        ),
+    ] {
+        for uri in ["/query", "/query/sql"] {
+            let body = json!({ "query": text, "target_database": "clickhouse" });
+            let (status, body) = post_text(uri, body).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{uri} {text}: {body}");
+            assert!(body.contains(expected), "{uri} {text}: {body}");
+        }
+    }
+}
+
+/// The query argument of `apoc.export.*.query` runs on the statement's
+/// graph: a `USE` in it naming another graph is refused (it was ignored,
+/// and the export read the statement's graph); `default` and the schema it
+/// aliases are one graph.
+#[tokio::test]
+async fn an_export_query_runs_on_the_statements_graph() {
+    register_schema_as("prelude_g").await;
+    let export =
+        |inner: &str| format!("CALL apoc.export.csv.query(\"{inner}\", \"/tmp/g4_x.csv\", {{}})");
+    let q = "MATCH (u:User) RETURN u.name AS n";
+    let (status, body) = post_text(
+        "/query",
+        json!({ "query": export(&format!("USE prelude_g {q}")), "sql_only": true }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(body.contains("Multiple graphs"), "{body}");
+    for (inner, schema) in [
+        (format!("USE prelude_g {q}"), json!("prelude_g")),
+        (q.to_string(), json!("prelude_g")),
+        (format!("USE default {q}"), Value::Null),
+    ] {
+        let body = json!({ "query": export(&inner), "schema_name": schema, "sql_only": true });
+        let (status, body) = post_text("/query", body).await;
+        assert_eq!(status, StatusCode::OK, "{inner}: {body}");
+    }
+}

@@ -1135,25 +1135,10 @@ impl BoltHandler {
                     }
                 }
 
-                // If still no database specified, use the first loaded schema (if any)
-                if database.is_none() {
-                    if let Some(schemas_lock) = crate::server::GLOBAL_SCHEMAS.get() {
-                        let schemas = schemas_lock.read().await;
-                        // Find first non-default schema
-                        let first_schema = schemas
-                            .keys()
-                            .find(|k| *k != "default")
-                            .or_else(|| schemas.keys().next())
-                            .cloned();
-                        if let Some(schema_name) = first_schema {
-                            log::info!(
-                                "No database specified in LOGON, using first loaded schema: {}",
-                                schema_name
-                            );
-                            database = Some(schema_name);
-                        }
-                    }
-                }
+                // Still none: the session has no database of its own, and a
+                // query without USE runs on the default schema, as on HTTP
+                // without `schema_name` (#1372: this picked the first key of
+                // the schema map, an arbitrary one).
 
                 // Update context
                 {
@@ -1369,6 +1354,22 @@ impl BoltHandler {
         )]
     }
 
+    /// The statement front end's refusal as a FAILURE, with Neo4j's codes:
+    /// an invalid `CYPHER` option is an `ArgumentError`, UNION arms on
+    /// different graphs a `SyntaxError`.
+    fn prepare_failure(&self, error: crate::translate::PrepareError) -> Vec<BoltMessage> {
+        use crate::translate::PrepareError;
+        let code = match error {
+            PrepareError::InvalidOption(_) => "Neo.ClientError.Statement.ArgumentError",
+            PrepareError::MultipleGraphs(_) => "Neo.ClientError.Statement.SyntaxError",
+        };
+        vec![BoltMessage::failure(
+            code.to_string(),
+            error.to_string(),
+            self.negotiated_version(),
+        )]
+    }
+
     async fn handle_run(&mut self, message: BoltMessage) -> BoltResult<Vec<BoltMessage>> {
         // Verify connection state
         {
@@ -1390,10 +1391,20 @@ impl BoltHandler {
         // Log incoming Cypher query for debugging
         log::info!("📨 BROWSER SENT CYPHER QUERY: {}", query.trim());
 
+        // The statement front end (`translate::prepared`, shared with HTTP and
+        // the embedded connection): the prelude (`CYPHER ..`, EXPLAIN /
+        // PROFILE) is read once and comments are stripped; what follows reads
+        // the statement after it.
+        let prelude = match crate::translate::Prelude::parse(query) {
+            Ok(prelude) => prelude,
+            Err(e) => return Ok(self.prepare_failure(e)),
+        };
+        let query = prelude.text.as_str();
+
         // Handle EXPLAIN queries — browser sends "EXPLAIN <partial_query>" as autocomplete
         // probes while the user types. Return empty SUCCESS so probes don't show errors.
         // For fully-formed EXPLAIN queries, this also prevents unnecessary execution.
-        if query.trim().to_lowercase().starts_with("explain ") {
+        if prelude.mode == crate::translate::prepared::ExecutionMode::Explain {
             log::debug!("EXPLAIN query (returning empty plan): {}", query.trim());
             let mut meta = HashMap::new();
             meta.insert("fields".to_string(), Value::Array(vec![]));
@@ -1404,6 +1415,14 @@ impl BoltHandler {
             }
             self.cached_results = Some(vec![]);
             return Ok(vec![BoltMessage::success(meta)]);
+        }
+        if prelude.mode == crate::translate::prepared::ExecutionMode::Profile {
+            let error = BoltError::not_implemented("PROFILE (EXPLAIN returns an empty plan)");
+            return Ok(vec![BoltMessage::failure(
+                error.error_code().to_string(),
+                error.to_string(),
+                self.negotiated_version(),
+            )]);
         }
 
         // Intercept session commands before Cypher parsing
@@ -1472,7 +1491,16 @@ impl BoltHandler {
         // Map the Bolt `db` field to a loaded schema, tolerating the reserved
         // Neo4j default names (`neo4j`/`system`) that generic clients and MCP
         // servers always send.
-        let schema_name = resolve_requested_schema(requested_db, session_default).await;
+        let session_graph = resolve_requested_schema(requested_db, session_default).await;
+        // The statement's graph, by the rule HTTP applies: the first arm's
+        // USE, else the session's database, else the default schema (a later
+        // arm's USE naming another graph is refused, #1370). Read from the
+        // text after parameter substitution, which is what is parsed.
+        let schema_name =
+            match crate::translate::StatementTargets::of(&query).graph(session_graph.as_deref()) {
+                Ok(graph) => graph,
+                Err(e) => return Ok(self.prepare_failure(e)),
+            };
 
         // Store tenant_id on context (needed for execute_cypher_query fallback)
         if let Some(ref tid) = tenant_id {
@@ -1482,11 +1510,7 @@ impl BoltHandler {
 
         log::info!("Executing Cypher query: {}", query);
 
-        if let Some(ref schema) = schema_name {
-            log::debug!("Query execution using schema: {}", schema);
-        } else {
-            log::debug!("Query execution using schema: default");
-        }
+        log::debug!("Query execution using schema: {}", schema_name);
 
         // Check for SHOW DATABASES command before normal query processing
         let query_upper = query.trim().to_uppercase();
@@ -1690,7 +1714,7 @@ impl BoltHandler {
                 }
             }
 
-            let effective_schema = schema_name.as_deref().unwrap_or("default").to_string();
+            let effective_schema = schema_name.clone();
             let schema_guard = crate::server::GLOBAL_SCHEMAS
                 .get()
                 .ok_or_else(|| BoltError::internal("Schema registry not initialized"))?;
@@ -1751,7 +1775,7 @@ impl BoltHandler {
         if is_browser_count_union(&query_upper) {
             log::info!("Detected Browser count(n) UNION ALL count(r) query — short-circuiting");
 
-            let effective_schema = schema_name.as_deref().unwrap_or("default").to_string();
+            let effective_schema = schema_name.clone();
             let schema_guard = crate::server::GLOBAL_SCHEMAS
                 .get()
                 .ok_or_else(|| BoltError::internal("Schema registry not initialized"))?;
@@ -1844,7 +1868,7 @@ impl BoltHandler {
         if is_browser_labels_bundle(&query_upper) {
             log::info!("Detected Browser labels/types/propertyKeys bundle — short-circuiting");
 
-            let effective_schema = schema_name.as_deref().unwrap_or("default").to_string();
+            let effective_schema = schema_name.clone();
             let schema_guard = crate::server::GLOBAL_SCHEMAS
                 .get()
                 .ok_or_else(|| BoltError::internal("Schema registry not initialized"))?;
@@ -1919,7 +1943,7 @@ impl BoltHandler {
                 "Detected apoc.meta.schema UNWIND query — short-circuiting for MCP compatibility"
             );
 
-            let effective_schema = schema_name.as_deref().unwrap_or("default").to_string();
+            let effective_schema = schema_name.clone();
 
             let schema_guard = crate::server::GLOBAL_SCHEMAS
                 .get()
@@ -1979,7 +2003,7 @@ impl BoltHandler {
         // Parse and execute the query with task-local schema context
         // Note: id() predicates with encoded values are decoded in FilterTagging pass
         use crate::server::query_context::{with_query_context, QueryContext};
-        let ctx = QueryContext::new(schema_name.clone());
+        let ctx = QueryContext::new(Some(schema_name.clone()));
 
         // Observability: the Bolt path doesn't build per-phase timings like the
         // HTTP handler, so record only total/exec latency under a coarse "bolt"
@@ -2255,7 +2279,7 @@ impl BoltHandler {
             None
         };
 
-        let db_name = database.unwrap_or_else(|| "default".to_string());
+        let db_name = database.unwrap_or_else(|| crate::translate::DEFAULT_GRAPH.to_string());
         log::info!("ROUTE request for database: {}", db_name);
 
         // Verify schema exists
@@ -2320,12 +2344,14 @@ impl BoltHandler {
         Ok(vec![BoltMessage::success(metadata)])
     }
 
-    /// Execute a Cypher query and return result metadata
+    /// Execute a Cypher query (without its prelude) on the graph `schema_name`
+    /// (the statement's: [`crate::translate::StatementTargets::graph`]) and
+    /// return result metadata
     async fn execute_cypher_query(
         &mut self,
         query: &str,
         parameters: HashMap<String, Value>,
-        schema_name: Option<String>,
+        schema_name: String,
         tenant_id: Option<String>,
         role: Option<String>,
         view_parameters: Option<HashMap<String, String>>,
@@ -2350,25 +2376,7 @@ impl BoltHandler {
         // PHASE 1: Determine Schema (for id() transformation)
         // ============================================================
 
-        // Parse once to extract schema name
-        let effective_schema = match open_cypher_parser::parse_cypher_statement(query) {
-            Ok((_, stmt)) => match stmt {
-                CypherStatement::Query { query, .. } => {
-                    if let Some(use_clause) = query.use_clause {
-                        use_clause.database_name.to_string()
-                    } else {
-                        schema_name.as_deref().unwrap_or("default").to_string()
-                    }
-                }
-                CypherStatement::ProcedureCall(_) | CypherStatement::CopyTo(_) => {
-                    schema_name.as_deref().unwrap_or("default").to_string()
-                }
-            },
-            // Text only the clause-list parser reads (P-4c S10b) keeps its USE.
-            Err(_) => crate::translate::clause_list_use_name(query)
-                .flatten()
-                .unwrap_or_else(|| schema_name.as_deref().unwrap_or("default").to_string()),
-        };
+        let effective_schema = schema_name;
 
         // Load the actual GraphSchema object for id() transformation.
         // Set schema name in task-local context so downstream code can use it.
@@ -2466,8 +2474,12 @@ impl BoltHandler {
             crate::server::query_context::set_current_schema(Arc::new(graph_schema_obj.clone()));
 
             // Translate inner Cypher → SQL
-            let inner_sql = crate::translate::translate_inner_read(&inner_query, &graph_schema_obj)
-                .map_err(BoltError::query_error)?;
+            let inner_sql = crate::translate::translate_inner_read(
+                &inner_query,
+                &graph_schema_obj,
+                &effective_schema,
+            )
+            .map_err(BoltError::query_error)?;
 
             let export_sql = crate::procedures::apoc_export::build_export_sql(
                 &inner_sql,
@@ -2513,7 +2525,7 @@ impl BoltHandler {
         // statement is not `Send` and must not live across an await.)
         let legacy_parse_error = match open_cypher_parser::parse_cypher_statement(query) {
             Ok(_) => None,
-            Err(parse_error) if crate::translate::clause_list_use_name(query).is_some() => {
+            Err(parse_error) if crate::translate::clause_list_parses(query) => {
                 Some(format!("Statement parsing failed: {}", parse_error))
             }
             Err(parse_error) => {
@@ -2716,16 +2728,15 @@ impl BoltHandler {
                         ));
 
                         // Translate inner Cypher → SQL
-                        let inner_sql = {
-                            // `cypher_query` is a Cypher string-literal ARGUMENT to
-                            // apoc.export.*.query(...) — a separate string from the
-                            // outer `query` already stripped above, so it needs its
-                            // own strip_comments() before this independent parse.
-                            let stripped_inner =
-                                open_cypher_parser::strip_comments(&export_args.cypher_query);
-                            crate::translate::translate_inner_read(&stripped_inner, &graph_schema)
-                                .map_err(BoltError::query_error)?
-                        };
+                        // `cypher_query` is a Cypher string-literal ARGUMENT to
+                        // apoc.export.*.query(...), read through the front end
+                        // (its own comments, a USE naming another graph refused).
+                        let inner_sql = crate::translate::translate_inner_read(
+                            &export_args.cypher_query,
+                            &graph_schema,
+                            &effective_schema,
+                        )
+                        .map_err(BoltError::query_error)?;
 
                         // Build export SQL
                         let export_sql = crate::procedures::apoc_export::build_export_sql(
@@ -3684,6 +3695,8 @@ mod tests {
     // since no real schema is registered).
     // ------------------------------------------------------------------
 
+    const DEFAULT: &str = crate::translate::DEFAULT_GRAPH;
+
     fn assert_not_a_parse_error(result: &BoltResult<HashMap<String, Value>>, cypher: &str) {
         if let Err(e) = result {
             let msg = e.to_string();
@@ -3703,7 +3716,7 @@ mod tests {
         let mut handler = create_test_handler();
         let cypher = "MATCH (a:User) ORDER BY a.name LIMIT 3 RETURN a.name";
         let result = handler
-            .execute_cypher_query(cypher, HashMap::new(), None, None, None, None)
+            .execute_cypher_query(cypher, HashMap::new(), DEFAULT.into(), None, None, None)
             .await;
         assert_not_a_parse_error(&result, cypher);
     }
@@ -3715,7 +3728,7 @@ mod tests {
             .execute_cypher_query(
                 "RETURN 1 AS x // just a trailing note",
                 HashMap::new(),
-                None,
+                DEFAULT.into(),
                 None,
                 None,
                 None,
@@ -3731,7 +3744,7 @@ mod tests {
             .execute_cypher_query(
                 "RETURN 1 AS x /* trailing block comment */",
                 HashMap::new(),
-                None,
+                DEFAULT.into(),
                 None,
                 None,
                 None,
@@ -3750,7 +3763,7 @@ mod tests {
             .execute_cypher_query(
                 "RETURN 1 AS x GARBAGE",
                 HashMap::new(),
-                None,
+                DEFAULT.into(),
                 None,
                 None,
                 None,

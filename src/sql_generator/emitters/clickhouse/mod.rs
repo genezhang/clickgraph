@@ -39,8 +39,7 @@ pub fn cypher_to_sql(
     cypher: &str,
     schema: &crate::graph_catalog::graph_schema::GraphSchema,
 ) -> Result<String, String> {
-    let cleaned = crate::open_cypher_parser::strip_comments(cypher);
-    translate_text_for_library(&cleaned, schema).map(|t| t.sql)
+    translate_text_for_library(cypher, schema).map(|t| t.sql)
 }
 
 /// [`cypher_to_sql`], and the result columns holding an element id that a
@@ -50,8 +49,7 @@ pub fn cypher_to_sql_with_id_columns(
     cypher: &str,
     schema: &crate::graph_catalog::graph_schema::GraphSchema,
 ) -> Result<(String, Vec<String>), String> {
-    let cleaned = crate::open_cypher_parser::strip_comments(cypher);
-    let t = translate_text_for_library(&cleaned, schema)?;
+    let t = translate_text_for_library(cypher, schema)?;
     let id_columns = t
         .shape
         .iter()
@@ -76,20 +74,32 @@ pub fn cypher_to_sql_with_metadata(
     ),
     String,
 > {
-    let cleaned = crate::open_cypher_parser::strip_comments(cypher);
-    let t = translate_text_for_library(&cleaned, schema)?;
+    let t = translate_text_for_library(cypher, schema)?;
     let metadata = t.return_metadata();
     Ok((t.sql, metadata))
 }
 
-/// Parse `cleaned` and translate it through the read seam with default
-/// options; text only the clause-list parser reads (P-4c S10b) goes to the
-/// bound plan alone, and the legacy parse error is the answer when that
-/// does not translate it.
+/// Read `cypher` through the statement front end (`translate::prepared`:
+/// the `CYPHER ..` prelude is read and dropped, comments are stripped) and
+/// translate it through the read seam with default options; text only the
+/// clause-list parser reads (P-4c S10b) goes to the bound plan alone, and
+/// the legacy parse error is the answer when that does not translate it.
+///
+/// A library caller has one schema, and `USE` does not choose it; UNION
+/// arms whose `USE` clauses name different graphs are still refused.
 fn translate_text_for_library(
-    cleaned: &str,
+    cypher: &str,
     schema: &crate::graph_catalog::graph_schema::GraphSchema,
 ) -> Result<crate::translate::ReadTranslation, String> {
+    let prepared = crate::translate::PreparedStatement::parse(cypher).map_err(|e| e.to_string())?;
+    if prepared.prelude.mode != crate::translate::prepared::ExecutionMode::Run {
+        return Err(
+            "Not supported: EXPLAIN / PROFILE (`query_to_sql` returns the SQL a query runs)"
+                .to_string(),
+        );
+    }
+    prepared.targets.named_graph().map_err(|e| e.to_string())?;
+    let cleaned = prepared.text();
     let options = || crate::translate::ReadOptions {
         cypher: cleaned.to_string(),
         ..Default::default()

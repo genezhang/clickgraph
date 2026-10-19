@@ -74,6 +74,13 @@ Without the feature, only `sql_only` and `new_remote` constructors are available
 a chdb session. Used for testing, SQL preview, and lightweight tooling. Calling
 `query()` on an sql_only connection will fail; use `query_to_sql()` instead.
 
+Every query entry point reads the statement through the shared front end
+(`clickgraph::translate::prepared`): the `CYPHER ..` prelude is read and
+dropped, EXPLAIN / PROFILE are refused (nothing runs), and UNION arms whose
+`USE` clauses name different graphs are refused (one schema, which `USE`
+does not choose). `query()` dispatches a statement with a write clause in any
+UNION arm to the write planner (`StatementTargets::is_write`, #1447).
+
 ### Remote Mode (no chdb)
 `Database::new_remote(schema_path, RemoteConfig)` connects to an external ClickHouse
 cluster without starting a chdb session. Cypher is translated locally and executed

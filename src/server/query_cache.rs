@@ -63,71 +63,9 @@ macro_rules! lock_cache {
     };
 }
 
-/// Cache control strategy from CYPHER replan option
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub enum ReplanOption {
-    /// Normal cache behavior - use cache if available, regenerate if needed
-    #[default]
-    Default,
-    /// Force regeneration even if cached - useful for debugging or cache warming
-    Force,
-    /// Always use cache - error if not cached - useful to prevent planning latency spikes
-    Skip,
-}
-
-impl ReplanOption {
-    /// Parse replan option from query string prefix
-    ///
-    /// Examples:
-    /// - "CYPHER replan=force MATCH ..." -> Some(ReplanOption::Force)
-    /// - "CYPHER replan=skip MATCH ..." -> Some(ReplanOption::Skip)
-    /// - "MATCH ..." -> None (use default)
-    pub fn from_query_prefix(query: &str) -> Option<Self> {
-        let trimmed = query.trim();
-        if !trimmed.to_uppercase().starts_with("CYPHER") {
-            return None;
-        }
-
-        // Simple parser for "CYPHER replan=<option>"
-        if trimmed.to_uppercase().contains("REPLAN=FORCE") {
-            Some(ReplanOption::Force)
-        } else if trimmed.to_uppercase().contains("REPLAN=SKIP") {
-            Some(ReplanOption::Skip)
-        } else if trimmed.to_uppercase().contains("REPLAN=DEFAULT") {
-            Some(ReplanOption::Default)
-        } else {
-            None
-        }
-    }
-
-    /// Remove CYPHER prefix from query string
-    ///
-    /// Examples:
-    /// - "CYPHER replan=force MATCH ..." -> "MATCH ..."
-    /// - "MATCH ..." -> "MATCH ..."
-    pub fn strip_prefix(query: &str) -> &str {
-        let trimmed = query.trim();
-        if !trimmed.to_uppercase().starts_with("CYPHER") {
-            return query;
-        }
-
-        // Find first occurrence of MATCH, RETURN, WITH, UNWIND, CREATE, etc.
-        // These are the actual Cypher clause keywords
-        let cypher_keywords = [
-            "MATCH", "RETURN", "WITH", "UNWIND", "CREATE", "MERGE", "DELETE", "SET", "REMOVE",
-            "CALL", "EXPLAIN", "PROFILE", "USE",
-        ];
-
-        for keyword in cypher_keywords {
-            if let Some(pos) = trimmed.to_uppercase().find(keyword) {
-                return trimmed[pos..].trim();
-            }
-        }
-
-        // If no keyword found, return original
-        query
-    }
-}
+/// Cache control strategy from the `CYPHER replan=..` option (read by the
+/// statement front end, [`crate::translate::prepared`]).
+pub use crate::translate::prepared::ReplanOption;
 
 /// Key for cache lookup
 ///
@@ -199,8 +137,8 @@ impl QueryCacheKey {
         tenant_id: Option<&str>,
         view_parameters: Option<&std::collections::HashMap<String, String>>,
     ) -> Self {
-        // Strip CYPHER prefix if present
-        let stripped = ReplanOption::strip_prefix(query);
+        // Without its prelude (`CYPHER replan=..`): the same statement.
+        let stripped = crate::translate::prepared::without_prelude(query);
 
         // Normalize whitespace: collapse multiple spaces/tabs/newlines into single space
         // (of the query without its comments: a quote inside one opens no
@@ -550,43 +488,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_replan_option_parsing() {
-        assert_eq!(ReplanOption::from_query_prefix("MATCH (n) RETURN n"), None);
-        assert_eq!(
-            ReplanOption::from_query_prefix("CYPHER replan=force MATCH (n) RETURN n"),
-            Some(ReplanOption::Force)
-        );
-        assert_eq!(
-            ReplanOption::from_query_prefix("CYPHER replan=skip MATCH (n) RETURN n"),
-            Some(ReplanOption::Skip)
-        );
-        assert_eq!(
-            ReplanOption::from_query_prefix("CYPHER replan=default MATCH (n) RETURN n"),
-            Some(ReplanOption::Default)
-        );
-        assert_eq!(
-            ReplanOption::from_query_prefix("cypher replan=FORCE match (n) return n"),
-            Some(ReplanOption::Force)
-        );
-    }
-
-    #[test]
-    fn test_strip_prefix() {
-        assert_eq!(
-            ReplanOption::strip_prefix("MATCH (n) RETURN n"),
-            "MATCH (n) RETURN n"
-        );
-        assert_eq!(
-            ReplanOption::strip_prefix("CYPHER replan=force MATCH (n) RETURN n"),
-            "MATCH (n) RETURN n"
-        );
-        assert_eq!(
-            ReplanOption::strip_prefix("  CYPHER replan=skip  MATCH (n) RETURN n  "),
-            "MATCH (n) RETURN n"
-        );
-    }
-
-    #[test]
     fn test_cache_key_route_separates_endpoints() {
         // `/query/sql` returns SQL instead of executing it and must never share
         // entries with `/query`, even for the same text and scope.
@@ -601,6 +502,10 @@ mod tests {
         let key1 = QueryCacheKey::new("MATCH (n) RETURN n", "default");
         let key2 = QueryCacheKey::new("CYPHER replan=force MATCH (n) RETURN n", "default");
         assert_eq!(key1.normalized_query, key2.normalized_query);
+        // #1371: the prelude ends where the statement starts; its `USE` is
+        // part of the key.
+        let key3 = QueryCacheKey::new("CYPHER replan=force USE g MATCH (n) RETURN n", "default");
+        assert_eq!(key3.normalized_query, "USE g MATCH (n) RETURN n");
     }
 
     #[test]

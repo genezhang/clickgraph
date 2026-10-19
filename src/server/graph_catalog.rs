@@ -22,6 +22,44 @@ use super::{
     GLOBAL_SCHEMA_CONTENT_HASHES,
 };
 
+/// The schema the name `default` aliases: the configured `default_schema`,
+/// else the first schema of the startup config. `None`: `default` names a
+/// schema of its own (a single unnamed schema, the database catalog), or
+/// nothing was loaded.
+static DEFAULT_SCHEMA_TARGET: std::sync::RwLock<Option<String>> = std::sync::RwLock::new(None);
+
+/// The schema the name `default` aliases ([`DEFAULT_SCHEMA_TARGET`]).
+pub fn default_schema_target() -> Option<String> {
+    DEFAULT_SCHEMA_TARGET.read().ok().and_then(|t| t.clone())
+}
+
+pub(crate) fn set_default_schema_target(target: Option<String>) {
+    if let Ok(mut t) = DEFAULT_SCHEMA_TARGET.write() {
+        *t = target;
+    }
+}
+
+/// After `name` is (re)loaded: when it is `default` or the schema `default`
+/// aliases, the two names no longer hold the same schema, so they are two
+/// graphs from now on (review of #1504: a UNION naming both read one copy).
+pub(crate) fn forget_default_alias_of(name: &str) {
+    let target = default_schema_target();
+    if name == crate::translate::DEFAULT_GRAPH || target.as_deref() == Some(name) {
+        set_default_schema_target(None);
+    }
+}
+
+/// Whether two schema names name the same graph: the same name, or
+/// `default` and the schema it aliases (a statement may name the default
+/// graph either way: `translate::StatementTargets::graph`).
+pub fn same_schema(a: &str, b: &str) -> bool {
+    if a == b {
+        return true;
+    }
+    let default = crate::translate::DEFAULT_GRAPH;
+    default_schema_target().is_some_and(|t| (a == default && b == t) || (b == default && a == t))
+}
+
 /// Deterministic (within-process) hash of schema YAML content, used only to
 /// detect re-registration of an existing schema name with different content.
 /// Not a security primitive — `DefaultHasher` is fine here.
@@ -124,17 +162,25 @@ async fn load_schema_and_config_from_yaml_content(
     Ok((schema, config))
 }
 
+/// The schemas of a startup YAML config, and the name of the schema its
+/// `default_schema` names.
+type LoadedSchemas = (
+    Vec<(String, GraphSchema, GraphSchemaConfig)>,
+    Option<String>,
+);
+
 /// Load multiple schemas from YAML content (supports both single and multi-schema format)
 async fn load_schemas_from_yaml_content(
     yaml_content: &str,
     clickhouse_client: Option<&Client>,
-) -> Result<Vec<(String, GraphSchema, GraphSchemaConfig)>, String> {
+) -> Result<LoadedSchemas, String> {
     use crate::graph_catalog::config::SchemaConfigFile;
 
     let config_file: SchemaConfigFile = serde_yaml::from_str(yaml_content)
         .map_err(|e| format!("Failed to parse YAML config: {}", e))?;
 
     let mut results = Vec::new();
+    let mut explicit_default = None;
 
     match config_file {
         SchemaConfigFile::Single(config) => {
@@ -186,6 +232,7 @@ async fn load_schemas_from_yaml_content(
                 {
                     let (_, schema, config) = results[idx].clone();
                     results.push(("default".to_string(), schema, config));
+                    explicit_default = Some(default_name);
                 } else {
                     return Err(format!(
                         "default_schema '{}' not found in schemas list",
@@ -196,7 +243,7 @@ async fn load_schemas_from_yaml_content(
         }
     }
 
-    Ok(results)
+    Ok((results, explicit_default))
 }
 
 pub async fn initialize_global_schema(
@@ -218,7 +265,7 @@ pub async fn initialize_global_schema(
 
         // Load schemas (supports both single and multi-schema formats)
         match load_schemas_from_yaml_content(&yaml_content, clickhouse_client.as_ref()).await {
-            Ok(schemas_list) => {
+            Ok((schemas_list, explicit_default)) => {
                 log::info!(
                     "✓ Loaded {} schema(s) from YAML: {}",
                     schemas_list.len(),
@@ -268,6 +315,18 @@ pub async fn initialize_global_schema(
                 // Check if "default" was explicitly set in config (from default_schema field)
                 let has_explicit_default =
                     schemas_list.iter().any(|(name, _, _)| name == "default");
+                // The schema "default" aliases: the configured default_schema,
+                // else the first schema (#1370: a statement may name it
+                // either way).
+                set_default_schema_target(match explicit_default {
+                    Some(name) => Some(name),
+                    None if has_explicit_default => None,
+                    None => schemas_list
+                        .iter()
+                        .map(|(name, _, _)| name)
+                        .find(|name| *name != "default")
+                        .cloned(),
+                });
                 let mut first_schema_info: Option<(GraphSchema, GraphSchemaConfig)> = None;
 
                 for (schema_name, schema, config) in schemas_list {
@@ -603,6 +662,9 @@ pub async fn load_schema_from_content(
                 .ok_or("Global schemas not initialized")?;
             let mut schemas_guard = schemas_lock.write().await;
             schemas_guard.insert(schema_name.to_string(), schema.clone());
+            // Reloading `default` or the schema it aliases makes them two
+            // graphs: `default` keeps the copy it was registered with.
+            forget_default_alias_of(schema_name);
 
             let configs_lock = GLOBAL_SCHEMA_CONFIGS
                 .get()

@@ -70,7 +70,7 @@ CYPHER replan=<option> <your-query>
 |--------|----------|----------|
 | `default` | Normal LRU cache behavior | Default (can be omitted) |
 | `force` | Bypass cache, regenerate SQL, update cache | Debugging, testing new query translations |
-| `skip` | **Always use cache**, error if not cached | Prevent latency spikes in production |
+| `skip` | Use the cached SQL; translate when nothing is cached (as Neo4j: "if possible, do not replan") | Prevent re-planning in production |
 
 **Examples:**
 
@@ -111,7 +111,12 @@ response = requests.post('http://localhost:8080/query', json={
 
 ### Neo4j Compatibility
 
-The `CYPHER replan=<option>` syntax is **compatible with Neo4j**, allowing the same queries to work across both systems. The `CYPHER` prefix is automatically stripped before query execution.
+The `CYPHER replan=<option>` syntax is **compatible with Neo4j**, allowing the same queries to work across both systems. The prelude is read as Neo4j reads it, on every entry point (HTTP `/query` and `/query/sql`, Bolt, the embedded library and `cg`):
+
+- `CYPHER` may carry a version (`CYPHER 5`) and several `name=value` options (`CYPHER 5 runtime=slotted replan=force`). Options other than `replan`, and the version, are accepted and ignored: unlike Neo4j, an unknown option (`CYPHER foo=bar`), version (`CYPHER 4.4`) or value of another option (`runtime=bogus`) is not an error. An invalid `replan` value, or two different ones, is an error, as in Neo4j.
+- The prelude ends where the statement starts: `CYPHER replan=force USE social MATCH …` runs on `social`.
+- `EXPLAIN` / `PROFILE` may come before or after `CYPHER`. HTTP `/query` and `/query/sql` refuse both (`sql_only: true` returns the SQL a query runs); Bolt answers `EXPLAIN` with an empty plan (Neo4j Browser sends it while you type) and refuses `PROFILE`; the library refuses both.
+- The query argument of `apoc.export.*.query` runs on the statement's graph: a `USE` in it naming another graph is an error.
 
 ### Configuration
 
@@ -167,11 +172,11 @@ Content-Type: application/json
   - **Query Cache Control**: Prefix query with `CYPHER replan=<option>` to control caching behavior
     - `CYPHER replan=default` - Normal cache behavior (use cache if available, regenerate if needed)
     - `CYPHER replan=force` - Bypass cache, regenerate SQL, update cache (useful for debugging)
-    - `CYPHER replan=skip` - Always use cache, error if not cached (prevent latency spikes)
+    - `CYPHER replan=skip` - Use the cached SQL; translate when nothing is cached
   - Example: `"CYPHER replan=force MATCH (u:User) RETURN u.name"`
   - The `CYPHER` prefix is automatically stripped before query execution
 - `parameters` (object, optional): Query parameters for `$param` placeholders
-- `schema_name` (string, optional): Schema to use (overrides USE clause and defaults to "default")
+- `schema_name` (string, optional): Schema to use when the query has no `USE` clause (a `USE` takes precedence; without either, the `default` schema)
 - `sql_only` (boolean, optional): Return generated SQL without executing (default: false)
 - `format` (string, optional): Response format - `json` (default) or `table`
 - `view_parameters` (object, optional): Parameters for parameterized views (multi-tenancy)
@@ -319,7 +324,7 @@ Content-Type: application/json
 
 **Parameters:**
 - `query` (string, required): Cypher query to translate
-- `schema_name` (string, optional): Schema to use (defaults to "default")
+- `schema_name` (string, optional): Schema to use when the query has no `USE` clause (defaults to "default")
 - `target_database` (string, optional): Target SQL dialect - "clickhouse" (default) or "postgresql" (future)
 - `parameters` (object, optional): Query parameters for `$param` placeholders
 - `view_parameters` (object, optional): Parameters for parameterized views

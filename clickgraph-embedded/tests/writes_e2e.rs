@@ -653,3 +653,41 @@ fn delete_return_of_another_variable() {
         1
     );
 }
+
+/// #1447: a write in a later UNION arm reaches the write planner, which
+/// refuses it before anything runs (dispatch read only the first arm, and
+/// the read path answered "ClickGraph is read-only"). The `CYPHER` prelude
+/// is read and dropped on the write path too.
+#[test]
+fn a_write_in_a_later_union_arm_is_refused_by_the_write_planner() {
+    let Some(conn) = conn() else { return };
+    person(&conn, "un1", 40);
+    let err = conn
+        .query(
+            "MATCH (x:Person) RETURN x.name AS n UNION MATCH (y:Person) WHERE \
+             y.person_id = 'un1' SET y.name = 'w' RETURN y.name AS n",
+        )
+        .expect_err("an update in a UNION");
+    assert!(
+        err.to_string().contains("an updating clause in a UNION"),
+        "{err}"
+    );
+    let mut result = conn
+        .query("MATCH (a:Person) WHERE a.person_id = 'un1' RETURN a.name AS n")
+        .expect("read back");
+    assert_eq!(
+        result.next().unwrap().get("n").unwrap().as_str(),
+        Some("un1")
+    );
+    conn.query(
+        "CYPHER replan=force MATCH (a:Person) WHERE a.person_id = 'un1' SET a.name = 'un1b'",
+    )
+    .expect("a prelude before a write");
+    assert_eq!(
+        count(
+            &conn,
+            "MATCH (a:Person) WHERE a.person_id = 'un1' AND a.name = 'un1b' RETURN count(a) AS c"
+        ),
+        1
+    );
+}
