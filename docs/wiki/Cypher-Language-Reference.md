@@ -30,6 +30,7 @@ Complete syntax reference for Cypher queries supported by ClickGraph.
   - [List Functions](#other-list-functions)
 - [ClickHouse Function Passthrough](#clickhouse-function-passthrough) ⭐ **NEW**
   - [Lambda Expressions](#lambda-expressions)
+- [Names](#names) (escaped names, property access)
 - [Operators](#operators)
 - [Data Types](#data-types)
 - [Parameters](#parameters)
@@ -1836,6 +1837,57 @@ RETURN last([1, 2, 3])               -- 3
 -- Range
 RETURN range(1, 10)                  -- [1,2,3,4,5,6,7,8,9,10]
 ```
+
+---
+
+## Names
+
+Variables, labels, relationship types, property keys, map keys, aliases,
+parameters and function names are **symbolic names**, as in Neo4j:
+
+- **Unescaped**: a letter or `_`, then letters, digits, `_` and `$`
+  (`user_id`, `_tmp`, `é`, `a$b`). A keyword is a name wherever the
+  grammar expects one (`RETURN 1 AS count`).
+- **Escaped**: any characters between backticks. A doubled backtick stands
+  for one; a backslash is an ordinary character (`` `a\nb` `` is the four
+  characters `a\nb`).
+
+```cypher
+MATCH (`my node`:`User`)-[r:`FOLLOWS`]->(b)
+WHERE `my node`.`q?` IS NULL
+RETURN `my node`.name AS `the name`, {`it's`: 1, `a``b`: 2} AS m
+```
+
+An escaped name means what the same name means unescaped (`` n.`name` ``
+is `n.name`, `` d.`year` `` is `d.year`); an escaped keyword is just a name
+(`` `true` `` is a variable, not the literal).
+A column RETURN names by its expression keeps the text as written
+(`` RETURN n.`name` `` is the column `` n.`name` ``); a bare variable's
+column is its name (`` RETURN `x y` `` is the column `x y`).
+
+Not supported (an error, never another name):
+- a property key holding a `.` (`` n.`q.x` ``): `v.a.b` is carried as the
+  key path `a.b`, so the two would read alike;
+- a parameter name other than letters, digits and `_` (`` $`p q` ``): a
+  parameter's value is put in its place by name;
+- a function name other than letters, digits and `_` (`` `foo bar`(x) ``),
+  and the escaped names `` `*` `` (as a variable or key, it would read as
+  the `*` of `RETURN *`, `count(*)`, `n.*`).
+
+### Property access
+
+A property of a variable is `n.key`; of any other value, `e.key` (the same
+as `e['key']`): a key of an element, of a call's result, of a parenthesized
+expression, or a further key of a chain.
+
+```cypher
+WITH [{name: 'x'}, {name: 'y'}] AS ms
+RETURN ms[0].name, ms[-1].name, (ms[0]).name   -- 'x', 'y', 'x'
+```
+
+A property of an element of a list of nodes or relationships (`bs[0].name`
+for `bs = collect(b)`) is not supported yet (#1378); `[x IN bs | x.name][0]`
+reads it.
 
 ---
 

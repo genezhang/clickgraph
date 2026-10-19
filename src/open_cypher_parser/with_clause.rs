@@ -12,7 +12,7 @@ use super::{
     ast::{WithClause, WithItem},
     common::ws,
     errors::OpenCypherParsingError,
-    expression::{parse_expression, parse_identifier},
+    expression::parse_expression,
     limit_clause::parse_limit_clause,
     match_clause::parse_match_clause,
     optional_match_clause::parse_optional_match_clause,
@@ -41,7 +41,11 @@ fn parse_with_item(input: &'_ str) -> IResult<&'_ str, WithItem<'_>> {
         Err(e) => return Err(e),
     };
 
-    let (input, alias) = opt(preceded(ws(tag_no_case("AS")), ws(parse_identifier))).parse(input)?;
+    let (input, alias) = opt(preceded(
+        ws(tag_no_case("AS")),
+        ws(super::common::symbolic_name),
+    ))
+    .parse(input)?;
 
     let with_item = WithItem { expression, alias };
     Ok((input, with_item))
@@ -173,7 +177,7 @@ mod tests {
             Ok((remaining, with_item)) => {
                 assert_eq!(remaining, "");
                 let expected = WithItem {
-                    expression: Expression::Variable("a"),
+                    expression: Expression::Variable("a".into()),
                     alias: None,
                 };
                 assert_eq!(&with_item, &expected);
@@ -190,8 +194,8 @@ mod tests {
             Ok((remaining, with_item)) => {
                 assert_eq!(remaining, "");
                 let expected = WithItem {
-                    expression: Expression::Variable("a"),
-                    alias: Some("alias"),
+                    expression: Expression::Variable("a".into()),
+                    alias: Some("alias".into()),
                 };
                 assert_eq!(&with_item, &expected);
             }
@@ -208,15 +212,15 @@ mod tests {
                 assert_eq!(remaining, "");
                 assert_eq!(with_clause.with_items.len(), 3);
                 let expected_item1 = WithItem {
-                    expression: Expression::Variable("a"),
+                    expression: Expression::Variable("a".into()),
                     alias: None,
                 };
                 let expected_item2 = WithItem {
-                    expression: Expression::Variable("b"),
-                    alias: Some("aliasB"),
+                    expression: Expression::Variable("b".into()),
+                    alias: Some("aliasB".into()),
                 };
                 let expected_item3 = WithItem {
-                    expression: Expression::Variable("c"),
+                    expression: Expression::Variable("c".into()),
                     alias: None,
                 };
                 assert_eq!(&with_clause.with_items[0], &expected_item1);
@@ -239,16 +243,16 @@ mod tests {
                 assert_eq!(remaining, "");
                 assert_eq!(with_clause.with_items.len(), 3);
                 let expected_item1 = WithItem {
-                    expression: Expression::Variable("a"),
-                    alias: Some("aliasA"),
+                    expression: Expression::Variable("a".into()),
+                    alias: Some("aliasA".into()),
                 };
                 let expected_item2 = WithItem {
-                    expression: Expression::Variable("b"),
+                    expression: Expression::Variable("b".into()),
                     alias: None,
                 };
                 let expected_item3 = WithItem {
-                    expression: Expression::Variable("c"),
-                    alias: Some("aliasC"),
+                    expression: Expression::Variable("c".into()),
+                    alias: Some("aliasC".into()),
                 };
                 assert_eq!(&with_clause.with_items[0], &expected_item1);
                 assert_eq!(&with_clause.with_items[1], &expected_item2);

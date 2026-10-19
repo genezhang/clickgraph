@@ -404,7 +404,7 @@ mod tests {
         let ast_operator_app = ast::OperatorApplication {
             operator: ast::Operator::Equal,
             operands: vec![
-                ast::Expression::Variable("city"),
+                ast::Expression::Variable("city".into()),
                 ast::Expression::Literal(ast::Literal::String("San Francisco")),
             ],
         };
@@ -428,7 +428,7 @@ mod tests {
     fn test_function_call_conversion_aggregate() {
         let ast_function_call = ast::FunctionCall {
             name: "count".to_string(),
-            args: vec![ast::Expression::Variable("person")],
+            args: vec![ast::Expression::Variable("person".into())],
         };
         let logical_expr = LogicalExpr::try_from(ast_function_call).unwrap();
 
@@ -449,7 +449,7 @@ mod tests {
     fn test_function_call_conversion_scalar() {
         let ast_function_call = ast::FunctionCall {
             name: "length".to_string(),
-            args: vec![ast::Expression::Variable("username")],
+            args: vec![ast::Expression::Variable("username".into())],
         };
         let logical_expr = LogicalExpr::try_from(ast_function_call).unwrap();
 
@@ -469,10 +469,10 @@ mod tests {
     #[test]
     fn test_node_pattern_from_ast() {
         let ast_node_pattern = ast::NodePattern {
-            name: Some("employee"),
-            labels: Some(vec!["Person"]),
+            name: Some("employee".into()),
+            labels: Some(vec!["Person".into()]),
             properties: Some(vec![ast::Property::PropertyKV(ast::PropertyKVPair {
-                key: "department",
+                key: "department".into(),
                 value: ast::Expression::Literal(ast::Literal::String("Engineering")),
             })]),
         };
@@ -500,11 +500,11 @@ mod tests {
     #[test]
     fn test_relationship_pattern_from_ast() {
         let ast_relationship_pattern = ast::RelationshipPattern {
-            name: Some("follows"),
+            name: Some("follows".into()),
             direction: ast::Direction::Outgoing,
-            labels: Some(vec!["FOLLOWS"]),
+            labels: Some(vec!["FOLLOWS".into()]),
             properties: Some(vec![ast::Property::PropertyKV(ast::PropertyKVPair {
-                key: "since",
+                key: "since".into(),
                 value: ast::Expression::Literal(ast::Literal::Integer(2020)),
             })]),
             variable_length: None,
@@ -538,19 +538,19 @@ mod tests {
     #[test]
     fn test_connected_pattern_from_ast() {
         let start_node = ast::NodePattern {
-            name: Some("user"),
-            labels: Some(vec!["User"]),
+            name: Some("user".into()),
+            labels: Some(vec!["User".into()]),
             properties: None,
         };
         let end_node = ast::NodePattern {
-            name: Some("company"),
-            labels: Some(vec!["Company"]),
+            name: Some("company".into()),
+            labels: Some(vec!["Company".into()]),
             properties: None,
         };
         let relationship = ast::RelationshipPattern {
-            name: Some("works_at"),
+            name: Some("works_at".into()),
             direction: ast::Direction::Outgoing,
-            labels: Some(vec!["WORKS_AT"]),
+            labels: Some(vec!["WORKS_AT".into()]),
             properties: None,
             variable_length: None,
         };
@@ -595,8 +595,8 @@ mod tests {
     #[test]
     fn test_path_pattern_node_from_ast() {
         let ast_node = ast::NodePattern {
-            name: Some("customer"),
-            labels: Some(vec!["Customer"]),
+            name: Some("customer".into()),
+            labels: Some(vec!["Customer".into()]),
             properties: None,
         };
         let ast_path_pattern = ast::PathPattern::Node(ast_node);
@@ -614,12 +614,12 @@ mod tests {
     #[test]
     fn test_logical_expr_from_expression_variable() {
         // Test star variable
-        let ast_star = ast::Expression::Variable("*");
+        let ast_star = ast::Expression::Variable("*".into());
         let logical_star = LogicalExpr::try_from(ast_star).unwrap();
         assert_eq!(logical_star, LogicalExpr::Star);
 
         // Test regular variable
-        let ast_var = ast::Expression::Variable("product");
+        let ast_var = ast::Expression::Variable("product".into());
         let logical_var = LogicalExpr::try_from(ast_var).unwrap();
         match logical_var {
             LogicalExpr::TableAlias(alias) => assert_eq!(alias.0, "product"),
@@ -706,7 +706,7 @@ mod tests {
         for func_name in &agg_functions {
             let ast_function_call = ast::FunctionCall {
                 name: func_name.to_string(),
-                args: vec![ast::Expression::Variable("revenue")],
+                args: vec![ast::Expression::Variable("revenue".into())],
             };
             let logical_expr = LogicalExpr::try_from(ast_function_call).unwrap();
 
@@ -722,7 +722,7 @@ mod tests {
         let ast_scalar_function = ast::FunctionCall {
             name: "substring".to_string(),
             args: vec![
-                ast::Expression::Variable("description"),
+                ast::Expression::Variable("description".into()),
                 ast::Expression::Literal(ast::Literal::Integer(1)),
                 ast::Expression::Literal(ast::Literal::Integer(10)),
             ],
@@ -752,7 +752,7 @@ mod tests {
         for func_name in &ch_agg_functions {
             let ast_function_call = ast::FunctionCall {
                 name: func_name.to_string(),
-                args: vec![ast::Expression::Variable("user_id")],
+                args: vec![ast::Expression::Variable("user_id".into())],
             };
             let logical_expr = LogicalExpr::try_from(ast_function_call).unwrap();
 
@@ -770,7 +770,7 @@ mod tests {
         for func_name in &ch_scalar_functions {
             let ast_function_call = ast::FunctionCall {
                 name: func_name.to_string(),
-                args: vec![ast::Expression::Variable("email")],
+                args: vec![ast::Expression::Variable("email".into())],
             };
             let logical_expr = LogicalExpr::try_from(ast_function_call).unwrap();
 
@@ -795,13 +795,13 @@ fn test_pattern_comprehension_error_instead_of_panic() {
         open_cypher_parser::ast::PatternComprehension {
             pattern: Box::new(open_cypher_parser::ast::PathPattern::Node(
                 open_cypher_parser::ast::NodePattern {
-                    name: Some("n"),
+                    name: Some("n".into()),
                     labels: None,
                     properties: None,
                 },
             )),
             where_clause: None,
-            projection: Box::new(open_cypher_parser::ast::Expression::Variable("n")),
+            projection: Box::new(open_cypher_parser::ast::Expression::Variable("n".into())),
         },
     );
 

@@ -44,7 +44,7 @@ mod tests {
                     Expression::OperatorApplicationExp(OperatorApplication {
                         operator: Operator::Equal,
                         operands: vec![
-                            Expression::Variable("a"),
+                            Expression::Variable("a".into()),
                             Expression::Literal(Literal::Integer(1)),
                         ],
                     });
@@ -68,7 +68,7 @@ mod tests {
                     Expression::OperatorApplicationExp(OperatorApplication {
                         operator: Operator::Equal,
                         operands: vec![
-                            Expression::Variable("a"),
+                            Expression::Variable("a".into()),
                             Expression::Literal(Literal::Integer(1)),
                         ],
                     });

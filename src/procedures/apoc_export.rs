@@ -565,7 +565,7 @@ mod tests {
         let arg0 = Expression::Literal(Literal::String("MATCH (n) RETURN n"));
         let arg1 = Expression::Literal(Literal::String("/tmp/output.parquet"));
         let arg2 = Expression::MapLiteral(vec![(
-            "compression",
+            "compression".into(),
             Expression::Literal(Literal::String("zstd")),
         )]);
         let args: Vec<&Expression> = vec![&arg0, &arg1, &arg2];

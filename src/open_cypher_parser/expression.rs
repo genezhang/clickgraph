@@ -16,7 +16,8 @@ use crate::open_cypher_parser::common::{self, ws};
 use super::{
     ast::{
         ExistsSubquery, Expression, FunctionCall, LambdaExpression, ListComprehension, Literal,
-        Operator, OperatorApplication, PatternComprehension, PropertyAccess, ReduceExpression,
+        Name, NodePattern, Operator, OperatorApplication, PathPattern, PatternComprehension,
+        PropertyAccess, ReduceExpression,
     },
     errors::OpenCypherParsingError,
     path_pattern, where_clause,
@@ -43,7 +44,6 @@ fn parse_postfix_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_>> 
         parse_list_comprehension, // Must be before parse_list_literal to catch [x IN list WHERE ...]
         parse_path_pattern_expression,
         parse_function_call,
-        parse_property_access,
         parse_map_literal, // Must be before list_literal (different brackets anyway)
         parse_list_literal,
         parse_parameter,
@@ -152,40 +152,12 @@ fn parse_postfix_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_>> 
             continue;
         }
 
-        // Try to parse temporal accessor postfix: expr.year, expr.month, etc.
-        // This handles cases like datetime('2013').year or (expr).month
-        let temporal_attempt: IResult<_, _, nom::error::Error<_>> = preceded(
-            char('.'),
-            alt((
-                map(tag_no_case::<_, _, nom::error::Error<_>>("year"), |_| {
-                    "year"
-                }),
-                map(tag_no_case("month"), |_| "month"),
-                map(tag_no_case("day"), |_| "day"),
-                map(tag_no_case("hour"), |_| "hour"),
-                map(tag_no_case("minute"), |_| "minute"),
-                map(tag_no_case("second"), |_| "second"),
-                map(tag_no_case("millisecond"), |_| "millisecond"),
-                map(tag_no_case("microsecond"), |_| "microsecond"),
-                map(tag_no_case("nanosecond"), |_| "nanosecond"),
-            )),
-        )
-        .parse(input);
-
-        if let Ok((new_input, accessor)) = temporal_attempt {
-            // Ensure the accessor isn't followed by alphanumeric (to avoid matching partial identifiers)
-            let is_complete_token = new_input
-                .chars()
-                .next()
-                .is_none_or(|c| !c.is_alphanumeric() && c != '_');
-            if is_complete_token {
-                expr = Expression::FunctionCallExp(crate::open_cypher_parser::ast::FunctionCall {
-                    name: accessor.to_string(),
-                    args: vec![expr],
-                });
-                input = new_input;
-                continue;
-            }
+        // A property: `expr.key` (a variable's, `n.name`; a chain's, `m.a.b`;
+        // any value's, `xs[1].name`, `head(l).name`, `(a).name`).
+        if let Some((new_input, e)) = parse_property_postfix(input, &expr) {
+            expr = e;
+            input = new_input;
+            continue;
         }
 
         // No more postfix operations found
@@ -193,6 +165,100 @@ fn parse_postfix_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_>> 
     }
 
     Ok((input, expr))
+}
+
+/// The temporal accessors `.year` … `.nanosecond`, read at parse time as the
+/// function of the same name (`d.year` is `year(d)`): a property named so
+/// would be read as the accessor (escaped too: quoting never changes what a
+/// name means, `` d.`year` `` is Neo4j's `d.year`), unless written
+/// `n['year']`.
+const TEMPORAL_ACCESSORS: [&str; 9] = [
+    "year",
+    "month",
+    "day",
+    "hour",
+    "minute",
+    "second",
+    "millisecond",
+    "microsecond",
+    "nanosecond",
+];
+
+/// `.key` after `base` (the postfix loop of [`parse_postfix_expression`]).
+///
+/// * `v.key`, a variable's property: [`Expression::PropertyAccessExp`];
+///   `v.*`: all of them.
+/// * `e.key` of anything else, including a further key of a chain
+///   (`m.a.b` is `(m.a).b`): [`Expression::PropertyOf`].
+/// * A temporal accessor ([`TEMPORAL_ACCESSORS`]) is its function, as the parser has always read it: after a variable when it
+///   ends the chain (`d.month`, but `x.month.day` is the property `month`'s
+///   `day`) and after a chain's key, spelled in lower case; after any other
+///   value (`datetime(s).Year`) in any case.
+fn parse_property_postfix<'a>(
+    input: &'a str,
+    base: &Expression<'a>,
+) -> Option<(&'a str, Expression<'a>)> {
+    let after_dot = input.strip_prefix('.')?;
+    // `(a).name`: a parenthesized variable parses as the node pattern `(a)`.
+    let as_variable;
+    let base = match base {
+        Expression::PathPattern(PathPattern::Node(NodePattern {
+            name: Some(name),
+            labels: None,
+            properties: None,
+        })) => {
+            as_variable = Expression::Variable(name.clone());
+            &as_variable
+        }
+        _ => base,
+    };
+    if let (Expression::Variable(v), Some(rest)) = (base, after_dot.strip_prefix('*')) {
+        if v != "*" {
+            return Some((
+                rest,
+                Expression::PropertyAccessExp(PropertyAccess {
+                    base: v.clone(),
+                    key: "*".into(),
+                }),
+            ));
+        }
+    }
+    let (rest, key) = common::symbolic_name::<Error<&str>>(after_dot).ok()?;
+    if key == "*" {
+        // The key `` `*` ``: carried as `v.*` (all properties), it would
+        // read alike, so it does not parse.
+        return None;
+    }
+    let exact = || TEMPORAL_ACCESSORS.iter().find(|a| **a == key);
+    let accessor = match base {
+        Expression::Variable(_) => {
+            let continues = rest
+                .strip_prefix('.')
+                .is_some_and(|r| common::symbolic_name::<Error<&str>>(r).is_ok());
+            exact().filter(|_| !continues)
+        }
+        Expression::PropertyAccessExp(_) | Expression::PropertyOf { .. } => exact(),
+        _ => TEMPORAL_ACCESSORS
+            .iter()
+            .find(|a| a.eq_ignore_ascii_case(&key)),
+    };
+    let expr = match (accessor, base) {
+        (Some(name), _) => Expression::FunctionCallExp(FunctionCall {
+            name: name.to_string(),
+            args: vec![base.clone()],
+        }),
+        (None, Expression::Variable(v)) if v != "*" => {
+            Expression::PropertyAccessExp(PropertyAccess {
+                base: v.clone(),
+                key,
+            })
+        }
+        (None, _) => Expression::PropertyOf {
+            base: Box::new(base.clone()),
+            key,
+        },
+    };
+    Some((rest, expr))
 }
 
 /// Parse EXISTS subquery expression
@@ -289,11 +355,26 @@ fn parse_case_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
     ))
 }
 
+/// A keyword: `word` in any case, not followed by a name character
+/// (`WHERE` but not `WHEREx`).
+fn keyword<'a>(
+    word: &'static str,
+) -> impl Parser<&'a str, Output = &'a str, Error = Error<&'a str>> {
+    ws(terminated(
+        tag_no_case(word),
+        not(peek(nom::character::complete::satisfy(|c: char| {
+            c.is_alphanumeric() || c == '_' || c == '$'
+        }))),
+    ))
+}
+
 /// Parse reduce expression
 /// Syntax: reduce(accumulator = initial, variable IN list | expression)
 /// Examples:
 ///   reduce(total = 0, x IN [1, 2, 3] | total + x)
 ///   reduce(s = '', name IN names | s + name)
+///
+/// No operator is spelled `|` or `)`, so each expression ends there.
 fn parse_reduce_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
     // Parse "reduce" keyword (case-insensitive)
     let (input, _) = ws(tag_no_case("reduce")).parse(input)?;
@@ -302,7 +383,7 @@ fn parse_reduce_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
     let (input, _) = ws(char('(')).parse(input)?;
 
     // Parse accumulator = initial_value
-    let (input, accumulator) = ws(parse_identifier).parse(input)?;
+    let (input, accumulator) = ws(common::symbolic_name).parse(input)?;
     let (input, _) = ws(char('=')).parse(input)?;
     let (input, initial_value) = ws(parse_expression).parse(input)?;
 
@@ -310,18 +391,15 @@ fn parse_reduce_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
     let (input, _) = ws(char(',')).parse(input)?;
 
     // Parse variable IN list
-    let (input, variable) = ws(parse_identifier).parse(input)?;
-    let (input, _) = ws(tag_no_case("IN")).parse(input)?;
-
-    // Parse the list expression - need to be careful to stop at '|'
-    // We can't just use parse_expression because it would consume the '|'
-    let (input, list) = parse_reduce_list_expression(input)?;
+    let (input, variable) = ws(common::symbolic_name).parse(input)?;
+    let (input, _) = keyword("IN").parse(input)?;
+    let (input, list) = parse_expression(input)?;
 
     // Parse '|' separator
     let (input, _) = ws(char('|')).parse(input)?;
 
     // Parse the expression (the body of the reduce)
-    let (input, expression) = ws(parse_reduce_body_expression).parse(input)?;
+    let (input, expression) = ws(parse_expression).parse(input)?;
 
     // Parse closing parenthesis
     let (input, _) = ws(char(')')).parse(input)?;
@@ -353,14 +431,13 @@ fn parse_pattern_comprehension(input: &'_ str) -> IResult<&'_ str, Expression<'_
         ws(crate::open_cypher_parser::path_pattern::parse_path_pattern).parse(input)?;
 
     // Optional WHERE clause
-    let (input, where_clause) =
-        opt(preceded(ws(tag_no_case("WHERE")), parse_expression)).parse(input)?;
+    let (input, where_clause) = opt(preceded(keyword("WHERE"), parse_expression)).parse(input)?;
 
     // Parse '|' separator
     let (input, _) = ws(char('|')).parse(input)?;
 
-    // Parse the projection expression
-    let (input, projection) = parse_pattern_comprehension_projection(input)?;
+    // Parse the projection expression (it ends at the `]`)
+    let (input, projection) = parse_expression(input)?;
 
     // Parse closing bracket ']'
     let (input, _) = ws(char(']')).parse(input)?;
@@ -375,101 +452,28 @@ fn parse_pattern_comprehension(input: &'_ str) -> IResult<&'_ str, Expression<'_
     ))
 }
 
-/// Helper to parse the projection expression inside pattern comprehension
-/// Stops at the closing ']'
-fn parse_pattern_comprehension_projection(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
-    // We need to parse an expression but stop at ']'
-    // Use a similar approach to parse_reduce_body_expression
-
-    let mut depth = 0;
-    let mut i = 0;
-    let bytes = input.as_bytes();
-
-    while i < bytes.len() {
-        match bytes[i] as char {
-            '[' => depth += 1,
-            ']' if depth == 0 => break, // Found our closing bracket
-            ']' => depth -= 1,
-            '(' => {
-                // Track nested parentheses too
-                let mut paren_depth = 1;
-                i += 1;
-                while i < bytes.len() && paren_depth > 0 {
-                    match bytes[i] as char {
-                        '(' => paren_depth += 1,
-                        ')' => paren_depth -= 1,
-                        _ => {}
-                    }
-                    i += 1;
-                }
-                continue;
-            }
-            _ => {}
-        }
-        i += 1;
-    }
-
-    let expr_str = &input[..i];
-    let remaining = &input[i..];
-
-    // Parse the expression from the extracted string
-    let (leftover, expr) = parse_expression(expr_str)?;
-
-    // Make sure we consumed the whole expression
-    if !leftover.trim().is_empty() {
-        return Err(nom::Err::Error(Error::new(input, ErrorKind::TakeWhile1)));
-    }
-
-    Ok((remaining, expr))
-}
-
 /// Parse list comprehension: [variable IN list WHERE condition | projection]
 /// Examples:
 ///   [x IN range(1,10) WHERE x > 5]
 ///   [x IN list | x * 2]
 ///   [p IN posts WHERE (p)-[:HAS_TAG]->()<-[:HAS_INTEREST]-(person)]
+///   [`x y` IN list | `x y`.name]
 ///
-/// Disambiguated from list literal by requiring `identifier IN` after `[`.
+/// Disambiguated from list literal by requiring `name IN` after `[`. The
+/// list, the condition and the projection are expressions: none continues
+/// past a `WHERE`, `|` or `]` (no operator is spelled so), and a string or
+/// an escaped name holding one is a token of its own.
 fn parse_list_comprehension(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
     // Parse opening bracket '['
     let (input, _) = ws(char('[')).parse(input)?;
 
-    // Parse variable name — must be followed by whitespace + IN keyword
-    let (input, variable) = parse_identifier(input)?;
+    // Parse variable name — must be followed by the IN keyword
+    let (input, variable) = common::symbolic_name(input)?;
+    let (input, _) = keyword("IN").parse(input)?;
 
-    // Parse 'IN' keyword (must be surrounded by whitespace and case-insensitive)
-    let (input, _) = ws(tag_no_case("IN")).parse(input)?;
-
-    // Parse the list expression. We need to stop at WHERE, |, or ]
-    // Use bracket-aware scanning to find the boundary
-    let (input, list_expr) = parse_list_comp_inner_expr(input, &["WHERE", "|", "]"])?;
-
-    // Parse optional WHERE clause
-    let (input, where_clause) = {
-        let trimmed = input.trim_start();
-        if trimmed.starts_with("WHERE") || trimmed.starts_with("where") {
-            // Consume WHERE keyword
-            let (input, _) = ws(tag_no_case("WHERE")).parse(input)?;
-            // Parse the WHERE expression, stopping at | or ]
-            let (input, expr) = parse_list_comp_inner_expr(input, &["|", "]"])?;
-            (input, Some(Box::new(expr)))
-        } else {
-            (input, None)
-        }
-    };
-
-    // Parse optional projection (| expr)
-    let (input, projection) = {
-        let trimmed = input.trim_start();
-        if trimmed.starts_with('|') {
-            let (input, _) = ws(char('|')).parse(input)?;
-            // Parse the projection expression, stopping at ]
-            let (input, expr) = parse_list_comp_inner_expr(input, &["]"])?;
-            (input, Some(Box::new(expr)))
-        } else {
-            (input, None)
-        }
-    };
+    let (input, list_expr) = parse_expression(input)?;
+    let (input, where_clause) = opt(preceded(keyword("WHERE"), parse_expression)).parse(input)?;
+    let (input, projection) = opt(preceded(ws(char('|')), parse_expression)).parse(input)?;
 
     // Parse closing bracket ']'
     let (input, _) = ws(char(']')).parse(input)?;
@@ -479,183 +483,10 @@ fn parse_list_comprehension(input: &'_ str) -> IResult<&'_ str, Expression<'_>> 
         Expression::ListComprehension(ListComprehension {
             variable,
             list_expr: Box::new(list_expr),
-            where_clause,
-            projection,
+            where_clause: where_clause.map(Box::new),
+            projection: projection.map(Box::new),
         }),
     ))
-}
-
-/// Parse an expression inside a list comprehension, stopping at specified keywords/chars.
-/// Handles bracket nesting, parenthesis nesting, and string literals so that
-/// keywords inside strings (e.g., `"WHERE"`) or nested brackets are not treated as stops.
-fn parse_list_comp_inner_expr<'a>(
-    input: &'a str,
-    stop_at: &[&str],
-) -> IResult<&'a str, Expression<'a>> {
-    let mut depth_bracket = 0i32;
-    let mut depth_paren = 0i32;
-    let mut i = 0;
-    let bytes = input.as_bytes();
-
-    while i < bytes.len() {
-        let ch = bytes[i] as char;
-
-        // Skip string literals — don't match keywords or track brackets inside them
-        if ch == '\'' || ch == '"' {
-            let quote = ch;
-            i += 1;
-            while i < bytes.len() {
-                if bytes[i] as char == '\\' {
-                    i += 2; // skip escaped character
-                    continue;
-                }
-                if bytes[i] as char == quote {
-                    i += 1; // consume closing quote
-                    break;
-                }
-                i += 1;
-            }
-            continue;
-        }
-
-        match ch {
-            '[' => depth_bracket += 1,
-            ']' => {
-                if depth_bracket == 0 && depth_paren == 0 {
-                    // Check if "]" is a stop token
-                    if stop_at.contains(&"]") {
-                        break;
-                    }
-                }
-                depth_bracket -= 1;
-            }
-            '(' => depth_paren += 1,
-            ')' => {
-                if depth_paren > 0 {
-                    depth_paren -= 1;
-                }
-            }
-            _ => {
-                // Only check keyword stops at depth 0
-                if depth_bracket == 0 && depth_paren == 0 {
-                    for token in stop_at {
-                        // Bytes: `i` may be inside a character of a name (`lé`).
-                        let candidate = bytes.get(i..i + token.len());
-                        if *token != "]"
-                            && candidate.is_some_and(|c| c.eq_ignore_ascii_case(token.as_bytes()))
-                        {
-                            // A keyword is a word (not part of a larger
-                            // identifier: `a_where_b`, `léwhere`); `|` stops
-                            // wherever it is (`x>1|x`).
-                            let name = |b: u8| b.is_ascii_alphanumeric() || b == b'_' || b >= 0x80;
-                            let word = token.starts_with(|c: char| c.is_ascii_alphabetic());
-                            let before_ok = !word || i == 0 || !name(bytes[i - 1]);
-                            let after_ok =
-                                !word || bytes.get(i + token.len()).is_none_or(|&b| !name(b));
-                            if before_ok && after_ok {
-                                // Found stop token at position i
-                                let expr_str = input[..i].trim_end();
-                                let remaining = &input[i..];
-                                let (leftover, expr) = parse_expression(expr_str)?;
-                                if !leftover.trim().is_empty() {
-                                    return Err(nom::Err::Error(Error::new(
-                                        input,
-                                        ErrorKind::TakeWhile1,
-                                    )));
-                                }
-                                return Ok((remaining, expr));
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        i += 1;
-    }
-
-    // Reached end of relevant portion (or found ] at depth 0)
-    let expr_str = input[..i].trim_end();
-    let remaining = &input[i..];
-
-    if expr_str.is_empty() {
-        return Err(nom::Err::Error(Error::new(input, ErrorKind::TakeWhile1)));
-    }
-
-    let (leftover, expr) = parse_expression(expr_str)?;
-    if !leftover.trim().is_empty() {
-        return Err(nom::Err::Error(Error::new(input, ErrorKind::TakeWhile1)));
-    }
-
-    Ok((remaining, expr))
-}
-
-/// Parse the list expression in reduce, stopping at '|'
-fn parse_reduce_list_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
-    // Parse a simple expression that doesn't cross the '|' boundary
-    // This handles: variable, list literal, function call, property access
-    let (input, _) = multispace0.parse(input)?;
-
-    // Try to parse a list literal first
-    if input.starts_with('[') {
-        return parse_list_literal(input);
-    }
-
-    // Try function call (e.g., nodes(path))
-    let func_result = parse_function_call(input);
-    if func_result.is_ok() {
-        return func_result;
-    }
-
-    // Try property access (e.g., u.friends)
-    let prop_result = parse_property_access(input);
-    if prop_result.is_ok() {
-        return prop_result;
-    }
-
-    // Fall back to simple variable
-    let (input, var) = parse_identifier(input)?;
-    Ok((input, Expression::Variable(var)))
-}
-
-/// Parse the body expression in reduce, stopping at ')'
-fn parse_reduce_body_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
-    // Parse expression but be careful with parentheses
-    // We need to track depth to handle nested expressions
-    let mut depth = 0;
-    let mut end_pos = 0;
-    let chars: Vec<char> = input.chars().collect();
-
-    for (i, &c) in chars.iter().enumerate() {
-        match c {
-            '(' => depth += 1,
-            ')' => {
-                if depth == 0 {
-                    end_pos = i;
-                    break;
-                }
-                depth -= 1;
-            }
-            _ => {}
-        }
-    }
-
-    if end_pos == 0 && depth == 0 {
-        // No closing paren found at depth 0, use whole remaining input
-        end_pos = input.len();
-    }
-
-    let expr_str = &input[..end_pos];
-    let remaining = &input[end_pos..];
-
-    // Now parse the expression substring
-    let (leftover, expr) = parse_expression(expr_str.trim())?;
-
-    // Make sure we consumed the whole expression
-    if !leftover.trim().is_empty() {
-        return Err(nom::Err::Error(Error::new(input, ErrorKind::TakeWhile1)));
-    }
-
-    Ok((remaining, expr))
 }
 
 fn parse_primary(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
@@ -1014,23 +845,22 @@ fn parse_logical_or(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
     Ok((remaining_input, final_expression))
 }
 
-fn is_identifier_char(c: char) -> bool {
-    c.is_alphanumeric() || c == '_'
-}
-
-// Parse an identifier and return it as a String.
-pub fn parse_identifier(input: &str) -> IResult<&str, &str> {
-    take_while1(is_identifier_char).parse(input)
-}
-
 pub fn parse_function_call(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
-    // First, parse the function name - support dotted names like ch.arrayFilter
-    // Parse identifier parts separated by dots
-    let (input, name_parts) = separated_list0(char('.'), ws(parse_identifier)).parse(input)?;
+    // First, parse the function name - support dotted (namespaced) names like
+    // ch.arrayFilter; each part is a symbolic name (`` `toUpper`(x) ``).
+    let start = input;
+    let (input, name_parts) = separated_list0(char('.'), ws(common::symbolic_name)).parse(input)?;
 
-    // If no dots found, need at least one identifier
-    if name_parts.is_empty() {
-        return Err(nom::Err::Error(Error::new(input, ErrorKind::Alpha)));
+    // If no dots found, need at least one identifier. A function's name is
+    // letters, digits and `_`, escaped or not: a function the library does
+    // not know is called by its name in the SQL (`ch.` / passthrough), so
+    // another character (`` `foo bar`(x) ``, `` `a.b`(x) ``) is no call.
+    if name_parts.is_empty()
+        || name_parts
+            .iter()
+            .any(|p| p.is_empty() || !p.chars().all(|c| c.is_alphanumeric() || c == '_'))
+    {
+        return Err(nom::Err::Error(Error::new(start, ErrorKind::Alpha)));
     }
 
     let name = name_parts.join(".");
@@ -1060,14 +890,15 @@ pub fn parse_function_call(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
 ///   elem -> elem.field = 'value'
 pub fn parse_lambda_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
     // Try single parameter: x ->
-    let single_param = map(terminated(ws(parse_identifier), ws(tag("->"))), |param| {
-        vec![param]
-    });
+    let single_param = map(
+        terminated(ws(common::symbolic_name), ws(tag("->"))),
+        |param| vec![param],
+    );
 
     // Try multiple parameters: (x, y) ->
     let multi_param = delimited(
         ws(char('(')),
-        separated_list0(ws(char(',')), ws(parse_identifier)),
+        separated_list0(ws(char(',')), ws(common::symbolic_name)),
         delimited(ws(char(')')), ws(tag("->")), multispace0),
     );
 
@@ -1088,6 +919,7 @@ pub fn parse_lambda_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_
 
 /// Parse a map literal: {key1: value1, key2: value2}
 /// Used in duration({days: 5}), point({x: 1, y: 2}), etc.
+/// A key is a symbolic name (`` {`it's`: 1} ``).
 pub fn parse_map_literal(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
     // Parse content within { ... } as comma-separated key:value pairs
     let (input, entries) = delimited(
@@ -1098,7 +930,7 @@ pub fn parse_map_literal(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
             delimited(multispace0, char(','), multispace0),
             // Each entry is: key : value (using native tuple parser)
             (
-                parse_identifier,                               // key (identifier)
+                common::symbolic_name,                          // key
                 delimited(multispace0, char(':'), multispace0), // colon
                 parse_expression,                               // value (any expression)
             ),
@@ -1109,7 +941,7 @@ pub fn parse_map_literal(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
     .parse(input)?;
 
     // Transform (key, _, value) tuples into (key, value) pairs
-    let pairs: Vec<(&str, Expression)> = entries
+    let pairs: Vec<(Name, Expression)> = entries
         .into_iter()
         .map(|(key, _, value)| (key, value))
         .collect();
@@ -1137,156 +969,21 @@ pub fn parse_list_literal(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
     Ok((input, Expression::List(exprs)))
 }
 
-/// Parse a property name which can be either an identifier or a wildcard (*)
-fn parse_property_name(input: &str) -> IResult<&str, &str> {
-    nom::branch::alt((
-        nom::bytes::complete::tag("*"),
-        common::parse_alphanumeric_with_underscore,
-    ))
-    .parse(input)
-}
-
-pub fn parse_property_access(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
-    let original_input = input;
-
-    // First part: the base (e.g., "src" or "p")
-    let (mut input, base_str) = common::parse_alphanumeric_with_underscore(input)?;
-
-    // Parse the first property: base.property
-    let (new_input, _) = char('.')(input)?;
-    let (new_input, first_key) = parse_property_name(new_input)?;
-    input = new_input;
-
-    // Build initial expression for base.first_property
-    let base_expr = match parse_literal_or_variable_expression(base_str) {
-        Ok((_, Expression::Variable(base))) => base,
-        _ => return Err(nom::Err::Error(Error::new(input, ErrorKind::Float))),
-    };
-
-    if first_key == "*" {
-        return Ok((
-            input,
-            Expression::PropertyAccessExp(PropertyAccess {
-                base: base_expr,
-                key: "*",
-            }),
-        ));
-    }
-
-    // Greedily parse additional chained properties: .property2.property3...
-    // Builds a compound key like "msg.id" from "latestLike.msg.id"
-    let temporal_accessors = [
-        "year",
-        "month",
-        "day",
-        "hour",
-        "minute",
-        "second",
-        "millisecond",
-        "microsecond",
-        "nanosecond",
-    ];
-
-    // Check if first_key alone is a temporal accessor (e.g., birthday.month -> month(birthday)).
-    // This mirrors the chain loop's temporal check below, which only fires for SUBSEQUENT keys.
-    // Without this check, `birthday.month` would be PropertyAccess instead of FunctionCall.
-    //
-    // DESIGN NOTE: This is a context-free heuristic. In Cypher, `x.month` is ambiguous:
-    //   - If x is a temporal value: month(x) (temporal accessor)
-    //   - If x is a map/node: x['month'] (property access)
-    // The spec resolves this at the semantic level (type checking), but we resolve at parse
-    // time because post-WITH temporal values lose their type information. This means a node
-    // property literally named "month", "day", "year", etc. would be misinterpreted. If that
-    // occurs, the workaround is to use map syntax: `node['month']`.
-    //
-    // Guard: only apply when first_key is the TERMINAL segment (no further `.segment` follows).
-    // If chained (e.g., `x.month.something`), it's clearly a property access, not temporal.
-    if temporal_accessors.contains(&first_key) {
-        let peek_result: IResult<_, _, nom::error::Error<_>> =
-            preceded(char('.'), parse_property_name).parse(input);
-        if peek_result.is_err() {
-            return Ok((
-                input,
-                Expression::FunctionCallExp(crate::open_cypher_parser::ast::FunctionCall {
-                    name: first_key.to_string(),
-                    args: vec![Expression::Variable(base_expr)],
-                }),
-            ));
-        }
-    }
-
-    // Collect all key segments: first_key, then any additional .segment chains
-    let mut segments: Vec<&str> = vec![first_key];
-    let mut compound_input = input;
-
-    while let Ok((new_input, next_key)) =
-        preceded(char('.'), parse_property_name).parse(compound_input)
-    {
-        if temporal_accessors.contains(&next_key) {
-            // Temporal accessor ends the chain — build expression from segments so far
-            let inner_expr =
-                build_property_access_from_segments(base_expr, &segments, original_input)?;
-            return Ok((
-                new_input,
-                Expression::FunctionCallExp(crate::open_cypher_parser::ast::FunctionCall {
-                    name: next_key.to_string(),
-                    args: vec![inner_expr],
-                }),
-            ));
-        }
-        // Not temporal — add segment and continue
-        segments.push(next_key);
-        compound_input = new_input;
-    }
-
-    let expr = build_property_access_from_segments(base_expr, &segments, original_input)?;
-    let final_input = if segments.len() > 1 {
-        compound_input
-    } else {
-        input
-    };
-    Ok((final_input, expr))
-}
-
-/// Build a PropertyAccessExp from base and key segments.
-/// For single segment ["id"], key = "id".
-/// For multiple segments ["msg", "id"], key = "msg.id" (compound key as contiguous slice).
-fn build_property_access_from_segments<'a>(
-    base: &'a str,
-    segments: &[&'a str],
-    original_input: &'a str,
-) -> Result<Expression<'a>, nom::Err<Error<&'a str>>> {
-    let key = if segments.len() == 1 {
-        segments[0]
-    } else {
-        // Compute compound key as a contiguous slice from original_input
-        // first segment starts at some offset, last segment ends at some offset
-        let first = segments[0];
-        let last = segments[segments.len() - 1];
-        let first_start = first.as_ptr() as usize - original_input.as_ptr() as usize;
-        let last_end = last.as_ptr() as usize + last.len() - original_input.as_ptr() as usize;
-        &original_input[first_start..last_end]
-    };
-    match parse_literal_or_variable_expression(key) {
-        Ok(("", Expression::Variable(key))) => {
-            Ok(Expression::PropertyAccessExp(PropertyAccess { base, key }))
-        }
-        _ => Err(nom::Err::Error(Error::new(
-            original_input,
-            ErrorKind::Float,
-        ))),
-    }
-}
-
 /// Helper function to determine if a character is valid in a parameter name.
 fn is_param_char(c: char) -> bool {
     c.is_alphanumeric() || c == '_'
 }
 
+/// `$name`: a symbolic name (`` $`a b` ``) or a number (`$0`).
 pub fn parse_parameter(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
-    // println!("Input in parse_parameter {:?}", input);
-
-    let (input, param) = preceded(tag("$"), take_while1(is_param_char)).parse(input)?;
+    let (input, param) = preceded(
+        tag("$"),
+        alt((
+            common::symbolic_name,
+            map(take_while1(is_param_char), Name::Borrowed),
+        )),
+    )
+    .parse(input)?;
 
     // Check for temporal property accessor after the parameter: $param.year
     let (input, temporal_accessor) = opt(preceded(
@@ -1333,14 +1030,14 @@ fn is_binary_operator_keyword(s: &str) -> bool {
 
 /// Parse a label expression: variable:Label
 /// This checks if a variable has a specific label
-/// Example: message:Comment, n:Person
+/// Example: message:Comment, n:Person, `my node`:`My Label`
 fn parse_label_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
-    // Parse variable name (identifier)
-    let (input, variable) = ws(parse_identifier).parse(input)?;
+    // Parse variable name
+    let (input, variable) = ws(common::symbolic_name).parse(input)?;
     // Parse colon
     let (input, _) = char(':').parse(input)?;
-    // Parse label name (identifier)
-    let (input, label) = parse_identifier(input)?;
+    // Parse label name
+    let (input, label) = common::symbolic_name(input)?;
 
     Ok((input, Expression::LabelExpression { variable, label }))
 }
@@ -1351,27 +1048,42 @@ pub fn parse_literal_or_variable_expression(input: &'_ str) -> IResult<&'_ str, 
         map(ws(parse_double_quoted_string_literal), Expression::Literal),
         // Try label expression first (variable:Label)
         parse_label_expression,
-        // Parse alphanumeric values but reject binary operators as standalone expressions
+        // The star of `count(*)`, `RETURN *`, `WITH *`.
+        map(ws(tag("*")), |_| Expression::Variable(Name::Borrowed("*"))),
+        // Numbers: 123, -456, 3.14, 1e10.
         |input| {
-            let (remaining, s) =
-                ws(common::parse_alphanumeric_with_underscore_dot_star).parse(input)?;
-
+            let (remaining, s) = ws(common::parse_numeric_literal).parse(input)?;
+            if let Ok(i) = s.parse::<i64>() {
+                Ok((remaining, Expression::Literal(Literal::Integer(i))))
+            } else if let Ok(f) = s.parse::<f64>() {
+                Ok((remaining, Expression::Literal(Literal::Float(f))))
+            } else {
+                Err(nom::Err::Error(Error::new(input, ErrorKind::Float)))
+            }
+        },
+        // A name: a variable, or the keyword literals `null`, `true` and
+        // `false` when unescaped (`` `true` `` is a variable). A binary
+        // operator keyword is no expression ("WHERE AND ...").
+        |input| {
+            let (name_input, _) = multispace0(input)?;
+            let (remaining, s) = ws(common::symbolic_name).parse(name_input)?;
+            if common::is_escaped_name(name_input) {
+                // The variable `` `*` ``: carried as the star of `RETURN *`
+                // and `count(*)`, it would read alike, so it does not parse.
+                if s == "*" {
+                    return Err(nom::Err::Error(Error::new(input, ErrorKind::Tag)));
+                }
+                return Ok((remaining, Expression::Variable(s)));
+            }
             if s.eq_ignore_ascii_case("null") {
                 Ok((remaining, Expression::Literal(Literal::Null)))
             } else if s.eq_ignore_ascii_case("true") {
                 Ok((remaining, Expression::Literal(Literal::Boolean(true))))
             } else if s.eq_ignore_ascii_case("false") {
                 Ok((remaining, Expression::Literal(Literal::Boolean(false))))
-            } else if let Ok(i) = s.parse::<i64>() {
-                Ok((remaining, Expression::Literal(Literal::Integer(i))))
-            } else if let Ok(f) = s.parse::<f64>() {
-                Ok((remaining, Expression::Literal(Literal::Float(f))))
-            } else if is_binary_operator_keyword(s) {
-                // Reject binary operators as standalone expressions
-                // This catches "WHERE AND ..." patterns
+            } else if is_binary_operator_keyword(&s) {
                 Err(nom::Err::Error(Error::new(input, ErrorKind::Tag)))
             } else {
-                // string literal is covered already in parse_string_literal fn. Any other string is variable now.
                 Ok((remaining, Expression::Variable(s)))
             }
         },
@@ -1573,7 +1285,7 @@ mod tests {
         assert_eq!(rem, "");
         let expected = Expression::OperatorApplicationExp(OperatorApplication {
             operator: Operator::IsNull,
-            operands: vec![Expression::Variable("a")],
+            operands: vec![Expression::Variable("a".into())],
         });
         assert_eq!(&expr, &expected);
     }
@@ -1584,7 +1296,7 @@ mod tests {
         assert_eq!(rem, "");
         let expected = Expression::OperatorApplicationExp(OperatorApplication {
             operator: Operator::IsNotNull,
-            operands: vec![Expression::Variable("a")],
+            operands: vec![Expression::Variable("a".into())],
         });
         assert_eq!(&expr, &expected);
     }
@@ -1596,7 +1308,7 @@ mod tests {
         assert_eq!(rem, "");
         let expected = Expression::OperatorApplicationExp(OperatorApplication {
             operator: Operator::Not,
-            operands: vec![Expression::Variable("a")],
+            operands: vec![Expression::Variable("a".into())],
         });
         assert_eq!(&expr, &expected);
     }
@@ -1608,7 +1320,10 @@ mod tests {
         assert_eq!(rem, "");
         let expected = Expression::OperatorApplicationExp(OperatorApplication {
             operator: Operator::Addition,
-            operands: vec![Expression::Variable("a"), Expression::Variable("b")],
+            operands: vec![
+                Expression::Variable("a".into()),
+                Expression::Variable("b".into()),
+            ],
         });
         assert_eq!(&expr, &expected);
     }
@@ -1620,7 +1335,10 @@ mod tests {
         assert_eq!(rem, "");
         let expected = Expression::OperatorApplicationExp(OperatorApplication {
             operator: Operator::And,
-            operands: vec![Expression::Variable("a"), Expression::Variable("b")],
+            operands: vec![
+                Expression::Variable("a".into()),
+                Expression::Variable("b".into()),
+            ],
         });
         assert_eq!(&expr, &expected);
     }
@@ -1632,7 +1350,10 @@ mod tests {
         assert_eq!(rem, "");
         let expected = Expression::OperatorApplicationExp(OperatorApplication {
             operator: Operator::Or,
-            operands: vec![Expression::Variable("a"), Expression::Variable("b")],
+            operands: vec![
+                Expression::Variable("a".into()),
+                Expression::Variable("b".into()),
+            ],
         });
         assert_eq!(&expr, &expected);
     }
@@ -1645,7 +1366,10 @@ mod tests {
         assert_eq!(rem, "");
         let expected = Expression::FunctionCallExp(FunctionCall {
             name: "foo".to_string(),
-            args: vec![Expression::Variable("a"), Expression::Variable("b")],
+            args: vec![
+                Expression::Variable("a".into()),
+                Expression::Variable("b".into()),
+            ],
         });
         assert_eq!(&expr, &expected);
     }
@@ -1657,7 +1381,7 @@ mod tests {
         assert_eq!(rem, "");
         let expected = Expression::FunctionCallExp(FunctionCall {
             name: "count".to_string(),
-            args: vec![Expression::Variable("*")],
+            args: vec![Expression::Variable("*".into())],
         });
         assert_eq!(&expr, &expected);
     }
@@ -1667,67 +1391,123 @@ mod tests {
     fn test_parse_list_literal() {
         let (rem, expr) = parse_list_literal("[a, b]").unwrap();
         assert_eq!(rem, "");
-        let expected = Expression::List(vec![Expression::Variable("a"), Expression::Variable("b")]);
+        let expected = Expression::List(vec![
+            Expression::Variable("a".into()),
+            Expression::Variable("b".into()),
+        ]);
         assert_eq!(&expr, &expected);
     }
 
     //  property access
+    fn prop<'a>(base: &'a str, key: &'a str) -> Expression<'a> {
+        Expression::PropertyAccessExp(PropertyAccess {
+            base: base.into(),
+            key: key.into(),
+        })
+    }
+
+    fn prop_of<'a>(base: Expression<'a>, key: &'a str) -> Expression<'a> {
+        Expression::PropertyOf {
+            base: Box::new(base),
+            key: key.into(),
+        }
+    }
+
     #[test]
     fn test_parse_property_access() {
-        let (rem, expr) = parse_property_access("user.name").unwrap();
+        let (rem, expr) = parse_expression("user.name").unwrap();
         assert_eq!(rem, "");
-        let expected = Expression::PropertyAccessExp(PropertyAccess {
-            base: "user",
-            key: "name",
-        });
-        assert_eq!(&expr, &expected);
+        assert_eq!(expr, prop("user", "name"));
     }
 
     #[test]
     fn test_parse_chained_property_access() {
-        // latestLike.msg.id → PropertyAccess { base: "latestLike", key: "msg.id" }
-        let (rem, expr) = parse_property_access("latestLike.msg.id").unwrap();
+        // latestLike.msg.id is (latestLike.msg).id: the conversion carries it as
+        // the variable's key path `msg.id`.
+        let (rem, expr) = parse_expression("latestLike.msg.id").unwrap();
         assert_eq!(rem, "");
-        let expected = Expression::PropertyAccessExp(PropertyAccess {
-            base: "latestLike",
-            key: "msg.id",
-        });
-        assert_eq!(&expr, &expected);
+        assert_eq!(expr, prop_of(prop("latestLike", "msg"), "id"));
     }
 
     #[test]
     fn test_parse_chained_property_access_with_remainder() {
-        // latestLike.msg.id + 1 → key = "msg.id", remainder = " + 1"
-        let (rem, expr) = parse_property_access("latestLike.msg.id + 1").unwrap();
+        let (rem, expr) = parse_postfix_expression("latestLike.msg.id + 1").unwrap();
         assert_eq!(rem, " + 1");
-        let expected = Expression::PropertyAccessExp(PropertyAccess {
-            base: "latestLike",
-            key: "msg.id",
-        });
-        assert_eq!(&expr, &expected);
+        assert_eq!(expr, prop_of(prop("latestLike", "msg"), "id"));
     }
 
     #[test]
     fn test_parse_chained_property_with_temporal() {
         // latestLike.msg.creationDate.year → year(latestLike.msg.creationDate)
-        let (rem, expr) = parse_property_access("latestLike.msg.creationDate.year").unwrap();
+        let (rem, expr) = parse_expression("latestLike.msg.creationDate.year").unwrap();
         assert_eq!(rem, "");
-        match expr {
-            Expression::FunctionCallExp(fc) => {
-                assert_eq!(fc.name, "year");
-                assert_eq!(fc.args.len(), 1);
-                match &fc.args[0] {
-                    Expression::PropertyAccessExp(pa) => {
-                        assert_eq!(pa.base, "latestLike");
-                        assert_eq!(pa.key, "msg.creationDate");
-                    }
-                    other => panic!("Expected PropertyAccessExp, got {:?}", other),
-                }
-            }
-            other => panic!("Expected FunctionCallExp, got {:?}", other),
-        }
+        assert_eq!(
+            expr,
+            Expression::FunctionCallExp(FunctionCall {
+                name: "year".to_string(),
+                args: vec![prop_of(prop("latestLike", "msg"), "creationDate")],
+            })
+        );
     }
 
+    /// Escaped names in a property access, and a property of any value
+    /// (#1489, #1381).
+    #[test]
+    fn property_access_of_escaped_names_and_any_value_1489_1381() {
+        for (input, expected) in [
+            ("a.`name`", prop("a", "name")),
+            ("`my node`.`my key`", prop("my node", "my key")),
+            ("a.`q?`", prop("a", "q?")),
+            ("a.`q.x`", prop("a", "q.x")),
+            // An escaped temporal accessor is the accessor, as unescaped.
+            (
+                "d.`year`",
+                Expression::FunctionCallExp(FunctionCall {
+                    name: "year".to_string(),
+                    args: vec![Expression::Variable("d".into())],
+                }),
+            ),
+            ("_a.name", prop("_a", "name")),
+            (
+                "xs[1].name",
+                prop_of(
+                    Expression::ArraySubscript {
+                        array: Box::new(Expression::Variable("xs".into())),
+                        index: Box::new(Expression::Literal(Literal::Integer(1))),
+                    },
+                    "name",
+                ),
+            ),
+            (
+                "head(l).name",
+                prop_of(
+                    Expression::FunctionCallExp(FunctionCall {
+                        name: "head".to_string(),
+                        args: vec![Expression::Variable("l".into())],
+                    }),
+                    "name",
+                ),
+            ),
+            ("(a).name", prop("a", "name")),
+            ("(a.b).c", prop_of(prop("a", "b"), "c")),
+        ] {
+            let (rem, expr) = parse_expression(input).unwrap_or_else(|e| panic!("{input}: {e:?}"));
+            assert_eq!(rem, "", "{input}");
+            assert_eq!(expr, expected, "{input}");
+        }
+        // nss[0][1].name: a property of an element of an element.
+        let (rem, expr) = parse_expression("nss[0][-1].name").unwrap();
+        assert_eq!(rem, "");
+        let Expression::PropertyOf { base, key } = expr else {
+            panic!("{expr:?}");
+        };
+        assert_eq!(key, "name");
+        assert!(matches!(
+            *base,
+            Expression::ArraySubscript { ref array, .. }
+                if matches!(**array, Expression::ArraySubscript { .. })
+        ));
+    }
     // fn_call + operator
     #[test]
     fn test_parse_expression_fn_call_expression() {
@@ -1739,9 +1519,12 @@ mod tests {
             operands: vec![
                 Expression::FunctionCallExp(FunctionCall {
                     name: "foo".to_string(),
-                    args: vec![Expression::Variable("a"), Expression::Variable("b")],
+                    args: vec![
+                        Expression::Variable("a".into()),
+                        Expression::Variable("b".into()),
+                    ],
                 }),
-                Expression::Variable("c"),
+                Expression::Variable("c".into()),
             ],
         });
         assert_eq!(&expr, &expected);
@@ -2346,42 +2129,18 @@ mod tests {
 
     #[test]
     fn test_temporal_accessor_rejects_partial_identifiers() {
-        // "yearly" should NOT match as temporal accessor "year"
-        let input = "datetime('2013-01-01').yearly";
-        let result = parse_expression(input);
-        // Parser should consume datetime(...) but NOT .yearly as temporal.
-        // Err is also acceptable — failing to parse is fine.
-        if let Ok((remaining, _)) = result {
+        // `yearly`, `months`, `year_start` are not the accessors `year` /
+        // `month`: each is the property of that name (#1381: any value's).
+        for key in ["yearly", "months", "year_start"] {
+            let input = format!("datetime('2013-01-01').{key}");
+            let (remaining, expr) = parse_expression(&input).unwrap();
+            assert_eq!(remaining, "", "{input}");
             assert!(
-                remaining.contains("yearly"),
-                "Expected 'yearly' to remain unparsed, got remaining: {}",
-                remaining
-            );
-        }
-
-        // "months" should NOT match as temporal accessor "month"
-        let input = "datetime('2013-01-01').months";
-        let result = parse_expression(input);
-        if let Ok((remaining, _)) = result {
-            assert!(
-                remaining.contains("months"),
-                "Expected 'months' to remain unparsed, got remaining: {}",
-                remaining
-            );
-        }
-
-        // "year_start" should NOT match as temporal accessor "year"
-        let input = "datetime('2013-01-01').year_start";
-        let result = parse_expression(input);
-        if let Ok((remaining, _)) = result {
-            assert!(
-                remaining.contains("year_start"),
-                "Expected 'year_start' to remain unparsed, got remaining: {}",
-                remaining
+                matches!(&expr, Expression::PropertyOf { key: k, .. } if k == key),
+                "{input}: {expr:?}"
             );
         }
     }
-
     #[test]
     fn test_temporal_accessor_single_segment() {
         // birthday.month should parse as month(birthday)
@@ -2394,7 +2153,7 @@ mod tests {
                 if let Expression::FunctionCallExp(fc) = &expr {
                     assert_eq!(fc.name, "month");
                     assert_eq!(fc.args.len(), 1);
-                    assert!(matches!(&fc.args[0], Expression::Variable("birthday")));
+                    assert!(matches!(&fc.args[0], Expression::Variable(v) if v == "birthday"));
                 } else {
                     panic!("Expected FunctionCallExp(month), got {:?}", expr);
                 }
@@ -2428,7 +2187,7 @@ mod tests {
         assert_eq!(remaining, "");
         if let Expression::ListComprehension(lc) = &expr {
             assert_eq!(lc.variable, "x");
-            assert!(matches!(&*lc.list_expr, Expression::Variable("list")));
+            assert!(matches!(&*lc.list_expr, Expression::Variable(v) if v == "list"));
             assert!(lc.where_clause.is_none());
             assert!(lc.projection.is_none());
         } else {
@@ -2502,7 +2261,7 @@ mod tests {
         let Expression::ListComprehension(lc) = &expr else {
             panic!("expected ListComprehension, got {:?}", expr);
         };
-        assert!(matches!(&*lc.list_expr, Expression::Variable("a_where_b")));
+        assert!(matches!(&*lc.list_expr, Expression::Variable(v) if v == "a_where_b"));
         // A name of other than ASCII letters is no stop either, and is read
         // without a panic (`i` inside a character).
         for input in ["[x IN léwhere | x]", "[x IN lé WHERE x > 0]"] {
@@ -2514,7 +2273,7 @@ mod tests {
         let Expression::ListComprehension(lc) = &expr else {
             panic!("expected ListComprehension, got {:?}", expr);
         };
-        assert!(matches!(&*lc.list_expr, Expression::Variable("WHEREx")));
+        assert!(matches!(&*lc.list_expr, Expression::Variable(v) if v == "WHEREx"));
         assert!(lc.where_clause.is_none());
     }
 
@@ -2526,7 +2285,7 @@ mod tests {
         assert_eq!(remaining, "");
         if let Expression::ListComprehension(lc) = &expr {
             assert_eq!(lc.variable, "p");
-            assert!(matches!(&*lc.list_expr, Expression::Variable("posts")));
+            assert!(matches!(&*lc.list_expr, Expression::Variable(v) if v == "posts"));
             assert!(lc.where_clause.is_some());
         } else {
             panic!("Expected ListComprehension, got {:?}", expr);
@@ -2588,6 +2347,101 @@ mod tests {
             assert!(lc.where_clause.is_some());
         } else {
             panic!("Expected ListComprehension, got {:?}", expr);
+        }
+    }
+
+    /// Escaped names in expressions: map keys (#1421), parameters, lambda
+    /// parameters, label tests, comprehension variables (#1381), the
+    /// keyword literals; a doubled backtick is one (#1489).
+    #[test]
+    fn escaped_names_in_expressions_1489_1421() {
+        let (rem, e) = parse_expression("{`it's`: 1, `a``b`: 2, c: 3}").unwrap();
+        assert_eq!(rem, "");
+        let Expression::MapLiteral(entries) = e else {
+            panic!("{e:?}");
+        };
+        let keys: Vec<&str> = entries.iter().map(|(k, _)| &**k).collect();
+        assert_eq!(keys, ["it's", "a`b", "c"]);
+        assert!(matches!(entries[1].0, Name::Owned(_)));
+
+        let (_, e) = parse_expression("$`my param`").unwrap();
+        assert_eq!(e, Expression::Parameter("my param".into()));
+        let (_, e) = parse_expression("$0").unwrap();
+        assert_eq!(e, Expression::Parameter("0".into()));
+
+        let (_, e) = parse_expression("`n x`:`My Label`").unwrap();
+        assert_eq!(
+            e,
+            Expression::LabelExpression {
+                variable: "n x".into(),
+                label: "My Label".into(),
+            }
+        );
+
+        let (rem, e) = parse_expression("[`x]y` IN l WHERE `x]y` > 1 | `x]y`]").unwrap();
+        assert_eq!(rem, "");
+        let Expression::ListComprehension(lc) = e else {
+            panic!("{e:?}");
+        };
+        assert_eq!(lc.variable, "x]y");
+        assert_eq!(*lc.list_expr, Expression::Variable("l".into()));
+        assert_eq!(
+            lc.projection.as_deref(),
+            Some(&Expression::Variable("x]y".into()))
+        );
+
+        let (rem, e) = parse_expression("reduce(`a c` = 0, `x|` IN l | `a c` + `x|`)").unwrap();
+        assert_eq!(rem, "");
+        let Expression::ReduceExp(r) = e else {
+            panic!("{e:?}");
+        };
+        assert_eq!((&*r.accumulator, &*r.variable), ("a c", "x|"));
+
+        // Escaped, a keyword literal is a variable; a binary operator
+        // keyword is a name.
+        for (input, name) in [("`true`", "true"), ("`NULL`", "NULL"), ("`AND`", "AND")] {
+            assert_eq!(
+                parse_expression(input).unwrap().1,
+                Expression::Variable(name.into()),
+                "{input}"
+            );
+        }
+        assert_eq!(
+            parse_expression("true").unwrap().1,
+            Expression::Literal(Literal::Boolean(true))
+        );
+        // `` `*` `` would read as the star of `count(*)`: no parse.
+        assert!(parse_expression("`*`").is_err());
+        assert!(!matches!(parse_expression("a.`*`"), Ok(("", _))));
+    }
+
+    /// A string, or an escaped name, holding a `]`, `|`, `)` or `WHERE`
+    /// ends no comprehension, reduce or pattern comprehension (#1489).
+    #[test]
+    fn brackets_inside_strings_and_names_end_nothing_1489() {
+        for input in [
+            "[x IN ['a'] | x + ']']",
+            "[x IN ['a'] WHERE x <> '|' | x + ' WHERE ']",
+            "reduce(s = '', x IN ['a'] | s + ')' + x)",
+            "[(a)-[:R]->(c) | c.name + ']']",
+            "[(a)-[:R]->(c) WHERE c.`x)` = ')' | c.`y]`]",
+            "[`a]` IN [1] | `a]`]",
+        ] {
+            let (rem, _) = parse_expression(input).unwrap_or_else(|e| panic!("{input}: {e:?}"));
+            assert_eq!(rem, "", "{input}");
+        }
+    }
+
+    /// A function's name is letters, digits and `_`, escaped or not: an
+    /// unknown function is called by its name in the SQL (#1489).
+    #[test]
+    fn escaped_function_names_1489() {
+        let (_, e) = parse_expression("`toUpper`(x)").unwrap();
+        assert!(matches!(e, Expression::FunctionCallExp(ref f) if f.name == "toUpper"));
+        let (_, e) = parse_expression("ch.`arrayFilter`(x)").unwrap();
+        assert!(matches!(e, Expression::FunctionCallExp(ref f) if f.name == "ch.arrayFilter"));
+        for input in ["`foo bar`(x)", "`a.b`(x)", "`f;`(x)"] {
+            assert!(!matches!(parse_expression(input), Ok(("", _))), "{input}");
         }
     }
 }

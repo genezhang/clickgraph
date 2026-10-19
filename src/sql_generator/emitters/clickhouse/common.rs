@@ -16,11 +16,12 @@
 /// Quote an identifier (column name, table name) if it contains special
 /// characters, using the **active dialect's** identifier delimiter.
 ///
-/// An identifier needs quoting when it contains any of:
-/// - Dots (.)
-/// - Spaces
-/// - Hyphens (-)
-/// - Parentheses
+/// An identifier needs quoting unless it is a plain ASCII identifier (a
+/// letter or `_`, then letters, digits and `_`, [`is_plain_identifier`]):
+/// a dot, a space, a hyphen, any other symbol, a non-ASCII letter (bare,
+/// ClickHouse reads `é` as an unrecognized token) or a leading digit. A
+/// Cypher name can hold any character (`` n.`a;b` ``, #1489), so a name
+/// is never emitted bare unless it is plain.
 ///
 /// When quoting is needed the delimiter is dialect-specific — ClickHouse
 /// double-quotes (`"id.orig_h"`), Spark/Databricks backticks
@@ -40,18 +41,27 @@
 /// assert_eq!(quote_identifier("user_id"), "user_id");
 /// assert_eq!(quote_identifier("id.orig_h"), "\"id.orig_h\"");
 /// assert_eq!(quote_identifier("user-name"), "\"user-name\"");
+/// // Any other symbol, a non-ASCII letter, a backslash (#1489).
+/// assert_eq!(quote_identifier("a;b"), "\"a;b\"");
+/// assert_eq!(quote_identifier("é"), "\"é\"");
+/// assert_eq!(quote_identifier(r"a\"), r#""a\\""#);
 /// ```
 pub fn quote_identifier(name: &str) -> String {
-    if name.contains('.')
-        || name.contains(' ')
-        || name.contains('-')
-        || name.contains('(')
-        || name.contains(')')
-    {
-        crate::sql_generator::function_mapper::current_function_mapper().quote_alias(name)
-    } else {
+    if is_plain_identifier(name) {
         name.to_string()
+    } else {
+        crate::sql_generator::function_mapper::current_function_mapper().quote_alias(name)
     }
+}
+
+/// A name that is a valid unquoted identifier in every dialect: an ASCII
+/// letter or `_`, then ASCII letters, digits and `_`.
+pub fn is_plain_identifier(name: &str) -> bool {
+    let mut chars = name.chars();
+    chars
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 /// Format a qualified column reference: table_alias.column_name

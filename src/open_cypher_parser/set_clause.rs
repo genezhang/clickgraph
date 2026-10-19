@@ -75,7 +75,7 @@ mod tests {
                 let expected_operator_application = OperatorApplication {
                     operator: Operator::Equal,
                     operands: vec![
-                        Expression::Variable("a"),
+                        Expression::Variable("a".into()),
                         Expression::Literal(Literal::Integer(1)),
                     ],
                 };
@@ -99,14 +99,14 @@ mod tests {
                 let expected_operator_application1 = OperatorApplication {
                     operator: Operator::Equal,
                     operands: vec![
-                        Expression::Variable("a"),
+                        Expression::Variable("a".into()),
                         Expression::Literal(Literal::Integer(1)),
                     ],
                 };
                 let expected_operator_application2 = OperatorApplication {
                     operator: Operator::Equal,
                     operands: vec![
-                        Expression::Variable("b"),
+                        Expression::Variable("b".into()),
                         Expression::Literal(Literal::Integer(2)),
                     ],
                 };
@@ -130,14 +130,14 @@ mod tests {
                 let expected_operator_application1 = OperatorApplication {
                     operator: Operator::Equal,
                     operands: vec![
-                        Expression::Variable("a"),
+                        Expression::Variable("a".into()),
                         Expression::Literal(Literal::Integer(1)),
                     ],
                 };
                 let expected_operator_application2 = OperatorApplication {
                     operator: Operator::Equal,
                     operands: vec![
-                        Expression::Variable("b"),
+                        Expression::Variable("b".into()),
                         Expression::Literal(Literal::Integer(2)),
                     ],
                 };

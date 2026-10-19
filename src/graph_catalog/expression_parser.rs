@@ -356,8 +356,10 @@ fn is_simple_column(s: &str) -> bool {
 }
 
 fn needs_quoting(col: &str) -> bool {
-    // If column name contains spaces or special chars, it needs quoting
-    col.chars().any(|c| !c.is_alphanumeric() && c != '_')
+    // Anything but a plain ASCII identifier: a symbol, a space, a non-ASCII
+    // letter (bare, ClickHouse reads `é` as an unrecognized token) or a
+    // leading digit (#1489: a Cypher name can hold any character).
+    !crate::clickhouse_query_generator::is_plain_identifier(col)
 }
 
 /// Quote a column identifier for the active SQL dialect — ClickHouse double

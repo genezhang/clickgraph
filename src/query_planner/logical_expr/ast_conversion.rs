@@ -89,6 +89,68 @@ impl<'a> From<open_cypher_parser::ast::PropertyAccess<'a>> for PropertyAccess {
     }
 }
 
+/// A property key holding a `.` (only an escaped one can, `` n.`q.x` ``) is
+/// refused: a variable's property path `v.k1.k2` is carried as the one key
+/// `k1.k2` (how the lowering reads a key of a map's value, S11o8), so the two
+/// would read alike.
+fn refuse_dotted_key(key: &str) -> Result<(), errors::LogicalExprError> {
+    if key.contains('.') {
+        return Err(errors::LogicalExprError::UnsupportedExpression(format!(
+            "a property key containing '.' (`{}`)",
+            key.replace('`', "``")
+        )));
+    }
+    Ok(())
+}
+
+/// `base.key` of a value other than a variable (`ast::Expression::PropertyOf`).
+/// A chain of keys on a variable, `v.k1.k2`, is the variable's property `k1.k2`
+/// as the parser has always carried it; anything else is `base['key']`, its
+/// dynamic form.
+fn property_of(
+    base: open_cypher_parser::ast::Expression<'_>,
+    key: open_cypher_parser::ast::Name<'_>,
+) -> Result<LogicalExpr, errors::LogicalExprError> {
+    use open_cypher_parser::ast::Expression;
+    refuse_dotted_key(&key)?;
+    let mut keys = vec![key];
+    let mut root = base;
+    while let Expression::PropertyOf { base, key } = root {
+        refuse_dotted_key(&key)?;
+        keys.push(key);
+        root = *base;
+    }
+    keys.reverse();
+    match root {
+        Expression::PropertyAccessExp(pa) if pa.key != "*" => {
+            refuse_dotted_key(&pa.key)?;
+            let mut path = pa.key.to_string();
+            for k in &keys {
+                path.push('.');
+                path.push_str(k);
+            }
+            Ok(LogicalExpr::PropertyAccessExp(PropertyAccess {
+                table_alias: TableAlias(pa.base.to_string()),
+                column: crate::graph_catalog::expression_parser::PropertyValue::Column(path),
+            }))
+        }
+        other => {
+            let mut out = LogicalExpr::try_from(other)?;
+            for k in keys {
+                out = LogicalExpr::ArraySubscript {
+                    array: Box::new(out),
+                    // A string literal's text is its raw body (escapes
+                    // undecoded), so the key's backslashes are escaped.
+                    index: Box::new(LogicalExpr::Literal(Literal::String(
+                        k.replace('\\', "\\\\"),
+                    ))),
+                };
+            }
+            Ok(out)
+        }
+    }
+}
+
 // =============================================================================
 // Direction Conversions
 // =============================================================================
@@ -494,7 +556,18 @@ impl<'a> std::convert::TryFrom<open_cypher_parser::ast::Expression<'a>> for Logi
                     Ok(LogicalExpr::TableAlias(TableAlias(s.to_string())))
                 }
             }
-            Expression::Parameter(s) => Ok(LogicalExpr::Parameter(s.to_string())),
+            // A parameter's value is put in its place by its name, which
+            // is letters, digits and `_` (`server::parameter_substitution`);
+            // another escaped name (`` $`p q` ``, #1489) cannot be given one.
+            Expression::Parameter(s) => {
+                if s.is_empty() || !s.chars().all(|c| c.is_alphanumeric() || c == '_') {
+                    return Err(errors::LogicalExprError::UnsupportedExpression(format!(
+                        "a parameter named `{}` (a parameter's name is letters, digits and _)",
+                        s.replace('`', "``")
+                    )));
+                }
+                Ok(LogicalExpr::Parameter(s.to_string()))
+            }
             Expression::List(exprs) => {
                 let logical_exprs = exprs
                     .into_iter()
@@ -504,8 +577,10 @@ impl<'a> std::convert::TryFrom<open_cypher_parser::ast::Expression<'a>> for Logi
             }
             Expression::FunctionCallExp(fc) => LogicalExpr::try_from(fc),
             Expression::PropertyAccessExp(pa) => {
+                refuse_dotted_key(&pa.key)?;
                 Ok(LogicalExpr::PropertyAccessExp(PropertyAccess::from(pa)))
             }
+            Expression::PropertyOf { base, key } => property_of(*base, key),
             Expression::OperatorApplicationExp(oa) => Ok(LogicalExpr::OperatorApplicationExp(
                 OperatorApplication::try_from(oa)?,
             )),
@@ -690,6 +765,7 @@ fn expr_contains_path_pattern(expr: &open_cypher_parser::ast::Expression<'_>) ->
                     .as_deref()
                     .is_some_and(expr_contains_path_pattern)
         }
+        Expression::PropertyOf { base, .. } => expr_contains_path_pattern(base),
         Expression::ArraySubscript { array, index } => {
             expr_contains_path_pattern(array) || expr_contains_path_pattern(index)
         }
@@ -734,7 +810,7 @@ mod listcomp_lowering_tests {
         Expression::OperatorApplicationExp(OperatorApplication {
             operator: op,
             operands: vec![
-                Expression::Variable("x"),
+                Expression::Variable("x".into()),
                 Expression::Literal(AstLiteral::Integer(rhs)),
             ],
         })
@@ -755,7 +831,7 @@ mod listcomp_lowering_tests {
     fn where_only_lowers_to_array_filter() {
         // [x IN [1,2,3] WHERE x > 1] -> arrayFilter(x -> x > 1, [1,2,3])
         let lowered = lower(ListComprehension {
-            variable: "x",
+            variable: "x".into(),
             list_expr: Box::new(list_123()),
             where_clause: Some(Box::new(bin_x(Operator::GreaterThan, 1))),
             projection: None,
@@ -775,7 +851,7 @@ mod listcomp_lowering_tests {
     fn map_only_lowers_to_array_map() {
         // [x IN [1,2,3] | x * 2] -> arrayMap(x -> x * 2, [1,2,3])
         let lowered = lower(ListComprehension {
-            variable: "x",
+            variable: "x".into(),
             list_expr: Box::new(list_123()),
             where_clause: None,
             projection: Some(Box::new(bin_x(Operator::Multiplication, 2))),
@@ -792,7 +868,7 @@ mod listcomp_lowering_tests {
     fn where_and_map_nests_map_over_filter() {
         // [x IN l WHERE p | e] -> arrayMap(x -> e, arrayFilter(x -> p, l))
         let lowered = lower(ListComprehension {
-            variable: "x",
+            variable: "x".into(),
             list_expr: Box::new(list_123()),
             where_clause: Some(Box::new(bin_x(Operator::GreaterThan, 1))),
             projection: Some(Box::new(bin_x(Operator::Multiplication, 10))),
@@ -810,7 +886,7 @@ mod listcomp_lowering_tests {
     fn identity_lowers_to_bare_list() {
         // [x IN [1,2,3]] -> [1,2,3] (no filter, no map)
         let lowered = lower(ListComprehension {
-            variable: "x",
+            variable: "x".into(),
             list_expr: Box::new(list_123()),
             where_clause: None,
             projection: None,
@@ -830,13 +906,13 @@ mod listcomp_lowering_tests {
         // fires on any `Expression::PathPattern` in the WHERE; the inner pattern
         // shape is irrelevant, so a bare `PathPattern::Node` suffices here.
         let pattern = Expression::PathPattern(AstPathPattern::Node(NodePattern {
-            name: Some("p"),
+            name: Some("p".into()),
             labels: None,
             properties: None,
         }));
         let err = lower(ListComprehension {
-            variable: "p",
-            list_expr: Box::new(Expression::Variable("posts")),
+            variable: "p".into(),
+            list_expr: Box::new(Expression::Variable("posts".into())),
             where_clause: Some(Box::new(pattern)),
             projection: None,
         })
@@ -852,7 +928,7 @@ mod listcomp_lowering_tests {
         // The guard recurses through operator operands, so a pattern buried in
         // `AND`/`NOT`/`OR` (`WHERE x > 0 AND (p)-[...]->()`) is still caught.
         let pattern = Expression::PathPattern(AstPathPattern::Node(NodePattern {
-            name: Some("p"),
+            name: Some("p".into()),
             labels: None,
             properties: None,
         }));
@@ -861,8 +937,8 @@ mod listcomp_lowering_tests {
             operands: vec![bin_x(Operator::GreaterThan, 0), pattern],
         });
         let err = lower(ListComprehension {
-            variable: "p",
-            list_expr: Box::new(Expression::Variable("posts")),
+            variable: "p".into(),
+            list_expr: Box::new(Expression::Variable("posts".into())),
             where_clause: Some(Box::new(where_clause)),
             projection: None,
         })
@@ -881,7 +957,7 @@ mod listcomp_lowering_tests {
         // PANICKED at render_expr.rs (pattern in expression context is
         // `unimplemented!`). It must fail loud instead.
         let pattern = Expression::PathPattern(AstPathPattern::Node(NodePattern {
-            name: Some("p"),
+            name: Some("p".into()),
             labels: None,
             properties: None,
         }));
@@ -891,8 +967,8 @@ mod listcomp_lowering_tests {
             else_expr: Some(Box::new(Expression::Literal(AstLiteral::Boolean(false)))),
         });
         let err = lower(ListComprehension {
-            variable: "p",
-            list_expr: Box::new(Expression::Variable("posts")),
+            variable: "p".into(),
+            list_expr: Box::new(Expression::Variable("posts".into())),
             where_clause: Some(Box::new(case)),
             projection: None,
         })
@@ -908,7 +984,7 @@ mod listcomp_lowering_tests {
         // The guard also covers the projection (`| …`), not just the WHERE:
         // `[p IN l | CASE WHEN (p)-[:R]->() THEN 1 ELSE 0 END]` must fail loud.
         let pattern = Expression::PathPattern(AstPathPattern::Node(NodePattern {
-            name: Some("p"),
+            name: Some("p".into()),
             labels: None,
             properties: None,
         }));
@@ -918,7 +994,7 @@ mod listcomp_lowering_tests {
             else_expr: Some(Box::new(Expression::Literal(AstLiteral::Integer(0)))),
         });
         let err = lower(ListComprehension {
-            variable: "p",
+            variable: "p".into(),
             list_expr: Box::new(list_123()),
             where_clause: None,
             projection: Some(Box::new(projection)),

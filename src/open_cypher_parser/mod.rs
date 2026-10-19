@@ -385,7 +385,7 @@ mod tests {
                 let match_clause = &ast.match_clauses[0];
 
                 if let (_, PathPattern::Node(node)) = &match_clause.path_patterns[0] {
-                    assert_eq!(node.name, Some("a"));
+                    assert_eq!(node.name.as_deref(), Some("a"));
                 } else {
                     panic!("Expected MATCH clause to contain a Node pattern");
                 }
@@ -393,7 +393,7 @@ mod tests {
                 let with_clause = ast.with_clause.unwrap();
                 assert_eq!(with_clause.with_items.len(), 1);
                 let with_item = &with_clause.with_items[0];
-                assert_eq!(with_item.expression, Expression::Variable("a"));
+                assert_eq!(with_item.expression, Expression::Variable("a".into()));
                 assert_eq!(with_item.alias, None);
 
                 // Check WHERE is now part of WITH clause
@@ -408,7 +408,10 @@ mod tests {
                 {
                     assert_eq!(operator_application.operator, Operator::Equal);
                     assert_eq!(operator_application.operands.len(), 2);
-                    assert_eq!(operator_application.operands[0], Expression::Variable("a"));
+                    assert_eq!(
+                        operator_application.operands[0],
+                        Expression::Variable("a".into())
+                    );
                     assert_eq!(
                         operator_application.operands[1],
                         Expression::Literal(Literal::Integer(1))
@@ -419,7 +422,7 @@ mod tests {
 
                 let create_clause = ast.create_clause.unwrap();
                 if let PathPattern::Node(node) = &create_clause.path_patterns[0] {
-                    assert_eq!(node.name, Some("b"));
+                    assert_eq!(node.name.as_deref(), Some("b"));
                 } else {
                     panic!("Expected CREATE clause to contain a Node pattern");
                 }
@@ -460,12 +463,15 @@ mod tests {
                 let delete_clause = ast.delete_clause.unwrap();
                 assert!(!delete_clause.is_detach);
                 assert_eq!(delete_clause.delete_items.len(), 1);
-                assert_eq!(delete_clause.delete_items[0], Expression::Variable("a"));
+                assert_eq!(
+                    delete_clause.delete_items[0],
+                    Expression::Variable("a".into())
+                );
 
                 let return_clause = ast.return_clause.unwrap();
                 assert_eq!(return_clause.return_items.len(), 2);
                 let return_item1 = &return_clause.return_items[0];
-                assert_eq!(return_item1.expression, Expression::Variable("a"));
+                assert_eq!(return_item1.expression, Expression::Variable("a".into()));
                 assert_eq!(return_item1.alias, None);
                 let return_item2 = &return_clause.return_items[1];
                 if let Expression::PropertyAccessExp(prop) = &return_item2.expression {
@@ -474,15 +480,15 @@ mod tests {
                 } else {
                     panic!("Expected second RETURN item to be a property access");
                 }
-                assert_eq!(return_item2.alias, Some("name"));
+                assert_eq!(return_item2.alias.as_deref(), Some("name"));
 
                 let order_by_clause = ast.order_by_clause.unwrap();
                 assert_eq!(order_by_clause.order_by_items.len(), 2);
                 let order_item1 = &order_by_clause.order_by_items[0];
-                assert_eq!(order_item1.expression, Expression::Variable("a"));
+                assert_eq!(order_item1.expression, Expression::Variable("a".into()));
                 assert_eq!(order_item1.order, OrerByOrder::Asc);
                 let order_item2 = &order_by_clause.order_by_items[1];
-                assert_eq!(order_item2.expression, Expression::Variable("b"));
+                assert_eq!(order_item2.expression, Expression::Variable("b".into()));
                 assert_eq!(order_item2.order, OrerByOrder::Desc);
 
                 let skip_clause = ast.skip_clause.unwrap();
@@ -635,10 +641,10 @@ mod tests {
                 PathPattern::ConnectedPattern(vec![
                     ConnectedPattern {
                         start_node: Rc::new(RefCell::new(NodePattern {
-                            name: Some("david"),
+                            name: Some("david".into()),
                             labels: None,
                             properties: Some(vec![Property::PropertyKV(PropertyKVPair {
-                                key: "name",
+                                key: "name".into(),
                                 value: Expression::Literal(Literal::String("David")),
                             })]),
                         })),
@@ -650,14 +656,14 @@ mod tests {
                             variable_length: None,
                         },
                         end_node: Rc::new(RefCell::new(NodePattern {
-                            name: Some("otherPerson"),
+                            name: Some("otherPerson".into()),
                             labels: None,
                             properties: None,
                         })),
                     },
                     ConnectedPattern {
                         start_node: Rc::new(RefCell::new(NodePattern {
-                            name: Some("otherPerson"),
+                            name: Some("otherPerson".into()),
                             labels: None,
                             properties: None,
                         })),
@@ -669,7 +675,7 @@ mod tests {
                             properties: None,
                         },
                         end_node: Rc::new(RefCell::new(NodePattern {
-                            name: Some("b"),
+                            name: Some("b".into()),
                             labels: None,
                             properties: None,
                         })),
@@ -687,15 +693,15 @@ mod tests {
         let expected_with_clause = WithClause {
             with_items: vec![
                 WithItem {
-                    expression: Expression::Variable("otherPerson"),
+                    expression: Expression::Variable("otherPerson".into()),
                     alias: None,
                 },
                 WithItem {
                     expression: Expression::FunctionCallExp(FunctionCall {
                         name: "count".to_string(),
-                        args: vec![Expression::Variable("*")],
+                        args: vec![Expression::Variable("*".into())],
                     }),
-                    alias: Some("foaf"),
+                    alias: Some("foaf".into()),
                 },
             ],
             is_star: false,
@@ -715,7 +721,7 @@ mod tests {
                         Expression::OperatorApplicationExp(OperatorApplication {
                             operator: Operator::GreaterThan,
                             operands: vec![
-                                Expression::Variable("foaf"),
+                                Expression::Variable("foaf".into()),
                                 Expression::Literal(Literal::Integer(1)),
                             ],
                         }),
@@ -724,13 +730,13 @@ mod tests {
                             operands: vec![
                                 Expression::OperatorApplicationExp(OperatorApplication {
                                     operator: Operator::IsNotNull,
-                                    operands: vec![Expression::Variable("fof")],
+                                    operands: vec![Expression::Variable("fof".into())],
                                 }),
                                 Expression::OperatorApplicationExp(OperatorApplication {
                                     operator: Operator::Addition,
                                     operands: vec![
-                                        Expression::Variable("a"),
-                                        Expression::Variable("b"),
+                                        Expression::Variable("a".into()),
+                                        Expression::Variable("b".into()),
                                     ],
                                 }),
                             ],
@@ -753,10 +759,10 @@ mod tests {
             distinct: false,
             return_items: vec![ReturnItem {
                 expression: Expression::PropertyAccessExp(PropertyAccess {
-                    base: "otherPerson",
-                    key: "name",
+                    base: "otherPerson".into(),
+                    key: "name".into(),
                 }),
-                alias: Some("otherName"),
+                alias: Some("otherName".into()),
                 original_text: None,
             }],
         };
@@ -770,8 +776,8 @@ mod tests {
         let expected_order_by_clause = OrderByClause {
             order_by_items: vec![OrderByItem {
                 expression: Expression::PropertyAccessExp(PropertyAccess {
-                    base: "otherPerson",
-                    key: "name",
+                    base: "otherPerson".into(),
+                    key: "name".into(),
                 }),
                 order: OrerByOrder::Desc,
             }],
@@ -825,43 +831,43 @@ mod tests {
                     // (p:Person {name: 'Tom Hardy'})-[r:ACTED_IN]->(movie:Movie)
                     ConnectedPattern {
                         start_node: Rc::new(RefCell::new(NodePattern {
-                            name: Some("p"),
-                            labels: Some(vec!["Person"]),
+                            name: Some("p".into()),
+                            labels: Some(vec!["Person".into()]),
                             properties: Some(vec![Property::PropertyKV(PropertyKVPair {
-                                key: "name",
+                                key: "name".into(),
                                 value: Expression::Literal(Literal::String("Tom Hardy")),
                             })]),
                         })),
                         relationship: RelationshipPattern {
-                            name: Some("r"),
+                            name: Some("r".into()),
                             direction: Direction::Outgoing,
                             variable_length: None,
-                            labels: Some(vec!["ACTED_IN"]),
+                            labels: Some(vec!["ACTED_IN".into()]),
                             properties: None,
                         },
                         end_node: Rc::new(RefCell::new(NodePattern {
-                            name: Some("movie"),
-                            labels: Some(vec!["Movie"]),
+                            name: Some("movie".into()),
+                            labels: Some(vec!["Movie".into()]),
                             properties: None,
                         })),
                     },
                     // (movie:Movie)<-[:DIRECTED]-(director:Person)
                     ConnectedPattern {
                         start_node: Rc::new(RefCell::new(NodePattern {
-                            name: Some("movie"),
-                            labels: Some(vec!["Movie"]),
+                            name: Some("movie".into()),
+                            labels: Some(vec!["Movie".into()]),
                             properties: None,
                         })),
                         relationship: RelationshipPattern {
                             name: None,
                             direction: Direction::Incoming,
                             variable_length: None,
-                            labels: Some(vec!["DIRECTED"]),
+                            labels: Some(vec!["DIRECTED".into()]),
                             properties: None,
                         },
                         end_node: Rc::new(RefCell::new(NodePattern {
-                            name: Some("director"),
-                            labels: Some(vec!["Person"]),
+                            name: Some("director".into()),
+                            labels: Some(vec!["Person".into()]),
                             properties: None,
                         })),
                     },
@@ -874,15 +880,15 @@ mod tests {
                         // p IS NOT NULL
                         Expression::OperatorApplicationExp(OperatorApplication {
                             operator: Operator::IsNotNull,
-                            operands: vec![Expression::Variable("p")],
+                            operands: vec![Expression::Variable("p".into())],
                         }),
                         // movie.name = 'Batman'
                         Expression::OperatorApplicationExp(OperatorApplication {
                             operator: Operator::Equal,
                             operands: vec![
                                 Expression::PropertyAccessExp(PropertyAccess {
-                                    base: "movie",
-                                    key: "name",
+                                    base: "movie".into(),
+                                    key: "name".into(),
                                 }),
                                 Expression::Literal(Literal::String("Batman")),
                             ],
@@ -903,17 +909,17 @@ mod tests {
             return_items: vec![
                 // p as tom_hardy
                 ReturnItem {
-                    expression: Expression::Variable("p"),
-                    alias: Some("tom_hardy"),
+                    expression: Expression::Variable("p".into()),
+                    alias: Some("tom_hardy".into()),
                     original_text: None,
                 },
                 // movie.name AS movieName
                 ReturnItem {
                     expression: Expression::PropertyAccessExp(PropertyAccess {
-                        base: "movie",
-                        key: "name",
+                        base: "movie".into(),
+                        key: "name".into(),
                     }),
-                    alias: Some("movieName"),
+                    alias: Some("movieName".into()),
                     original_text: None,
                 },
                 // (a)-[]->(c)
@@ -921,7 +927,7 @@ mod tests {
                     expression: Expression::PathPattern(PathPattern::ConnectedPattern(vec![
                         ConnectedPattern {
                             start_node: Rc::new(RefCell::new(NodePattern {
-                                name: Some("a"),
+                                name: Some("a".into()),
                                 labels: None,
                                 properties: None,
                             })),
@@ -933,7 +939,7 @@ mod tests {
                                 properties: None,
                             },
                             end_node: Rc::new(RefCell::new(NodePattern {
-                                name: Some("c"),
+                                name: Some("c".into()),
                                 labels: None,
                                 properties: None,
                             })),
@@ -998,16 +1004,16 @@ mod tests {
                 (
                     None,
                     PathPattern::Node(NodePattern {
-                        name: Some("a"),
-                        labels: Some(vec!["Person"]),
+                        name: Some("a".into()),
+                        labels: Some(vec!["Person".into()]),
                         properties: None,
                     }),
                 ),
                 (
                     None,
                     PathPattern::Node(NodePattern {
-                        name: Some("b"),
-                        labels: Some(vec!["Person"]),
+                        name: Some("b".into()),
+                        labels: Some(vec!["Person".into()]),
                         properties: None,
                     }),
                 ),
@@ -1020,8 +1026,8 @@ mod tests {
                             operator: Operator::Equal,
                             operands: vec![
                                 Expression::PropertyAccessExp(PropertyAccess {
-                                    base: "a",
-                                    key: "name",
+                                    base: "a".into(),
+                                    key: "name".into(),
                                 }),
                                 Expression::Literal(Literal::String("Node A")),
                             ],
@@ -1030,8 +1036,8 @@ mod tests {
                             operator: Operator::Equal,
                             operands: vec![
                                 Expression::PropertyAccessExp(PropertyAccess {
-                                    base: "b",
-                                    key: "name",
+                                    base: "b".into(),
+                                    key: "name".into(),
                                 }),
                                 Expression::Literal(Literal::String("Node B")),
                             ],
@@ -1050,25 +1056,25 @@ mod tests {
         let expected_create_clause = CreateClause {
             path_patterns: vec![PathPattern::ConnectedPattern(vec![ConnectedPattern {
                 start_node: Rc::new(RefCell::new(NodePattern {
-                    name: Some("a"),
+                    name: Some("a".into()),
                     labels: None,
                     properties: None,
                 })),
                 relationship: RelationshipPattern {
-                    name: Some("r"),
+                    name: Some("r".into()),
                     direction: Direction::Outgoing,
                     variable_length: None,
-                    labels: Some(vec!["RELTYPE"]),
+                    labels: Some(vec!["RELTYPE".into()]),
                     properties: Some(vec![Property::PropertyKV(PropertyKVPair {
-                        key: "name",
+                        key: "name".into(),
                         value: Expression::PropertyAccessExp(PropertyAccess {
-                            base: "a",
-                            key: "name",
+                            base: "a".into(),
+                            key: "name".into(),
                         }),
                     })]),
                 },
                 end_node: Rc::new(RefCell::new(NodePattern {
-                    name: Some("b"),
+                    name: Some("b".into()),
                     labels: None,
                     properties: None,
                 })),
@@ -1081,7 +1087,7 @@ mod tests {
         let expected_return_clause = ReturnClause {
             distinct: false,
             return_items: vec![ReturnItem {
-                expression: Expression::Variable("r"),
+                expression: Expression::Variable("r".into()),
                 alias: None,
                 original_text: Some("r"),
             }],
@@ -1134,10 +1140,10 @@ mod tests {
             path_patterns: vec![(
                 None,
                 PathPattern::Node(NodePattern {
-                    name: Some("n"),
+                    name: Some("n".into()),
                     labels: None,
                     properties: Some(vec![Property::PropertyKV(PropertyKVPair {
-                        key: "name",
+                        key: "name".into(),
                         value: Expression::Literal(Literal::String("Andres")),
                     })]),
                 }),
@@ -1152,15 +1158,18 @@ mod tests {
 
         let expected_set_item1 = OperatorApplication {
             operator: Operator::Equal,
-            operands: vec![Expression::Variable("n"), Expression::Parameter("props")],
+            operands: vec![
+                Expression::Variable("n".into()),
+                Expression::Parameter("props".into()),
+            ],
         };
 
         let expected_set_item2 = OperatorApplication {
             operator: Operator::Equal,
             operands: vec![
                 Expression::PropertyAccessExp(PropertyAccess {
-                    base: "n",
-                    key: "rage",
+                    base: "n".into(),
+                    key: "rage".into(),
                 }),
                 Expression::Literal(Literal::String("blah")),
             ],
@@ -1173,7 +1182,7 @@ mod tests {
         let expected_return_clause = ReturnClause {
             distinct: false,
             return_items: vec![ReturnItem {
-                expression: Expression::Variable("n"),
+                expression: Expression::Variable("n".into()),
                 alias: None,
                 original_text: Some("n"),
             }],
@@ -1229,10 +1238,10 @@ mod tests {
             path_patterns: vec![(
                 None,
                 PathPattern::Node(NodePattern {
-                    name: Some("n"),
+                    name: Some("n".into()),
                     labels: None,
                     properties: Some(vec![Property::PropertyKV(PropertyKVPair {
-                        key: "name",
+                        key: "name".into(),
                         value: Expression::Literal(Literal::String("Andres")),
                     })]),
                 }),
@@ -1245,7 +1254,7 @@ mod tests {
         let delete_clause = query_ast.delete_clause.unwrap();
         let expected_delete_clause = DeleteClause {
             is_detach: true,
-            delete_items: vec![Expression::Variable("n")],
+            delete_items: vec![Expression::Variable("n".into())],
         };
         assert_eq!(delete_clause, expected_delete_clause);
 
@@ -1303,10 +1312,10 @@ mod tests {
             path_patterns: vec![(
                 None,
                 PathPattern::Node(NodePattern {
-                    name: Some("andres"),
+                    name: Some("andres".into()),
                     labels: None,
                     properties: Some(vec![Property::PropertyKV(PropertyKVPair {
-                        key: "name",
+                        key: "name".into(),
                         value: Expression::Literal(Literal::String("Andres")),
                     })]),
                 }),
@@ -1320,12 +1329,12 @@ mod tests {
         let expected_remove_clause = RemoveClause {
             remove_items: vec![
                 PropertyAccess {
-                    base: "andres",
-                    key: "age",
+                    base: "andres".into(),
+                    key: "age".into(),
                 },
                 PropertyAccess {
-                    base: "andres",
-                    key: "address",
+                    base: "andres".into(),
+                    key: "address".into(),
                 },
             ],
         };
@@ -1336,7 +1345,7 @@ mod tests {
         let expected_return_clause = ReturnClause {
             distinct: false,
             return_items: vec![ReturnItem {
-                expression: Expression::Variable("andres"),
+                expression: Expression::Variable("andres".into()),
                 alias: None,
                 original_text: Some("andres"),
             }],
@@ -1393,8 +1402,8 @@ mod tests {
             path_patterns: vec![(
                 None,
                 PathPattern::Node(NodePattern {
-                    name: Some("p"),
-                    labels: Some(vec!["Person"]),
+                    name: Some("p".into()),
+                    labels: Some(vec!["Person".into()]),
                     properties: None,
                 }),
             )],
@@ -1407,8 +1416,8 @@ mod tests {
                             operator: Operator::In,
                             operands: vec![
                                 Expression::PropertyAccessExp(PropertyAccess {
-                                    base: "p",
-                                    key: "name",
+                                    base: "p".into(),
+                                    key: "name".into(),
                                 }),
                                 Expression::List(vec![
                                     Expression::Literal(Literal::String("Alice")),
@@ -1425,8 +1434,8 @@ mod tests {
                                     operator: Operator::GreaterThan,
                                     operands: vec![
                                         Expression::PropertyAccessExp(PropertyAccess {
-                                            base: "p",
-                                            key: "age",
+                                            base: "p".into(),
+                                            key: "age".into(),
                                         }),
                                         Expression::Literal(Literal::Integer(30)),
                                     ],
@@ -1436,8 +1445,8 @@ mod tests {
                                     operator: Operator::LessThan,
                                     operands: vec![
                                         Expression::PropertyAccessExp(PropertyAccess {
-                                            base: "p",
-                                            key: "age",
+                                            base: "p".into(),
+                                            key: "age".into(),
                                         }),
                                         Expression::Literal(Literal::Integer(20)),
                                     ],
@@ -1457,7 +1466,7 @@ mod tests {
         let expected_return_clause = ReturnClause {
             distinct: false,
             return_items: vec![ReturnItem {
-                expression: Expression::Variable("p"),
+                expression: Expression::Variable("p".into()),
                 alias: None,
                 original_text: Some("p"),
             }],
@@ -1517,8 +1526,8 @@ mod tests {
             path_patterns: vec![(
                 None,
                 PathPattern::Node(NodePattern {
-                    name: Some("p"),
-                    labels: Some(vec!["Person"]),
+                    name: Some("p".into()),
+                    labels: Some(vec!["Person".into()]),
                     properties: None,
                 }),
             )],
@@ -1533,8 +1542,8 @@ mod tests {
                                     operator: Operator::In,
                                     operands: vec![
                                         Expression::PropertyAccessExp(PropertyAccess {
-                                            base: "p",
-                                            key: "name",
+                                            base: "p".into(),
+                                            key: "name".into(),
                                         }),
                                         Expression::List(vec![
                                             Expression::Literal(Literal::String("Alice")),
@@ -1546,8 +1555,8 @@ mod tests {
                                     operator: Operator::NotIn,
                                     operands: vec![
                                         Expression::PropertyAccessExp(PropertyAccess {
-                                            base: "p",
-                                            key: "city",
+                                            base: "p".into(),
+                                            key: "city".into(),
                                         }),
                                         Expression::List(vec![
                                             Expression::Literal(Literal::String("Chicago")),
@@ -1565,8 +1574,8 @@ mod tests {
                                     operator: Operator::GreaterThan,
                                     operands: vec![
                                         Expression::PropertyAccessExp(PropertyAccess {
-                                            base: "p",
-                                            key: "age",
+                                            base: "p".into(),
+                                            key: "age".into(),
                                         }),
                                         Expression::Literal(Literal::Integer(30)),
                                     ],
@@ -1576,8 +1585,8 @@ mod tests {
                                     operator: Operator::LessThan,
                                     operands: vec![
                                         Expression::PropertyAccessExp(PropertyAccess {
-                                            base: "p",
-                                            key: "age",
+                                            base: "p".into(),
+                                            key: "age".into(),
                                         }),
                                         Expression::Literal(Literal::Integer(20)),
                                     ],
@@ -1597,7 +1606,7 @@ mod tests {
         let expected_return_clause = ReturnClause {
             distinct: false,
             return_items: vec![ReturnItem {
-                expression: Expression::Variable("p"),
+                expression: Expression::Variable("p".into()),
                 alias: None,
                 original_text: Some("p"),
             }],

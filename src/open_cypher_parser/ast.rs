@@ -1,5 +1,13 @@
 use serde::{Deserialize, Serialize};
-use std::{cell::RefCell, fmt, rc::Rc};
+use std::{borrow::Cow, cell::RefCell, fmt, rc::Rc};
+
+/// A symbolic name (variable, label, relationship type, property key, map
+/// key, alias, parameter name) as the query means it: a plain name, or the
+/// text of a backtick-quoted one with each doubled backtick (` `` `) read as
+/// one. It borrows from the query text unless the quoted name held an escaped
+/// backtick, whose unescaped form is not a slice of the input
+/// ([`super::common::symbolic_name`]).
+pub type Name<'a> = Cow<'a, str>;
 
 /// Type of UNION operation
 #[derive(Debug, PartialEq, Clone)]
@@ -101,13 +109,13 @@ pub struct UseClause<'a> {
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct MatchClause<'a> {
-    pub path_patterns: Vec<(Option<&'a str>, PathPattern<'a>)>, // Vec of (optional path_var, pattern)
+    pub path_patterns: Vec<(Option<Name<'a>>, PathPattern<'a>)>, // Vec of (optional path_var, pattern)
     pub where_clause: Option<WhereClause<'a>>, // Optional WHERE clause per MATCH (OpenCypher grammar compliant)
 }
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct OptionalMatchClause<'a> {
-    pub path_patterns: Vec<(Option<&'a str>, PathPattern<'a>)>, // (optional path_var, pattern), as in MATCH
+    pub path_patterns: Vec<(Option<Name<'a>>, PathPattern<'a>)>, // (optional path_var, pattern), as in MATCH
     pub where_clause: Option<WhereClause<'a>>,
 }
 
@@ -119,7 +127,7 @@ pub struct UnwindClause<'a> {
     /// The expression to unwind (must evaluate to an array/list)
     pub expression: Expression<'a>,
     /// The alias for each unwound element
-    pub alias: &'a str,
+    pub alias: Name<'a>,
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -157,7 +165,7 @@ pub struct ReturnClause<'a> {
 #[derive(Debug, PartialEq, Clone)]
 pub struct ReturnItem<'a> {
     pub expression: Expression<'a>,
-    pub alias: Option<&'a str>,
+    pub alias: Option<Name<'a>>,
     /// Original text of the expression from the query, used as default alias when no explicit AS is provided
     /// This preserves the exact user input including spacing, matching Neo4j's behavior
     pub original_text: Option<&'a str>,
@@ -206,7 +214,7 @@ pub struct CallArgument<'a> {
 #[derive(Debug, PartialEq, Clone)]
 pub struct WithItem<'a> {
     pub expression: Expression<'a>,
-    pub alias: Option<&'a str>,
+    pub alias: Option<Name<'a>>,
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -255,27 +263,27 @@ pub enum PathPattern<'a> {
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct NodePattern<'a> {
-    pub name: Option<&'a str>,                 // `a` in `(a:Person)`
-    pub labels: Option<Vec<&'a str>>, // `Person` in `(a:Person)` or `Person|Post` in `(a:Person|Post)`
+    pub name: Option<Name<'a>>,                // `a` in `(a:Person)`
+    pub labels: Option<Vec<Name<'a>>>, // `Person` in `(a:Person)` or `Person|Post` in `(a:Person|Post)`
     pub properties: Option<Vec<Property<'a>>>, // `{name: "Charlie Sheen"}`
 }
 
 impl<'a> NodePattern<'a> {
     /// Helper to get the first label (for single-label compatibility)
-    pub fn first_label(&self) -> Option<&'a str> {
-        self.labels.as_ref().and_then(|l| l.first()).copied()
+    pub fn first_label(&self) -> Option<&str> {
+        self.labels.as_ref().and_then(|l| l.first()).map(|l| &**l)
     }
 }
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum Property<'a> {
     PropertyKV(PropertyKVPair<'a>),
-    Param(&'a str),
+    Param(Name<'a>),
 }
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct PropertyKVPair<'a> {
-    pub key: &'a str,
+    pub key: Name<'a>,
     pub value: Expression<'a>,
 }
 
@@ -295,9 +303,9 @@ pub struct ConnectedPattern<'a> {
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct RelationshipPattern<'a> {
-    pub name: Option<&'a str>,
+    pub name: Option<Name<'a>>,
     pub direction: Direction,
-    pub labels: Option<Vec<&'a str>>, // Support multiple labels: [:TYPE1|TYPE2]
+    pub labels: Option<Vec<Name<'a>>>, // Support multiple labels: [:TYPE1|TYPE2]
     pub properties: Option<Vec<Property<'a>>>,
     pub variable_length: Option<VariableLengthSpec>,
 }
@@ -500,8 +508,8 @@ pub struct OperatorApplication<'a> {
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct PropertyAccess<'a> {
-    pub base: &'a str,
-    pub key: &'a str,
+    pub base: Name<'a>,
+    pub key: Name<'a>,
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -527,10 +535,10 @@ pub enum Expression<'a> {
     Literal(Literal<'a>),
 
     /// A variable (e.g. n, x, or even backtick-quoted names).
-    Variable(&'a str),
+    Variable(Name<'a>),
 
     /// A parameter, such as `$param` or `$0`.
-    Parameter(&'a str),
+    Parameter(Name<'a>),
 
     // A list literal: a vector of expressions.
     List(Vec<Expression<'a>>),
@@ -538,9 +546,17 @@ pub enum Expression<'a> {
     // A function call, e.g. length(p) or nodes(p).
     FunctionCallExp(FunctionCall<'a>),
 
-    // Property access. In Cypher you have both static and dynamic property accesses.
-    // This variant uses a boxed base expression and a boxed key expression.
+    /// A variable's property: `n.name`, `` `my node`.`my key` ``, `n.*`.
     PropertyAccessExp(PropertyAccess<'a>),
+
+    /// A property of any other value: a further key of a chain (`m.a.b` is
+    /// `(m.a).b`), or of an element, a call, a parenthesized expression
+    /// (`xs[1].name`, `head(l).name`, `(a).name`). The same as the dynamic
+    /// `base['key']` in Cypher.
+    PropertyOf {
+        base: Box<Expression<'a>>,
+        key: Name<'a>,
+    },
 
     // An operator application, e.g. 1 + 2 or 3 < 4.
     // The operator itself could be another enum.
@@ -559,13 +575,13 @@ pub enum Expression<'a> {
     ReduceExp(ReduceExpression<'a>),
     /// Map literal: {key1: value1, key2: value2}
     /// Used in duration({days: 5}), point({x: 1, y: 2}), etc.
-    MapLiteral(Vec<(&'a str, Expression<'a>)>),
+    MapLiteral(Vec<(Name<'a>, Expression<'a>)>),
     /// Label expression: variable:Label
     /// Returns true if the variable has the specified label
     /// Example: message:Comment, n:Person
     LabelExpression {
-        variable: &'a str,
-        label: &'a str,
+        variable: Name<'a>,
+        label: Name<'a>,
     },
     /// Lambda expression: param -> body
     /// Used in ClickHouse array functions like arrayFilter, arrayMap
@@ -606,7 +622,7 @@ pub enum Expression<'a> {
 #[derive(Debug, PartialEq, Clone)]
 pub struct LambdaExpression<'a> {
     /// Parameter names (single or multiple)
-    pub params: Vec<&'a str>,
+    pub params: Vec<Name<'a>>,
     /// Body expression (can reference params)
     pub body: Box<Expression<'a>>,
 }
@@ -634,11 +650,11 @@ pub struct ExistsSubquery<'a> {
 #[derive(Debug, PartialEq, Clone)]
 pub struct ReduceExpression<'a> {
     /// Name of the accumulator variable (e.g., "total")
-    pub accumulator: &'a str,
+    pub accumulator: Name<'a>,
     /// Initial value for the accumulator (e.g., 0)
     pub initial_value: Box<Expression<'a>>,
     /// Iteration variable name (e.g., "x")
-    pub variable: &'a str,
+    pub variable: Name<'a>,
     /// List expression to iterate over
     pub list: Box<Expression<'a>>,
     /// Expression to compute for each element (can reference both accumulator and variable)
@@ -680,7 +696,7 @@ pub struct PatternComprehension<'a> {
 #[derive(Debug, PartialEq, Clone)]
 pub struct ListComprehension<'a> {
     /// The iteration variable name (e.g., "x", "p")
-    pub variable: &'a str,
+    pub variable: Name<'a>,
     /// The list expression to iterate over
     pub list_expr: Box<Expression<'a>>,
     /// Optional WHERE clause for filtering

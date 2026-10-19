@@ -71,8 +71,8 @@ mod tests {
                 assert_eq!(remove_clause.remove_items.len(), 1);
                 let prop_access = &remove_clause.remove_items[0];
                 let expected = PropertyAccess {
-                    base: "user",
-                    key: "name",
+                    base: "user".into(),
+                    key: "name".into(),
                 };
                 assert_eq!(prop_access, &expected);
             }
@@ -89,12 +89,12 @@ mod tests {
                 assert_eq!(remaining, "");
                 assert_eq!(remove_clause.remove_items.len(), 2);
                 let expected1 = PropertyAccess {
-                    base: "user",
-                    key: "name",
+                    base: "user".into(),
+                    key: "name".into(),
                 };
                 let expected2 = PropertyAccess {
-                    base: "order",
-                    key: "date",
+                    base: "order".into(),
+                    key: "date".into(),
                 };
                 assert_eq!(&remove_clause.remove_items[0], &expected1);
                 assert_eq!(&remove_clause.remove_items[1], &expected2);
@@ -112,12 +112,12 @@ mod tests {
                 assert_eq!(remaining, "");
                 assert_eq!(remove_clause.remove_items.len(), 2);
                 let expected1 = PropertyAccess {
-                    base: "user",
-                    key: "name",
+                    base: "user".into(),
+                    key: "name".into(),
                 };
                 let expected2 = PropertyAccess {
-                    base: "order",
-                    key: "date",
+                    base: "order".into(),
+                    key: "date".into(),
                 };
                 assert_eq!(&remove_clause.remove_items[0], &expected1);
                 assert_eq!(&remove_clause.remove_items[1], &expected2);

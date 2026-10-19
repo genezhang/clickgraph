@@ -89,10 +89,10 @@ fn redact_literals(input: &str) -> String {
             }
             continue;
         }
-        // Comments are dropped here too, not only by `strip_comments`: the
-        // two passes split quotes differently (inside backticks a backslash
-        // escapes for `strip_comments`, not here), so a comment it kept as
-        // identifier text (``(n:`a\`) // secret``) must not survive this pass.
+        // Comments are dropped here too, not only by `strip_comments`: a
+        // comment it kept as identifier text (before #1489 it read a
+        // backslash inside backticks as an escape: ``(n:`a\`) // secret``)
+        // must not survive this pass.
         let next = chars.get(i + 1).copied();
         let rel_dash =
             matches!(chars.get(i + 2), Some('>' | '(' | '[')) || (i > 0 && chars[i - 1] == '<');
@@ -941,8 +941,8 @@ mod tests {
         let got = sanitize_query(r#"USE `db\` MATCH (x) WHERE x.p = 'x`secret'"#);
         assert!(!got.contains("secret"), "leak: {got}");
         assert_eq!(got, "USE `?` MATCH (x) WHERE x.p = '?'");
-        // `strip_comments` reads `\`` inside backticks as an escape and keeps
-        // the comment behind it; this pass must still drop it.
+        // Before #1489 `strip_comments` read `\`` inside backticks as an
+        // escape and kept the comment behind it; this pass drops it anyway.
         for q in [
             "MATCH (n:`a\\`) // password hunter2",
             "MATCH (n:`a\\`) /* token=hunter2 */ RETURN n",
