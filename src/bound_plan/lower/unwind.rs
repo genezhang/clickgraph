@@ -530,7 +530,7 @@ impl<'s> Lowerer<'s> {
     /// The column type of property `p` in each label / type of node or
     /// relationship `v` (`None`: not known there,
     /// `NodeSchema::property_column_type`).
-    fn property_columns(&self, v: VarId, p: &str) -> Vec<Option<&KeyPartType>> {
+    pub(super) fn property_columns(&self, v: VarId, p: &str) -> Vec<Option<&KeyPartType>> {
         match &self.binding(v).kind {
             BindingKind::Node { labels } => labels
                 .iter()
@@ -556,6 +556,56 @@ impl<'s> Lowerer<'s> {
                 .collect(),
             _ => vec![None],
         }
+    }
+
+    /// VALUE_TYPES.md T4a (#1396): the CAST target of the elements of list
+    /// literal `xs` where the backend has no common type for them
+    /// (the dialect's `common_type_where_none`: a `UInt64` and a signed column,
+    /// whose list is otherwise a `Variant` in which equal integers are two
+    /// values). `None` unless every element's type is known (a property of a
+    /// known column type, an integer or NULL literal), and where they have
+    /// one: the SQL as before. NULL-able where an element can be NULL.
+    pub(super) fn list_meeting_type(&self, xs: &[LogicalExpr]) -> Option<String> {
+        let mut known = Vec::new();
+        let mut nullable = false;
+        for x in xs {
+            match x {
+                // A literal is of the narrowest type holding it: a negative
+                // one is signed.
+                LogicalExpr::Literal(lx::Literal::Integer(n)) if *n < 0 => {
+                    known.push(KeyPartType::parse("Int64"))
+                }
+                LogicalExpr::Literal(lx::Literal::Integer(_)) => {}
+                // `-1` is `0 - 1`: of integer literals, a signed integer.
+                LogicalExpr::Operator(op) | LogicalExpr::OperatorApplicationExp(op)
+                    if op.operator == lx::Operator::Subtraction
+                        && op.operands.iter().all(|o| {
+                            matches!(o, LogicalExpr::Literal(lx::Literal::Integer(_)))
+                        }) =>
+                {
+                    known.push(KeyPartType::parse("Int64"))
+                }
+                LogicalExpr::Literal(lx::Literal::Null) => nullable = true,
+                LogicalExpr::PropertyAccessExp(pa) => {
+                    let (PropertyValue::Column(p), Some(v)) =
+                        (&pa.column, parse_var(&pa.table_alias.0))
+                    else {
+                        return None;
+                    };
+                    let types = self.property_columns(v, p);
+                    let first = types.first().copied().flatten()?;
+                    if types.iter().any(|t| *t != Some(first)) {
+                        return None;
+                    }
+                    nullable |= self.binding(v).nullable;
+                    known.push(first.clone());
+                }
+                _ => return None,
+            }
+        }
+        let mut target = self.options.dialect.common_type_where_none(&known)?;
+        target.nullable |= nullable;
+        Some(self.options.dialect.cast_target(&target))
     }
 
     /// Whether `e` is never a boolean: a number or a string (`Kind::Scalar`

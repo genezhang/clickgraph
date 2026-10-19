@@ -74,15 +74,32 @@ impl SqlDialect {
     /// form kept).
     ///
     /// `Nullable(..)` is ClickHouse-only: Spark types are implicitly nullable.
+    /// A ClickHouse target is its spelling (`Int128` is no `Int64`, #1358);
+    /// a target with none is the `SchemaType`'s.
     pub fn cast_target(&self, kp: &crate::graph_catalog::schema_types::KeyPartType) -> String {
-        if kp.raw.contains('(') {
-            return match self {
-                SqlDialect::Databricks => kp.schema.to_spark_type().to_string(),
-                _ if kp.nullable => format!("Nullable({})", kp.raw),
-                _ => kp.raw.clone(),
-            };
+        match self {
+            SqlDialect::Databricks if kp.raw.contains('(') => kp.schema.to_spark_type().to_string(),
+            SqlDialect::ClickHouse if !kp.raw.is_empty() => match kp.nullable {
+                true => format!("Nullable({})", kp.raw),
+                false => kp.raw.clone(),
+            },
+            _ => kp.schema.sql_type_name(*self, kp.nullable),
         }
-        kp.schema.sql_type_name(*self, kp.nullable)
+    }
+
+    /// The type values of `parts` meet in where this dialect has no common
+    /// type for them (`schema_types::common_type_where_none`, VALUE_TYPES.md
+    /// T4a). Spark has no unsigned integers: none.
+    pub fn common_type_where_none(
+        &self,
+        parts: &[crate::graph_catalog::schema_types::KeyPartType],
+    ) -> Option<crate::graph_catalog::schema_types::KeyPartType> {
+        match self {
+            SqlDialect::ClickHouse => {
+                crate::graph_catalog::schema_types::common_type_where_none(parts)
+            }
+            _ => None,
+        }
     }
 
     /// Whether this dialect supports the `FINAL` table modifier. `FINAL` is a
@@ -189,5 +206,17 @@ mod walk_key_cast_target_tests {
             SqlDialect::ClickHouse.cast_target(&kp("Nullable(String)")),
             "Nullable(String)"
         );
+    }
+
+    /// #1358: a ClickHouse target is its own spelling, which `SchemaType`
+    /// would collapse (`Int128` is no `Int64`).
+    #[test]
+    fn a_clickhouse_target_keeps_its_spelling() {
+        assert_eq!(SqlDialect::ClickHouse.cast_target(&kp("Int128")), "Int128");
+        assert_eq!(
+            SqlDialect::ClickHouse.cast_target(&kp("Nullable(Int128)")),
+            "Nullable(Int128)"
+        );
+        assert_eq!(SqlDialect::Databricks.cast_target(&kp("Int128")), "BIGINT");
     }
 }

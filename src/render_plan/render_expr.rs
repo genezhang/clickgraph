@@ -58,6 +58,14 @@ pub enum RenderExpr {
         from: Option<Box<RenderExpr>>,
         to: Option<Box<RenderExpr>>,
     },
+
+    /// `CAST(expr AS target)`, the target already spelled for the SQL
+    /// flavor (`cast_target`): where values of differently typed columns
+    /// meet (docs/design/VALUE_TYPES.md T3).
+    Cast {
+        expr: Box<RenderExpr>,
+        target: String,
+    },
 }
 
 /// Decision returned by a [`map_render_expr`] rewrite closure for a node.
@@ -142,6 +150,10 @@ where
         RenderExpr::ArraySubscript { array, index } => RenderExpr::ArraySubscript {
             array: Box::new(map_render_expr(array, f)),
             index: Box::new(map_render_expr(index, f)),
+        },
+        RenderExpr::Cast { expr, target } => RenderExpr::Cast {
+            expr: Box::new(map_render_expr(expr, f)),
+            target: target.clone(),
         },
         RenderExpr::ArraySlicing { array, from, to } => RenderExpr::ArraySlicing {
             array: Box::new(map_render_expr(array, f)),
@@ -251,6 +263,7 @@ where
             visit_render_expr_mut(array, f);
             visit_render_expr_mut(index, f);
         }
+        RenderExpr::Cast { expr, .. } => visit_render_expr_mut(expr, f),
         RenderExpr::ArraySlicing { array, from, to } => {
             visit_render_expr_mut(array, f);
             if let Some(x) = from.as_mut() {
