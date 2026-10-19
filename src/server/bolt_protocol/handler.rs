@@ -402,12 +402,30 @@ fn substitute_cypher_parameters(query: &str, parameters: &HashMap<String, Value>
 
     // Is `pos` inside a string literal or a backtick-quoted name? Cypher's
     // quoting: `'…'` and `"…"` with `\` escapes, `` `…` `` with a doubled
-    // backtick (a name such as `` `it's` `` holds no string, #1489).
+    // backtick (a name such as `` `it's` `` holds no string, #1489); a
+    // quote inside a `//` or `/* */` comment opens none either.
     fn is_inside_string(query: &str, pos: usize) -> bool {
         let mut quote: Option<char> = None;
-        let mut chars = query[..pos].chars();
+        let mut chars = query[..pos].chars().peekable();
         while let Some(c) = chars.next() {
             match quote {
+                None if c == '/' && chars.peek() == Some(&'/') => {
+                    for d in chars.by_ref() {
+                        if d == '\n' {
+                            break;
+                        }
+                    }
+                }
+                None if c == '/' && chars.peek() == Some(&'*') => {
+                    chars.next();
+                    let mut star = false;
+                    for d in chars.by_ref() {
+                        if star && d == '/' {
+                            break;
+                        }
+                        star = d == '*';
+                    }
+                }
                 None if matches!(c, '\'' | '"' | '`') => quote = Some(c),
                 None => {}
                 Some(q) if c == '\\' && q != '`' => {
@@ -3762,5 +3780,15 @@ mod tests {
         assert_eq!(substitute_cypher_parameters(q, &params), q);
         let q = "RETURN \"a `b\" AS s, 1 AS x WHERE id(m) = $p";
         assert!(substitute_cypher_parameters(q, &params).contains("id(m) = 7"));
+        // Nor does one inside a comment (review).
+        for q in [
+            "MATCH (m) // it's a comment\nWHERE id(m) = $p RETURN m",
+            "MATCH (m) /* it's */ WHERE id(m) = $p RETURN m",
+        ] {
+            assert!(
+                substitute_cypher_parameters(q, &params).contains("id(m) = 7"),
+                "{q}"
+            );
+        }
     }
 }
