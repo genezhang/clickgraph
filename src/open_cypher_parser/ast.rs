@@ -455,6 +455,7 @@ pub enum Operator {
     RegexMatch,       // =~ (regex match)
     And,
     Or,
+    Xor,
     In, // IN [...]
     NotIn,
     // String predicates
@@ -487,6 +488,7 @@ impl From<Operator> for String {
             Operator::RegexMatch => "=~".to_string(),
             Operator::And => "AND".to_string(),
             Operator::Or => "OR".to_string(),
+            Operator::Xor => "XOR".to_string(),
             Operator::In => "IN".to_string(),
             Operator::NotIn => "NOT IN".to_string(),
             Operator::StartsWith => "STARTS WITH".to_string(),

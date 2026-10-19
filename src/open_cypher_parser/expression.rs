@@ -1,7 +1,7 @@
 use nom::{
     branch::alt,
     bytes::complete::{tag, tag_no_case, take_while1},
-    character::complete::{alphanumeric1, multispace0},
+    character::complete::multispace0,
     combinator::{map, not, opt, peek},
     error::{Error, ErrorKind},
     multi::separated_list0,
@@ -16,10 +16,9 @@ use crate::open_cypher_parser::common::{self, ws};
 use super::{
     ast::{
         ExistsSubquery, Expression, FunctionCall, LambdaExpression, ListComprehension, Literal,
-        Name, NodePattern, Operator, OperatorApplication, PathPattern, PatternComprehension,
-        PropertyAccess, ReduceExpression,
+        Name, Operator, OperatorApplication, PathPattern, PatternComprehension, PropertyAccess,
+        ReduceExpression,
     },
-    errors::OpenCypherParsingError,
     path_pattern, where_clause,
 };
 
@@ -28,12 +27,22 @@ pub fn parse_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
     Ok((input, expression))
 }
 
+/// A pattern used as an expression: a relationship pattern (a pattern
+/// predicate, `(a)-[:R]->()`), `shortestPath(…)` / `allShortestPaths(…)`.
+/// A lone node `(x)` is not one: in an expression it is a parenthesized
+/// expression, `(a)` the variable, `(a:Person)` a label test, `(NOT false)` a
+/// negation (#1398), as in Neo4j, where a pattern expression has a
+/// relationship.
 pub fn parse_path_pattern_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
-    let (input, path_pattern) = path_pattern::parse_path_pattern(input)?;
-    Ok((input, Expression::PathPattern(path_pattern)))
+    let (rest, path_pattern) = path_pattern::parse_path_pattern(input)?;
+    if matches!(path_pattern, PathPattern::Node(_)) {
+        return Err(nom::Err::Error(Error::new(input, ErrorKind::Verify)));
+    }
+    Ok((rest, Expression::PathPattern(path_pattern)))
 }
 
-// parse_postfix_expression
+/// An atom and its postfix operators: `[i]`, `[a..b]`, `.key`, any number,
+/// left to right (`nss[0][1].name`).
 fn parse_postfix_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
     // First, parse any primary expression (function call, literal, variable, etc.)
     let (mut input, mut expr) = alt((
@@ -54,27 +63,6 @@ fn parse_postfix_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_>> 
 
     // Then, parse any postfix operations in a loop
     loop {
-        // Try to parse array subscript OR slicing: expr[index] or expr[from..to]
-        // Need to be careful: [expr] could also be a list literal
-        // Also careful: [(pattern) | projection] is a pattern comprehension, not subscript
-        // We check for [ immediately after the expression (with optional whitespace)
-
-        // First, peek to see if this looks like a subscript vs pattern comprehension
-        // Pattern comprehension starts with [(node) or [(path)
-        // Subscript has a simple expression like [0] or [i] or ["key"]
-        let looks_like_pattern_comp: IResult<_, _, nom::error::Error<_>> = (
-            multispace0::<_, nom::error::Error<_>>,
-            char('['),
-            multispace0,
-            char('('),
-        )
-            .parse(input);
-
-        if looks_like_pattern_comp.is_ok() {
-            // This looks like pattern comprehension [(...)], not a subscript - stop parsing postfix
-            break;
-        }
-
         // Try to parse slicing first: [from..to], [..to], [from..], or [..]
         let slicing_attempt = (
             multispace0,
@@ -124,34 +112,6 @@ fn parse_postfix_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_>> 
             continue; // Check for more postfix operations
         }
 
-        // Try to parse IS NULL / IS NOT NULL
-        let null_check_result = nom::combinator::opt(preceded(
-            ws(tag_no_case::<_, _, OpenCypherParsingError>("IS")),
-            alt((
-                map(
-                    preceded(
-                        ws(tag_no_case::<_, _, OpenCypherParsingError>("NOT")),
-                        ws(tag_no_case::<_, _, OpenCypherParsingError>("NULL")),
-                    ),
-                    |_| Operator::IsNotNull,
-                ),
-                map(
-                    ws(tag_no_case::<_, _, OpenCypherParsingError>("NULL")),
-                    |_| Operator::IsNull,
-                ),
-            )),
-        ))
-        .parse(input);
-
-        if let Ok((new_input, Some(op))) = null_check_result {
-            expr = Expression::OperatorApplicationExp(OperatorApplication {
-                operator: op,
-                operands: vec![expr],
-            });
-            input = new_input;
-            continue;
-        }
-
         // A property: `expr.key` (a variable's, `n.name`; a chain's, `m.a.b`;
         // any value's, `xs[1].name`, `head(l).name`, `(a).name`).
         if let Some((new_input, e)) = parse_property_postfix(input, &expr) {
@@ -199,19 +159,6 @@ fn parse_property_postfix<'a>(
     base: &Expression<'a>,
 ) -> Option<(&'a str, Expression<'a>)> {
     let after_dot = input.strip_prefix('.')?;
-    // `(a).name`: a parenthesized variable parses as the node pattern `(a)`.
-    let as_variable;
-    let base = match base {
-        Expression::PathPattern(PathPattern::Node(NodePattern {
-            name: Some(name),
-            labels: None,
-            properties: None,
-        })) => {
-            as_variable = Expression::Variable(name.clone());
-            &as_variable
-        }
-        _ => base,
-    };
     if let (Expression::Variable(v), Some(rest)) = (base, after_dot.strip_prefix('*')) {
         if v != "*" {
             return Some((
@@ -268,13 +215,13 @@ fn parse_property_postfix<'a>(
 ///   EXISTS { MATCH (u)-[:FOLLOWS]->(f) WHERE f.active = true }
 fn parse_exists_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
     // Parse EXISTS keyword
-    let (input, _) = ws(tag_no_case("EXISTS")).parse(input)?;
+    let (input, _) = keyword("EXISTS").parse(input)?;
 
     // Parse opening brace
     let (input, _) = ws(char('{')).parse(input)?;
 
     // Optionally skip MATCH keyword if present
-    let (input, _) = opt(ws(tag_no_case("MATCH"))).parse(input)?;
+    let (input, _) = opt(keyword("MATCH")).parse(input)?;
 
     // Parse the pattern
     let (input, pattern) = ws(path_pattern::parse_path_pattern).parse(input)?;
@@ -299,12 +246,11 @@ fn parse_exists_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
 }
 
 fn parse_case_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
-    let (input, _) = ws(tag_no_case("CASE")).parse(input)?;
+    let (input, _) = keyword("CASE").parse(input)?;
 
-    // Check if this is a searched CASE (starts with WHEN) or simple CASE (has an expression)
-    // Try to peek ahead to see if the next non-whitespace token is "WHEN"
-    let (input_after_ws, _) = multispace0.parse(input)?;
-    let is_searched = input_after_ws.starts_with("WHEN") || input_after_ws.starts_with("when");
+    // A searched CASE starts with WHEN (in any case); a simple CASE has an
+    // expression first.
+    let is_searched = peek(keyword("WHEN")).parse(input).is_ok();
 
     let (input, case_expr) = if is_searched {
         // Searched CASE - no case_expr
@@ -323,8 +269,8 @@ fn parse_case_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
 
     loop {
         let res = preceded(
-            ws(tag_no_case("WHEN")),
-            separated_pair(parse_expression, ws(tag_no_case("THEN")), parse_expression),
+            keyword("WHEN"),
+            separated_pair(parse_expression, keyword("THEN"), parse_expression),
         )
         .parse(remaining_input);
 
@@ -340,10 +286,10 @@ fn parse_case_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
 
     // Optional ELSE clause
     let (input, else_expr) =
-        opt(preceded(ws(tag_no_case("ELSE")), parse_expression)).parse(remaining_input)?;
+        opt(preceded(keyword("ELSE"), parse_expression)).parse(remaining_input)?;
 
     // END keyword
-    let (input, _) = ws(tag_no_case("END")).parse(input)?;
+    let (input, _) = keyword("END").parse(input)?;
 
     Ok((
         input,
@@ -489,57 +435,85 @@ fn parse_list_comprehension(input: &'_ str) -> IResult<&'_ str, Expression<'_>> 
     ))
 }
 
-fn parse_primary(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
-    // Use parse_postfix_expression as the primary parser, which handles all atomic expressions
-    // plus postfix operations like [index] and IS NULL
-    parse_postfix_expression.parse(input)
-}
+// ----------------------------------------------------------------- operators
+//
+// The levels of Neo4j 5's expression grammar (Cypher5Parser `expression`
+// … `expression2`), loosest first:
+//
+//   OR < XOR < AND < NOT < comparison (= <> != < > <= >=, chained)
+//      < predicate (=~, STARTS WITH, ENDS WITH, CONTAINS, IN, NOT IN,
+//                   IS [NOT] NULL: at most one, on a `+`/`-` operand)
+//      < + - < * / % < ^ < unary - (and DISTINCT) < postfix (.key, [i],
+//        [a..b]) < atom
+//
+// `a < b < c` is `a < b AND b < c` for any of the comparison operators,
+// `<>` included, over any number of terms. A parenthesized operand is an
+// operand: `(a < b) < c` compares a boolean.
 
 #[cfg(test)]
 pub fn parse_operator_symbols(input: &str) -> IResult<&str, Operator> {
     alt((
-        map(tag_no_case(">="), |_| Operator::GreaterThanEqual),
-        map(tag_no_case("<="), |_| Operator::LessThanEqual),
-        map(tag_no_case("<>"), |_| Operator::NotEqual),
-        map(tag_no_case("!="), |_| Operator::NotEqual), // Also support != for NotEqual
-        map(tag_no_case("=~"), |_| Operator::RegexMatch), // Must be before "=" to match first
-        map(tag_no_case(">"), |_| Operator::GreaterThan),
-        map(tag_no_case("<"), |_| Operator::LessThan),
-        map(tag_no_case("="), |_| Operator::Equal),
-        map(tag_no_case("+"), |_| Operator::Addition),
-        map(tag_no_case("-"), |_| Operator::Subtraction),
-        map(tag_no_case("*"), |_| Operator::Multiplication),
-        map(tag_no_case("/"), |_| Operator::Division),
-        map(tag_no_case("%"), |_| Operator::ModuloDivision),
-        map(tag_no_case("^"), |_| Operator::Exponentiation),
-        // String predicates - must be before IN to avoid partial match
-        map(
-            preceded(ws(tag_no_case("STARTS")), ws(tag_no_case("WITH"))),
-            |_| Operator::StartsWith,
-        ),
-        map(
-            preceded(ws(tag_no_case("ENDS")), ws(tag_no_case("WITH"))),
-            |_| Operator::EndsWith,
-        ),
-        map(tag_no_case("CONTAINS"), |_| Operator::Contains),
-        map(tag_no_case("NOT IN"), |_| Operator::NotIn),
-        map(tag_no_case("IN"), |_| Operator::In),
+        comparison_operator,
+        map(tag("=~"), |_| Operator::RegexMatch),
+        map(tag("+"), |_| Operator::Addition),
+        map(tag("-"), |_| Operator::Subtraction),
+        map(tag("*"), |_| Operator::Multiplication),
+        map(tag("/"), |_| Operator::Division),
+        map(tag("%"), |_| Operator::ModuloDivision),
+        map(tag("^"), |_| Operator::Exponentiation),
+        map(preceded(keyword("STARTS"), keyword("WITH")), |_| {
+            Operator::StartsWith
+        }),
+        map(preceded(keyword("ENDS"), keyword("WITH")), |_| {
+            Operator::EndsWith
+        }),
+        map(keyword("CONTAINS"), |_| Operator::Contains),
+        map(preceded(keyword("NOT"), keyword("IN")), |_| Operator::NotIn),
+        map(keyword("IN"), |_| Operator::In),
     ))
     .parse(input)
+}
+
+fn binary<'a>(operator: Operator, lhs: Expression<'a>, rhs: Expression<'a>) -> Expression<'a> {
+    Expression::OperatorApplicationExp(OperatorApplication {
+        operator,
+        operands: vec![lhs, rhs],
+    })
+}
+
+/// A left-associative level: `operand (op operand)*`.
+fn left_assoc<'a>(
+    input: &'a str,
+    operand: fn(&'a str) -> IResult<&'a str, Expression<'a>>,
+    mut op: impl Parser<&'a str, Output = Operator, Error = Error<&'a str>>,
+) -> IResult<&'a str, Expression<'a>> {
+    let (mut input, mut expr) = operand(input)?;
+    loop {
+        match op.parse(input) {
+            Ok((rest, operator)) => {
+                let (rest, rhs) = operand(rest)?;
+                expr = binary(operator, expr, rhs);
+                input = rest;
+            }
+            Err(nom::Err::Error(_)) => return Ok((input, expr)),
+            Err(e) => return Err(e),
+        }
+    }
 }
 
 fn parse_unary_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
     alt((
         // Unary minus (negation)
         map(preceded(ws(tag("-")), parse_unary_expression), |expr| {
-            Expression::OperatorApplicationExp(OperatorApplication {
-                operator: Operator::Subtraction,
-                operands: vec![Expression::Literal(Literal::Integer(0)), expr],
-            })
+            binary(
+                Operator::Subtraction,
+                Expression::Literal(Literal::Integer(0)),
+                expr,
+            )
         }),
-        // DISTINCT is a unary operator
+        // DISTINCT is a unary operator (`count(DISTINCT x)`)
         map(
-            preceded(ws(tag_no_case("DISTINCT")), parse_unary_expression),
+            preceded(keyword("DISTINCT"), parse_unary_expression),
             |expr| {
                 Expression::OperatorApplicationExp(OperatorApplication {
                     operator: Operator::Distinct,
@@ -547,41 +521,9 @@ fn parse_unary_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
                 })
             },
         ),
-        parse_primary, // fallback to a primary expression
+        parse_postfix_expression,
     ))
     .parse(input)
-}
-
-// Multiplicative operators: * / %
-fn parse_multiplicative_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
-    let (input, lhs) = parse_exponent_expression(input)?;
-
-    let mut remaining_input = input;
-    let mut final_expression = lhs;
-
-    loop {
-        // Try to parse a multiplicative operator
-        let op_result = ws(alt((
-            map(tag_no_case("*"), |_| Operator::Multiplication),
-            map(tag_no_case("/"), |_| Operator::Division),
-            map(tag_no_case("%"), |_| Operator::ModuloDivision),
-        )))
-        .parse(remaining_input);
-
-        match op_result {
-            Ok((new_input, op)) => {
-                let (new_input, rhs) = parse_exponent_expression(new_input)?;
-                final_expression = Expression::OperatorApplicationExp(OperatorApplication {
-                    operator: op,
-                    operands: vec![final_expression, rhs],
-                });
-                remaining_input = new_input;
-            }
-            Err(nom::Err::Error(_)) => break,
-            Err(e) => return Err(e),
-        }
-    }
-    Ok((remaining_input, final_expression))
 }
 
 // Exponentiation: ^ — binds tighter than * / %, looser than unary sign, per the
@@ -591,179 +533,147 @@ fn parse_multiplicative_expression(input: &'_ str) -> IResult<&'_ str, Expressio
 // Operands are unary expressions, so `-2 ^ 2` parses as `(-2) ^ 2` (the sign
 // binds tighter than `^`, matching the grammar's `<arithmetic unary>` operand).
 fn parse_exponent_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
-    let (input, lhs) = parse_unary_expression(input)?;
+    left_assoc(
+        input,
+        parse_unary_expression,
+        ws(map(tag("^"), |_| Operator::Exponentiation)),
+    )
+}
 
-    let mut remaining_input = input;
-    let mut final_expression = lhs;
-
-    loop {
-        let op_result =
-            ws(map(tag_no_case("^"), |_| Operator::Exponentiation)).parse(remaining_input);
-
-        match op_result {
-            Ok((new_input, op)) => {
-                let (new_input, rhs) = parse_unary_expression(new_input)?;
-                final_expression = Expression::OperatorApplicationExp(OperatorApplication {
-                    operator: op,
-                    operands: vec![final_expression, rhs],
-                });
-                remaining_input = new_input;
-            }
-            Err(nom::Err::Error(_)) => break,
-            Err(e) => return Err(e),
-        }
-    }
-    Ok((remaining_input, final_expression))
+// Multiplicative operators: * / %
+fn parse_multiplicative_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
+    left_assoc(
+        input,
+        parse_exponent_expression,
+        ws(alt((
+            map(tag("*"), |_| Operator::Multiplication),
+            map(tag("/"), |_| Operator::Division),
+            map(tag("%"), |_| Operator::ModuloDivision),
+        ))),
+    )
 }
 
 // Additive operators: + -
 fn parse_additive_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
-    let (input, lhs) = parse_multiplicative_expression(input)?;
-
-    let mut remaining_input = input;
-    let mut final_expression = lhs;
-
-    loop {
-        // Try to parse an additive operator
-        let op_result = ws(alt((
-            map(tag_no_case("+"), |_| Operator::Addition),
-            map(tag_no_case("-"), |_| Operator::Subtraction),
-        )))
-        .parse(remaining_input);
-
-        match op_result {
-            Ok((new_input, op)) => {
-                let (new_input, rhs) = parse_multiplicative_expression(new_input)?;
-                final_expression = Expression::OperatorApplicationExp(OperatorApplication {
-                    operator: op,
-                    operands: vec![final_expression, rhs],
-                });
-                remaining_input = new_input;
-            }
-            Err(nom::Err::Error(_)) => break,
-            Err(e) => return Err(e),
-        }
-    }
-    Ok((remaining_input, final_expression))
+    left_assoc(
+        input,
+        parse_multiplicative_expression,
+        ws(alt((
+            map(tag("+"), |_| Operator::Addition),
+            map(tag("-"), |_| Operator::Subtraction),
+        ))),
+    )
 }
 
-// Comparison and string operators: = <> < > <= >= =~ IN NOT IN STARTS WITH ENDS WITH CONTAINS
-fn parse_comparison_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
+/// The string, list and null predicates (Neo4j's `expression7`): an additive
+/// operand and at most one of `=~ x`, `STARTS WITH x`, `ENDS WITH x`,
+/// `CONTAINS x`, `IN x`, `NOT IN x` (a ClickGraph spelling of
+/// `NOT (… IN x)`), `IS [NOT] NULL`. They bind tighter than the comparisons
+/// (`true = x IN l` is `true = (x IN l)`, `1 + 2 IS NULL` is
+/// `(1 + 2) IS NULL`) and do not repeat (`x IN l IN m` does not parse, as in
+/// Neo4j).
+fn parse_predicate_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
     let (input, lhs) = parse_additive_expression(input)?;
+    let mut null_test = preceded(
+        keyword("IS"),
+        alt((
+            map(preceded(keyword("NOT"), keyword("NULL")), |_| {
+                Operator::IsNotNull
+            }),
+            map(keyword("NULL"), |_| Operator::IsNull),
+        )),
+    );
+    if let Ok((rest, operator)) = null_test.parse(input) {
+        return Ok((
+            rest,
+            Expression::OperatorApplicationExp(OperatorApplication {
+                operator,
+                operands: vec![lhs],
+            }),
+        ));
+    }
+    let predicate = alt((
+        map(ws(tag("=~")), |_| Operator::RegexMatch),
+        map(preceded(keyword("STARTS"), keyword("WITH")), |_| {
+            Operator::StartsWith
+        }),
+        map(preceded(keyword("ENDS"), keyword("WITH")), |_| {
+            Operator::EndsWith
+        }),
+        map(keyword("CONTAINS"), |_| Operator::Contains),
+        map(preceded(keyword("NOT"), keyword("IN")), |_| Operator::NotIn),
+        map(keyword("IN"), |_| Operator::In),
+    ));
+    match opt(predicate).parse(input)? {
+        (rest, Some(operator)) => {
+            let (rest, rhs) = parse_additive_expression(rest)?;
+            Ok((rest, binary(operator, lhs, rhs)))
+        }
+        (rest, None) => Ok((rest, lhs)),
+    }
+}
 
-    let mut remaining_input = input;
-    let mut final_expression = lhs;
-    // #1355: only comparisons built by THIS loop are bare and chainable.
-    // A comparison-shaped operand from parse_additive_expression necessarily
-    // came through a parenthesized sub-expression (no lower level parses
-    // comparison ops), so it must not participate in chain desugaring.
-    let mut prev_is_bare_comparison = false;
+/// `=`, `<>`, `!=`, `<`, `>`, `<=`, `>=` (not the `=` of `=~`).
+fn comparison_operator(input: &str) -> IResult<&str, Operator> {
+    alt((
+        map(tag(">="), |_| Operator::GreaterThanEqual),
+        map(tag("<="), |_| Operator::LessThanEqual),
+        map(tag("<>"), |_| Operator::NotEqual),
+        map(tag("!="), |_| Operator::NotEqual),
+        map(tag(">"), |_| Operator::GreaterThan),
+        map(tag("<"), |_| Operator::LessThan),
+        map(terminated(tag("="), not(char('~'))), |_| Operator::Equal),
+    ))
+    .parse(input)
+}
 
+/// The comparisons (Neo4j's `expression8`): `a op b op c …` with any of
+/// [`comparison_operator`] is the conjunction of each adjacent pair,
+/// `a op b AND b op c AND …` (`1 <> 2 <> 1` is true, `1 < 2 < 3 < 2` false,
+/// as in Neo4j). One comparison is itself. Each operand is a
+/// [`parse_predicate_expression`]; a parenthesized one is an operand like
+/// any other (`(a < b) < c` compares a boolean, #1355).
+fn parse_comparison_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
+    let (mut input, first) = parse_predicate_expression(input)?;
+    let mut operands = vec![first];
+    let mut operators = Vec::new();
     loop {
-        // Try to parse a comparison operator
-        let op_result = ws(alt((
-            map(tag_no_case(">="), |_| Operator::GreaterThanEqual),
-            map(tag_no_case("<="), |_| Operator::LessThanEqual),
-            map(tag_no_case("<>"), |_| Operator::NotEqual),
-            map(tag_no_case("!="), |_| Operator::NotEqual), // Add != support
-            map(tag_no_case("=~"), |_| Operator::RegexMatch),
-            map(tag_no_case(">"), |_| Operator::GreaterThan),
-            map(tag_no_case("<"), |_| Operator::LessThan),
-            map(tag_no_case("="), |_| Operator::Equal),
-            map(
-                preceded(ws(tag_no_case("STARTS")), ws(tag_no_case("WITH"))),
-                |_| Operator::StartsWith,
-            ),
-            map(
-                preceded(ws(tag_no_case("ENDS")), ws(tag_no_case("WITH"))),
-                |_| Operator::EndsWith,
-            ),
-            map(tag_no_case("CONTAINS"), |_| Operator::Contains),
-            map(tag_no_case("NOT IN"), |_| Operator::NotIn),
-            map(tag_no_case("IN"), |_| Operator::In),
-        )))
-        .parse(remaining_input);
-
-        match op_result {
-            Ok((new_input, op)) => {
-                let (new_input, rhs) = parse_additive_expression(new_input)?;
-
-                // Chained comparison desugaring: `a > b >= c` → `(a > b) AND (b >= c)`
-                // When the LHS is itself a comparison, extract the middle operand
-                // and split into two comparisons joined by AND.
-                // Note: Only handles double chains (2 operators). Triple chains like
-                // `a > b >= c > d` produce `((a > b) AND (b >= c)) > d` because the
-                // desugared AND doesn't match the comparison guard on the 3rd iteration.
-                // Triple chains are not used in practice (not in LDBC or standard Cypher).
-                //
-                // NotEqual (<>, !=) is excluded — `a <> b <> c` is not a meaningful
-                // mathematical chain, unlike ordered comparisons.
-                let is_comparison = |o: &Operator| {
-                    matches!(
-                        o,
-                        Operator::LessThan
-                            | Operator::LessThanEqual
-                            | Operator::GreaterThan
-                            | Operator::GreaterThanEqual
-                            | Operator::Equal
-                    )
-                };
-                // #1355 (review): only a parenthesized LEFT operand stops a
-                // chain. `x op1 y op2 (z)` still chains even when `(z)` is a
-                // comparison: `prev_is_bare_comparison` alone gives the fix
-                // (a comparison-shaped lhs from parse_additive_expression
-                // necessarily came through parens); no rhs veto.
-                if is_comparison(&op) && prev_is_bare_comparison {
-                    if let Expression::OperatorApplicationExp(ref prev_op) = final_expression {
-                        if is_comparison(&prev_op.operator) && prev_op.operands.len() == 2 {
-                            // prev: (a op1 b), current op2 with rhs c
-                            // Desugar to: (a op1 b) AND (b op2 c)
-                            let middle = prev_op.operands[1].clone();
-                            let new_comp =
-                                Expression::OperatorApplicationExp(OperatorApplication {
-                                    operator: op,
-                                    operands: vec![middle, rhs],
-                                });
-                            final_expression =
-                                Expression::OperatorApplicationExp(OperatorApplication {
-                                    operator: Operator::And,
-                                    operands: vec![final_expression, new_comp],
-                                });
-                            prev_is_bare_comparison = false; // result is AND, not chainable
-                            remaining_input = new_input;
-                            continue;
-                        }
-                    }
-                }
-
-                final_expression = Expression::OperatorApplicationExp(OperatorApplication {
-                    operator: op,
-                    operands: vec![final_expression, rhs],
-                });
-                prev_is_bare_comparison = is_comparison(&op);
-                remaining_input = new_input;
+        match ws(comparison_operator).parse(input) {
+            Ok((rest, operator)) => {
+                let (rest, rhs) = parse_predicate_expression(rest)?;
+                operators.push(operator);
+                operands.push(rhs);
+                input = rest;
             }
             Err(nom::Err::Error(_)) => break,
             Err(e) => return Err(e),
         }
     }
-    Ok((remaining_input, final_expression))
+    let mut pairs = operators
+        .iter()
+        .zip(operands.windows(2))
+        .map(|(op, pair)| binary(*op, pair[0].clone(), pair[1].clone()));
+    let Some(first_pair) = pairs.next() else {
+        let only = operands
+            .pop()
+            .ok_or_else(|| nom::Err::Error(Error::new(input, ErrorKind::Verify)))?;
+        return Ok((input, only));
+    };
+    let chain = pairs.fold(first_pair, |chain, pair| binary(Operator::And, chain, pair));
+    Ok((input, chain))
 }
 
 // NOT operator - lower precedence than comparison
 // This allows "NOT a = b" to parse as "NOT (a = b)" rather than "(NOT a) = b"
 fn parse_not_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
     alt((
-        map(
-            preceded(ws(tag_no_case("NOT")), parse_not_expression),
-            |expr| {
-                Expression::OperatorApplicationExp(OperatorApplication {
-                    operator: Operator::Not,
-                    operands: vec![expr],
-                })
-            },
-        ),
-        parse_comparison_expression, // fallback to comparison
+        map(preceded(keyword("NOT"), parse_not_expression), |expr| {
+            Expression::OperatorApplicationExp(OperatorApplication {
+                operator: Operator::Not,
+                operands: vec![expr],
+            })
+        }),
+        parse_comparison_expression,
     ))
     .parse(input)
 }
@@ -775,74 +685,28 @@ fn parse_binary_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
 }
 
 fn parse_logical_and(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
-    let (input, lhs) = parse_not_expression(input)?;
-
-    let mut remaining_input = input;
-    let mut final_expression = lhs;
-
-    loop {
-        // Try to parse an "AND" followed by a NOT expression.
-        let res = preceded(ws(tag_no_case("AND")), parse_not_expression).parse(remaining_input);
-        match res {
-            Ok((new_input, rhs)) => {
-                // Build a new expression by moving `expr` and `rhs` into a new operator application.
-                final_expression = Expression::OperatorApplicationExp(OperatorApplication {
-                    operator: Operator::And,
-                    // final_expression here is lhs
-                    operands: vec![final_expression, rhs],
-                });
-                remaining_input = new_input;
-            }
-            // If we don't match "AND", exit the loop.
-            Err(nom::Err::Error(_)) => break,
-            Err(e) => return Err(e),
-        }
-    }
-    Ok((remaining_input, final_expression))
+    left_assoc(
+        input,
+        parse_not_expression,
+        map(keyword("AND"), |_| Operator::And),
+    )
 }
 
-// fn parse_logical_or(input: &str) -> IResult<&str, Expression> {
-//     let (input, left) = parse_logical_and(input)?;
-//     fold_many0(
-//         // parse only "OR" and not "ORDER"
-//         preceded(ws(terminated(tag_no_case("OR"), not(peek(alphanumeric1)))), parse_logical_and),
-//         move || left.clone(),
-//         |acc, rhs| Expression::OperatorApplicationExp(OperatorApplication {
-//             operator: Operator::Or,
-//             operands: vec![acc, rhs],
-//         }),
-//     ).parse(input)
-// }
+fn parse_logical_xor(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
+    left_assoc(
+        input,
+        parse_logical_and,
+        map(keyword("XOR"), |_| Operator::Xor),
+    )
+}
 
+/// `OR`, the loosest (the keyword: never the `OR` of `ORDER`).
 fn parse_logical_or(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
-    let (input, lhs) = parse_logical_and(input)?;
-
-    let mut remaining_input = input;
-    let mut final_expression = lhs;
-
-    loop {
-        let res = preceded(
-            // parse only "OR" and not "ORDER"
-            ws(terminated(tag_no_case("OR"), not(peek(alphanumeric1)))),
-            parse_logical_and,
-        )
-        .parse(remaining_input);
-
-        match res {
-            Ok((new_input, rhs)) => {
-                final_expression = Expression::OperatorApplicationExp(OperatorApplication {
-                    operator: Operator::Or,
-                    // final_expression here is lhs
-                    operands: vec![final_expression, rhs],
-                });
-                remaining_input = new_input;
-            }
-            Err(nom::Err::Error(_)) => break,
-            Err(e) => return Err(e),
-        }
-    }
-
-    Ok((remaining_input, final_expression))
+    left_assoc(
+        input,
+        parse_logical_xor,
+        map(keyword("OR"), |_| Operator::Or),
+    )
 }
 
 pub fn parse_function_call(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
@@ -1255,10 +1119,10 @@ mod tests {
         assert_eq!(op, Operator::In);
     }
 
-    // postfix
+    // null predicates
     #[test]
-    fn test_parse_postfix_expression_is_null() {
-        let (rem, expr) = parse_postfix_expression("a IS NULL").unwrap();
+    fn test_parse_predicate_expression_is_null() {
+        let (rem, expr) = parse_predicate_expression("a IS NULL").unwrap();
         assert_eq!(rem, "");
         let expected = Expression::OperatorApplicationExp(OperatorApplication {
             operator: Operator::IsNull,
@@ -1268,8 +1132,8 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_postfix_expression_is_not_null() {
-        let (rem, expr) = parse_postfix_expression("a IS NOT NULL").unwrap();
+    fn test_parse_predicate_expression_is_not_null() {
+        let (rem, expr) = parse_predicate_expression("a IS NOT NULL").unwrap();
         assert_eq!(rem, "");
         let expected = Expression::OperatorApplicationExp(OperatorApplication {
             operator: Operator::IsNotNull,
@@ -1984,17 +1848,21 @@ mod tests {
     }
 
     #[test]
-    fn test_not_equal_not_chained() {
-        // `a <> b <> c` should NOT be desugared (NotEqual excluded)
+    fn test_not_equal_chains_1398() {
+        // `a <> b <> c` chains like any comparison, as in Neo4j (`1 <> 2 <> 1`
+        // is true): `a <> b AND b <> c` (#1398).
         let input = "a <> b <> c";
         let (remaining, expr) = parse_expression(input).unwrap();
         assert_eq!(remaining, "");
-        if let Expression::OperatorApplicationExp(op) = &expr {
-            // Should be a nested NotEqual, not AND
-            assert_eq!(op.operator, Operator::NotEqual);
-        } else {
-            panic!("Expected NotEqual expression, got {:?}", expr);
-        }
+        let v = |n: &'static str| Expression::Variable(n.into());
+        assert_eq!(
+            expr,
+            binary(
+                Operator::And,
+                binary(Operator::NotEqual, v("a"), v("b")),
+                binary(Operator::NotEqual, v("b"), v("c")),
+            )
+        );
     }
 
     #[test]
@@ -2420,5 +2288,134 @@ mod tests {
         for input in ["`foo bar`(x)", "`a.b`(x)", "`f;`(x)"] {
             assert!(!matches!(parse_expression(input), Ok(("", _))), "{input}");
         }
+    }
+
+    /// The operator levels follow Neo4j 5 (#1398): each input parses as the
+    /// fully parenthesized one.
+    #[test]
+    fn operator_precedence_follows_neo4j_1398() {
+        for (input, grouped) in [
+            // A predicate binds tighter than a comparison.
+            ("true = x IN l", "true = (x IN l)"),
+            ("x IN l = true", "(x IN l) = true"),
+            ("false = 1 IS NULL", "false = (1 IS NULL)"),
+            ("a = b STARTS WITH c", "a = (b STARTS WITH c)"),
+            ("a =~ b = c", "(a =~ b) = c"),
+            // The predicate's operand is additive.
+            ("1 + 2 IS NULL", "(1 + 2) IS NULL"),
+            ("a + b IN l", "(a + b) IN l"),
+            ("a * b CONTAINS c", "(a * b) CONTAINS c"),
+            // NOT is looser than the comparisons, tighter than AND.
+            ("NOT a = b", "NOT (a = b)"),
+            ("NOT a IS NULL", "NOT (a IS NULL)"),
+            ("NOT a AND b", "(NOT a) AND b"),
+            ("(NOT false) = x", "(NOT false) = x"),
+            // XOR between AND and OR.
+            ("a OR b XOR c", "a OR (b XOR c)"),
+            ("a XOR b AND c", "a XOR (b AND c)"),
+            ("a XOR b XOR c", "(a XOR b) XOR c"),
+            ("NOT a XOR b", "(NOT a) XOR b"),
+            // Arithmetic.
+            ("1 + 2 * 3 ^ 2", "1 + (2 * (3 ^ 2))"),
+            ("2 ^ 3 ^ 2", "(2 ^ 3) ^ 2"),
+            ("a - b - c", "(a - b) - c"),
+            // Postfix binds tightest.
+            ("-x.a", "-(x.a)"),
+            ("x[0] IN l", "(x[0]) IN l"),
+        ] {
+            let (rem, got) = parse_expression(input).unwrap_or_else(|e| panic!("{input}: {e:?}"));
+            assert_eq!(rem, "", "{input}");
+            let (rem, want) = parse_expression(grouped).unwrap();
+            assert_eq!(rem, "", "{grouped}");
+            assert_eq!(got, want, "{input} should be {grouped}");
+        }
+    }
+
+    /// A comparison chain of any length, `<>` included, is the conjunction of
+    /// its adjacent comparisons; a parenthesized operand is an operand
+    /// (#1398, #1355).
+    #[test]
+    fn comparison_chains_1398() {
+        for (input, conjunction) in [
+            ("a < b < c", "(a < b) AND (b < c)"),
+            ("a <> b <> c", "(a <> b) AND (b <> c)"),
+            ("a < b < c < b", "((a < b) AND (b < c)) AND (c < b)"),
+            ("a = b = c", "(a = b) AND (b = c)"),
+            ("a >= b > c <= d", "((a >= b) AND (b > c)) AND (c <= d)"),
+            ("x < 30 < (40)", "(x < 30) AND (30 < (40))"),
+            ("a > b = (c > d)", "(a > b) AND (b = (c > d))"),
+            ("a = b IN l = c", "(a = (b IN l)) AND ((b IN l) = c)"),
+        ] {
+            let (rem, got) = parse_expression(input).unwrap_or_else(|e| panic!("{input}: {e:?}"));
+            assert_eq!(rem, "", "{input}");
+            assert_eq!(got, parse_expression(conjunction).unwrap().1, "{input}");
+        }
+        // A parenthesized comparison on the left is compared, not chained.
+        let (_, got) = parse_expression("(a < b) < c").unwrap();
+        let Expression::OperatorApplicationExp(op) = &got else {
+            panic!("{got:?}");
+        };
+        assert_eq!(op.operator, Operator::LessThan);
+    }
+
+    /// A predicate does not repeat, as in Neo4j (`x IN l IN m` is a syntax
+    /// error there): the second is left unparsed.
+    #[test]
+    fn predicates_do_not_repeat_1398() {
+        for (input, rest) in [
+            ("x IN l IN m", "IN m"),
+            ("a IS NULL IS NULL", "IS NULL"),
+            ("s STARTS WITH 'a' IS NULL", "IS NULL"),
+            ("s =~ 'a' =~ 'b'", "=~ 'b'"),
+        ] {
+            let (rem, _) = parse_expression(input).unwrap();
+            assert_eq!(rem.trim(), rest, "{input}");
+        }
+    }
+
+    /// Keywords are words: `nothing` is no `NOT`, `order` no `OR`, `android`
+    /// no `AND`, `index` no `IN`; and a lone node in an expression is a
+    /// parenthesized expression, not a pattern (#1398).
+    #[test]
+    fn keywords_are_words_and_a_lone_node_is_parenthesized_1398() {
+        for (input, name) in [
+            ("nothing", "nothing"),
+            ("notable", "notable"),
+            ("android", "android"),
+            ("orders", "orders"),
+            ("index", "index"),
+            ("isnull", "isnull"),
+            ("xorx", "xorx"),
+            ("cases", "cases"),
+        ] {
+            assert_eq!(
+                parse_expression(input).unwrap(),
+                ("", Expression::Variable(name.into())),
+                "{input}"
+            );
+        }
+        let (rem, e) = parse_expression("a ANDROID").unwrap();
+        assert_eq!(
+            (rem.trim(), e),
+            ("ANDROID", Expression::Variable("a".into()))
+        );
+        // `(a)` is the variable, `(a:L)` the label test.
+        assert_eq!(
+            parse_expression("(a)").unwrap().1,
+            Expression::Variable("a".into())
+        );
+        assert!(matches!(
+            parse_expression("(a:L)").unwrap().1,
+            Expression::LabelExpression { .. }
+        ));
+        // A relationship pattern is still a pattern.
+        assert!(matches!(
+            parse_expression("(a)-[:R]->()").unwrap().1,
+            Expression::PathPattern(PathPattern::ConnectedPattern(_))
+        ));
+        // CASE / WHEN in any case.
+        let (rem, e) = parse_expression("CASE When x THEN 1 eLsE 2 End").unwrap();
+        assert_eq!(rem, "");
+        assert!(matches!(e, Expression::Case(ref c) if c.expr.is_none()));
     }
 }

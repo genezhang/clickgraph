@@ -2395,6 +2395,7 @@ impl RenderExpr {
                         Operator::RegexMatch => "REGEX", // Special handling below
                         Operator::And => "AND",
                         Operator::Or => "OR",
+                        Operator::Xor => "XOR", // Special handling below
                         Operator::In => "IN",
                         Operator::NotIn => "NOT IN",
                         Operator::StartsWith => "STARTS WITH", // Special handling below
@@ -2571,6 +2572,10 @@ impl RenderExpr {
                 // Special handling for RegexMatch - ClickHouse uses match() function
                 if op.operator == Operator::RegexMatch && rendered.len() == 2 {
                     return super::common::regex_match_predicate(&rendered[0], &rendered[1]);
+                }
+                if op.operator == Operator::Xor && rendered.len() == 2 {
+                    return crate::sql_generator::function_mapper::current_function_mapper()
+                        .logical_xor(&rendered[0], &rendered[1]);
                 }
 
                 // Special handling for IN/NOT IN with array columns
@@ -3026,6 +3031,7 @@ impl RenderExpr {
                         Operator::RegexMatch => "REGEX", // Special handling below
                         Operator::And => "AND",
                         Operator::Or => "OR",
+                        Operator::Xor => "XOR", // Special handling below
                         Operator::In => "IN",
                         Operator::NotIn => "NOT IN",
                         Operator::StartsWith => "STARTS WITH", // Special handling below
@@ -3068,6 +3074,10 @@ impl RenderExpr {
                 // Special handling for RegexMatch - ClickHouse uses match() function
                 if op.operator == Operator::RegexMatch && rendered.len() == 2 {
                     return super::common::regex_match_predicate(&rendered[0], &rendered[1]);
+                }
+                if op.operator == Operator::Xor && rendered.len() == 2 {
+                    return crate::sql_generator::function_mapper::current_function_mapper()
+                        .logical_xor(&rendered[0], &rendered[1]);
                 }
 
                 // Special handling for IN/NOT IN with array columns. Type check
@@ -3381,6 +3391,7 @@ impl ToSql for OperatorApplication {
                 Operator::RegexMatch => "REGEX", // Special handling below
                 Operator::And => "AND",
                 Operator::Or => "OR",
+                Operator::Xor => "XOR", // Special handling below
                 Operator::In => "IN",
                 Operator::NotIn => "NOT IN",
                 Operator::StartsWith => "STARTS WITH", // Special handling below
@@ -3413,6 +3424,10 @@ impl ToSql for OperatorApplication {
         // Special handling for RegexMatch - ClickHouse uses match() function
         if self.operator == Operator::RegexMatch && rendered.len() == 2 {
             return super::common::regex_match_predicate(&rendered[0], &rendered[1]);
+        }
+        if self.operator == Operator::Xor && rendered.len() == 2 {
+            return crate::sql_generator::function_mapper::current_function_mapper()
+                .logical_xor(&rendered[0], &rendered[1]);
         }
 
         // Special handling for IN/NOT IN with array columns

@@ -234,6 +234,7 @@ pub enum Operator {
     RegexMatch, // =~ (regex match)
     And,
     Or,
+    Xor,
     In,
     NotIn,
     StartsWith, // STARTS WITH

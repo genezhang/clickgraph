@@ -270,6 +270,7 @@ fn infer_operator_type(op: Operator, operands: &[RenderExpr]) -> Option<RenderTy
         | Operator::RegexMatch
         | Operator::And
         | Operator::Or
+        | Operator::Xor
         | Operator::Not
         | Operator::In
         | Operator::NotIn

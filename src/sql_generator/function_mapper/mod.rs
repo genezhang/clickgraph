@@ -160,6 +160,10 @@ pub(crate) trait FunctionMapper: Send + Sync {
     /// three or more relations). `a` and `b` are pre-rendered SQL.
     fn null_safe_equal(&self, a: &str, b: &str) -> String;
 
+    /// Cypher `a XOR b`: true when exactly one is true, NULL when either is
+    /// NULL. `a` and `b` are pre-rendered SQL booleans.
+    fn logical_xor(&self, a: &str, b: &str) -> String;
+
     /// Concatenate two arrays. CH: `arrayConcat`. Spark: `concat`
     /// (overloaded for arrays).
     fn array_concat(&self) -> &'static str;

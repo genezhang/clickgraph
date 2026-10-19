@@ -381,12 +381,16 @@ fn parse_name_labels(
 > {
     let (input, _) = multispace0(input)?;
 
-    separated_pair(
-        parse_name_or_label_with_properties,
-        opt(char(':')),
-        parse_name_or_labels_with_properties,
-    )
-    .parse(input)
+    // Labels follow a `:`: `(a b)` is no node (it read as the node `a` of
+    // label `b`, #1398).
+    let (input, name) = parse_name_or_label_with_properties(input)?;
+    match opt(char(':')).parse(input)? {
+        (input, Some(_)) => {
+            let (input, labels) = parse_name_or_labels_with_properties(input)?;
+            Ok((input, (name, labels)))
+        }
+        (input, None) => Ok((input, (name, (None, None)))),
+    }
 }
 
 // fn parse_comma(input: &str) -> IResult<&str, Option<&str>> {
@@ -428,11 +432,13 @@ fn parse_relationship_internals_with_multiple_labels(
     // Parse relationship name (optional)
     let (input, rel_name) = ws(opt(common::symbolic_name)).parse(input)?;
 
-    // Parse : separator
-    let (input, _) = opt(ws(char(':'))).parse(input)?;
-
-    // Parse relationship labels (can be multiple separated by |)
-    let (input, rel_labels) = parse_relationship_labels(input)?;
+    // Parse relationship types (can be multiple separated by |), after a `:`
+    // (`[r T]` is no relationship)
+    let (input, colon) = opt(ws(char(':'))).parse(input)?;
+    let (input, rel_labels) = match colon {
+        Some(_) => parse_relationship_labels(input)?,
+        None => (input, None),
+    };
 
     // Parse variable length spec
     let (input, var_len) = parse_variable_length_spec(input)?;
@@ -1519,5 +1525,21 @@ mod tests {
             result.is_err(),
             "Should error on deeply nested relationship chains (100 > 50 limit)"
         );
+    }
+
+    /// Labels and types follow a `:` (#1398): `(a b)` is no node of label
+    /// `b`, `[r T]` no relationship of type `T`.
+    #[test]
+    fn labels_and_types_follow_a_colon_1398() {
+        assert!(!matches!(parse_path_pattern("(a b)"), Ok(("", _))));
+        assert!(!matches!(parse_path_pattern("(NOT false)"), Ok(("", _))));
+        assert!(!matches!(parse_path_pattern("(a)-[r T]->(b)"), Ok(("", _))));
+        let (rest, p) = parse_path_pattern("(a :User)").unwrap();
+        assert_eq!(rest, "");
+        let PathPattern::Node(n) = p else {
+            panic!("{p:?}");
+        };
+        assert_eq!(n.name.as_deref(), Some("a"));
+        assert_eq!(n.labels, Some(vec!["User".into()]));
     }
 }

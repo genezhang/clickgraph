@@ -1923,6 +1923,7 @@ reads it.
 ```cypher
 AND  -- Logical AND
 OR   -- Logical OR
+XOR  -- Logical exclusive OR (NULL when either side is NULL)
 NOT  -- Logical NOT
 ```
 
@@ -1948,6 +1949,33 @@ NOT IN  -- Negated membership
 IS NULL      -- Null check
 IS NOT NULL  -- Not null check
 ```
+
+### Precedence
+
+As in Neo4j 5, loosest first:
+
+| Level | Operators |
+|---|---|
+| 1 | `OR` |
+| 2 | `XOR` |
+| 3 | `AND` |
+| 4 | `NOT` |
+| 5 | `=` `<>` `<` `>` `<=` `>=` (chained) |
+| 6 | `=~` `STARTS WITH` `ENDS WITH` `CONTAINS` `IN` `IS [NOT] NULL` (one, on a `+`/`-` operand) |
+| 7 | `+` `-` |
+| 8 | `*` `/` `%` |
+| 9 | `^` (left-associative: `2 ^ 3 ^ 2` is 64) |
+| 10 | unary `-` |
+| 11 | `.key`, `[i]`, `[a..b]` |
+
+So `true = x IN [1, 2]` is `true = (x IN [1, 2])`, `1 + 2 IS NULL` is
+`(1 + 2) IS NULL`, and `NOT a = b` is `NOT (a = b)`. A comparison chain of
+any length is the conjunction of its adjacent comparisons: `a < b <= c` is
+`a < b AND b <= c`, `1 <> 2 <> 1` is `1 <> 2 AND 2 <> 1` (true), and a
+parenthesized operand is an operand (`(a < b) < c` compares a boolean). A
+second predicate does not parse (`x IN l IN m`, `a IS NULL IS NULL`), as in
+Neo4j. ClickGraph also accepts `!=` for `<>` and `x NOT IN l` for
+`NOT x IN l` (Neo4j refuses both).
 
 ---
 

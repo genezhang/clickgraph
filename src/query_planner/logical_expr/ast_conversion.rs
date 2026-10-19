@@ -56,6 +56,7 @@ impl From<open_cypher_parser::ast::Operator> for Operator {
             open_cypher_parser::ast::Operator::RegexMatch => Operator::RegexMatch,
             open_cypher_parser::ast::Operator::And => Operator::And,
             open_cypher_parser::ast::Operator::Or => Operator::Or,
+            open_cypher_parser::ast::Operator::Xor => Operator::Xor,
             open_cypher_parser::ast::Operator::In => Operator::In,
             open_cypher_parser::ast::Operator::NotIn => Operator::NotIn,
             open_cypher_parser::ast::Operator::StartsWith => Operator::StartsWith,
