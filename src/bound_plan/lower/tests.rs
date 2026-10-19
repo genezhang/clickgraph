@@ -8614,7 +8614,7 @@ fn list_predicates_1420() {
     has(
         "MATCH (u:User) WHERE any(x IN [1, 2] WHERE x = u.user_id) RETURN u.name AS n",
         &[
-            "CASE WHEN length(arrayFilter(v1 -> v1 = v0.user_id, [1, 2])) IS NULL THEN NULL",
+            "CASE WHEN length(arrayFilter(v1 -> true, [1, 2])) IS NULL THEN NULL",
             "WHEN length(arrayFilter(v2 -> v2 = v0.user_id, [1, 2])) > 0 THEN true",
             "WHEN length(arrayFilter(v3 -> (v3 = v0.user_id) IS NULL, [1, 2])) > 0 THEN NULL \
              ELSE false END",
