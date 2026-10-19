@@ -137,6 +137,19 @@ with_query_context(context, async move {
 }).await
 ```
 
+### Request Records (metrics, OTLP spans)
+
+Every request is recorded exactly once (#1500). HTTP: queries that run the
+pipeline are recorded at the finalization sites in `query_handler_inner`
+(with their phase breakdown); everything else — procedures, SHOW DATABASES,
+COPY TO, exports, a capacity rejection, every `Err` — by `query_handler`
+from the status it returns. `record_query_with` sets the request's
+`REQUEST_RECORD.recorded` flag, so the wrapper never records twice; an early
+path only notes its type (`note_request_type`). Bolt: `handle_run` records
+every RUN once, whatever answered it (a query, a procedure, an intercept,
+EXPLAIN, a refusal), its class from the FAILURE's code. Do not add
+`record_query` calls to early returns.
+
 ### 3. Schema Name Resolution Order
 
 Schema name is determined in this priority, by one rule for HTTP `/query`,
@@ -314,7 +327,7 @@ The `bolt_protocol/` directory (7,986 lines, 11 files) implements the Neo4j Bolt
 | `id_mapper.rs` | 757 | Deterministic int↔elementId mapping (53-bit JS-safe, label-encoded, session-scoped); `resolve_node_id` for the bound plan's `id()` reads |
 | `messages.rs` | 562 | `BoltMessage`, `BoltValue`, message signatures (HELLO=0x01, RUN=0x10, SUCCESS=0x70, etc.) |
 | `auth.rs` | 401 | `AuthScheme` (None/Basic/Kerberos), `AuthToken`, `Authenticator` with SHA-256 |
-| `errors.rs` | 213 | `BoltError` enum with Neo4j-compatible error codes |
+| `errors.rs` | 361 | `BoltError` enum with Neo4j-compatible error codes; `QueryErrorKind` (#1399) is a query failure's kind (syntax, argument, parameter missing, database / procedure not found, procedure failed, execution failed), whose `neo4j_code()` is its FAILURE code and whose metrics class is `ErrorClass::from_neo4j_code` |
 | `websocket.rs` | 156 | `WebSocketBoltAdapter` — wraps WebSocket as AsyncRead/AsyncWrite for Bolt-over-WS |
 
 ### Bolt Data Flow

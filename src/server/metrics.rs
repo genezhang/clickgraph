@@ -120,6 +120,21 @@ impl ErrorClass {
             _ => ErrorClass::Exec,
         }
     }
+
+    /// Map a Neo4j status code (a Bolt FAILURE's) to an error class: an
+    /// unknown database or procedure is `not_found`, another client error
+    /// `bad_request`, a backend failure `exec`, a transient one `capacity`,
+    /// anything else `internal`.
+    pub fn from_neo4j_code(code: &str) -> Self {
+        match code {
+            "Neo.ClientError.Database.DatabaseNotFound"
+            | "Neo.ClientError.Procedure.ProcedureNotFound" => ErrorClass::NotFound,
+            "Neo.DatabaseError.Statement.ExecutionFailed" => ErrorClass::Exec,
+            c if c.starts_with("Neo.ClientError.") => ErrorClass::BadRequest,
+            c if c.starts_with("Neo.TransientError.") => ErrorClass::Capacity,
+            _ => ErrorClass::Internal,
+        }
+    }
 }
 
 /// Outcome of a recorded query.

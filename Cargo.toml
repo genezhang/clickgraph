@@ -117,6 +117,12 @@ path = "tests/rust/integration/mod.rs"
 name = "e2e"
 path = "tests/rust/e2e/mod.rs"
 
+# Owns the process-wide metrics registry: every HTTP / Bolt request is
+# recorded exactly once (#1500), with its outcome classified (#1399).
+[[test]]
+name = "request_records"
+path = "tests/rust/request_records.rs"
+
 # Guardrail G.1 (docs/design/REFACTORING_SAFETY_PLAN.md §2.1): ratchets raw
 # schema-pattern/dialect axis token counts across src/**/*.rs so new inline
 # branching can't silently accrete while the schema-pattern/dialect dispatch

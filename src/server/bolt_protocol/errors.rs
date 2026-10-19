@@ -4,6 +4,48 @@
 
 use thiserror::Error;
 
+/// What kind of failure a query had (#1399): the one classification its
+/// Bolt status code and the metrics error class come from. Before it every
+/// query failure was `Neo.ClientError.Statement.SyntaxError`, so a
+/// ClickHouse failure, an unknown database or an unknown procedure read as
+/// a syntax error (drivers 5.7+ raise `CypherSyntaxError`; the Python driver
+/// treats `DatabaseNotFound` as fatal during routing discovery).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QueryErrorKind {
+    /// Not valid Cypher, or a query Neo4j refuses when compiling it (an
+    /// undefined variable, a procedure's unknown output or wrong arguments):
+    /// Neo4j's `SyntaxError` for all of these.
+    Syntax,
+    /// An invalid argument (an option, an export format or destination).
+    Argument,
+    /// A parameter the query uses was not given.
+    ParameterMissing,
+    /// The graph (database) the statement names is not loaded.
+    DatabaseNotFound,
+    /// No procedure of that name.
+    ProcedureNotFound,
+    /// A procedure failed (an unknown index, an invalid argument value).
+    ProcedureCallFailed,
+    /// The backend (ClickHouse, chdb, or another SQL engine) failed to run
+    /// the SQL.
+    ExecutionFailed,
+}
+
+impl QueryErrorKind {
+    /// Neo4j's status code for this kind.
+    pub fn neo4j_code(self) -> &'static str {
+        match self {
+            QueryErrorKind::Syntax => "Neo.ClientError.Statement.SyntaxError",
+            QueryErrorKind::Argument => "Neo.ClientError.Statement.ArgumentError",
+            QueryErrorKind::ParameterMissing => "Neo.ClientError.Statement.ParameterMissing",
+            QueryErrorKind::DatabaseNotFound => "Neo.ClientError.Database.DatabaseNotFound",
+            QueryErrorKind::ProcedureNotFound => "Neo.ClientError.Procedure.ProcedureNotFound",
+            QueryErrorKind::ProcedureCallFailed => "Neo.ClientError.Procedure.ProcedureCallFailed",
+            QueryErrorKind::ExecutionFailed => "Neo.DatabaseError.Statement.ExecutionFailed",
+        }
+    }
+}
+
 /// Bolt protocol error types
 #[derive(Error, Debug)]
 pub enum BoltError {
@@ -43,9 +85,12 @@ pub enum BoltError {
         expected_state: String,
     },
 
-    /// Query execution error
+    /// Query error, of a [`QueryErrorKind`]
     #[error("Query execution error: {message}")]
-    QueryError { message: String },
+    QueryError {
+        kind: QueryErrorKind,
+        message: String,
+    },
 
     /// Transaction error
     #[error("Transaction error: {message}")]
@@ -93,10 +138,39 @@ impl BoltError {
         }
     }
 
-    /// Create a new query error
-    pub fn query_error<S: Into<String>>(message: S) -> Self {
+    /// Create a query error of `kind`.
+    pub fn query<S: Into<String>>(kind: QueryErrorKind, message: S) -> Self {
         BoltError::QueryError {
+            kind,
             message: message.into(),
+        }
+    }
+
+    /// A parse failure: `Neo.ClientError.Statement.SyntaxError`.
+    pub fn syntax<S: Into<String>>(message: S) -> Self {
+        Self::query(QueryErrorKind::Syntax, message)
+    }
+
+    /// The backend failed to run the SQL:
+    /// `Neo.DatabaseError.Statement.ExecutionFailed`.
+    pub fn execution_failed<S: Into<String>>(message: S) -> Self {
+        Self::query(QueryErrorKind::ExecutionFailed, message)
+    }
+
+    /// The statement's graph is not loaded:
+    /// `Neo.ClientError.Database.DatabaseNotFound`.
+    pub fn database_not_found<S: Into<String>>(message: S) -> Self {
+        Self::query(QueryErrorKind::DatabaseNotFound, message)
+    }
+
+    /// A query error from a translation's: invalid Cypher is a syntax error
+    /// (as Neo4j reports an undefined variable), what is not translated is
+    /// not supported, a broken invariant is internal.
+    pub fn from_translate(e: crate::translate::TranslateError) -> Self {
+        match e {
+            crate::translate::TranslateError::Invalid(e) => Self::syntax(e),
+            crate::translate::TranslateError::Unsupported(e) => Self::not_implemented(e),
+            crate::translate::TranslateError::Internal(e) => Self::internal(e),
         }
     }
 
@@ -131,7 +205,7 @@ impl BoltError {
             BoltError::AuthenticationFailed { .. } => "Neo.ClientError.Security.Unauthorized",
             BoltError::AuthorizationFailed { .. } => "Neo.ClientError.Security.Forbidden",
             BoltError::InvalidState { .. } => "Neo.ClientError.Request.Invalid",
-            BoltError::QueryError { .. } => "Neo.ClientError.Statement.SyntaxError",
+            BoltError::QueryError { kind, .. } => kind.neo4j_code(),
             BoltError::TransactionError { .. } => "Neo.TransientError.Transaction.Terminated",
             BoltError::SerializationError(_) => "Neo.ClientError.Request.InvalidFormat",
             BoltError::ConnectionTimeout { .. } => "Neo.TransientError.General.DatabaseUnavailable",
@@ -215,11 +289,29 @@ mod tests {
             "Neo.ClientError.Security.Unauthorized"
         );
 
-        let query_error = BoltError::query_error("Syntax error");
+        let query_error = BoltError::syntax("Syntax error");
         assert_eq!(
             query_error.error_code(),
             "Neo.ClientError.Statement.SyntaxError"
         );
+        // #1399: each kind its own code; a backend failure is a database
+        // error, not the client's syntax.
+        for (error, code) in [
+            (
+                BoltError::execution_failed("x"),
+                "Neo.DatabaseError.Statement.ExecutionFailed",
+            ),
+            (
+                BoltError::database_not_found("x"),
+                "Neo.ClientError.Database.DatabaseNotFound",
+            ),
+            (
+                BoltError::query(QueryErrorKind::ProcedureNotFound, "x"),
+                "Neo.ClientError.Procedure.ProcedureNotFound",
+            ),
+        ] {
+            assert_eq!(error.error_code(), code);
+        }
     }
 
     #[test]

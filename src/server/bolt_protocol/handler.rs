@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use super::auth::{AuthToken, AuthenticatedUser, Authenticator};
-use super::errors::{BoltError, BoltResult};
+use super::errors::{BoltError, BoltResult, QueryErrorKind};
 use super::messages::{signatures, BoltMessage, BoltValue};
 use super::{BoltConfig, BoltContext, ConnectionState};
 
@@ -105,6 +105,46 @@ fn bolt_value_to_string(value: &BoltValue) -> String {
         }
         BoltValue::PackstreamBytes(bytes) => format!("<packstream: {} bytes>", bytes.len()),
     }
+}
+
+/// The Neo4j status code of a FAILURE message (`neo4j_code` from Bolt 5.7,
+/// `code` before).
+fn failure_code(message: &BoltMessage) -> String {
+    match message.fields.first() {
+        Some(BoltValue::Json(Value::Object(m))) => m
+            .get("neo4j_code")
+            .or_else(|| m.get("code"))
+            .and_then(|c| c.as_str())
+            .unwrap_or_default()
+            .to_string(),
+        _ => String::new(),
+    }
+}
+
+/// A procedure's failure (#1399): no procedure of that name is
+/// `ProcedureNotFound`, a graph that is not loaded `DatabaseNotFound` (the
+/// reserved `system` database reads none), anything else
+/// `ProcedureCallFailed`.
+async fn procedure_failure(
+    name: &str,
+    graph: &str,
+    registry: &crate::procedures::ProcedureRegistry,
+    message: String,
+) -> BoltError {
+    if !registry.contains(name) {
+        return BoltError::query(
+            QueryErrorKind::ProcedureNotFound,
+            format!("There is no procedure with the name `{name}` registered"),
+        );
+    }
+    if !graph.eq_ignore_ascii_case("system")
+        && graph_catalog::get_graph_schema_by_name(graph)
+            .await
+            .is_err()
+    {
+        return BoltError::database_not_found(message);
+    }
+    BoltError::query(QueryErrorKind::ProcedureCallFailed, message)
 }
 
 /// Resolve the graph schema a RUN/BEGIN message should route to from its Bolt
@@ -843,6 +883,9 @@ pub struct BoltHandler {
     executor: Arc<dyn QueryExecutor>,
     /// Cached query results for streaming
     cached_results: Option<Vec<Vec<BoltValue>>>,
+    /// The graph the current RUN's statement runs on, once resolved (its
+    /// metrics record's schema label).
+    run_graph: Option<String>,
 }
 
 impl BoltHandler {
@@ -859,6 +902,7 @@ impl BoltHandler {
             authenticated_user: None,
             executor,
             cached_results: None,
+            run_graph: None,
         }
     }
 
@@ -1342,11 +1386,12 @@ impl BoltHandler {
         Ok(Some(vec![BoltMessage::success(meta)]))
     }
 
-    /// Handle RUN message (execute Cypher query)
-    /// A query error answered as a FAILURE (the client RESETs and the
-    /// connection stays usable), not returned as a connection error.
+    /// A procedure's YIELD / WHERE / RETURN refused, answered as a FAILURE
+    /// (the client RESETs and the connection stays usable), not returned as
+    /// a connection error: Neo4j's `SyntaxError` ("Unknown procedure
+    /// output").
     fn query_failure(&self, message: String) -> Vec<BoltMessage> {
-        let error = BoltError::query_error(message);
+        let error = BoltError::syntax(message);
         vec![BoltMessage::failure(
             error.error_code().to_string(),
             error.to_string(),
@@ -1372,7 +1417,95 @@ impl BoltHandler {
         )]
     }
 
+    /// Handle RUN: [`Self::run_statement`], recorded once (#1500). Every
+    /// RUN is one record, whichever way it is answered: a query, a
+    /// procedure, an intercept (SHOW DATABASES, the Browser's probes,
+    /// EXPLAIN), a refusal. Before, only what reached `execute_cypher_query`
+    /// was recorded, every failure as `exec`.
     async fn handle_run(&mut self, message: BoltMessage) -> BoltResult<Vec<BoltMessage>> {
+        let Some(reg) = GLOBAL_SERVER_METRICS.get() else {
+            return self.answer_run(message).await;
+        };
+        let _inflight = reg.in_flight_guard();
+        let start = std::time::Instant::now();
+        let text = message.extract_query().unwrap_or_default().to_string();
+        self.run_graph = None;
+        metrics::with_ch_stats_scope(async {
+            let result = self.answer_run(message).await;
+            let outcome = match &result {
+                Ok(messages) => match messages.first() {
+                    Some(m) if m.signature == signatures::FAILURE => {
+                        Outcome::Err(ErrorClass::from_neo4j_code(&failure_code(m)))
+                    }
+                    _ => Outcome::Ok,
+                },
+                // What ends the connection (a protocol error, a poisoned
+                // lock): the server's.
+                Err(_) => Outcome::Err(ErrorClass::Internal),
+            };
+            let elapsed = start.elapsed().as_secs_f64();
+            let m = QueryPerformanceMetrics {
+                total_time: elapsed,
+                execution_time: elapsed,
+                query_type: "bolt".to_string(),
+                ..QueryPerformanceMetrics::default()
+            };
+            // The statement's graph when it was resolved, else the session's,
+            // when it is loaded and the RUN succeeded: a failure may name a
+            // graph that does not exist, which no span attribute carries (as
+            // on HTTP). Read only to label a span: a poisoned mutex degrades
+            // to no schema attribute rather than a failed query.
+            let schema = match (reg.tracing_enabled(), outcome) {
+                (true, Outcome::Ok) => {
+                    let name = self
+                        .run_graph
+                        .clone()
+                        .or_else(|| self.context.lock().ok().and_then(|c| c.schema_name.clone()));
+                    match name {
+                        Some(name) if graph_catalog::schema_exists(&name).await => Some(name),
+                        _ => None,
+                    }
+                }
+                _ => None,
+            };
+            reg.record_query(&QuerySample {
+                metrics: &m,
+                outcome,
+                has_phase_breakdown: false,
+                query_text: Some(&text),
+                schema: schema.as_deref(),
+                ch: metrics::current_ch_stats(),
+            });
+            result
+        })
+        .await
+    }
+
+    /// Answer a RUN: a query error is a FAILURE, after which the client
+    /// RESETs and goes on; only what breaks the connection itself (a
+    /// protocol error, a poisoned lock) is returned as an `Err`, which ends
+    /// it (#1399 review: an intercept's unknown database reset the
+    /// connection instead of answering `DatabaseNotFound`).
+    async fn answer_run(&mut self, message: BoltMessage) -> BoltResult<Vec<BoltMessage>> {
+        match self.run_statement(message).await {
+            Err(
+                e @ (BoltError::QueryError { .. }
+                | BoltError::NotImplemented { .. }
+                | BoltError::Internal { .. }),
+            ) => {
+                log::error!("Query failed: {}", e);
+                Ok(vec![BoltMessage::failure(
+                    e.error_code().to_string(),
+                    e.to_string(),
+                    self.negotiated_version(),
+                )])
+            }
+            other => other,
+        }
+    }
+
+    /// Answer a RUN (not recorded: [`Self::handle_run`] records it).
+    async fn run_statement(&mut self, message: BoltMessage) -> BoltResult<Vec<BoltMessage>> {
         // Verify connection state
         {
             let context = lock_context!(self.context);
@@ -1724,9 +1857,9 @@ impl BoltHandler {
                 .get()
                 .ok_or_else(|| BoltError::internal("Schema registry not initialized"))?;
             let schemas = schema_guard.read().await;
-            let schema = schemas
-                .get(&effective_schema)
-                .ok_or_else(|| BoltError::internal("Schema not found"))?;
+            let schema = schemas.get(&effective_schema).ok_or_else(|| {
+                BoltError::database_not_found(format!("Graph not found: {effective_schema}"))
+            })?;
 
             let fields = build_schema_visualization_fields(schema);
             drop(schemas);
@@ -1785,9 +1918,9 @@ impl BoltHandler {
                 .get()
                 .ok_or_else(|| BoltError::internal("Schema registry not initialized"))?;
             let schemas = schema_guard.read().await;
-            let schema = schemas
-                .get(&effective_schema)
-                .ok_or_else(|| BoltError::internal("Schema not found"))?;
+            let schema = schemas.get(&effective_schema).ok_or_else(|| {
+                BoltError::database_not_found(format!("Graph not found: {effective_schema}"))
+            })?;
 
             // Distinct underlying tables — polymorphic schemas can map several labels
             // (or rel composite keys) onto a single physical table; counting that
@@ -1878,9 +2011,9 @@ impl BoltHandler {
                 .get()
                 .ok_or_else(|| BoltError::internal("Schema registry not initialized"))?;
             let schemas = schema_guard.read().await;
-            let schema = schemas
-                .get(&effective_schema)
-                .ok_or_else(|| BoltError::internal("Schema not found"))?;
+            let schema = schemas.get(&effective_schema).ok_or_else(|| {
+                BoltError::database_not_found(format!("Graph not found: {effective_schema}"))
+            })?;
 
             let collect_column = |records: Vec<HashMap<String, serde_json::Value>>,
                                   key: &str|
@@ -1892,17 +2025,18 @@ impl BoltHandler {
             };
 
             let labels = collect_column(
-                crate::procedures::db_labels::execute(schema).map_err(BoltError::query_error)?,
+                crate::procedures::db_labels::execute(schema)
+                    .map_err(|e| BoltError::query(QueryErrorKind::ProcedureCallFailed, e))?,
                 "label",
             );
             let rel_types = collect_column(
                 crate::procedures::db_relationship_types::execute(schema)
-                    .map_err(BoltError::query_error)?,
+                    .map_err(|e| BoltError::query(QueryErrorKind::ProcedureCallFailed, e))?,
                 "relationshipType",
             );
             let prop_keys = collect_column(
                 crate::procedures::db_property_keys::execute(schema)
-                    .map_err(BoltError::query_error)?,
+                    .map_err(|e| BoltError::query(QueryErrorKind::ProcedureCallFailed, e))?,
                 "propertyKey",
             );
             drop(schemas);
@@ -1954,9 +2088,9 @@ impl BoltHandler {
                 .get()
                 .ok_or_else(|| BoltError::internal("Schema registry not initialized"))?;
             let schemas = schema_guard.read().await;
-            let schema = schemas
-                .get(&effective_schema)
-                .ok_or_else(|| BoltError::internal("Schema not found"))?;
+            let schema = schemas.get(&effective_schema).ok_or_else(|| {
+                BoltError::database_not_found(format!("Graph not found: {effective_schema}"))
+            })?;
 
             match crate::procedures::apoc_meta_schema::execute_unwound(schema) {
                 Ok(records) => {
@@ -2010,12 +2144,9 @@ impl BoltHandler {
         use crate::server::query_context::{with_query_context, QueryContext};
         let ctx = QueryContext::new(Some(schema_name.clone()));
 
-        // Observability: the Bolt path doesn't build per-phase timings like the
-        // HTTP handler, so record only total/exec latency under a coarse "bolt"
-        // type. The in-flight guard + CH-stats scope mirror the HTTP path.
-        let _inflight = GLOBAL_SERVER_METRICS.get().map(|r| r.in_flight_guard());
-        let run_start = std::time::Instant::now();
-        let exec_result = metrics::with_ch_stats_scope(with_query_context(
+        // The statement's graph labels its record (`handle_run`).
+        self.run_graph = Some(schema_name.clone());
+        let exec_result = with_query_context(
             ctx,
             self.execute_cypher_query(
                 &query,
@@ -2025,10 +2156,10 @@ impl BoltHandler {
                 role,
                 view_parameters,
             ),
-        ))
+        )
         .await;
 
-        let (messages, outcome) = match exec_result {
+        let messages = match exec_result {
             Ok(result_metadata) => {
                 // Update context to streaming state
                 {
@@ -2037,7 +2168,7 @@ impl BoltHandler {
                 }
 
                 // Return success with query metadata
-                (vec![BoltMessage::success(result_metadata)], Outcome::Ok)
+                vec![BoltMessage::success(result_metadata)]
             }
             Err(query_error) => {
                 let error_code = query_error.error_code().to_string();
@@ -2052,43 +2183,13 @@ impl BoltHandler {
                 // Don't update state - let client send RESET to recover
                 // Setting to Failed would close the connection
 
-                (
-                    vec![BoltMessage::failure(
-                        error_code,
-                        error_message,
-                        self.negotiated_version(),
-                    )],
-                    Outcome::Err(ErrorClass::Exec),
-                )
+                vec![BoltMessage::failure(
+                    error_code,
+                    error_message,
+                    self.negotiated_version(),
+                )]
             }
         };
-
-        if let Some(reg) = GLOBAL_SERVER_METRICS.get() {
-            let elapsed = run_start.elapsed().as_secs_f64();
-            let m = QueryPerformanceMetrics {
-                total_time: elapsed,
-                execution_time: elapsed,
-                query_type: "bolt".to_string(),
-                ..QueryPerformanceMetrics::default()
-            };
-            // Read the session schema only to label a span, and only when
-            // tracing is on. `lock_context!` would turn a poisoned mutex into a
-            // failed query, which is not an acceptable price for a metric
-            // attribute, so this degrades to "no schema attribute" instead.
-            let schema = if reg.tracing_enabled() {
-                self.context.lock().ok().and_then(|c| c.schema_name.clone())
-            } else {
-                None
-            };
-            reg.record_query(&QuerySample {
-                metrics: &m,
-                outcome,
-                has_phase_breakdown: false,
-                query_text: Some(&query),
-                schema: schema.as_deref(),
-                ch: metrics::current_ch_stats(),
-            });
-        }
 
         Ok(messages)
     }
@@ -2453,14 +2554,17 @@ impl BoltHandler {
             let destination = copy_stmt.destination.to_string();
             let ch_format = if let Some(fmt) = copy_stmt.format {
                 crate::procedures::apoc_export::format_from_copy_format(fmt)
-                    .map_err(BoltError::query_error)?
+                    .map_err(|e| BoltError::query(QueryErrorKind::Argument, e))?
             } else {
                 crate::procedures::apoc_export::format_from_extension(&destination).ok_or_else(
                     || {
-                        BoltError::query_error(format!(
-                            "Cannot determine format from '{}'. Use FORMAT clause.",
-                            destination
-                        ))
+                        BoltError::query(
+                            QueryErrorKind::Argument,
+                            format!(
+                                "Cannot determine format from '{}'. Use FORMAT clause.",
+                                destination
+                            ),
+                        )
                     },
                 )?
             };
@@ -2475,7 +2579,7 @@ impl BoltHandler {
 
             let graph_schema_obj = graph_catalog::get_graph_schema_by_name(&effective_schema)
                 .await
-                .map_err(BoltError::query_error)?;
+                .map_err(BoltError::database_not_found)?;
             crate::server::query_context::set_current_schema(Arc::new(graph_schema_obj.clone()));
 
             // Translate inner Cypher → SQL
@@ -2484,7 +2588,7 @@ impl BoltHandler {
                 &graph_schema_obj,
                 &effective_schema,
             )
-            .map_err(BoltError::query_error)?;
+            .map_err(BoltError::from_translate)?;
 
             let export_sql = crate::procedures::apoc_export::build_export_sql(
                 &inner_sql,
@@ -2492,14 +2596,16 @@ impl BoltHandler {
                 ch_format,
                 &config,
             )
-            .map_err(BoltError::query_error)?;
+            .map_err(|e| BoltError::query(QueryErrorKind::Argument, e))?;
 
             log::debug!("Bolt COPY TO SQL: {}", export_sql);
 
             self.executor
                 .execute_text(&export_sql, "TabSeparated", role.as_deref())
                 .await
-                .map_err(|e| BoltError::query_error(format!("COPY TO execution failed: {}", e)))?;
+                .map_err(|e| {
+                    BoltError::execution_failed(format!("COPY TO execution failed: {}", e))
+                })?;
 
             // Cache a single result record for PULL
             let result_record = vec![
@@ -2534,7 +2640,7 @@ impl BoltHandler {
                 Some(format!("Statement parsing failed: {}", parse_error))
             }
             Err(parse_error) => {
-                return Err(BoltError::query_error(format!(
+                return Err(BoltError::syntax(format!(
                     "Statement parsing failed: {}",
                     parse_error
                 )));
@@ -2546,7 +2652,7 @@ impl BoltHandler {
             let parsed_stmt = match open_cypher_parser::parse_cypher_statement(query) {
                 Ok((_, stmt)) => stmt,
                 Err(parse_error) => {
-                    return Err(BoltError::query_error(format!(
+                    return Err(BoltError::syntax(format!(
                         "Statement parsing failed: {}",
                         parse_error
                     )));
@@ -2559,7 +2665,7 @@ impl BoltHandler {
                     .is_some_and(|(name, _)| crate::procedures::is_sql_procedure(name))
             {
                 crate::procedures::executor::sql_procedure_tail_refused(&parsed_stmt)
-                    .map_err(BoltError::query_error)?;
+                    .map_err(BoltError::syntax)?;
             }
 
             log::debug!("Query execution using schema: {}", effective_schema);
@@ -2578,7 +2684,7 @@ impl BoltHandler {
                     CypherStatement::CopyTo(_) => {
                         // COPY TO is handled by the early intercept above;
                         // this branch is unreachable for valid COPY TO queries.
-                        return Err(BoltError::query_error(
+                        return Err(BoltError::internal(
                             "Unexpected COPY TO in execution plan phase".to_string(),
                         ));
                     }
@@ -2620,7 +2726,7 @@ impl BoltHandler {
                                     }
                                 }
                             } else {
-                                return Err(BoltError::query_error(
+                                return Err(BoltError::internal(
                                     "No call clause found".to_string(),
                                 ));
                             }
@@ -2647,7 +2753,7 @@ impl BoltHandler {
                             let branch_type = query_planner::get_query_type(&union_clause.query);
                             if branch_type != query_planner::types::QueryType::Read {
                                 log::debug!("UNION branch has non-Read type: {:?}", branch_type);
-                                return Err(BoltError::query_error(
+                                return Err(BoltError::not_implemented(
                                     "Only read queries are currently supported via Bolt protocol"
                                         .to_string(),
                                 ));
@@ -2663,7 +2769,7 @@ impl BoltHandler {
                 }
                 CypherStatement::CopyTo(_) => {
                     // COPY TO is handled by the early intercept above
-                    return Err(BoltError::query_error(
+                    return Err(BoltError::internal(
                         "Unexpected COPY TO in query type phase".to_string(),
                     ));
                 }
@@ -2694,19 +2800,19 @@ impl BoltHandler {
 
                         let ch_format =
                             crate::procedures::apoc_export::format_from_procedure_name(&proc_name)
-                                .map_err(BoltError::query_error)?;
+                                .map_err(|e| BoltError::query(QueryErrorKind::Argument, e))?;
 
                         // Re-parse to extract arguments
                         let export_args = {
                             let (_, stmt) = open_cypher_parser::parse_cypher_statement(query)
                                 .map_err(|e| {
-                                    BoltError::query_error(format!("Export parse error: {}", e))
+                                    BoltError::syntax(format!("Export parse error: {}", e))
                                 })?;
                             let expressions: Vec<_> = match &stmt {
                                 CypherStatement::ProcedureCall(pc) => pc.arguments.iter().collect(),
                                 CypherStatement::Query { query: q, .. } => {
                                     let cc = q.call_clause.as_ref().ok_or_else(|| {
-                                        BoltError::query_error(
+                                        BoltError::internal(
                                             "No CALL clause in export query".to_string(),
                                         )
                                     })?;
@@ -2714,20 +2820,22 @@ impl BoltHandler {
                                 }
                                 CypherStatement::CopyTo(_) => {
                                     // COPY TO is handled by the early intercept above
-                                    return Err(BoltError::query_error(
+                                    return Err(BoltError::internal(
                                         "Unexpected COPY TO in export args extraction".to_string(),
                                     ));
                                 }
                             };
                             crate::procedures::apoc_export::parse_export_call(&expressions)
-                                .map_err(BoltError::query_error)?
+                                .map_err(|e| {
+                                    BoltError::query(QueryErrorKind::ProcedureCallFailed, e)
+                                })?
                         };
 
                         // Resolve schema
                         let graph_schema =
                             graph_catalog::get_graph_schema_by_name(&effective_schema)
                                 .await
-                                .map_err(BoltError::query_error)?;
+                                .map_err(BoltError::database_not_found)?;
                         crate::server::query_context::set_current_schema(Arc::new(
                             graph_schema.clone(),
                         ));
@@ -2741,7 +2849,7 @@ impl BoltHandler {
                             &graph_schema,
                             &effective_schema,
                         )
-                        .map_err(BoltError::query_error)?;
+                        .map_err(BoltError::from_translate)?;
 
                         // Build export SQL
                         let export_sql = crate::procedures::apoc_export::build_export_sql(
@@ -2750,7 +2858,7 @@ impl BoltHandler {
                             ch_format,
                             &export_args.config,
                         )
-                        .map_err(BoltError::query_error)?;
+                        .map_err(|e| BoltError::query(QueryErrorKind::Argument, e))?;
 
                         log::info!("Bolt export SQL: {}", export_sql);
 
@@ -2759,7 +2867,10 @@ impl BoltHandler {
                             .execute_text(&export_sql, "TabSeparated", role.as_deref())
                             .await
                             .map_err(|e| {
-                                BoltError::query_error(format!("Export execution failed: {}", e))
+                                BoltError::execution_failed(format!(
+                                    "Export execution failed: {}",
+                                    e
+                                ))
                             })?;
 
                         // Return status as a single record
@@ -2784,49 +2895,48 @@ impl BoltHandler {
                         let search_args = {
                             let (_, stmt) = open_cypher_parser::parse_cypher_statement(query)
                                 .map_err(|e| {
-                                    BoltError::query_error(format!(
-                                        "Vector search parse error: {}",
-                                        e
-                                    ))
+                                    BoltError::syntax(format!("Vector search parse error: {}", e))
                                 })?;
                             let expressions: Vec<_> = match &stmt {
                                 CypherStatement::ProcedureCall(pc) => pc.arguments.iter().collect(),
                                 CypherStatement::Query { query: q, .. } => {
                                     let cc = q.call_clause.as_ref().ok_or_else(|| {
-                                        BoltError::query_error(
+                                        BoltError::internal(
                                             "No CALL clause in vector search query".to_string(),
                                         )
                                     })?;
                                     cc.arguments.iter().map(|a| &a.value).collect()
                                 }
                                 CypherStatement::CopyTo(_) => {
-                                    return Err(BoltError::query_error(
+                                    return Err(BoltError::internal(
                                         "Unexpected COPY TO in vector search context".to_string(),
                                     ));
                                 }
                             };
                             crate::procedures::vector_search::parse_vector_search_args(&expressions)
-                                .map_err(BoltError::query_error)?
+                                .map_err(|e| {
+                                    BoltError::query(QueryErrorKind::ProcedureCallFailed, e)
+                                })?
                         };
 
                         // Resolve schema and vector index
                         let graph_schema =
                             graph_catalog::get_graph_schema_by_name(&effective_schema)
                                 .await
-                                .map_err(BoltError::query_error)?;
+                                .map_err(BoltError::database_not_found)?;
 
                         let index_config = crate::procedures::vector_search::resolve_vector_index(
                             &graph_schema,
                             &search_args.index_name,
                         )
-                        .map_err(BoltError::query_error)?;
+                        .map_err(|e| BoltError::query(QueryErrorKind::ProcedureCallFailed, e))?;
 
                         // Generate and execute SQL
                         let search_sql = crate::procedures::vector_search::build_vector_search_sql(
                             &search_args,
                             index_config,
                         )
-                        .map_err(BoltError::query_error)?;
+                        .map_err(|e| BoltError::query(QueryErrorKind::ProcedureCallFailed, e))?;
 
                         log::debug!(
                             "Bolt vector search: index='{}', top_k={}",
@@ -2839,7 +2949,7 @@ impl BoltHandler {
                             .execute_text(&search_sql, "JSONEachRow", role.as_deref())
                             .await
                             .map_err(|e| {
-                                BoltError::query_error(format!(
+                                BoltError::execution_failed(format!(
                                     "Vector search execution failed: {}",
                                     e
                                 ))
@@ -2854,7 +2964,7 @@ impl BoltHandler {
                                     line,
                                 )
                                 .map_err(|e| {
-                                    BoltError::query_error(format!(
+                                    BoltError::execution_failed(format!(
                                         "Failed to parse JSONEachRow line: {}",
                                         e
                                     ))
@@ -2870,23 +2980,20 @@ impl BoltHandler {
                         let search_args = {
                             let (_, stmt) = open_cypher_parser::parse_cypher_statement(query)
                                 .map_err(|e| {
-                                    BoltError::query_error(format!(
-                                        "Fulltext search parse error: {}",
-                                        e
-                                    ))
+                                    BoltError::syntax(format!("Fulltext search parse error: {}", e))
                                 })?;
                             let expressions: Vec<_> = match &stmt {
                                 CypherStatement::ProcedureCall(pc) => pc.arguments.iter().collect(),
                                 CypherStatement::Query { query: q, .. } => {
                                     let cc = q.call_clause.as_ref().ok_or_else(|| {
-                                        BoltError::query_error(
+                                        BoltError::internal(
                                             "No CALL clause in fulltext search query".to_string(),
                                         )
                                     })?;
                                     cc.arguments.iter().map(|a| &a.value).collect()
                                 }
                                 CypherStatement::CopyTo(_) => {
-                                    return Err(BoltError::query_error(
+                                    return Err(BoltError::internal(
                                         "Unexpected COPY TO in fulltext search context".to_string(),
                                     ));
                                 }
@@ -2894,20 +3001,22 @@ impl BoltHandler {
                             crate::procedures::fulltext_search::parse_fulltext_search_args(
                                 &expressions,
                             )
-                            .map_err(BoltError::query_error)?
+                            .map_err(|e| BoltError::query(QueryErrorKind::ProcedureCallFailed, e))?
                         };
 
                         let graph_schema =
                             graph_catalog::get_graph_schema_by_name(&effective_schema)
                                 .await
-                                .map_err(BoltError::query_error)?;
+                                .map_err(BoltError::database_not_found)?;
 
                         let index_config =
                             crate::procedures::fulltext_search::resolve_fulltext_index(
                                 &graph_schema,
                                 &search_args.index_name,
                             )
-                            .map_err(BoltError::query_error)?;
+                            .map_err(|e| {
+                                BoltError::query(QueryErrorKind::ProcedureCallFailed, e)
+                            })?;
 
                         let search_sql =
                             crate::procedures::fulltext_search::build_fulltext_search_sql(
@@ -2926,7 +3035,7 @@ impl BoltHandler {
                             .execute_text(&search_sql, "JSONEachRow", role.as_deref())
                             .await
                             .map_err(|e| {
-                                BoltError::query_error(format!(
+                                BoltError::execution_failed(format!(
                                     "Fulltext search execution failed: {}",
                                     e
                                 ))
@@ -2940,7 +3049,7 @@ impl BoltHandler {
                                     line,
                                 )
                                 .map_err(|e| {
-                                    BoltError::query_error(format!(
+                                    BoltError::execution_failed(format!(
                                         "Failed to parse JSONEachRow line: {}",
                                         e
                                     ))
@@ -2954,32 +3063,50 @@ impl BoltHandler {
                             &effective_schema,
                             &registry,
                         )
-                        .await
-                        .map_err(|e| {
-                            BoltError::query_error(format!("Procedure execution failed: {}", e))
-                        })?;
+                        .await;
+                        let rows = match rows {
+                            Ok(rows) => rows,
+                            Err(e) => {
+                                return Err(procedure_failure(
+                                    &proc_name,
+                                    &effective_schema,
+                                    &registry,
+                                    format!("Procedure execution failed: {}", e),
+                                )
+                                .await)
+                            }
+                        };
                         // What follows the CALL (YIELD, WHERE; #1411)
                         crate::procedures::executor::apply_statement_tail(rows, query, 0)
-                            .map_err(BoltError::query_error)?
+                            .map_err(BoltError::syntax)?
                     }
                 }
                 ExecutionPlan::ProcedureWithReturn { proc_name } => {
                     log::info!("Executing procedure with RETURN via Bolt: {}", proc_name);
 
                     // Execute procedure
-                    let raw_results = crate::procedures::executor::execute_procedure_by_name(
+                    let raw_results = match crate::procedures::executor::execute_procedure_by_name(
                         &proc_name,
                         &effective_schema,
                         &registry,
                     )
                     .await
-                    .map_err(BoltError::query_error)?;
+                    {
+                        Ok(rows) => rows,
+                        Err(e) => {
+                            return Err(procedure_failure(
+                                &proc_name,
+                                &effective_schema,
+                                &registry,
+                                e,
+                            )
+                            .await)
+                        }
+                    };
 
                     // What follows the CALL (YIELD, WHERE, RETURN; #1411)
                     crate::procedures::executor::apply_statement_tail(raw_results, query, 0)
-                        .map_err(|e| {
-                            BoltError::query_error(format!("Procedure query failed: {}", e))
-                        })?
+                        .map_err(|e| BoltError::syntax(format!("Procedure query failed: {}", e)))?
                 }
                 ExecutionPlan::Union { branches } => {
                     log::info!(
@@ -2991,13 +3118,25 @@ impl BoltHandler {
 
                     // Execute each branch
                     for (idx, branch) in branches.iter().enumerate() {
-                        let raw_results = crate::procedures::executor::execute_procedure_by_name(
-                            &branch.proc_name,
-                            &effective_schema,
-                            &registry,
-                        )
-                        .await
-                        .map_err(BoltError::query_error)?;
+                        let raw_results =
+                            match crate::procedures::executor::execute_procedure_by_name(
+                                &branch.proc_name,
+                                &effective_schema,
+                                &registry,
+                            )
+                            .await
+                            {
+                                Ok(rows) => rows,
+                                Err(e) => {
+                                    return Err(procedure_failure(
+                                        &branch.proc_name,
+                                        &effective_schema,
+                                        &registry,
+                                        e,
+                                    )
+                                    .await)
+                                }
+                            };
 
                         // What follows this branch's CALL (YIELD, WHERE, RETURN; #1411)
                         let transformed_results =
@@ -3007,7 +3146,7 @@ impl BoltHandler {
                                 idx,
                             )
                             .map_err(|e| {
-                                BoltError::query_error(format!("Procedure query failed: {}", e))
+                                BoltError::syntax(format!("Procedure query failed: {}", e))
                             })?;
 
                         all_results.extend(transformed_results);
@@ -3057,7 +3196,7 @@ impl BoltHandler {
         // Handle regular queries
         // Check query type
         if query_type != query_planner::types::QueryType::Read {
-            return Err(BoltError::query_error(
+            return Err(BoltError::not_implemented(
                 "Only read queries are currently supported via Bolt protocol".to_string(),
             ));
         }
@@ -3066,7 +3205,10 @@ impl BoltHandler {
         let graph_schema = match graph_catalog::get_graph_schema_by_name(&effective_schema).await {
             Ok(schema) => schema,
             Err(e) => {
-                return Err(BoltError::query_error(format!("Schema error: {}", e)));
+                return Err(BoltError::database_not_found(format!(
+                    "Schema error: {}",
+                    e
+                )));
             }
         };
 
@@ -3098,7 +3240,7 @@ impl BoltHandler {
                 },
             ) {
                 Ok(Some(t)) => Ok(t),
-                Ok(None) => return Err(BoltError::query_error(parse_error)),
+                Ok(None) => return Err(BoltError::syntax(parse_error)),
                 Err(e) => Err(e),
             }
         } else {
@@ -3108,7 +3250,7 @@ impl BoltHandler {
             let parsed_stmt = match open_cypher_parser::parse_cypher_statement(query) {
                 Ok((_, stmt)) => stmt,
                 Err(e) => {
-                    return Err(BoltError::query_error(format!("Re-parse failed: {}", e)));
+                    return Err(BoltError::syntax(format!("Re-parse failed: {}", e)));
                 }
             };
             crate::translate::translate_read(
@@ -3126,8 +3268,9 @@ impl BoltHandler {
         };
         let translation = match translated {
             Ok(t) => t,
+            // As Neo4j reports an undefined variable: a syntax error.
             Err(crate::translate::TranslateError::Invalid(e)) => {
-                return Err(BoltError::query_error(format!("Invalid query: {}", e)));
+                return Err(BoltError::syntax(format!("Invalid query: {}", e)));
             }
             Err(crate::translate::TranslateError::Unsupported(e)) => {
                 return Err(BoltError::not_implemented(e));
@@ -3156,10 +3299,16 @@ impl BoltHandler {
             match parameter_substitution::substitute_parameters(&translation.sql, &parameters) {
                 Ok(sql) => sql,
                 Err(e) => {
-                    return Err(BoltError::query_error(format!(
-                        "Parameter substitution failed: {}",
-                        e
-                    )));
+                    let kind = match e {
+                        parameter_substitution::ParameterSubstitutionError::MissingParameter(_) => {
+                            QueryErrorKind::ParameterMissing
+                        }
+                        _ => QueryErrorKind::Argument,
+                    };
+                    return Err(BoltError::query(
+                        kind,
+                        format!("Parameter substitution failed: {}", e),
+                    ));
                 }
             };
 
@@ -3170,7 +3319,7 @@ impl BoltHandler {
             .executor
             .execute_json(&final_sql, role.as_deref())
             .await
-            .map_err(|e| BoltError::query_error(format!("Query execution failed: {}", e)))?;
+            .map_err(|e| BoltError::execution_failed(format!("Query execution failed: {}", e)))?;
 
         // Parse JSON results into field_names + row vectors
         let mut rows = Vec::new();
