@@ -39,11 +39,24 @@ jobs:
     - name: Lint
       run: cargo clippy --all-targets -- -D warnings
 
+    # #1501: the root Cargo.toml is a package and a workspace with no
+    # default-members, so the plain cargo commands cover only the
+    # clickgraph package. Lint and test the other members explicitly.
+    # clickgraph-ffi and clickgraph-tck need chdb (the `embedded` feature),
+    # which CI does not install.
+    - name: Lint workspace crates
+      run: cargo clippy -p clickgraph-tool -p clickgraph-client -p clickgraph-embedded --features clickgraph-tool/databricks,clickgraph-embedded/databricks --all-targets -- -D warnings
+
     - name: Build
       run: cargo build --verbose
 
     - name: Run full cargo test suite
       run: cargo test --verbose
+
+    # Doctests are left out: their examples call `Database::new`, which
+    # exists only with the `embedded` (chdb) feature.
+    - name: Run workspace crate tests
+      run: cargo test --verbose -p clickgraph-tool -p clickgraph-client -p clickgraph-embedded --features clickgraph-tool/databricks,clickgraph-embedded/databricks --lib --bins --tests
 
     - name: Start ClickHouse test infrastructure
       run: docker compose -f docker-compose.test.yaml up -d
