@@ -1127,8 +1127,13 @@ types, definitions or labels; `Lowerer::build_union_path`, `path::Search`,
     `DateTime64` scales and knows nothing of nullability), so the discovered
     spelling is kept; the target's *spelling* is the dialect axis's
     (`SqlDialect::cast_target`). Only the pairs above are reconciled — every
-    other combination keeps the SQL it had, and the zone-less targets leave a
-    zone-bearing pair of one instant (a follow-up) to keep its own SQL too.
+    other combination keeps the SQL it had. The targets are zone-less and a
+    cast keeps each column's own zone, so time columns in different zones
+    (the server's counting as one, unknown at translation) are left uncast:
+    a Tokyo and a UTC midnight would spell one local text for two instants.
+    Their one-instant pairs stay unmatched, as before (a follow-up). The
+    types are the ones `auto_discover_columns` reads; a declared
+    `property_mappings` element has none, so its keys keep their SQL.
 - **Ends.** The last node is restricted as the first is (by label and id
   `IN` the rows so far or its own conjuncts, §4.8 d), and the search stops
   once it has reached every value the last node can have. A label condition
@@ -1419,10 +1424,14 @@ types, definitions or labels; `Lowerer::build_union_path`, `path::Search`,
   table once made the reach depend on that order). The parts still agreeing
   spell no cast. A mix outside the table (`Int64` against `Float64`, a
   `Decimal` column, `-0.`) is left uncast: its SQL is what it was before. The
-  targets are spelled zone-less, so a zone-bearing pair of one instant —
-  `DateTime('Asia/Tokyo')` against `DateTime64(3,'UTC')` — is not covered
-  (a follow-up would spell the target's zone); the table is not complete past
-  that.
+  targets are spelled zone-less and a cast keeps each column's zone, so time
+  columns in different zones are left uncast (one local text would stand for
+  two instants and match what `=` refuses); a pair of one instant in two
+  zones — `DateTime('Asia/Tokyo')` against `DateTime64(3,'UTC')` — is
+  therefore not covered (a follow-up would spell the target's zone), and the
+  table is not complete past that. Types come only from
+  `auto_discover_columns`: a declared `property_mappings` element keeps its
+  SQL.
 - **Conditions the search cannot hold** (§4.8: a length it does not bound,
   a lower bound above 1, a condition on an end): the pick reads the
   generator's trails through `vlp_{var}_keyed`, their ends keyed alike from

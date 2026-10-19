@@ -839,8 +839,10 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
   round 3). Covered: single and composite ids, per part; `Date`/`DateTime`/`DateTime64(scale)`;
   `FixedString`/`String`; `Bool`/`UInt8`; `Float32`/`Float64` (both cast to `Float64`, the
   type `=` compares them in — equal texts, unequal values, was the table's reverse row).
-  Not covered: a zone-bearing pair of one instant (`DateTime('Asia/Tokyo')` against
-  `DateTime64(3,'UTC')` — a follow-up would spell the target's zone; round 3). The fold is
+  Not covered: time columns in different zones are left uncast (a zone-less target keeps
+  each column's zone, so one local text would match two instants), so a pair of one instant
+  (`DateTime('Asia/Tokyo')` against `DateTime64(3,'UTC')`) stays unmatched — a follow-up
+  would spell the target's zone. The fold is
   recorded under a walk's own arms before any of its restrictions are spelled, and dropped
   when the walk returns (round 3; before, a filtered or bound end read a fold a previous
   walk over a shared label had left — or none — and its seed matched nothing, and queries

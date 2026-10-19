@@ -2422,15 +2422,6 @@ impl GraphSchemaConfig {
         let engine = engines
             .get(&(database.to_string(), table.to_string()))
             .cloned();
-        // #1360: the discovered columns, kept for their *types* even when
-        // `auto_discover` is false. That flag decides which columns become
-        // properties; the walk key separately needs each id column's type to
-        // compare it in the right one, and a declared-property schema was
-        // getting no types at all before this.
-        let columns_all = match columns {
-            Columns::Discovered(all) => all.get(database, table),
-            Columns::DeclaredOnly => None,
-        };
         let discovered = match columns {
             Columns::Discovered(columns) if auto_discover => {
                 let Some(found) = columns.get(database, table) else {
@@ -2464,15 +2455,17 @@ impl GraphSchemaConfig {
             }
             Columns::Discovered(_) | Columns::DeclaredOnly => None,
         };
-        let column_types = columns_all.map(|found| {
-            found
-                .iter()
-                .map(|c| (c.name.clone(), c.data_type.clone()))
-                .collect::<HashMap<String, String>>()
-        });
+        // #1360: only an `auto_discover_columns` element keeps the column
+        // types (its id parts' too). A declared element whose table another
+        // element reads stays as on main: no types, no casts, and the
+        // `node_id.dtype` Bolt `id()` decoding reads unchanged.
         Ok(TableDiscovery {
             columns: discovered.map(|c| c.iter().map(|c| c.name.clone()).collect()),
-            column_info: column_types,
+            column_info: discovered.map(|c| {
+                c.iter()
+                    .map(|c| (c.name.clone(), c.data_type.clone()))
+                    .collect()
+            }),
             engine,
         })
     }
@@ -5014,5 +5007,65 @@ graph_schema:
             result.is_err(),
             "a denormalized self-loop missing to_node_properties must be rejected by validation"
         );
+    }
+}
+
+#[cfg(test)]
+mod declared_table_shared_with_auto_1360 {
+    use super::*;
+    use crate::graph_catalog::column_info::ColumnInfo;
+
+    /// A declared node whose table an `auto_discover_columns` edge reads gets
+    /// no id types from that read: declared elements stay as on main (#1360),
+    /// including the `node_id.dtype` Bolt `id()` decoding reads.
+    #[test]
+    fn a_declared_node_sharing_an_auto_table_gets_no_types() {
+        let y = r#"
+graph_schema:
+  nodes:
+    - label: Post
+      database: db
+      table: posts
+      node_id: post_id
+      property_mappings:
+        content: content
+    - label: User
+      database: db
+      table: users
+      node_id: user_id
+      property_mappings:
+        name: name
+  edges:
+    - type: AUTHORED
+      database: db
+      table: posts
+      from_id: author_id
+      to_id: post_id
+      from_node: User
+      to_node: Post
+      auto_discover_columns: true
+      property_mappings: {}
+"#;
+        let c = GraphSchemaConfig::from_yaml_str(y).unwrap();
+        let mut d = DiscoveredColumns::default();
+        d.insert(
+            "db",
+            "posts",
+            vec![
+                ColumnInfo::new("post_id".into(), "String".into()),
+                ColumnInfo::new("author_id".into(), "UInt64".into()),
+                ColumnInfo::new("content".into(), "String".into()),
+            ],
+        );
+        let s = c.to_graph_schema_with_columns(&d).unwrap();
+        let p = s.node_schema("Post").unwrap();
+        let u = s.node_schema("User").unwrap();
+        assert_eq!(p.node_id.dtype, SchemaType::Integer);
+        assert!(p.node_id.part_types.is_empty());
+        assert!(u.node_id.part_types.is_empty());
+        // The edge asked: its ends keep their types.
+        let r = s.get_rel_schema("AUTHORED").unwrap();
+        assert_eq!(r.to_node_id_part_types.len(), 1);
+        assert_eq!(r.to_node_id_part_types[0].raw, "String");
     }
 }

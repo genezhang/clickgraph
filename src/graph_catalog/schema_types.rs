@@ -359,6 +359,15 @@ impl KeyPartType {
         if self.raw.eq_ignore_ascii_case(&other.raw) {
             return None;
         }
+        // A zone-less target keeps each column's own zone, so the texts are
+        // local times: two sides in different zones (or one in the server's,
+        // unknown here) would spell one local text for two instants and
+        // match what `=` refuses. Leave such a pair uncast, as before.
+        if let (Some(a), Some(b)) = (self.time_zone(), other.time_zone()) {
+            if a != b {
+                return None;
+            }
+        }
         let nullable = self.nullable || other.nullable;
         let raw = match (self.schema, other.schema) {
             // Date and DateTime read as different text ('2020-01-01' vs
@@ -424,6 +433,17 @@ impl KeyPartType {
         self.datetime64_scale().is_some()
     }
 
+    /// The zone a `DateTime` / `DateTime64` column spells its text in:
+    /// `Some(Some(zone))` when the type names one, `Some(None)` for the
+    /// server's (unknown at translation), `None` for any other type (a
+    /// `Date` has no time of day, so no zone).
+    fn time_zone(&self) -> Option<Option<&str>> {
+        if !self.raw.to_ascii_lowercase().starts_with("datetime") {
+            return None;
+        }
+        Some(self.raw.split('\'').nth(1))
+    }
+
     fn is_fixed_string(&self) -> bool {
         self.raw.to_ascii_lowercase().contains("fixedstring(")
     }
@@ -460,6 +480,16 @@ pub fn fold_common(parts: &[KeyPartType]) -> Option<KeyPartType> {
     // folds nothing — the reach differs only by which arms discovered the
     // sides in which order). Folding in a canonical order makes the fold a
     // function of the SET, and its target one answer.
+    // Zones (`KeyPartType::widen_to`): the fold's target is zone-less, so a
+    // set whose time columns spell their texts in more than one zone stays
+    // uncast — checked over the whole set, since a widened accumulator no
+    // longer carries the zone of the side it came from.
+    let mut zones = parts.iter().filter_map(KeyPartType::time_zone);
+    if let Some(first) = zones.next() {
+        if zones.any(|z| z != first) {
+            return None;
+        }
+    }
     let mut sorted: Vec<&KeyPartType> = parts.iter().collect();
     sorted.sort_by(|a, b| a.raw.to_ascii_lowercase().cmp(&b.raw.to_ascii_lowercase()));
     let mut iter = sorted.into_iter();
@@ -1014,6 +1044,40 @@ mod walk_key_lct_tests {
             let got = kp(a).widen_to(&kp(b)).expect("widened");
             assert_eq!(got.nullable, want_nullable, "{a} with {b}");
         }
+    }
+
+    /// A zone-less target keeps each column's zone, so its texts are local
+    /// times: a Tokyo midnight and a UTC midnight spell alike though `=`
+    /// says they differ. Sides in different zones (the server's counts as
+    /// one, unknown here) stay uncast; one zone, or a `Date`, still folds.
+    #[test]
+    fn sides_in_different_zones_stay_uncast() {
+        for (a, b) in [
+            ("DateTime('Asia/Tokyo')", "DateTime64(3, 'UTC')"),
+            ("DateTime('Asia/Tokyo')", "DateTime64(3)"),
+            ("DateTime('UTC')", "DateTime64(3, 'Asia/Tokyo')"),
+            ("DateTime64(3, 'Asia/Tokyo')", "DateTime64(6, 'UTC')"),
+        ] {
+            assert_eq!(kp(a).widen_to(&kp(b)), None, "{a}/{b}");
+            assert_eq!(kp(b).widen_to(&kp(a)), None, "{b}/{a}");
+            assert_eq!(fold_common(&[kp(a), kp(b)]), None, "{a}/{b}");
+        }
+        // The accumulator loses the zone it came from: checked over the set.
+        assert_eq!(
+            fold_common(&[
+                kp("Date"),
+                kp("DateTime('Asia/Tokyo')"),
+                kp("DateTime64(3, 'UTC')")
+            ]),
+            None
+        );
+        let f = fold_common(&[
+            kp("DateTime('Asia/Tokyo')"),
+            kp("DateTime64(3, 'Asia/Tokyo')"),
+        ])
+        .expect("one zone folds");
+        assert_eq!(f.raw, "DateTime64(3)");
+        assert!(fold_common(&[kp("Date"), kp("DateTime('Asia/Tokyo')")]).is_some());
     }
 
     /// The node key is one CTE shared by every arm, so all sides must agree.
