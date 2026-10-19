@@ -140,6 +140,27 @@ pub struct ServerConfig {
     /// Off by default: any one of the values is read.
     #[serde(default)]
     pub check_node_properties: bool,
+
+    /// OTLP/HTTP base URL for opt-in per-query tracing
+    /// (`CLICKGRAPH_OTLP_ENDPOINT`, traces go to `{endpoint}/v1/traces`).
+    /// Unset = tracing off (default): no traffic, no per-query cost.
+    /// Tracing rides on the observability registry, so it is also off when
+    /// `CLICKGRAPH_METRICS_ENABLED=false`.
+    #[serde(default)]
+    pub otlp_endpoint: Option<String>,
+
+    /// Include the literals-stripped Cypher text in OTLP spans
+    /// (`CLICKGRAPH_OTLP_INCLUDE_QUERY=1`). Off by default: spans carry
+    /// shape/timings only, never query text.
+    #[serde(default)]
+    pub otlp_include_query: bool,
+
+    /// Static auth/tenant headers for OTLP exports, comma-separated
+    /// `key=value` (OTEL's `OTEL_EXPORTER_OTLP_HEADERS` form), e.g.
+    /// `CLICKGRAPH_OTLP_HEADERS=Authorization=Basic <base64(pk:sk)>`.
+    /// Unset = no extra headers (open collectors).
+    #[serde(default)]
+    pub otlp_headers: String,
 }
 
 impl Default for ServerConfig {
@@ -167,6 +188,9 @@ impl Default for ServerConfig {
             stats_enabled: false,
             stats_ttl_secs: 300,
             check_node_properties: false,
+            otlp_endpoint: None,
+            otlp_include_query: false,
+            otlp_headers: String::new(),
         }
     }
 }
@@ -197,6 +221,12 @@ impl ServerConfig {
             stats_enabled: parse_env_var("CLICKGRAPH_STATS_ENABLED", "false")?,
             stats_ttl_secs: parse_env_var("CLICKGRAPH_STATS_TTL_SECS", "300")?,
             check_node_properties: parse_env_var("CLICKGRAPH_CHECK_NODE_PROPERTIES", "false")?,
+            otlp_endpoint: env::var("CLICKGRAPH_OTLP_ENDPOINT")
+                .ok()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty()),
+            otlp_include_query: parse_env_flag("CLICKGRAPH_OTLP_INCLUDE_QUERY", false)?,
+            otlp_headers: env::var("CLICKGRAPH_OTLP_HEADERS").unwrap_or_default(),
         };
 
         config.validate()?;
@@ -232,6 +262,13 @@ impl ServerConfig {
             stats_enabled: parse_env_var("CLICKGRAPH_STATS_ENABLED", "false")?,
             stats_ttl_secs: parse_env_var("CLICKGRAPH_STATS_TTL_SECS", "300")?,
             check_node_properties: parse_env_var("CLICKGRAPH_CHECK_NODE_PROPERTIES", "false")?,
+            // Tracing knobs are operational and env-only, like the metrics knobs.
+            otlp_endpoint: env::var("CLICKGRAPH_OTLP_ENDPOINT")
+                .ok()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty()),
+            otlp_include_query: parse_env_flag("CLICKGRAPH_OTLP_INCLUDE_QUERY", false)?,
+            otlp_headers: env::var("CLICKGRAPH_OTLP_HEADERS").unwrap_or_default(),
         };
 
         config.validate()?;
@@ -320,6 +357,27 @@ where
     })
 }
 
+/// Parse a boolean flag leniently: `true`/`false` plus `1`/`0`, `yes`/`no`,
+/// `on`/`off`, case-insensitively. Used for opt-in observability knobs, where
+/// `str::parse::<bool>` would reject `1` and — because these are read during
+/// startup — take the whole server down over a tracing flag.
+fn parse_env_flag(key: &str, default: bool) -> Result<bool, ConfigError> {
+    let raw = env::var(key).unwrap_or_else(|_| default.to_string());
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "" => Ok(default),
+        "1" | "true" | "yes" | "on" => Ok(true),
+        "0" | "false" | "no" | "off" => Ok(false),
+        other => Err(ConfigError::Parse {
+            field: key.to_string(),
+            value: other.to_string(),
+            source: Box::new(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "expected one of: true/false, 1/0, yes/no, on/off",
+            )),
+        }),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -331,6 +389,32 @@ mod tests {
         assert_eq!(config.http_port, 7475);
         assert_eq!(config.bolt_port, 7687);
         assert!(config.bolt_enabled);
+    }
+
+    #[test]
+    fn otlp_include_query_accepts_numeric_and_wordy_flags() {
+        // Read at startup, so an unparseable value must not be a reason to
+        // refuse to boot.
+        for truthy in ["1", "true", "TRUE", "yes", "on"] {
+            unsafe { env::set_var("CLICKGRAPH_OTLP_INCLUDE_QUERY", truthy) };
+            assert!(
+                ServerConfig::from_env().expect("starts").otlp_include_query,
+                "{truthy} should enable"
+            );
+        }
+        for falsy in ["0", "false", "no", "off", ""] {
+            unsafe { env::set_var("CLICKGRAPH_OTLP_INCLUDE_QUERY", falsy) };
+            assert!(
+                !ServerConfig::from_env().expect("starts").otlp_include_query,
+                "{falsy:?} should disable"
+            );
+        }
+        unsafe { env::set_var("CLICKGRAPH_OTLP_INCLUDE_QUERY", "maybe") };
+        assert!(
+            ServerConfig::from_env().is_err(),
+            "nonsense is reported rather than silently ignored"
+        );
+        unsafe { env::remove_var("CLICKGRAPH_OTLP_INCLUDE_QUERY") };
     }
 
     #[test]

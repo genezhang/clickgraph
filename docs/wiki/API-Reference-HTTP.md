@@ -702,7 +702,11 @@ curl http://localhost:8080/metrics
 JSON snapshot for humans/dashboards: uptime, version, query counters by type and
 error class, latency percentiles (p50/p95/p99 + mean) per phase, cache
 hit-rate, connection-pool stats (`null` in embedded/Databricks modes), and
-ClickHouse transfer bytes.
+ClickHouse transfer bytes. When OTLP query tracing is configured
+(`CLICKGRAPH_OTLP_ENDPOINT`, the metrics section below), the snapshot also
+carries an `otlp` block with `sent`/`failed`/`dropped` export counters so
+tracing health is observable without waiting for a log line; when tracing is
+not configured the field is absent entirely (not `null`).
 
 ```bash
 curl http://localhost:8080/stats | jq
@@ -725,7 +729,23 @@ Each record carries `timestamp_ms`, `query_type`, `total_ms`, `exec_ms`,
 curl "http://localhost:8080/stats/queries?recent=10&slowest=10" | jq
 ```
 
-**Configuration** (env vars):
+### OTLP query spans (opt-in)
+
+Every Bolt query and every HTTP `/query` request that is translated or fails
+emits one OTLP/HTTP trace span named `cypher.query` (resource
+`service.name=clickgraph`; successful procedure calls, `SHOW DATABASES` and
+`COPY TO` on HTTP are not traced). Attributes: `db.system`,
+`cypher.query.type`, `cypher.outcome`, `cypher.schema`, `cypher.sql_queries`,
+`cypher.result_rows`, `cypher.phase.*_s` timings, and `cypher.query.text` only
+when enabled below. Configuration:
+
+| Var | Default | Purpose |
+|-----|---------|---------|
+| `CLICKGRAPH_OTLP_ENDPOINT` | (unset) | Base URL of an OTLP/HTTP collector; traces POST to `{endpoint}/v1/traces`. Unset = no spans at all |
+| `CLICKGRAPH_OTLP_INCLUDE_QUERY` | `false` | Put the literals-stripped, sanitized Cypher text in the span (writes and comments gone; values never included unmasked) |
+| `CLICKGRAPH_OTLP_HEADERS` | (empty) | Static `key=value` headers for the exports, OTEL comma-separated form (e.g. `Authorization=Basic <basic64>`); values are percent-decoded per OTEL, marked sensitive, and malformed entries are warned about by position only |
+
+Vendors mount the OTLP path wherever they like, so set `CLICKGRAPH_OTLP_ENDPOINT` to the base that makes `{endpoint}/v1/traces` the real URL — e.g. Langfuse 4.x serves OTLP at `http://<langfuse>/api/public/otel/v1/traces`, so its endpoint value is `http://<langfuse>/api/public/otel`.
 
 | Var | Default | Purpose |
 |-----|---------|---------|

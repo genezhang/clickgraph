@@ -234,6 +234,9 @@ Five schema variations exist: Standard, FK-edge, Denormalized, Polymorphic, Comp
 | `CLICKGRAPH_STATS_ENABLED` | Stats-informed anchor selection (default false; ordering only, see `docs/design/STATS_PLANNING.md`). Inert since the P-4c cutover: only the legacy planner (deleted in S14c3) read the stats. Kept (user, 2026-10-13) for shaping the lowering's SQL if ClickHouse's own optimizer falls short (e.g. join ordering, S11o10) |
 | `CLICKGRAPH_STATS_TTL_SECS` | Row-count cache TTL for stats-informed planning (default 300) |
 | `CLICKGRAPH_CHECK_NODE_PROPERTIES` | Fail a read of an embedded node's property when the rows of one id hold several values of it (default false: any one is read; #531) |
+| `CLICKGRAPH_OTLP_ENDPOINT` | OTLP/HTTP base URL for opt-in per-query tracing (traces go to `{endpoint}/v1/traces`; unset = off, zero per-query cost). Requires `CLICKGRAPH_METRICS_ENABLED=true`, since spans are emitted from the query registry |
+| `CLICKGRAPH_OTLP_INCLUDE_QUERY` | Include the literals-stripped, comments-stripped, length-capped Cypher text in OTLP spans (default false: shape/timings only, never query text). Accepts `true/false`, `1/0`, `yes/no`, `on/off` |
+| `CLICKGRAPH_OTLP_HEADERS` | Static auth/tenant headers for OTLP exports, comma-separated `key=value` (OTEL's `OTEL_EXPORTER_OTLP_HEADERS` form). Values are percent-decoded, so Langfuse's documented `Authorization=Basic%20…` works as written |
 | `CLICKGRAPH_CHDB_TESTS` | Set to `1` to enable chdb e2e tests |
 | `CLICKGRAPH_LLM_PROVIDER` | LLM provider for schema discovery (`anthropic` or `openai`) |
 | `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` | API keys for LLM schema discovery |

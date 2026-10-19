@@ -19,8 +19,6 @@ use tower_http::timeout::TimeoutLayer;
 
 use dotenvy::dotenv;
 use tokio::net::TcpListener;
-#[cfg(windows)]
-use tokio::signal;
 use tokio::sync::{OnceCell, RwLock, Semaphore};
 
 use crate::config::ServerConfig;
@@ -37,6 +35,7 @@ pub mod graph_output;
 pub mod handlers;
 pub mod metrics;
 pub mod models;
+pub mod otel;
 mod parameter_substitution;
 mod query_cache;
 pub mod query_context;
@@ -462,6 +461,10 @@ async fn run_server(app_state: AppState, config: ServerConfig) {
         slow_query_capacity: config.slow_query_capacity,
         slow_query_threshold_ms: config.slow_query_threshold_ms,
         query_preview: config.metrics_query_preview,
+        otlp_endpoint: config.otlp_endpoint.clone(),
+        otlp_include_query: config.otlp_include_query,
+        otlp_headers: config.otlp_headers.clone(),
+        dialect: query_context::get_server_dialect().as_str().to_string(),
     };
     let _ = GLOBAL_SERVER_METRICS.set(Arc::new(metrics::ServerMetrics::new(metrics_cfg)));
 
