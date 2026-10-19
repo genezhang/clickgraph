@@ -70,6 +70,26 @@ pub fn cypher_string_to_sql_literal_with(raw: &str, quote: &str) -> String {
     out
 }
 
+/// A string VALUE (not Cypher text: a request's view parameter, say) as a
+/// quoted SQL literal of the active dialect: its every character literal,
+/// a backslash and a quote included.
+pub fn string_value_to_sql_literal(value: &str) -> String {
+    // As the raw Cypher text that means this value, through the one spelling.
+    cypher_string_to_sql_literal(&value_as_cypher_text(value))
+}
+
+/// [`string_value_to_sql_literal`] with an explicit spelling for a quote.
+pub fn string_value_to_sql_literal_with(value: &str, quote: &str) -> String {
+    cypher_string_to_sql_literal_with(&value_as_cypher_text(value), quote)
+}
+
+/// The raw Cypher string-literal body whose value is `value`: what a
+/// `Literal::String` holds (its text as the query wrote it) for a value read
+/// from elsewhere.
+pub fn value_as_cypher_text(value: &str) -> String {
+    value.replace('\\', "\\\\").replace('\'', "\\'")
+}
+
 /// The VALUE of a raw Cypher string-literal body: escapes decoded (`\'`, `\"`, `\\`, `\n`, `\t`,
 /// `\r`, `\b`, `\f`, `\uXXXX`, `\UXXXXXXXX`). Unknown escapes keep their text. For comparing two
 /// literals at translation time — `'it\'s' = "it's"` must see the same value on both sides.
@@ -119,6 +139,22 @@ pub fn cypher_string_value(raw: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::cypher_string_to_sql_literal as lit;
+    use super::string_value_to_sql_literal_with;
+
+    /// A value's every character is literal, a backslash and a quote
+    /// included.
+    #[test]
+    fn a_value_is_literal_to_its_last_character() {
+        let v = "a\\'b";
+        assert_eq!(string_value_to_sql_literal_with(v, "''"), "'a\\\\''b'");
+        assert_eq!(string_value_to_sql_literal_with(v, "\\'"), "'a\\\\\\'b'");
+        assert_eq!(string_value_to_sql_literal_with("it's", "''"), "'it''s'");
+        // Not decoded: the value holds the six characters `\u0041`.
+        assert_eq!(
+            string_value_to_sql_literal_with("\\u0041", "''"),
+            "'\\\\u0041'"
+        );
+    }
 
     #[test]
     fn plain_and_bare_quote() {

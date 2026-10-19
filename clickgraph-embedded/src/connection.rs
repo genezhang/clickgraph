@@ -1575,7 +1575,10 @@ async fn read_ids(
                 )));
             };
             let value = match obj.values().next() {
-                Some(serde_json::Value::String(s)) => Literal::String(s.clone()),
+                // A literal holds its text as Cypher writes it.
+                Some(serde_json::Value::String(s)) => {
+                    Literal::String(clickgraph::utils::sql_literal::value_as_cypher_text(s))
+                }
                 Some(serde_json::Value::Bool(b)) => Literal::Boolean(*b),
                 Some(serde_json::Value::Number(n)) => match (n.as_i64(), n.as_f64()) {
                     (Some(i), _) => Literal::Integer(i),
@@ -1639,7 +1642,10 @@ fn json_literal(
     Ok(match v {
         serde_json::Value::Null => RenderExpr::Literal(Literal::Null),
         serde_json::Value::Bool(b) => RenderExpr::Literal(Literal::Boolean(*b)),
-        serde_json::Value::String(s) => RenderExpr::Literal(Literal::String(s.clone())),
+        // A literal holds its text as Cypher writes it.
+        serde_json::Value::String(s) => RenderExpr::Literal(Literal::String(
+            clickgraph::utils::sql_literal::value_as_cypher_text(s),
+        )),
         serde_json::Value::Number(n) => match (n.as_i64(), n.as_f64()) {
             (Some(i), _) => RenderExpr::Literal(Literal::Integer(i)),
             (None, Some(f)) => RenderExpr::Literal(Literal::Float(f)),

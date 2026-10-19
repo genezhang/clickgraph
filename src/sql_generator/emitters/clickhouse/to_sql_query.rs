@@ -2865,7 +2865,10 @@ impl RenderExpr {
                         .iter()
                         .flat_map(|(k, v)| {
                             let val_sql = v.to_sql();
-                            vec![format!("'{}'", k), format!("{}({})", to_str, val_sql)]
+                            vec![
+                                crate::utils::sql_literal::string_value_to_sql_literal(k),
+                                format!("{}({})", to_str, val_sql),
+                            ]
                         })
                         .collect();
                     format!("map({})", args.join(", "))

@@ -27,9 +27,13 @@ impl ViewTableRef {
                     .iter()
                     .filter_map(|name| {
                         param_values.get(name).map(|value| {
-                            // Escape single quotes in value for SQL safety
-                            let escaped_value = value.replace('\'', "''");
-                            format!("{} = '{}'", name, escaped_value)
+                            // The value as a literal of the dialect: every
+                            // character of it, a backslash included.
+                            format!(
+                                "{} = {}",
+                                name,
+                                crate::utils::sql_literal::string_value_to_sql_literal(value)
+                            )
                         })
                     })
                     .collect();
