@@ -191,7 +191,9 @@ one of the three.
   A union held in a type compared with one held as texts reads each
   definition's part back in its own type before its text
   (`union_part_text`; a `Float32` as a `Float64` spells other digits:
-  review, also wrong on main against a union of mixed labels).
+  review, also wrong on main against a union of mixed labels). A walk over
+  one definition reads such a union's part back in its own type, on that
+  definition's rows (`walked_identity_part`), before `has(path_edges, …)`.
   Left (other clusters): `collect()` of relationships of several types
   (lists, cluster 5), a node of several labels whose same-named properties
   differ in type (VALUE_TYPES).

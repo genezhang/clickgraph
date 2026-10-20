@@ -9750,6 +9750,12 @@ graph_schema:
         "MATCH ()-[r1:FDT|FDT64]->() MATCH ()-[r2:FDT|FI]->() WHERE r1 = r2 RETURN count(*) AS c",
         &["THEN CAST(CAST(v1.__cg_rid_0 AS Nullable(DateTime)) AS Nullable(String))"],
     );
+    // A walk over one definition of a union held as texts: the union's
+    // part read back in the walk's type on that definition's rows (review).
+    has(
+        "MATCH (a:U)-[r1:FD|FDT]-(b:U)-[r2:FDT*1..2]-(c:U) RETURN count(*) AS c",
+        &["CASE WHEN (v1.__cg_type = 'FDT' AND v1.__cg_from_label = 'U' AND v1.__cg_to_label = 'U') THEN CAST(v1.__cg_rid_0 AS Nullable(DateTime)) ELSE NULL END"],
+    );
     has(
         "MATCH p = (a:U)-[:FI|FU*1..2]->(b:U) RETURN p",
         &[r#"CAST(e.e AS Nullable(Int128)) AS "__cg_rid_0", e.a AS "__cg_from_0""#],

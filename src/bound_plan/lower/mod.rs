@@ -6325,9 +6325,11 @@ impl<'s> Lowerer<'s> {
                 Some(id) => id.columns().len(),
                 None => ps.from_id.columns().len() + ps.to_id.columns().len(),
             };
-            let ids = indexed_columns(REL_ID, arity)
-                .iter()
-                .map(|c| self.physical(r, c).map(|e| render_expr_to_sql_plain(&e)))
+            let ids = (0..arity)
+                .map(|i| {
+                    self.walked_identity_part(r, ps, &rel_type, i)
+                        .map(|e| render_expr_to_sql_plain(&e))
+                })
                 .collect::<Result<Vec<_>, _>>()?;
             let identity = match ids.as_slice() {
                 [one] => one.clone(),
@@ -6355,6 +6357,60 @@ impl<'s> Lowerer<'s> {
         Ok(Some(or_all(
             ia.into_iter().zip(ib).map(|(x, y)| differ(x, y)).collect(),
         )))
+    }
+
+    /// Identity part `i` of union of relationships `r` as a walk over one of
+    /// its definitions, `ps` of `rel_type`, spells its `path_edges`: the
+    /// union's column, where the union holds it as a text (I3c) read back,
+    /// on that definition's rows only (no other's text is cast), in the
+    /// definition's type: an `edge_id` part in its column's, an end in the
+    /// type the union compares its ends in (`REL_FROM_{i}` / `REL_TO_{i}`,
+    /// as an identity of ends is held typed).
+    fn walked_identity_part(
+        &self,
+        r: VarId,
+        ps: &RelationshipSchema,
+        rel_type: &str,
+        i: usize,
+    ) -> Result<RenderExpr, LowerError> {
+        let id = self.physical(r, &indexed_column(REL_ID, i))?;
+        let Some(Scan::Rels { arms, .. }) = self.scans.get(&r) else {
+            return Ok(id);
+        };
+        if !self.rel_id_texts(arms).get(i).copied().unwrap_or(false) {
+            return Ok(id);
+        }
+        let Some(arm) = arms.iter().find(|a| {
+            a.rel_type == rel_type
+                && a.schema.from_node == ps.from_node
+                && a.schema.to_node == ps.to_node
+        }) else {
+            return Ok(id);
+        };
+        let from = ps.from_id.columns().len();
+        let typed = match &ps.edge_id {
+            Some(edge) => {
+                let own = edge
+                    .columns()
+                    .get(i)
+                    .and_then(|c| ps.column_types.get(*c))
+                    .filter(|t| !t.raw.is_empty());
+                match own {
+                    Some(t) => RenderExpr::Cast {
+                        expr: Box::new(id),
+                        target: self.nullable_target(t),
+                    },
+                    None => return Ok(id),
+                }
+            }
+            None if i < from => self.physical(r, &indexed_column(REL_FROM, i))?,
+            None => self.physical(r, &indexed_column(REL_TO, i - from))?,
+        };
+        Ok(RenderExpr::Case(RenderCase {
+            expr: None,
+            when_then: vec![(self.definition_is(r, arm)?, typed)],
+            else_expr: Some(Box::new(RenderExpr::Literal(Literal::Null))),
+        }))
     }
 
     /// The definitions relationship `v` of a MATCH can be (none for a
