@@ -117,9 +117,14 @@ one of the three.
   labels holds that part as a text instead of a `Variant` (in which a string
   `'01'` reads as `1`): `Lowerer::held_as_text`, decided over every label as
   I1's cross-label fold is, so any two such columns agree. Each label spells
-  its text in the type its ids and ends meet in (`part_text`, the #1360
-  lattice: a `Date` id with `DateTime` ends spells the `DateTime`), the same
-  on its node's and its ends' side.
+  its text in the type its ids and ends meet in (`part_text`,
+  `schema_types::text_type`: the #1360 lattice, a `Date` id with `DateTime`
+  ends spells the `DateTime`; times of several zones, or a zoned time with a
+  `Date`, as instants in one zone, `DateTime64(s, zone)`, which walk keys
+  now spell too), the same on its node's and its ends' side, nullable (a
+  typed side may be an OPTIONAL MATCH's NULL). A `Date` id compared with
+  times of several zones has no one text: a column mixing its label is
+  refused (`texts_spellable`).
   - Producers: every `compared_as(.., across)` (several-labels nodes,
     union-walk nodes and their relationship unions' ends), a relationship
     between two labels read in both orientations (`turned_ends`), and a

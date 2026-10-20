@@ -598,7 +598,11 @@ impl Lowerer<'_> {
                 // read as its `Integer` default, it would be cast by the
                 // `Bool` / `Integer` rule.
                 set.retain(|t| !t.raw.is_empty());
-                crate::graph_catalog::schema_types::fold_common(&set)
+                // As an id's text is spelled where labels mix (I2): times as
+                // instants of one zone.
+                crate::graph_catalog::schema_types::text_type(&set)
+                    .ok()
+                    .flatten()
                     .map(|t| self.options.dialect.cast_target(&t))
             })
             .collect()
@@ -781,16 +785,57 @@ impl Lowerer<'_> {
         if !set.is_empty() && set.iter().all(|t| t.raw.eq_ignore_ascii_case("String")) {
             return e;
         }
-        let e = match crate::graph_catalog::schema_types::fold_common(&set) {
-            Some(t) => RenderExpr::Cast {
+        // (`texts_spellable` refused a set with no text type.)
+        let e = match crate::graph_catalog::schema_types::text_type(&set) {
+            Ok(Some(t)) => RenderExpr::Cast {
                 expr: Box::new(e),
                 target: self.options.dialect.cast_target(&t),
             },
-            None => e,
+            _ => e,
         };
+        // Nullable: a typed side may be an OPTIONAL MATCH's NULL.
         RenderExpr::Cast {
             expr: Box::new(e),
-            target: self.text_target(set.iter().any(|t| t.nullable)),
+            target: self.text_target(true),
+        }
+    }
+
+    /// Refuse a column that mixes `labels` where one of them holds an id
+    /// part as a text no spelling makes equal exactly where `=` holds
+    /// (`schema_types::text_type`: a `Date` with times of several zones).
+    fn texts_spellable<'l>(
+        &self,
+        labels: impl IntoIterator<Item = &'l str>,
+    ) -> Result<(), LowerError> {
+        for label in labels {
+            let arity = self.id_part_sets().get(label).map_or(0, Vec::len);
+            for i in (0..arity).filter(|i| self.held_as_text(*i)) {
+                if let Err(e) =
+                    crate::graph_catalog::schema_types::text_type(&self.id_part_set(label, i))
+                {
+                    return unsupported(format!(
+                        "nodes of several labels where {label}'s ids are of several kinds: {e}"
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Text `text` of id part `i` of `label` ([`Self::part_text`]) read back
+    /// in type `own`, one of that part's columns: through the type it was
+    /// spelled in, whose text it parses exactly (a time's in its zone).
+    fn read_back(&self, label: &str, i: usize, own: &KeyPartType, text: RenderExpr) -> RenderExpr {
+        let text = match self.text_fold(label, i) {
+            Some(t) => RenderExpr::Cast {
+                expr: Box::new(text),
+                target: self.options.dialect.cast_target(&t),
+            },
+            None => text,
+        };
+        RenderExpr::Cast {
+            expr: Box::new(text),
+            target: self.options.dialect.cast_target(own),
         }
     }
 
@@ -806,7 +851,9 @@ impl Lowerer<'_> {
     /// The type [`Self::part_text`] spells id part `i` of `label` in, other
     /// than its own (`None`: its own).
     fn text_fold(&self, label: &str, i: usize) -> Option<KeyPartType> {
-        crate::graph_catalog::schema_types::fold_common(&self.id_part_set(label, i))
+        crate::graph_catalog::schema_types::text_type(&self.id_part_set(label, i))
+            .ok()
+            .flatten()
     }
 
     /// `e`, of any type and maybe NULL, as a text.
@@ -862,11 +909,8 @@ impl Lowerer<'_> {
                     .filter_map(|(l, ns)| {
                         let own = ns.node_id.part_types.get(i).filter(|t| !t.raw.is_empty())?;
                         let back = RenderExpr::Cast {
-                            expr: Box::new(RenderExpr::Cast {
-                                expr: Box::new(id.clone()),
-                                target: self.options.dialect.cast_target(own),
-                            }),
-                            target: self.text_target(own.nullable),
+                            expr: Box::new(self.read_back(l, i, own, id.clone())),
+                            target: self.text_target(true),
                         };
                         Some((
                             RenderExpr::OperatorApplicationExp(eq(
@@ -935,11 +979,8 @@ impl Lowerer<'_> {
             when_then.push((
                 definition,
                 RenderExpr::Cast {
-                    expr: Box::new(RenderExpr::Cast {
-                        expr: Box::new(id.clone()),
-                        target: self.options.dialect.cast_target(own),
-                    }),
-                    target: self.text_target(own.nullable),
+                    expr: Box::new(self.read_back(label, i, own, id.clone())),
+                    target: self.text_target(true),
                 },
             ));
         }
@@ -2619,6 +2660,7 @@ impl<'s> Lowerer<'s> {
         for (_, ns) in arms {
             self.node_table(ns)?;
         }
+        self.texts_spellable(arms.iter().map(|(l, _)| l.as_str()))?;
         let props = self.label_union_props(v, arms);
         let mut input = Vec::new();
         let definitions: Vec<(&String, Vec<Option<usize>>)> = props
@@ -3177,6 +3219,7 @@ impl<'s> Lowerer<'s> {
         // held as such (I2; a union's are already).
         let (fc, tc) = match (&fl, &tl) {
             (EndLabel::Is(a), EndLabel::Is(b)) if a != b => {
+                self.texts_spellable([a.as_str(), b.as_str()])?;
                 let held = |label: &str, cols: Vec<RenderExpr>| -> Vec<RenderExpr> {
                     cols.into_iter()
                         .enumerate()
@@ -3454,6 +3497,12 @@ impl<'s> Lowerer<'s> {
             .map(|p| (p, self.rel_value_definitions(p, arms)))
             .collect();
         let mixed_labels = arms_mix_labels(arms);
+        if mixed_labels {
+            self.texts_spellable(
+                arms.iter()
+                    .flat_map(|a| [a.schema.from_node.as_str(), a.schema.to_node.as_str()]),
+            )?;
+        }
         let id_texts = self.rel_id_texts(arms);
         let mut input = Vec::new();
         for (i, arm) in arms.iter().enumerate() {
@@ -4748,10 +4797,7 @@ impl<'s> Lowerer<'s> {
                 .and_then(|ns| ns.node_id.part_types.get(i))
                 .filter(|t| !t.raw.is_empty());
             match (read_back_of(of, i), own) {
-                (true, Some(t)) => RenderExpr::Cast {
-                    expr: Box::new(id.clone()),
-                    target: self.options.dialect.cast_target(t),
-                },
+                (true, Some(t)) => self.read_back(of, i, t, id.clone()),
                 _ => id.clone(),
             }
         };
@@ -4813,6 +4859,9 @@ impl<'s> Lowerer<'s> {
         arms: &[RelArm],
     ) -> Result<String, LowerError> {
         let by_keys = self.walks_by_keys(labels);
+        if labels.len() > 1 {
+            self.texts_spellable(labels.iter().map(String::as_str))?;
+        }
         let g = value::spelling()?;
         let name = format!("vlp_{}_nodes", v.name());
         const ROW: &str = "e";

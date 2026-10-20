@@ -483,6 +483,63 @@ pub fn of_several_kinds(parts: &[KeyPartType]) -> bool {
     }
 }
 
+/// The type the id parts `parts` (one label's id part and the relationship
+/// ends at it) are spelled in as texts, so that two texts are equal exactly
+/// where `=` holds of the values (docs/design/ELEMENT_IDENTITY.md I2), or
+/// `None` where each is its own text: [`fold_common`], but times are
+/// instants. A text of a time is its wall clock in one zone, so every
+/// `DateTime` side is spelled in one zone (`DateTime64` of the finest
+/// scale): the zone they share, else UTC. A `Date` among them is midnight in
+/// the zone of the times it is compared with (as `=` reads it), so with times
+/// of several zones there is none: `Err`.
+pub fn text_type(parts: &[KeyPartType]) -> Result<Option<KeyPartType>, String> {
+    let parts: Vec<&KeyPartType> = parts.iter().filter(|p| !p.raw.is_empty()).collect();
+    let times: Vec<&KeyPartType> = parts
+        .iter()
+        .copied()
+        .filter(|p| p.schema == SchemaType::DateTime)
+        .collect();
+    let mut zones: Vec<Option<&str>> = times.iter().filter_map(|t| t.time_zone()).collect();
+    zones.sort();
+    zones.dedup();
+    let date = parts.iter().any(|p| p.schema == SchemaType::Date);
+    // Times of one zone are spelled alike in any (the fold's zone-less one,
+    // the server's), and a `Date` is midnight in the server's zone where the
+    // times have none: the walk keys' fold (#1360).
+    let one_zone = match zones.as_slice() {
+        [] | [None] => true,
+        [Some(_)] => !date,
+        _ => false,
+    };
+    if one_zone {
+        let owned: Vec<KeyPartType> = parts.iter().map(|p| (*p).clone()).collect();
+        return Ok(fold_common(&owned));
+    }
+    let zone = match zones.as_slice() {
+        [one] => *one,
+        _ if date => {
+            return Err(
+                "a Date id compared with DateTime columns of several time zones".to_string(),
+            )
+        }
+        _ => Some("UTC"),
+    };
+    let scale = times
+        .iter()
+        .filter_map(|t| t.datetime64_scale())
+        .max()
+        .unwrap_or(0);
+    let raw = match zone {
+        Some(z) => format!("DateTime64({scale}, '{z}')"),
+        None => format!("DateTime64({scale})"),
+    };
+    Ok(Some(KeyPartType {
+        schema: SchemaType::DateTime,
+        nullable: parts.iter().any(|p| p.nullable),
+        raw,
+    }))
+}
+
 /// The type values of `parts` meet in where ClickHouse has no common type
 /// for them, or `None` where it has one (docs/design/VALUE_TYPES.md T4a,
 /// #1396). Its own common type compares them as Cypher does; the gap is a

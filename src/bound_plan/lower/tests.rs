@@ -9214,9 +9214,9 @@ graph_schema:
     has(
         "MATCH (n) RETURN count(DISTINCT n)",
         &[
-            r#"CAST(e.id AS String) AS "__cg_id_0" FROM db.a"#,
+            r#"CAST(e.id AS Nullable(String)) AS "__cg_id_0" FROM db.a"#,
             r#"e.code AS "__cg_id_0" FROM db.b"#,
-            r#"CAST(CAST(e.day AS DateTime64(3)) AS String) AS "__cg_id_0" FROM db.d"#,
+            r#"CAST(CAST(e.day AS DateTime64(3)) AS Nullable(String)) AS "__cg_id_0" FROM db.d"#,
         ],
     );
     // Its ties to one label's ends, an equality with a node of one label,
@@ -9224,33 +9224,80 @@ graph_schema:
     // relationship between two labels spell those as texts too.
     has(
         "MATCH (n) WITH n MATCH (n)-[:AB]->(b) RETURN b.name",
-        &["ON CAST(v2.a_id AS String) = w2.v1____cg_id_0"],
+        &["ON CAST(v2.a_id AS Nullable(String)) = w2.v1____cg_id_0"],
     );
     has(
         "MATCH (a:A), (n) WHERE a = n RETURN count(*)",
-        &["CAST(v0.id AS String) = v1.__cg_id_0"],
+        &["CAST(v0.id AS Nullable(String)) = v1.__cg_id_0"],
     );
     has(
         "MATCH (x:C)-[*1..2]-(y) RETURN y.name",
         &[
-            r#"CAST(e.c_id AS String) AS "__cg_start_0""#,
-            "ON v1.start_id = CAST(v0.id AS String)",
+            r#"CAST(e.c_id AS Nullable(String)) AS "__cg_start_0""#,
+            "ON v1.start_id = CAST(v0.id AS Nullable(String))",
         ],
     );
     has(
         "MATCH (x:C) WHERE x.name = 'c' MATCH (x)-[*1..2]-(y) RETURN y.name",
-        &[r#"CAST(v0.id AS String) AS "id""#],
+        &[r#"CAST(v0.id AS Nullable(String)) AS "id""#],
     );
     has(
         "MATCH ()-[r:AB]->() MATCH (x)-[r]-(y) RETURN x.name",
-        &["THEN v1.b_code ELSE CAST(v1.a_id AS String) END = v3.__cg_id_0"],
+        &["THEN v1.b_code ELSE CAST(v1.a_id AS Nullable(String)) END = v3.__cg_id_0"],
     );
     // An element id reads its text back in its label's own type: a `D`'s
     // is its `Date`'s, as of a node of label `D`.
     has(
         "MATCH (n) RETURN n",
-        &["CASE WHEN v0.__cg_label = 'D' THEN CAST(CAST(v0.__cg_id_0 AS Date) AS String) ELSE v0.__cg_id_0 END"],
+        &["CASE WHEN v0.__cg_label = 'D' THEN CAST(CAST(CAST(v0.__cg_id_0 AS DateTime64(3)) AS Date) AS Nullable(String)) ELSE v0.__cg_id_0 END"],
     );
+    // Times are spelled as instants of one zone: a `DateTime` id with ends
+    // in another zone meets them (review finding: each side's own zone's
+    // wall clock matched nothing).
+    let zoned = schema(
+        &YAML
+            .replace(
+                "{at: DateTime, b_code: String}",
+                "{at: 'DateTime(''Asia/Tokyo'')', b_code: String}",
+            )
+            .replace(
+                "column_types: {day: Date}",
+                "column_types: {day: 'DateTime(''UTC'')'}",
+            ),
+    );
+    let got = lowered("MATCH (n) RETURN count(DISTINCT n)", &zoned, &options);
+    assert!(
+        got.contains(
+            r#"CAST(CAST(e.day AS DateTime64(0, 'UTC')) AS Nullable(String)) AS "__cg_id_0""#
+        ),
+        "{got}"
+    );
+    let got = lowered(
+        "MATCH (n) WITH n MATCH (n)-[:DB]->(b) RETURN b.name",
+        &zoned,
+        &options,
+    );
+    assert!(
+        got.contains(".at AS DateTime64(0, 'UTC')) AS Nullable(String)) = w"),
+        "{got}"
+    );
+    // A `Date` id with times of several zones has no one text: refused.
+    let several = schema(&format!(
+        "{}    - type: DD\n      database: db\n      table: dd\n      from_node: D\n      to_node: D\n      from_id: s\n      to_id: t\n      column_types: {{s: 'DateTime(''UTC'')', t: 'DateTime(''UTC'')'}}\n      property_mappings: {{}}\n",
+        YAML.replace(
+            "{at: DateTime, b_code: String}",
+            "{at: 'DateTime(''Asia/Tokyo'')', b_code: String}",
+        )
+    ));
+    let (_, stmt) = crate::open_cypher_parser::clause_list::parse_clause_statement(
+        "MATCH (n) RETURN count(DISTINCT n)",
+    )
+    .unwrap();
+    let bound = crate::bound_plan::bind_statement(&stmt, &several).unwrap();
+    match lower_statement(&bound, &several, &options) {
+        Err(e) => assert!(e.to_string().contains("time zones"), "{e}"),
+        Ok(_) => panic!("a Date id with times of several zones was lowered"),
+    }
     // Ids of one kind (no `B`, no `D`): the SQL of before.
     let one_kind = schema(
         &YAML
@@ -9276,7 +9323,7 @@ graph_schema:
         "MATCH (n) RETURN n",
     ] {
         let got = lowered(q, &one_kind, &options);
-        assert!(!got.contains("AS String)"), "{q}:\n{got}");
+        assert!(!got.contains("AS Nullable(String))"), "{q}:\n{got}");
     }
     // Spark: as before.
     let spark = crate::bound_plan::lower::LowerOptions {
