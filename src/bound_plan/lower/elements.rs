@@ -386,7 +386,7 @@ impl<'s> Lowerer<'s> {
                     Some(rs) => self.end_spellings(rs),
                     None => Default::default(),
                 };
-                let end = |slots: Vec<usize>, targets: &[Option<String>]| {
+                let end = |slots: Vec<usize>, targets: &[super::value::EndSpell]| {
                     let parts: Vec<String> = slots.into_iter().map(at).collect();
                     super::value::element_id_sql(g, &super::value::spelled_end(parts, targets))
                 };

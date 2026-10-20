@@ -344,7 +344,7 @@ fn text_literal(text: &str) -> String {
 
 /// An `edge_id`'s parts (SQL) as its text in a relationship's element id
 /// (`element_id::edge_id_text`): each part's text escaped, NULL as
-/// `NULL_EDGE_ID_PART`, joined by `|`, so the Rust and the SQL spell one text.
+/// `NULL_EDGE_ID_PART`, joined by `|`.
 pub(super) fn edge_id_sql(g: &GraphValues, parts: &[String]) -> String {
     let m = current_function_mapper();
     let mut texts = Vec::new();
@@ -356,8 +356,9 @@ pub(super) fn edge_id_sql(g: &GraphValues, parts: &[String]) -> String {
         for (from, to) in edge_id_escapes() {
             text = m.replace_text(&text, &text_literal(from), &text_literal(to));
         }
+        // By the part itself: a union's `Variant` of NULL is the text `''`.
         texts.push(format!(
-            "coalesce({text}, {})",
+            "CASE WHEN {p} IS NULL THEN {} ELSE {text} END",
             text_literal(NULL_EDGE_ID_PART)
         ));
     }
@@ -519,17 +520,45 @@ pub(super) fn table_node_object(
     ))
 }
 
-/// The CAST targets ([`cast_key_part`]) that spell a relationship's `from`
-/// and `to` ends' id parts as their nodes spell theirs
-/// (`Lowerer::end_spellings`); an empty entry: as its own.
-pub(super) type EndSpellings = (Vec<Option<String>>, Vec<Option<String>>);
+/// How a relationship end's id part is spelled as its node spells its id
+/// (`schema_types::EndSpelling`, its types spelled as CAST targets).
+#[derive(Debug, Clone, PartialEq)]
+pub(super) enum EndSpell {
+    Own,
+    In(String),
+    DayOrTime,
+    Exact(String),
+}
+
+/// How a relationship's `from` and `to` ends' id parts are spelled as their
+/// nodes spell theirs (`Lowerer::end_spellings`); a missing entry: as its own.
+pub(super) type EndSpellings = (Vec<EndSpell>, Vec<EndSpell>);
+
+/// An end's id part (SQL) as its node spells it ([`EndSpell`]).
+pub(super) fn spell_end(part: &str, spell: &EndSpell) -> String {
+    match spell {
+        EndSpell::Own => part.to_string(),
+        EndSpell::In(t) => format!("CAST({part} AS {t})"),
+        EndSpell::DayOrTime => day_or_time(part),
+        EndSpell::Exact(t) => {
+            let text = current_function_mapper().cast_string();
+            format!(
+                "CASE WHEN CAST({part} AS {t}) = {part} THEN {text}(CAST({part} AS {t})) \
+                 ELSE {text}({part}) END"
+            )
+        }
+    }
+}
 
 /// An end's id parts (SQL) as its node spells them ([`EndSpellings`]).
-pub(super) fn spelled_end(parts: Vec<String>, targets: &[Option<String>]) -> Vec<String> {
+pub(super) fn spelled_end(parts: Vec<String>, spells: &[EndSpell]) -> Vec<String> {
     parts
         .into_iter()
         .enumerate()
-        .map(|(i, p)| cast_key_part(&p, targets.get(i).and_then(Option::as_deref)))
+        .map(|(i, p)| match spells.get(i) {
+            Some(s) => spell_end(&p, s),
+            None => p,
+        })
         .collect()
 }
 

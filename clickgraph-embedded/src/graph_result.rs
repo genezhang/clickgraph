@@ -450,7 +450,8 @@ mod tests {
     }
 
     /// A returned relationship's edge is the server's: parallel ones are two
-    /// edges by their `edge_id` (#1334), a composite end its whole id.
+    /// edges by the element ids the SQL spells from their `edge_id` (#1334), a
+    /// composite end its whole id.
     #[test]
     fn returned_relationships_are_the_servers() {
         const YAML: &str = r#"
@@ -471,8 +472,8 @@ graph_schema:
             "from_id_2",
             "to_id_1",
             "to_id_2",
-            "edge_id",
             "w",
+            clickgraph::bound_plan::lower::REL_ELEMENT_ID_KEY,
         ];
         let meta = vec![ReturnItemMetadata {
             field_name: "r".to_string(),
@@ -484,14 +485,14 @@ graph_schema:
             },
             columns: Some(
                 keys.iter()
-                    .map(|k| (k.to_string(), format!("r.{k}")))
+                    .map(|k| (k.to_string(), format!("r.{}", k.trim_start_matches('#'))))
                     .collect(),
             ),
         }];
         let row = |fid: u32| {
             serde_json::json!({
                 "r.from_id_1": "t", "r.from_id_2": 6, "r.to_id_1": "t", "r.to_id_2": 7,
-                "r.edge_id": fid, "r.w": 1
+                "r.elementId": format!("F:{fid}:t|6->t|7-"), "r.w": 1
             })
         };
         let result = transform_rows_to_graph(&[row(10), row(11), row(10)], &meta, &schema);

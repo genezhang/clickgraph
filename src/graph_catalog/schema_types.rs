@@ -557,23 +557,40 @@ pub fn text_spelling(parts: &[KeyPartType]) -> TextSpelling {
 /// `=` holds of the two, as the node's text. Only a day or time met by a time
 /// or day of another type is spelled other than as its own text (integers of
 /// different types spell one value alike): a time met by a `Date` as
-/// [`TextSpelling::DayOrTime`], whose text is the date's where `=` holds of
+/// [`EndSpelling::DayOrTime`], whose text is the date's where `=` holds of
 /// them; a day or time met by a time of another zone or scale as an instant of
-/// the node's type. One to one: no two ends spell one text (a time finer than
-/// the node's, which its type would round, is its own text).
-pub fn end_spelling(node: &KeyPartType, end: &KeyPartType) -> TextSpelling {
+/// the node's type. One to one: no two ends spell one text.
+pub fn end_spelling(node: &KeyPartType, end: &KeyPartType) -> EndSpelling {
     if node.raw.is_empty() || end.raw.is_empty() || node.raw == end.raw {
-        return TextSpelling::Own;
+        return EndSpelling::Own;
     }
     let scale = |t: &KeyPartType| t.datetime64_scale().unwrap_or(0);
     match (node.schema, end.schema) {
-        (SchemaType::Date, SchemaType::DateTime) => TextSpelling::DayOrTime,
-        (SchemaType::DateTime, SchemaType::Date) => TextSpelling::In(node.clone()),
+        (SchemaType::Date, SchemaType::DateTime) => EndSpelling::DayOrTime,
+        (SchemaType::DateTime, SchemaType::Date) => EndSpelling::In(node.clone()),
         (SchemaType::DateTime, SchemaType::DateTime) if scale(end) <= scale(node) => {
-            TextSpelling::In(node.clone())
+            EndSpelling::In(node.clone())
         }
-        _ => TextSpelling::Own,
+        (SchemaType::DateTime, SchemaType::DateTime) => EndSpelling::Exact(node.clone()),
+        _ => EndSpelling::Own,
     }
+}
+
+/// How a relationship end's id part is spelled as its node's id
+/// ([`end_spelling`]).
+#[derive(Debug, Clone, PartialEq)]
+pub enum EndSpelling {
+    /// As its own text.
+    Own,
+    /// As the text of its value in this type (the node's).
+    In(KeyPartType),
+    /// A time at a `Date` node: its date's text where it is midnight in its
+    /// zone, else its own (no date's).
+    DayOrTime,
+    /// A time finer than its node's type (this one): the text of its value in
+    /// that type where that value is it, else its own text (of more digits
+    /// than any node's).
+    Exact(KeyPartType),
 }
 
 /// The type values of `parts` meet in where ClickHouse has no common type

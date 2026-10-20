@@ -155,21 +155,31 @@ one of the three.
   `:`, `|` as `\\`, `\:`, `\|`, a NULL part `\N`) and joined by `|`
   (`edge_id_text`), so no two edge ids spell one text: it is read up to its
   first unescaped `:` (`parse_edge_element_id`), placed before the ends,
-  whose texts are not escaped. Without one, `TYPE:from->to-` as before. One
-  definition, three spellers: the SQL (`value::edge_id_sql`,
-  `FunctionMapper::replace_text`; a union's per definition,
-  `Lowerer::union_edge_text`), Bolt and the HTTP graph output from a returned
-  relationship's `edge_id` / `edge_id_{i}` columns (`transform_to_relationship`,
-  of the definition between the returned labels), and embedded
-  `query_graph`, which now reads its edges through the same function (and so
-  a composite end whole). A relationship's ends, in its element id,
-  `startNodeElementId` / `endNodeElementId` and its returned `from_id` /
-  `to_id`, are spelled as their nodes spell their ids
+  whose texts are not escaped. Without one, `TYPE:from->to-` as before. The
+  SQL spells it, once (`value::edge_id_sql`, `FunctionMapper::replace_text`;
+  a NULL part tested `IS NULL`, as a union's `Variant` of NULL is the text
+  `''`; in a union per definition, `Lowerer::union_edge_text`, each part
+  read back in its own type where the union holds days and times, or floats,
+  in a wider one, `own_identity_part`). A returned relationship carries it
+  as a column (`name.elementId`, key `REL_ELEMENT_ID_KEY`, after its
+  properties, so no property's column moves), which Bolt, the HTTP graph
+  output and embedded `query_graph` (now through `transform_to_relationship`,
+  so a composite end whole) take as is: no second spelling to disagree (a
+  float's text, a property named `edge_id`: review). A relationship's ends,
+  in its element id, `startNodeElementId` / `endNodeElementId` and its
+  returned `from_id` / `to_id`, are spelled as their nodes spell their ids
   (`schema_types::end_spelling`, `Lowerer::end_spellings`): a time end of a
   `Date` node as `DayOrTime`, a day or time end of a time node of another
-  zone or a coarser scale as an instant of the node's type; one to one (a
-  finer time stays its own text), so a returned end still keys its rows
-  (`ElementColumns`' spelled identity).
+  zone or a coarser scale as an instant of the node's type, a finer one as
+  the node's text where its value in the node's type is it, else its own;
+  one to one, so a returned end still keys its rows (`ElementColumns`'
+  spelled identity). Left (on main alike): end labels are not in the element
+  id (two definitions of one type can share one), properties named
+  `from_id` / `to_id` collide with the ends' columns, walks and DISTINCT over
+  unions of edge ids of several kinds fail (`Variant`, I3c).
+- [ ] **I3c — unions of edge ids of several kinds**: walks over them fail
+  (Code 386) and DISTINCT of them (Code 44, a `Variant` in GROUP BY); hold
+  such identity columns as texts, as I2a holds ends.
 - [ ] **I3b — `id(r) = N`** (#1410): decoded through the session's mapping
   (`RETURN id(r)` numbers registered in it), compared with the
   relationship's element id; Bolt's `elementId(r) IN $ids` rewrite, which
