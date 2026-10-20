@@ -13,6 +13,9 @@
 
 - **A list of a `UInt64` and a signed integer holds integers (VALUE_TYPES.md T4a, #1396).** `[n.id, n.k]` of a `UInt64` and an `Int64` column (or a negative literal) was a ClickHouse `Variant`, in which `1` and `1` are two values: `count(DISTINCT x)` over it, `collect(DISTINCT x)` and `WITH DISTINCT` counted them twice (120 instead of 90 in the issue). Its elements are now cast to `Int128` where their types are known (read at load or `column_types`). Other lists keep their SQL.
 
+- **`id()` numbers are read within their session's graph and tenant (ELEMENT_IDENTITY.md I4a, #1388).** An integer compared with `id()` is now decoded only through the ids handed out in sessions of the same graph and tenant. Before, the server also searched every other session's ids, so the node a number named could depend on an unrelated graph's or tenant's session. The bit-pattern decode of a small integer key still works in any session.
+  - **Scope rules:** an HTTP request now uses its `tenant_id` as its scope. A Bolt session that names no database shares the default graph's scope with HTTP requests that name no schema.
+
 - **Relationships of several types whose edge ids are of different kinds (ELEMENT_IDENTITY.md I3c).** This covers a union of relationship types (`[r:A|B]`) where one type's `edge_id` is a string and another's an integer, or a date and a number. It also covers a string `edge_id` in one type when another type has no `edge_id` and integer node ids. On main such unions failed on ClickHouse:
   - `RETURN DISTINCT r`, `WITH DISTINCT r` and grouping by `r` failed with Code 44.
   - walks over the types (`[:A|B*1..2]`, paths) failed with Code 386.

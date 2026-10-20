@@ -119,7 +119,7 @@ impl IdMapper {
                 connection_id,
                 SessionEntry {
                     cache: Arc::clone(&cache),
-                    schema_name: None,
+                    schema_name: graph_scope(None),
                     tenant_id: None,
                 },
             );
@@ -133,7 +133,7 @@ impl IdMapper {
         IdMapper {
             connection_id,
             cache,
-            schema_name: None,
+            schema_name: graph_scope(None),
             tenant_id: None,
         }
     }
@@ -144,6 +144,7 @@ impl IdMapper {
     /// Clears the session cache when scope changes to prevent stale mappings
     /// from a previous scope leaking into the new one.
     pub fn set_scope(&mut self, schema_name: Option<String>, tenant_id: Option<String>) {
+        let schema_name = graph_scope(schema_name);
         let scope_changed = self.schema_name != schema_name || self.tenant_id != tenant_id;
 
         self.schema_name = schema_name.clone();
@@ -361,27 +362,6 @@ impl IdMapper {
         self.connection_id
     }
 
-    /// Static function to look up element_id from encoded ID across all sessions
-    ///
-    /// This can be called from anywhere (e.g., FilterTagging) without needing
-    /// an IdMapper instance. Searches all active session caches regardless of scope.
-    ///
-    /// This is safe for decode_for_query because element_ids are deterministic —
-    /// the same element_id string always maps to the same integer ID. The actual
-    /// tenant/schema filtering happens at the SQL level via parameterized views.
-    pub fn static_lookup_element_id(encoded_id: i64) -> Option<String> {
-        if let Ok(registry) = ACTIVE_SESSION_CACHES.read() {
-            for (_conn_id, entry) in registry.iter() {
-                if let Ok(cache) = entry.cache.read() {
-                    if let Some(element_id) = cache.int_to_element.get(&encoded_id) {
-                        return Some(element_id.clone());
-                    }
-                }
-            }
-        }
-        None
-    }
-
     /// Decode an encoded ID to extract the label code and raw id value
     ///
     /// Returns (label_code, id_hash) where:
@@ -428,24 +408,13 @@ impl IdMapper {
     /// **Callers should validate** that the decoded label's ID column is actually
     /// a numeric type before using the result, to avoid false positives.
     ///
-    /// Priority:
-    /// 1. Cache lookup - get exact element_id from session caches (always reliable)
-    /// 2. Direct extraction - if id_hash looks like a simple numeric ID (heuristic)
+    /// By the bit pattern alone: an id a session gave is read through that
+    /// session's mapper, scoped to its graph and tenant
+    /// ([`IdMapper::get_element_id`], [`resolve_node_id`]), never from
+    /// another scope's cache (#1388).
     ///
     /// Returns (label, raw_id_value) if decodable, None otherwise.
     pub fn decode_for_query(encoded_id: i64) -> Option<(String, String)> {
-        // First try cache lookup
-        if let Some(element_id) = Self::static_lookup_element_id(encoded_id) {
-            // "Label:value" (a composite's parts joined by `|`), without Neo4j
-            // Browser's trailing `-` sentinel ("User:2-" is key "2").
-            if let Ok((label, parts)) =
-                crate::graph_catalog::element_id::parse_node_element_id(&element_id)
-            {
-                return Some((label, parts.join("|")));
-            }
-        }
-
-        // Fall back to direct extraction
         let (label_code, id_hash) = Self::decode_id(encoded_id);
 
         // If label_code is 0, this isn't an encoded ID
@@ -491,6 +460,14 @@ impl IdMapper {
             .map(|label| format!("{}:{}", label, id_value))
             .collect()
     }
+}
+
+/// The graph a session's ids are scoped to: the one it names, else the
+/// default graph, which a session naming none reads (a Bolt session without
+/// a database, an HTTP request without a schema: one scope). Two names of
+/// one graph (`default` and its schema's own) are two scopes.
+fn graph_scope(schema_name: Option<String>) -> Option<String> {
+    Some(schema_name.unwrap_or_else(|| "default".to_string()))
 }
 
 impl Default for IdMapper {
@@ -738,20 +715,55 @@ mod tests {
     }
 
     /// An id another session cached (as Neo4j Browser's `User:2-`) decodes
-    /// to its key without the sentinel: `'2-'` against an integer key column
-    /// was a ClickHouse error (Code 53) on HTTP after a Bolt session.
+    /// to its key without the sentinel, through a mapper of that session's
+    /// scope: `'2-'` against an integer key column was a ClickHouse error
+    /// (Code 53) on HTTP after a Bolt session. Of another scope (graph or
+    /// tenant) it does not decode, but by its bit pattern (#1388).
     #[test]
-    fn decode_for_query_strips_the_browser_sentinel() {
-        let mut mapper = IdMapper::new();
-        let id = mapper.get_or_assign("S11eSentinel:2-");
+    fn a_cached_id_decodes_in_its_own_scope_only() {
+        let mut bolt = IdMapper::new();
+        bolt.set_scope(Some("s1388".to_string()), Some("t1".to_string()));
+        let id = bolt.get_or_assign("S1388Sentinel:x-");
+        let composite = bolt.get_or_assign("S1388Sentinel:a|b-");
+        let mut same = IdMapper::new();
+        same.set_scope(Some("s1388".to_string()), Some("t1".to_string()));
         assert_eq!(
-            IdMapper::decode_for_query(id),
-            Some(("S11eSentinel".to_string(), "2".to_string()))
+            resolve_node_id(&same, None, id),
+            Some(("S1388Sentinel".to_string(), "x".to_string()))
         );
-        let composite = mapper.get_or_assign("S11eSentinel:a|b-");
         assert_eq!(
-            IdMapper::decode_for_query(composite),
-            Some(("S11eSentinel".to_string(), "a|b".to_string()))
+            resolve_node_id(&same, None, composite),
+            Some(("S1388Sentinel".to_string(), "a|b".to_string()))
+        );
+        for (schema, tenant) in [
+            ("s1388", Some("t2")),
+            ("other", Some("t1")),
+            ("s1388", None),
+        ] {
+            let mut other = IdMapper::new();
+            other.set_scope(Some(schema.to_string()), tenant.map(str::to_string));
+            assert_eq!(
+                resolve_node_id(&other, None, id),
+                None,
+                "{schema} {tenant:?}"
+            );
+            assert_eq!(other.get_element_id(composite), None, "{schema} {tenant:?}");
+        }
+        // A session naming no graph is of the default graph's scope.
+        let mut unnamed = IdMapper::new();
+        unnamed.set_scope(None, None);
+        let unnamed_id = unnamed.get_or_assign("S1388Sentinel:y-");
+        let mut default = IdMapper::new();
+        default.set_scope(Some("default".to_string()), None);
+        assert_eq!(
+            resolve_node_id(&default, None, unnamed_id),
+            Some(("S1388Sentinel".to_string(), "y".to_string()))
+        );
+        // A small integer key decodes by its bit pattern, in any scope.
+        let small = bolt.get_or_assign("S1388Sentinel:2-");
+        assert_eq!(
+            IdMapper::decode_for_query(small),
+            Some(("S1388Sentinel".to_string(), "2".to_string()))
         );
     }
 }

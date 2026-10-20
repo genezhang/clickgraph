@@ -1478,7 +1478,9 @@ async fn query_handler_inner(
         use crate::server::bolt_protocol::id_mapper::IdMapper;
 
         let mut id_mapper = IdMapper::new();
-        id_mapper.set_scope(Some(schema_name.clone()), None); // HTTP has no tenant_id
+        // Scoped as a Bolt session of this graph and tenant: an id another
+        // scope's session gave is not read here (#1388).
+        id_mapper.set_scope(Some(schema_name.clone()), payload.tenant_id.clone());
         let cypher_statement = parsed_stmt;
 
         metrics.parse_time = parse_start.elapsed().as_secs_f64();

@@ -211,8 +211,16 @@ one of the three.
   comparisons are `=` / OR of `=` (a RETURN item of one a boolean). Left: Bolt's `elementId(r) IN $ids` rewrite still drops a
   relationship's predicate (Browser's dedup), and the library has no number
   to decode (refused).
-- [ ] **I4 — Bolt ids** (#1388): scoped static lookup; stable hash; label
-  codes per schema.
+- [x] **I4a — scoped lookup** (#1388). An `id()` number is read through
+  the session's mapper only, which chains to sessions of its scope (graph
+  and tenant): `IdMapper::decode_for_query` no longer reads every
+  session's cache (bit pattern alone), the unused Bolt parameter decoder
+  that did is gone, HTTP's per-request mapper carries the request's tenant,
+  and a session naming no graph is of the default graph's scope (Bolt
+  without a database, HTTP without a schema). Two names of one graph are
+  two scopes.
+- [ ] **I4b — Bolt ids**: stable hash (not `DefaultHasher`); label codes
+  per schema (process-global, clamped at 63, first-seen ordered).
 - [ ] **I5 — ids as values** (#1387, #1383): `id()` of a composite node and
   across a mixed-label UNION, from the output spelling.
 - [ ] **I6 — NULL id parts** (#1354): not a node (§2).
