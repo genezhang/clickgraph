@@ -55,7 +55,7 @@ SELECT
 FROM test_integration.post_likes_test AS e
 )
 SELECT 
-      map('elementId', CAST(concat(v1.__cg_type, ':', toString(v1.__cg_from_0), '->', toString(v1.__cg_to_0), '-'), 'Dynamic'), 'startNodeElementId', CAST(concat(v1.__cg_from_label, ':', toString(v1.__cg_from_0), '-'), 'Dynamic'), 'endNodeElementId', CAST(concat(v1.__cg_to_label, ':', toString(v1.__cg_to_0), '-'), 'Dynamic'), 'type', CAST(v1.__cg_type, 'Dynamic'), 'properties', CAST(mapFilter((__k, __v) -> __v IS NOT NULL, map('like_date', CAST(v1.p2_v1_like_date, 'Dynamic'))), 'Dynamic')) AS "r"
+      map('elementId', CAST(concat(v1.__cg_type, ':', CASE WHEN (v1.__cg_type = 'LIKED' AND v1.__cg_from_label = 'User' AND v1.__cg_to_label = 'Post') THEN concat(concat(CASE WHEN v1.__cg_rid_0 IS NULL THEN '\\N' ELSE replaceAll(replaceAll(replaceAll(toString(v1.__cg_rid_0), '\\', '\\\\'), ':', '\\:'), '|', '\\|') END), ':') ELSE '' END, toString(v1.__cg_from_0), '->', toString(v1.__cg_to_0), '-'), 'Dynamic'), 'startNodeElementId', CAST(concat(v1.__cg_from_label, ':', toString(v1.__cg_from_0), '-'), 'Dynamic'), 'endNodeElementId', CAST(concat(v1.__cg_to_label, ':', toString(v1.__cg_to_0), '-'), 'Dynamic'), 'type', CAST(v1.__cg_type, 'Dynamic'), 'properties', CAST(mapFilter((__k, __v) -> __v IS NOT NULL, map('like_date', CAST(v1.p2_v1_like_date, 'Dynamic'))), 'Dynamic')) AS "r"
 FROM v0_labels AS v0
 JOIN v1_rels AS v1 ON v1.__cg_start_label = v0.__cg_label AND v1.__cg_start_0 = v0.__cg_id_0
 JOIN v2_labels AS v2 ON v1.__cg_end_label = v2.__cg_label AND v1.__cg_end_0 = v2.__cg_id_0

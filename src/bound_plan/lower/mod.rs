@@ -187,8 +187,10 @@ pub enum ResultKind {
     /// A node with this label: a column `name.<prop>` per property.
     Node { label: String },
     /// A relationship: `name.from_id` and `name.to_id` (its stored endpoint
-    /// columns, `from_id_1`, `from_id_2`, … when composite), then a column
-    /// `name.<prop>` per property.
+    /// columns, as their nodes spell their ids; `from_id_1`, `from_id_2`, …
+    /// when composite), then a column `name.<prop>` per property, then, where
+    /// its schema declares an `edge_id`, `name.elementId`: its element id
+    /// (key [`REL_ELEMENT_ID_KEY`]).
     Rel {
         rel_type: String,
         from_label: String,
@@ -198,7 +200,8 @@ pub enum ResultKind {
     /// which Bolt returns encoded (`IdMapper`), as on the legacy pipeline.
     NodeId { label: String },
     /// `id(r)` of a relationship (S11l): column `name` holds its element id
-    /// (`TYPE:from->to`, as Bolt makes it); the server and the library
+    /// (`TYPE:from->to`, `TYPE:edge_id:from->to` with an `edge_id`, as Bolt
+    /// makes it); the server and the library
     /// return Bolt's number for it (`IdMapper::compute_deterministic_id`),
     /// SQL handed out as text keeps the element id.
     RelId,
@@ -206,6 +209,11 @@ pub enum ResultKind {
     /// (`value.rs`): column `name`.
     Graph(GraphType),
 }
+
+/// The key of a returned relationship's element id among its columns
+/// ([`ResultKind::Rel`]; its column is `name.elementId`): no property's name
+/// (`#` starts none, as the demand pass's markers rely on).
+pub const REL_ELEMENT_ID_KEY: &str = "#elementId";
 
 /// Lower a bound statement to a render plan.
 pub fn lower_statement(
@@ -992,11 +1000,12 @@ impl Lowerer<'_> {
     }
 
     /// Id part `i` of the `to` (else `from`) ends of union of relationships
-    /// `v` of `arms`, `id`, as its own end's text: a union that mixes labels
-    /// holds a part as a text folded with its label's ids and ends
-    /// (`held_as_text`, `part_text`), read back in each row's end column's
-    /// type where that differs (its element id is a relationship of one
-    /// definition's).
+    /// `v` of `arms`, `id`, as the node it ends at spells its id (its element
+    /// id is a relationship of one definition's, [`Self::end_spellings`]): a
+    /// union that mixes labels holds a part as a text folded with its label's
+    /// ids and ends (`held_as_text`, `part_text`), read back in each row's end
+    /// column's type where that differs, and spelled as its node's where that
+    /// differs. A text then wherever a definition's differs.
     fn own_end_text(
         &self,
         v: VarId,
@@ -1005,9 +1014,7 @@ impl Lowerer<'_> {
         i: usize,
         id: RenderExpr,
     ) -> Result<RenderExpr, LowerError> {
-        if !self.union_holds_texts(arms) || !self.held_as_text(i) {
-            return Ok(id);
-        }
+        let held = self.union_holds_texts(arms) && self.held_as_text(i);
         let mut when_then = Vec::new();
         let mut seen = BTreeSet::new();
         for arm in arms {
@@ -1019,37 +1026,199 @@ impl Lowerer<'_> {
             let Some(own) = types.get(i).filter(|t| !t.raw.is_empty()) else {
                 continue;
             };
-            if !self.read_back_differs(label, i) || !seen.insert(std::ptr::from_ref(rs)) {
+            let back = held && self.read_back_differs(label, i);
+            let spelling = self.end_spelling(label, i, own);
+            let own_text = spelling == value::EndSpell::Own;
+            if (!back && own_text) || !seen.insert(std::ptr::from_ref(rs)) {
                 continue;
             }
-            let is = |c: &str, value: &str| -> Result<RenderExpr, LowerError> {
-                Ok(RenderExpr::OperatorApplicationExp(eq(
-                    self.physical(v, c)?,
-                    RenderExpr::Literal(Literal::String(value.to_string())),
-                )))
+            let mut e = match back {
+                true => self.read_back(label, i, own, id.clone()),
+                false => id.clone(),
             };
-            let definition = and_all(vec![
-                is(REL_TYPE, &arm.rel_type)?,
-                is(REL_FROM_LABEL, &rs.from_node)?,
-                is(REL_TO_LABEL, &rs.to_node)?,
-            ])
-            .expect("a definition has columns");
-            when_then.push((
-                definition,
-                RenderExpr::Cast {
-                    expr: Box::new(self.read_back(label, i, own, id.clone())),
-                    target: self.text_target(true),
-                },
-            ));
+            if !own_text {
+                e = RenderExpr::Raw(value::spell_end(&render_expr_to_sql_plain(&e), &spelling));
+            }
+            when_then.push((self.definition_is(v, arm)?, self.any_text(e)));
         }
         Ok(match when_then.is_empty() {
             true => id,
             false => RenderExpr::Case(RenderCase {
                 expr: None,
                 when_then,
-                else_expr: Some(Box::new(id)),
+                else_expr: Some(Box::new(self.any_text(id))),
             }),
         })
+    }
+
+    /// Whether a row of union of relationships `v` is of `arm`'s definition
+    /// (its type and the labels of its stored ends).
+    fn definition_is(&self, v: VarId, arm: &RelArm) -> Result<RenderExpr, LowerError> {
+        let is = |c: &str, value: &str| -> Result<RenderExpr, LowerError> {
+            Ok(RenderExpr::OperatorApplicationExp(eq(
+                self.physical(v, c)?,
+                RenderExpr::Literal(Literal::String(value.to_string())),
+            )))
+        };
+        Ok(and_all(vec![
+            is(REL_TYPE, &arm.rel_type)?,
+            is(REL_FROM_LABEL, &arm.schema.from_node)?,
+            is(REL_TO_LABEL, &arm.schema.to_node)?,
+        ])
+        .expect("a definition has columns"))
+    }
+
+    /// The text (SQL) of the `edge_id` of a row of union of relationships `v`
+    /// of `arms` in its element id, with the separator after it, where its
+    /// definition declares one (`value::edge_id_sql`, of its identity columns
+    /// `REL_ID_{i}`), else an empty text; `None` where no arm's does.
+    pub(super) fn union_edge_text(
+        &self,
+        v: VarId,
+        arms: &[RelArm],
+        g: &crate::sql_generator::function_mapper::GraphValues,
+    ) -> Result<Option<String>, LowerError> {
+        let texts = self.rel_id_texts(arms);
+        let mut when_then = Vec::new();
+        let mut seen = BTreeSet::new();
+        for arm in arms {
+            let Some(id) = &arm.schema.edge_id else {
+                continue;
+            };
+            if !seen.insert(std::ptr::from_ref(arm.schema)) {
+                continue;
+            }
+            let parts = id
+                .columns()
+                .iter()
+                .enumerate()
+                .map(|(i, c)| {
+                    let e = self.physical(v, &indexed_column(REL_ID, i))?;
+                    Ok(render_expr_to_sql_plain(&self.own_identity_part(
+                        arms,
+                        &texts,
+                        i,
+                        arm.schema.column_types.get(*c),
+                        e,
+                    )))
+                })
+                .collect::<Result<Vec<_>, LowerError>>()?;
+            let text = (g.text)(&[
+                value::edge_id_sql(g, &parts),
+                value::string(crate::graph_catalog::element_id::edge_id_separators().1),
+            ]);
+            when_then.push((self.definition_is(v, arm)?, RenderExpr::Raw(text)));
+        }
+        if when_then.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(render_expr_to_sql_plain(&RenderExpr::Case(
+            RenderCase {
+                expr: None,
+                when_then,
+                else_expr: Some(Box::new(RenderExpr::Literal(
+                    Literal::String(String::new()),
+                ))),
+            },
+        ))))
+    }
+
+    /// Identity column `REL_ID_{i}` of a union of relationships `arms`, `e`,
+    /// in an arm whose own column there is of type `own`: read back in it
+    /// where the union holds the arms' days and times, or floats, in a wider
+    /// type (a `Date` with a `DateTime`, whose text is a time), so its text
+    /// is its own (exactly: the wider type holds every value of `own`).
+    /// Otherwise its text is its own already: integers spell their digits in
+    /// any type, a union of several kinds keeps each value (a `Variant`) or
+    /// holds its own text (`texts`, [`Self::rel_id_texts`]).
+    fn own_identity_part(
+        &self,
+        arms: &[RelArm],
+        texts: &[bool],
+        i: usize,
+        own: Option<&KeyPartType>,
+        e: RenderExpr,
+    ) -> RenderExpr {
+        let Some(own) = own.filter(|t| !t.raw.is_empty()) else {
+            return e;
+        };
+        if texts.get(i).copied().unwrap_or(false) {
+            return e;
+        }
+        let types: Vec<&KeyPartType> = arms
+            .iter()
+            .filter_map(|a| {
+                let rs = a.schema;
+                match &rs.edge_id {
+                    Some(id) => id.columns().get(i).and_then(|c| rs.column_types.get(*c)),
+                    None => {
+                        let from = rs.from_id.columns().len();
+                        match i < from {
+                            true => rs.from_node_id_part_types.get(i),
+                            false => rs.to_node_id_part_types.get(i - from),
+                        }
+                    }
+                }
+            })
+            .filter(|t| !t.raw.is_empty())
+            .collect();
+        // Of one family a union holds them in a wider type, whose text is
+        // not its own (a day's as a time, a `Float32`'s as a `Float64`):
+        // days and times, or floats.
+        use crate::graph_catalog::schema_types::SchemaType as T;
+        let family = |t: &KeyPartType| match t.schema {
+            T::Date | T::DateTime => Some(0),
+            T::Float => Some(1),
+            _ => None,
+        };
+        let one_family = family(own).is_some() && types.iter().all(|t| family(t) == family(own));
+        if !one_family || types.iter().all(|t| t.raw == own.raw) {
+            return e;
+        }
+        RenderExpr::Cast {
+            expr: Box::new(e),
+            target: self.nullable_target(own),
+        }
+    }
+
+    /// How id part `i` of a relationship's end of type `end` at a node of
+    /// `label` is spelled as that node spells its id
+    /// (`schema_types::end_spelling`).
+    fn end_spelling(&self, label: &str, i: usize, end: &KeyPartType) -> value::EndSpell {
+        use crate::graph_catalog::schema_types::EndSpelling;
+        let Some(node) = self
+            .schema
+            .node_schema_opt(label)
+            .and_then(|ns| ns.node_id.part_types.get(i))
+        else {
+            return value::EndSpell::Own;
+        };
+        match crate::graph_catalog::schema_types::end_spelling(node, end) {
+            EndSpelling::Own => value::EndSpell::Own,
+            EndSpelling::In(t) => value::EndSpell::In(self.nullable_target(&t)),
+            EndSpelling::DayOrTime => value::EndSpell::DayOrTime,
+            EndSpelling::Exact(t) => value::EndSpell::Exact(self.nullable_target(&t)),
+        }
+    }
+
+    /// ELEMENT_IDENTITY.md I3: how relationship `rs`'s stored ends' id parts
+    /// are spelled as their nodes spell their ids ([`Self::end_spelling`]):
+    /// its element id, `startNodeElementId` / `endNodeElementId` and its
+    /// returned `from_id` / `to_id` (from which Bolt spells the same), so
+    /// they name the nodes' element ids (a `Date` node's `D:2020-01-01-`, not
+    /// its `DateTime` end's `2020-01-01 00:00:00`).
+    pub(super) fn end_spellings(&self, rs: &RelationshipSchema) -> value::EndSpellings {
+        let side = |label: &str, types: &[KeyPartType]| -> Vec<value::EndSpell> {
+            types
+                .iter()
+                .enumerate()
+                .map(|(i, t)| self.end_spelling(label, i, t))
+                .collect()
+        };
+        (
+            side(&rs.from_node, &rs.from_node_id_part_types),
+            side(&rs.to_node, &rs.to_node_id_part_types),
+        )
     }
 
     /// Whether the end columns relationship `r` is tied by mix labels
@@ -3676,7 +3845,13 @@ impl<'s> Lowerer<'s> {
                 ));
                 if values {
                     items.push(select(
-                        RenderExpr::Raw(value::table_rel_object(g, rs, &arm.rel_type, ROW)?),
+                        RenderExpr::Raw(value::table_rel_object(
+                            g,
+                            rs,
+                            &arm.rel_type,
+                            ROW,
+                            &self.end_spellings(rs),
+                        )?),
                         ELEMENT_VALUE,
                     ));
                 }
@@ -4370,6 +4545,7 @@ impl<'s> Lowerer<'s> {
             node_tuples,
             rel_tuples,
             key_casts: key_casts.clone(),
+            ends: self.end_spellings(edge),
         };
         let (ctes, cte, edges) = match shortest {
             None => {
@@ -7094,7 +7270,7 @@ impl<'s> Lowerer<'s> {
                 columns: vec![(name.to_string(), column)],
             });
         }
-        let Some((columns, kind)) = self.element_columns(src)? else {
+        let Some((columns, kind, spelled)) = self.element_columns(src)? else {
             // An element that matches nothing: the relation has no rows.
             let column = body.column(RenderExpr::Literal(Literal::Null), name);
             return Ok(ResultColumn {
@@ -7109,7 +7285,7 @@ impl<'s> Lowerer<'s> {
         self.identities.push((name.to_string(), identity.clone()));
         let unreturned: Vec<RenderExpr> = identity
             .iter()
-            .filter(|i| !columns.iter().any(|(_, e)| e == *i))
+            .filter(|i| !columns.iter().any(|(_, e)| e == *i) && !spelled.contains(i))
             .cloned()
             .collect();
         if body.distinct && !unreturned.is_empty() {
@@ -7128,7 +7304,8 @@ impl<'s> Lowerer<'s> {
             if aggregating {
                 body.group_by.push(e.clone());
             }
-            let column = body.column(e, &format!("{name}.{key}"));
+            // A key no property has names its column without its `#`.
+            let column = body.column(e, &format!("{name}.{}", key.trim_start_matches('#')));
             named.push((key, column));
         }
         if aggregating {
@@ -7147,10 +7324,12 @@ impl<'s> Lowerer<'s> {
     }
 
     /// The columns of a whole node or relationship, in the legacy pipeline's
-    /// order: a relationship's stored endpoint columns, then every property
-    /// by name. `None` for an element that matches nothing.
+    /// order: a relationship's stored endpoint columns, its `edge_id`'s
+    /// where declared, then every property by name. `None` for an element
+    /// that matches nothing.
     fn element_columns(&self, v: VarId) -> Result<Option<ElementColumns>, LowerError> {
         let mut columns = Vec::new();
+        let mut spelled = Vec::new();
         let kind = match self.scans.get(&v) {
             Some(Scan::Node { label, .. }) => ResultKind::Node {
                 label: label.clone(),
@@ -7158,7 +7337,12 @@ impl<'s> Lowerer<'s> {
             Some(Scan::Rel {
                 schema, rel_type, ..
             }) => {
-                for (role, id) in [("from_id", &schema.from_id), ("to_id", &schema.to_id)] {
+                // Its ends' ids as their nodes spell theirs (I3).
+                let ends = self.end_spellings(schema);
+                for (role, id, spells) in [
+                    ("from_id", &schema.from_id, &ends.0),
+                    ("to_id", &schema.to_id, &ends.1),
+                ] {
                     let cols = id.columns();
                     for (i, c) in cols.iter().enumerate() {
                         let suffix = if cols.len() > 1 {
@@ -7166,7 +7350,16 @@ impl<'s> Lowerer<'s> {
                         } else {
                             role.to_string()
                         };
-                        columns.push((suffix, self.physical(v, c)?));
+                        let e = self.physical(v, c)?;
+                        let e = match spells.get(i) {
+                            Some(spell) if *spell != value::EndSpell::Own => {
+                                let sql = render_expr_to_sql_plain(&e);
+                                spelled.push(e);
+                                RenderExpr::Raw(value::spell_end(&sql, spell))
+                            }
+                            _ => e,
+                        };
+                        columns.push((suffix, e));
                     }
                 }
                 ResultKind::Rel {
@@ -7192,7 +7385,26 @@ impl<'s> Lowerer<'s> {
             };
             columns.push((prop, e));
         }
-        Ok(Some((columns, kind)))
+        // A relationship whose schema declares an `edge_id`: its element id
+        // as the SQL spells it (`value::rel_element_id`), which Bolt and the
+        // graph output return as is (#1334), under a key no property has
+        // and after the properties, whose columns keep their names. Its
+        // edge id is one to one with it.
+        if let Some(Scan::Rel {
+            schema, rel_type, ..
+        }) = self.scans.get(&v)
+        {
+            if let Some(id) = &schema.edge_id {
+                let g = value::spelling()?;
+                let (edge, from, to) = self.rel_identity_texts(v, schema, &g)?;
+                let text = value::rel_element_id(&g, rel_type, edge.as_deref(), &from, &to);
+                columns.push((REL_ELEMENT_ID_KEY.to_string(), RenderExpr::Raw(text)));
+                for c in id.columns() {
+                    spelled.push(self.physical(v, c)?);
+                }
+            }
+        }
+        Ok(Some((columns, kind, spelled)))
     }
 
     /// Every property of an element's label / type, by name.
@@ -7274,19 +7486,8 @@ impl<'s> Lowerer<'s> {
         };
         let (schema, rel_type): (&RelationshipSchema, String) = (schema, rel_type.clone());
         let g = value::spelling()?;
-        let end = |cols: Vec<&str>| -> Result<String, LowerError> {
-            let ids: Vec<String> = cols
-                .iter()
-                .map(|c| Ok(render_expr_to_sql_plain(&self.physical(r, c)?)))
-                .collect::<Result<_, LowerError>>()?;
-            Ok(value::element_id_sql(&g, &ids))
-        };
-        let text = value::rel_element_id(
-            &g,
-            &rel_type,
-            &end(schema.from_id.columns())?,
-            &end(schema.to_id.columns())?,
-        );
+        let (edge, from, to) = self.rel_identity_texts(r, schema, &g)?;
+        let text = value::rel_element_id(&g, &rel_type, edge.as_deref(), &from, &to);
         Ok(Some(self.unless_null(&[r], RenderExpr::Raw(text))?))
     }
 
@@ -8101,7 +8302,10 @@ const KEEP: &str = "__keep";
 const ALL_PROPERTIES: &str = "*";
 
 /// A returned element's columns (`<item>.<suffix>`, expression) and kind.
-type ElementColumns = (Vec<(String, RenderExpr)>, ResultKind);
+/// The columns of a returned element ([`Lowerer::element_columns`]): each
+/// named, its kind, and the identity columns some column spells one to one
+/// (a relationship's end as its node spells it).
+type ElementColumns = (Vec<(String, RenderExpr)>, ResultKind, Vec<RenderExpr>);
 
 /// What a segment's CTE exports: the next segment's scope.
 #[derive(Default)]

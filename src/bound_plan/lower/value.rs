@@ -22,8 +22,8 @@
 //! ([`GraphValue::keys`]) and pick the value with `any()`.
 
 use crate::graph_catalog::element_id::{
-    node_element_id_affixes, node_element_id_separators, relationship_element_id_affixes,
-    relationship_element_id_separators,
+    edge_id_escapes, edge_id_separators, node_element_id_affixes, node_element_id_separators,
+    relationship_element_id_affixes, relationship_element_id_separators, NULL_EDGE_ID_PART,
 };
 use crate::graph_catalog::graph_schema::{GraphSchema, NodeSchema, RelationshipSchema};
 use crate::query_planner::logical_expr::{self as lx, LogicalExpr};
@@ -336,27 +336,72 @@ fn labeled_node_object(
     ])
 }
 
-/// A relationship: its type, the labels of its stored `from` and `to`
-/// nodes, the SQL of their ids, its properties.
-#[allow(clippy::too_many_arguments)]
-/// A relationship's element id (as Bolt makes it): its type and the
-/// element-id texts of its stored ends (`from`, `to`).
-pub(super) fn rel_element_id(g: &GraphValues, rel_type: &str, from: &str, to: &str) -> String {
+/// The SQL string literal of the text `text` (`string` reads a Cypher
+/// literal's body, in which a backslash escapes).
+fn text_literal(text: &str) -> String {
+    string(&text.replace('\\', "\\\\"))
+}
+
+/// An `edge_id`'s parts (SQL) as its text in a relationship's element id
+/// (`element_id::edge_id_text`): each part's text escaped, NULL as
+/// `NULL_EDGE_ID_PART`, joined by `|`.
+pub(super) fn edge_id_sql(g: &GraphValues, parts: &[String]) -> String {
+    let m = current_function_mapper();
+    let mut texts = Vec::new();
+    for (i, p) in parts.iter().enumerate() {
+        if i > 0 {
+            texts.push(string(edge_id_separators().0));
+        }
+        let mut text = (g.to_text)(p);
+        for (from, to) in edge_id_escapes() {
+            text = m.replace_text(&text, &text_literal(from), &text_literal(to));
+        }
+        // By the part itself: a union's `Variant` of NULL is the text `''`.
+        texts.push(format!(
+            "CASE WHEN {p} IS NULL THEN {} ELSE {text} END",
+            text_literal(NULL_EDGE_ID_PART)
+        ));
+    }
+    (g.text)(&texts)
+}
+
+/// A relationship's element id (as Bolt makes it,
+/// `element_id::relationship_element_id`): its type, its `edge_id`'s text
+/// ([`edge_id_sql`]) where its schema declares one, and the element-id texts
+/// of its stored ends (`from`, `to`).
+pub(super) fn rel_element_id(
+    g: &GraphValues,
+    rel_type: &str,
+    edge: Option<&str>,
+    from: &str,
+    to: &str,
+) -> String {
     let (prefix, between, suffix) = relationship_element_id_affixes(rel_type);
-    (g.text)(&[
-        string(&prefix),
+    let mut parts = vec![string(&prefix)];
+    if let Some(edge) = edge {
+        parts.push(edge.to_string());
+        parts.push(string(edge_id_separators().1));
+    }
+    parts.extend([
         (g.to_text)(from),
         string(between),
         (g.to_text)(to),
         string(suffix),
-    ])
+    ]);
+    (g.text)(&parts)
 }
 
+/// A relationship: its type, the labels of its stored `from` and `to`
+/// nodes, its `edge_id`'s text ([`edge_id_sql`]) where its schema declares
+/// one, the SQL of its ends' ids (as their nodes spell theirs,
+/// `Lowerer::end_spellings`), its properties.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn rel_object(
     g: &GraphValues,
     rel_type: &str,
     from_label: &str,
     to_label: &str,
+    edge: Option<&str>,
     from: &str,
     to: &str,
     props: &[(String, String)],
@@ -366,7 +411,10 @@ pub(super) fn rel_object(
         (g.text)(&[string(&p), (g.to_text)(id), string(s)])
     };
     (g.object)(&[
-        (string("elementId"), rel_element_id(g, rel_type, from, to)),
+        (
+            string("elementId"),
+            rel_element_id(g, rel_type, edge, from, to),
+        ),
         (string("startNodeElementId"), node_id(from_label, from)),
         (string("endNodeElementId"), node_id(to_label, to)),
         (string("type"), string(rel_type)),
@@ -377,11 +425,14 @@ pub(super) fn rel_object(
 /// A relationship whose type and stored end labels are the SQL `rel_type`,
 /// `from_label`, `to_label` (columns: one of several possible definitions),
 /// else as [`rel_object`]. Its properties are those of every definition,
-/// NULL where its own has none, so the value has its own.
+/// NULL where its own has none, so the value has its own. `edge`: the text
+/// (SQL) of its `edge_id` and the separator after it where its definition
+/// declares one, else an empty text.
 fn labeled_rel_object(
     g: &GraphValues,
     rel_type: &str,
     (from_label, to_label): (&str, &str),
+    edge: Option<&str>,
     (from, to): (&str, &str),
     props: &[(String, String)],
 ) -> String {
@@ -398,14 +449,18 @@ fn labeled_rel_object(
     (g.object)(&[
         (
             string("elementId"),
-            (g.text)(&[
-                rel_type.to_string(),
-                string(after_type),
-                (g.to_text)(from),
-                string(between),
-                (g.to_text)(to),
-                string(suffix),
-            ]),
+            (g.text)(
+                &[rel_type.to_string(), string(after_type)]
+                    .into_iter()
+                    .chain(edge.map(str::to_string))
+                    .chain([
+                        (g.to_text)(from),
+                        string(between),
+                        (g.to_text)(to),
+                        string(suffix),
+                    ])
+                    .collect::<Vec<_>>(),
+            ),
         ),
         (string("startNodeElementId"), node_id(from_label, from)),
         (string("endNodeElementId"), node_id(to_label, to)),
@@ -465,24 +520,72 @@ pub(super) fn table_node_object(
     ))
 }
 
-/// A relationship of `schema`'s table read under `alias`.
+/// How a relationship end's id part is spelled as its node spells its id
+/// (`schema_types::EndSpelling`, its types spelled as CAST targets).
+#[derive(Debug, Clone, PartialEq)]
+pub(super) enum EndSpell {
+    Own,
+    In(String),
+    DayOrTime,
+    Exact(String),
+}
+
+/// How a relationship's `from` and `to` ends' id parts are spelled as their
+/// nodes spell theirs (`Lowerer::end_spellings`); a missing entry: as its own.
+pub(super) type EndSpellings = (Vec<EndSpell>, Vec<EndSpell>);
+
+/// An end's id part (SQL) as its node spells it ([`EndSpell`]).
+pub(super) fn spell_end(part: &str, spell: &EndSpell) -> String {
+    match spell {
+        EndSpell::Own => part.to_string(),
+        EndSpell::In(t) => format!("CAST({part} AS {t})"),
+        EndSpell::DayOrTime => day_or_time(part),
+        EndSpell::Exact(t) => {
+            let text = current_function_mapper().cast_string();
+            format!(
+                "CASE WHEN CAST({part} AS {t}) = {part} THEN {text}(CAST({part} AS {t})) \
+                 ELSE {text}({part}) END"
+            )
+        }
+    }
+}
+
+/// An end's id parts (SQL) as its node spells them ([`EndSpellings`]).
+pub(super) fn spelled_end(parts: Vec<String>, spells: &[EndSpell]) -> Vec<String> {
+    parts
+        .into_iter()
+        .enumerate()
+        .map(|(i, p)| match spells.get(i) {
+            Some(s) => spell_end(&p, s),
+            None => p,
+        })
+        .collect()
+}
+
+/// A relationship of `schema`'s table read under `alias`, its ends' ids
+/// spelled as `ends`.
 pub(super) fn table_rel_object(
     g: &GraphValues,
     schema: &RelationshipSchema,
     rel_type: &str,
     alias: &str,
+    ends: &EndSpellings,
 ) -> Result<String, LowerError> {
-    let end = |cols: Vec<&str>| -> String {
-        let ids: Vec<String> = cols.iter().map(|c| sql(&super::col_at(alias, c))).collect();
-        element_id_sql(g, &ids)
+    let cols = |cols: Vec<&str>| -> Vec<String> {
+        cols.iter().map(|c| sql(&super::col_at(alias, c))).collect()
     };
+    let edge = schema
+        .edge_id
+        .as_ref()
+        .map(|id| edge_id_sql(g, &cols(id.columns())));
     Ok(rel_object(
         g,
         rel_type,
         &schema.from_node,
         &schema.to_node,
-        &end(schema.from_id.columns()),
-        &end(schema.to_id.columns()),
+        edge.as_deref(),
+        &element_id_sql(g, &spelled_end(cols(schema.from_id.columns()), &ends.0)),
+        &element_id_sql(g, &spelled_end(cols(schema.to_id.columns()), &ends.1)),
         &table_props(&schema.property_mappings, alias),
     ))
 }
@@ -1141,6 +1244,7 @@ impl<'s> Lowerer<'s> {
                     &column(super::REL_FROM_LABEL)?,
                     &column(super::REL_TO_LABEL)?,
                 ),
+                self.union_edge_text(v, arms, s)?.as_deref(),
                 (
                     &end(super::REL_FROM, shape.from)?,
                     &end(super::REL_TO, shape.to)?,
@@ -1154,13 +1258,7 @@ impl<'s> Lowerer<'s> {
         else {
             return unsupported(format!("internal: {v} is not a relationship scan"));
         };
-        let end = |cols: Vec<&str>| -> Result<String, LowerError> {
-            let ids = cols
-                .iter()
-                .map(|c| self.physical(v, c).map(|e| sql(&e)))
-                .collect::<Result<Vec<_>, _>>()?;
-            Ok(element_id_sql(s, &ids))
-        };
+        let (edge, from, to) = self.rel_identity_texts(v, schema, s)?;
         let mut props = Vec::new();
         for name in self.all_property_names(v) {
             let e = self.property(v, &name)?;
@@ -1171,9 +1269,37 @@ impl<'s> Lowerer<'s> {
             rel_type,
             &schema.from_node,
             &schema.to_node,
-            &end(schema.from_id.columns())?,
-            &end(schema.to_id.columns())?,
+            edge.as_deref(),
+            &from,
+            &to,
             &props,
+        ))
+    }
+
+    /// The texts (SQL) relationship `v` of one definition, `schema`, spells
+    /// its element id from ([`rel_element_id`]): its `edge_id`'s, where
+    /// `schema` declares one, and its ends' ids', as their nodes spell theirs
+    /// (`Lowerer::end_spellings`).
+    pub(super) fn rel_identity_texts(
+        &self,
+        v: VarId,
+        schema: &RelationshipSchema,
+        s: &GraphValues,
+    ) -> Result<(Option<String>, String, String), LowerError> {
+        let cols = |cols: Vec<&str>| -> Result<Vec<String>, LowerError> {
+            cols.iter()
+                .map(|c| self.physical(v, c).map(|e| sql(&e)))
+                .collect()
+        };
+        let ends = self.end_spellings(schema);
+        let edge = match &schema.edge_id {
+            Some(id) => Some(edge_id_sql(s, &cols(id.columns())?)),
+            None => None,
+        };
+        Ok((
+            edge,
+            element_id_sql(s, &spelled_end(cols(schema.from_id.columns())?, &ends.0)),
+            element_id_sql(s, &spelled_end(cols(schema.to_id.columns())?, &ends.1)),
         ))
     }
 

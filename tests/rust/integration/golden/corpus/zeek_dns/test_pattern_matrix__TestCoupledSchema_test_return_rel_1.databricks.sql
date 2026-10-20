@@ -3,8 +3,9 @@ SELECT
       v1.answers AS `r.to_id`, 
       v1.query AS `r.query`, 
       v1.ts AS `r.timestamp`, 
-      v1.uid AS `r.uid`
+      v1.uid AS `r.uid`, 
+      concat('RESOLVED_TO:', concat(CASE WHEN v1.uid IS NULL THEN '\\N' ELSE replace(replace(replace(CAST(v1.uid AS STRING), '\\', '\\\\'), ':', '\\:'), '|', '\\|') END, '|', CASE WHEN v1.answers IS NULL THEN '\\N' ELSE replace(replace(replace(CAST(v1.answers AS STRING), '\\', '\\\\'), ':', '\\:'), '|', '\\|') END), ':', CAST(v1.query AS STRING), '->', CAST(v1.answers AS STRING), '-') AS `r.elementId`
 FROM zeek.dns_log AS v1
 WHERE (v1.query IS NOT NULL AND v1.answers IS NOT NULL)
 LIMIT 5
--- column r: Rel { rel_type: "RESOLVED_TO", from_label: "Domain", to_label: "ResolvedIP" } [("from_id", "r.from_id"), ("to_id", "r.to_id"), ("query", "r.query"), ("timestamp", "r.timestamp"), ("uid", "r.uid")]
+-- column r: Rel { rel_type: "RESOLVED_TO", from_label: "Domain", to_label: "ResolvedIP" } [("from_id", "r.from_id"), ("to_id", "r.to_id"), ("query", "r.query"), ("timestamp", "r.timestamp"), ("uid", "r.uid"), ("#elementId", "r.elementId")]

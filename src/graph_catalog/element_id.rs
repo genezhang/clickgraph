@@ -17,11 +17,15 @@
 //!
 //! ## Relationship elementId Format
 //! - `"RelType:from_id->to_id"`
+//! - `"RelType:edge_id:from_id->to_id"` where the schema declares an
+//!   `edge_id` (parallel relationships, #1334): its parts' texts joined by
+//!   `|`, each escaped ([`edge_id_text`]), so no two edge ids spell one text
 //!
 //! Examples:
 //! - `"FOLLOWS:123->456"` (integer IDs)
 //! - `"AUTHORED:alice@example.com->post-uuid-123"` (string IDs)
 //! - `"BELONGS_TO:tenant_1|user_456->tenant_1|org_789"` (composite IDs)
+//! - `"FOLLOWS:10:6->7"` (edge_id 10)
 //!
 //! # Reversibility
 //!
@@ -216,11 +220,172 @@ pub fn parse_node_element_id(element_id: &str) -> Result<(String, Vec<String>), 
 /// assert_eq!(element_id, "BELONGS_TO:tenant_1|user_456->tenant_1|org_789-");
 /// ```
 pub fn generate_relationship_element_id(rel_type: &str, from_id: &str, to_id: &str) -> String {
+    relationship_element_id(rel_type, None, from_id, to_id)
+}
+
+/// [`generate_relationship_element_id`] of a relationship whose schema
+/// declares an `edge_id`, of text `edge_id` ([`edge_id_text`]), else (`None`)
+/// of one without: `"TYPE:edge_id:from->to-"`.
+///
+/// ```
+/// use clickgraph::graph_catalog::element_id::{edge_id_text, relationship_element_id};
+///
+/// let edge = edge_id_text(&[Some("10")]);
+/// assert_eq!(relationship_element_id("FOLLOWS", Some(&edge), "6", "7"), "FOLLOWS:10:6->7-");
+/// assert_eq!(relationship_element_id("FOLLOWS", None, "6", "7"), "FOLLOWS:6->7-");
+/// ```
+pub fn relationship_element_id(
+    rel_type: &str,
+    edge_id: Option<&str>,
+    from_id: &str,
+    to_id: &str,
+) -> String {
     // Trailing `-` is a Neo4j-Browser-compat sentinel; see node generator.
     // The arrow `->` already contains a `-` in practice, but for relationships
     // returned without nodes, Browser still inspects the string. Be consistent.
     let (prefix, between, suffix) = relationship_element_id_affixes(rel_type);
-    format!("{prefix}{from_id}{between}{to_id}{suffix}")
+    let edge = match edge_id {
+        Some(e) => format!("{e}{}", edge_id_separators().1),
+        None => String::new(),
+    };
+    format!("{prefix}{edge}{from_id}{between}{to_id}{suffix}")
+}
+
+/// The texts in an `edge_id`'s part ([`edge_id_text`]) that are escaped, each
+/// with its escape: the escape character itself, and the separators between
+/// the parts and after the edge id.
+pub fn edge_id_escapes() -> [(&'static str, &'static str); 3] {
+    [("\\", "\\\\"), (":", "\\:"), ("|", "\\|")]
+}
+
+/// The text of a NULL part of an `edge_id` ([`edge_id_text`]): no escaped
+/// part's text.
+pub const NULL_EDGE_ID_PART: &str = "\\N";
+
+/// The text between an `edge_id`'s parts, and after the edge id, in a
+/// relationship's element id ([`relationship_element_id`]).
+pub fn edge_id_separators() -> (&'static str, &'static str) {
+    ("|", ":")
+}
+
+/// The text of an `edge_id` of parts `parts` (`None`: NULL) in a
+/// relationship's element id: each part's text escaped ([`edge_id_escapes`]),
+/// NULL as [`NULL_EDGE_ID_PART`], joined by `|`. Two edge ids of different
+/// parts are different texts, which end at the first unescaped `:`.
+pub fn edge_id_text(parts: &[Option<&str>]) -> String {
+    let texts: Vec<String> = parts
+        .iter()
+        .map(|p| match p {
+            Some(text) => escape_edge_id_part(text),
+            None => NULL_EDGE_ID_PART.to_string(),
+        })
+        .collect();
+    texts.join(edge_id_separators().0)
+}
+
+fn escape_edge_id_part(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        let mut buf = [0u8; 4];
+        let c = &*c.encode_utf8(&mut buf);
+        match edge_id_escapes().iter().find(|(from, _)| *from == c) {
+            Some((_, to)) => out.push_str(to),
+            None => out.push_str(c),
+        }
+    }
+    out
+}
+
+/// A relationship's element id with an `edge_id` ([`relationship_element_id`])
+/// read back: its type, the parts of its edge id (`None`: NULL), and the
+/// texts of its ends (`from->to`, which a string id containing `->` makes
+/// ambiguous; the edge id is not).
+#[derive(Debug, Clone, PartialEq)]
+pub struct EdgeElementId {
+    pub rel_type: String,
+    pub edge_id: Vec<Option<String>>,
+    pub ends: String,
+}
+
+/// Parse the element id of a relationship whose schema declares an
+/// `edge_id` ([`relationship_element_id`]).
+///
+/// ```
+/// use clickgraph::graph_catalog::element_id::{
+///     edge_id_text, parse_edge_element_id, relationship_element_id,
+/// };
+///
+/// let id = relationship_element_id("R", Some(&edge_id_text(&[Some("a:b"), None])), "1", "2");
+/// let parsed = parse_edge_element_id(&id).unwrap();
+/// assert_eq!(parsed.rel_type, "R");
+/// assert_eq!(parsed.edge_id, vec![Some("a:b".to_string()), None]);
+/// assert_eq!(parsed.ends, "1->2");
+/// ```
+pub fn parse_edge_element_id(element_id: &str) -> Result<EdgeElementId, ElementIdError> {
+    // One trailing `-` is the sentinel; an end's text may end with another.
+    let element_id = element_id
+        .strip_suffix(relationship_element_id_separators().2)
+        .unwrap_or(element_id);
+    let (after_type, _, _) = relationship_element_id_separators();
+    let (rel_type, rest) = element_id
+        .split_once(after_type)
+        .ok_or_else(|| ElementIdError::InvalidFormat("Expected 'TYPE:edge_id:ends'".into()))?;
+    if rel_type.is_empty() {
+        return Err(ElementIdError::MissingRelationshipType);
+    }
+    let (between_parts, after_edge) = edge_id_separators();
+    let mut parts: Vec<Option<String>> = Vec::new();
+    // The part being read: its text, or NULL (`\\N`, alone in its part).
+    let mut part: Option<String> = Some(String::new());
+    let mut chars = rest.char_indices();
+    let ends = loop {
+        let Some((i, c)) = chars.next() else {
+            return Err(ElementIdError::InvalidFormat(
+                "an edge id's element id has no ends after its edge id".into(),
+            ));
+        };
+        let mut buf = [0u8; 4];
+        let text = &*c.encode_utf8(&mut buf);
+        if text == between_parts || text == after_edge {
+            parts.push(part.replace(String::new()));
+            if text == after_edge {
+                break &rest[i + c.len_utf8()..];
+            }
+            continue;
+        }
+        let read = match (c, &mut part) {
+            ('\\', Some(p)) => match chars.next().map(|(_, e)| e) {
+                Some('N') if p.is_empty() => {
+                    part = None;
+                    continue;
+                }
+                Some(e) if edge_id_escapes().iter().any(|(f, _)| f.starts_with(e)) => {
+                    p.push(e);
+                    true
+                }
+                _ => false,
+            },
+            (_, Some(p)) => {
+                p.push(c);
+                true
+            }
+            // Text after a NULL part's `\\N`.
+            (_, None) => false,
+        };
+        if !read {
+            return Err(ElementIdError::InvalidFormat(
+                "an edge id's part is not an escaped text".into(),
+            ));
+        }
+    };
+    if ends.is_empty() {
+        return Err(ElementIdError::MissingFromId);
+    }
+    Ok(EdgeElementId {
+        rel_type: rel_type.to_string(),
+        edge_id: parts,
+        ends: ends.to_string(),
+    })
 }
 
 /// The text around a relationship's endpoint ids in its element id
@@ -609,5 +774,85 @@ mod tests {
         assert_eq!(label, "Post");
         // splitn(2, ':') will split only on first colon
         assert_eq!(ids, vec!["post:123:456"]);
+    }
+
+    // ========== Relationship elementId with an edge_id (#1334) ==========
+
+    #[test]
+    fn an_edge_id_is_in_its_relationships_element_id() {
+        let edge = edge_id_text(&[Some("10")]);
+        assert_eq!(edge, "10");
+        assert_eq!(
+            relationship_element_id("FOLLOWS", Some(&edge), "6", "7"),
+            "FOLLOWS:10:6->7-"
+        );
+        // Parallel relationships: one per edge id.
+        assert_ne!(
+            relationship_element_id("FOLLOWS", Some(&edge_id_text(&[Some("10")])), "6", "7"),
+            relationship_element_id("FOLLOWS", Some(&edge_id_text(&[Some("11")])), "6", "7"),
+        );
+        // Without one, as before.
+        assert_eq!(
+            relationship_element_id("FOLLOWS", None, "6", "7"),
+            generate_relationship_element_id("FOLLOWS", "6", "7")
+        );
+    }
+
+    #[test]
+    fn an_edge_ids_parts_are_escaped() {
+        assert_eq!(edge_id_text(&[Some("a:b")]), "a\\:b");
+        assert_eq!(edge_id_text(&[Some("a|b"), Some("c")]), "a\\|b|c");
+        assert_eq!(edge_id_text(&[Some("a\\"), None]), "a\\\\|\\N");
+        assert_eq!(edge_id_text(&[Some(""), Some("")]), "|");
+    }
+
+    /// No two edge ids spell one text, wherever their parts' texts hold the
+    /// separators, the escape, or the NULL part's text; each reads back.
+    #[test]
+    fn edge_ids_spell_texts_one_to_one() {
+        let parts: [Option<&str>; 10] = [
+            None,
+            Some(""),
+            Some("N"),
+            Some("\\N"),
+            Some(":"),
+            Some("|"),
+            Some("\\"),
+            Some("a:b|c"),
+            Some("->"),
+            Some("x-"),
+        ];
+        let mut ids: Vec<Vec<Option<&str>>> = parts.iter().map(|p| vec![*p]).collect();
+        for a in parts {
+            for b in parts {
+                ids.push(vec![a, b]);
+            }
+        }
+        let mut texts = std::collections::HashMap::new();
+        for id in &ids {
+            let element_id = relationship_element_id("R", Some(&edge_id_text(id)), "1:2", "3-");
+            if let Some(other) = texts.insert(element_id.clone(), id.clone()) {
+                panic!("{id:?} and {other:?} both spell {element_id}");
+            }
+            let parsed = parse_edge_element_id(&element_id).unwrap();
+            let read: Vec<Option<&str>> = parsed.edge_id.iter().map(Option::as_deref).collect();
+            assert_eq!(&read, id, "{element_id}");
+            assert_eq!(parsed.rel_type, "R");
+            assert_eq!(parsed.ends, "1:2->3-", "{element_id}");
+        }
+    }
+
+    #[test]
+    fn an_edge_element_id_that_is_not_one_is_refused() {
+        for bad in [
+            "R:10",
+            "R:1\\x:1->2-",
+            "R:\\Nx:1->2-",
+            "R:10:-",
+            ":10:1->2-",
+            "R10",
+        ] {
+            assert!(parse_edge_element_id(bad).is_err(), "{bad}");
+        }
     }
 }

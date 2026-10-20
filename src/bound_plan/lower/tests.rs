@@ -62,6 +62,14 @@ fn sql(q: &str) -> String {
         .sql
 }
 
+/// A relationship's `edge_id` part `col` (SQL) as its element id spells it
+/// on ClickHouse (#1334).
+fn edge_text(col: &str) -> String {
+    format!(
+        r"CASE WHEN {col} IS NULL THEN '\\N' ELSE replaceAll(replaceAll(replaceAll(toString({col}), '\\', '\\\\'), ':', '\\:'), '|', '\\|') END"
+    )
+}
+
 fn squash(s: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
@@ -1343,9 +1351,12 @@ fn a_returned_element_is_its_columns_under_its_name() {
         "MATCH (a:User)<-[r:FOLLOWS]-(b:User) RETURN r, a AS x, a.name",
         &social(),
     );
+    // A relationship with an `edge_id` returns its element id after its
+    // properties (#1334).
     assert!(
         sql.starts_with(
-            r#"SELECT v1.follower_id AS "r.from_id", v1.followed_id AS "r.to_id", v1.follow_date AS "r.follow_date", v0.age AS "x.age", v0.city AS "x.city", v0.country AS "x.country", v0.email_address AS "x.email", v0.is_active AS "x.is_active", v0.full_name AS "x.name", v0.registration_date AS "x.registration_date", v0.user_id AS "x.user_id", v0.full_name AS "a.name" FROM"#
+            &r#"SELECT v1.follower_id AS "r.from_id", v1.followed_id AS "r.to_id", v1.follow_date AS "r.follow_date", concat('FOLLOWS:', concat(EDGE), ':', toString(v1.follower_id), '->', toString(v1.followed_id), '-') AS "r.elementId", v0.age AS "x.age", v0.city AS "x.city", v0.country AS "x.country", v0.email_address AS "x.email", v0.is_active AS "x.is_active", v0.full_name AS "x.name", v0.registration_date AS "x.registration_date", v0.user_id AS "x.user_id", v0.full_name AS "a.name" FROM"#
+                .replace("EDGE", &edge_text("v1.follow_id"))
         ),
         "{sql}"
     );
@@ -1420,26 +1431,32 @@ fn grouping_and_distinct_over_a_returned_element() {
         "MATCH (:U)-[k:K]->(:U) RETURN k, count(*) AS c",
         &shapes_schema(),
     );
+    // Grouped by its columns (its element id among them) and its identity.
     assert!(
-        sql.contains("GROUP BY v1.a, v1.b, v1.weight, v1.kid"),
+        sql.contains("GROUP BY v1.a, v1.b, v1.weight, concat('K:'")
+            && sql.ends_with("'-'), v1.kid"),
         "{sql}"
     );
     let (sql, _) = shaped(
         "MATCH (:U)-[k:K]->(:U) RETURN DISTINCT k, k.w AS w",
         &shapes_schema(),
     );
+    // Its element id is returned, one to one with its `edge_id` (#1334): a
+    // plain DISTINCT.
     assert!(
-        sql.starts_with(r#"SELECT v1.a AS "k.from_id""#)
-            && sql.ends_with("GROUP BY v1.a, v1.b, v1.weight, v1.weight, v1.kid"),
+        sql.starts_with(
+            r#"SELECT DISTINCT v1.a AS "k.from_id", v1.b AS "k.to_id", v1.weight AS "k.w", concat('K:'"#
+        ) && sql.contains(r#"AS "k.elementId", v1.weight AS "w" FROM"#),
         "{sql}"
     );
-    let err = translate_bound_plan(
+    let (sql, _) = shaped(
         "MATCH (:U)-[k:K]->(:U) RETURN DISTINCT k, count(*) AS c",
         &shapes_schema(),
-        &ReadOptions::default(),
-    )
-    .unwrap_err();
-    assert!(err.contains("edge_id is not returned"), "{err}");
+    );
+    assert!(
+        sql.starts_with(r#"SELECT DISTINCT v1.a AS "k.from_id""#) && sql.ends_with("'-'), v1.kid"),
+        "{sql}"
+    );
     // A node's identity is among its properties (`node_id` names
     // properties): a plain DISTINCT.
     has(
@@ -2337,14 +2354,16 @@ fn a_path_is_the_list_of_its_elements() {
     let node = "map('elementId', CAST(concat('User:', toString(v0.user_id), '-'), 'Dynamic'), \
                 'labels', CAST(['User'], 'Dynamic'), 'properties', CAST(mapFilter((__k, __v) -> \
                 __v IS NOT NULL, map('age', CAST(v0.age, 'Dynamic'), ";
-    let rel = "map('elementId', CAST(concat('FOLLOWS:', toString(v1.follower_id), '->', \
+    // Its `edge_id`'s text, escaped (#1334).
+    let rel = "map('elementId', CAST(concat('FOLLOWS:', concat(EDGE), ':', toString(v1.follower_id), '->', \
                toString(v1.followed_id), '-'), 'Dynamic'), 'startNodeElementId', \
                CAST(concat('User:', toString(v1.follower_id), '-'), 'Dynamic'), \
                'endNodeElementId', CAST(concat('User:', toString(v1.followed_id), '-'), \
                'Dynamic'), 'type', CAST('FOLLOWS', 'Dynamic'), 'properties', \
                CAST(mapFilter((__k, __v) -> __v IS NOT NULL, map('follow_date', \
                CAST(v1.follow_date, 'Dynamic'))), 'Dynamic'))";
-    for part in [squash(node), squash(rel)] {
+    let rel = rel.replace("EDGE", &edge_text("v1.follow_id"));
+    for part in [squash(node), squash(&rel)] {
         assert!(sql.contains(&part), "missing `{part}` in\n{sql}");
     }
     assert!(sql.starts_with("SELECT [map('elementId'"), "{sql}");
@@ -2397,7 +2416,7 @@ fn a_variable_length_path_carries_its_values() {
             "[map('elementId', CAST(concat('User:', toString(start_node.user_id), '-')",
             "as path_node_values",
             "arrayConcat(vp.path_node_values, [map('elementId', CAST(concat('User:', toString(end_node.user_id)",
-            "arrayConcat(vp.path_rel_values, [map('elementId', CAST(concat('FOLLOWS:', toString(rel.follower_id)",
+            "arrayConcat(vp.path_rel_values, [map('elementId', CAST(concat('FOLLOWS:', concat(CASE WHEN rel.follow_id IS NULL",
             "arrayFlatten(arrayMap((__r, __n) -> [__r, __n], v1.path_rel_values, arraySlice(v1.path_node_values, 2))))",
         ],
     );
@@ -3499,7 +3518,8 @@ fn a_relationship_of_several_types_returned_whole_is_a_relationship_value() {
         &rels_schema(),
     );
     for part in [
-        "map('elementId', CAST(concat(v1.__cg_type, ':', toString(v1.__cg_from_0), '->', toString(v1.__cg_to_0), '-'), 'Dynamic')",
+        // The edge id of a definition that declares one (#1334).
+        r#"map('elementId', CAST(concat(v1.__cg_type, ':', CASE WHEN (v1.__cg_type = 'LIKES' AND v1.__cg_from_label = 'Person' AND v1.__cg_to_label = 'Post') THEN concat(concat(CASE WHEN v1.__cg_rid_0 IS NULL THEN '\\N' ELSE replaceAll(replaceAll(replaceAll(toString(v1.__cg_rid_0), '\\', '\\\\'), ':', '\\:'), '|', '\\|') END), ':') ELSE '' END, toString(v1.__cg_from_0), '->', toString(v1.__cg_to_0), '-'), 'Dynamic')"#,
         "'startNodeElementId', CAST(concat(v1.__cg_from_label, ':', toString(v1.__cg_from_0), '-'), 'Dynamic')",
         "'type', CAST(v1.__cg_type, 'Dynamic')",
         // Grouped by its definition, identity and properties.
@@ -5892,12 +5912,12 @@ fn a_union_keeps_elements_apart_by_identity() {
         &shapes_schema(),
     );
     assert!(
-        sql.contains(r#"v1.weight AS "__cg_w1_c2", 1 AS "__cg_w1_c3", v1.kid AS "__cg_w1_k0" FROM"#)
+        sql.contains(r#"'-') AS "__cg_w1_c3", 1 AS "__cg_w1_c4", v1.kid AS "__cg_w1_k0" FROM"#)
             && sql.contains(r#"w2.__cg_w2_k0 AS "__cg_k0" FROM with_w2 AS w2"#)
             // Grouped by every column's key and the identity.
             && sql.contains(r#"SELECT any(w3.__cg_c0) AS "k.from_id","#)
             && sql.contains(r#"GROUP BY tuple(multiIf(replaceRegexpOne(dynamicType(CAST(w3.__cg_c0, "#)
-            && sql.ends_with(r#"toString(w3.__cg_c3))), w3.__cg_k0"#),
+            && sql.ends_with(r#"toString(w3.__cg_c4))), w3.__cg_k0"#),
         "{sql}"
     );
     // A relationship of several types is a graph value, whose `elementId`
@@ -7198,7 +7218,10 @@ fn ids_as_values() {
         rel.shape
     );
     assert!(
-        squash(&rel.sql).contains("concat('FOLLOWS:', toString(v1.follower_id), '->', toString(v1.followed_id), '-') AS \"i\""),
+        squash(&rel.sql).contains(
+            "toString(v1.follow_id), '\\\\', '\\\\\\\\'), ':', '\\\\:'), '|', '\\\\|') END), ':', \
+             toString(v1.follower_id), '->', toString(v1.followed_id), '-') AS \"i\""
+        ),
         "{}",
         rel.sql
     );
@@ -7492,7 +7515,9 @@ fn databricks_graph_values() {
          CAST(v0.user_id AS STRING), '-') AS VARIANT), 'labels', CAST(array('User') AS VARIANT), \
          'properties', CAST(to_variant_object(map_filter(map('age', CAST(v0.age AS VARIANT),",
         "(__k, __v) -> __v IS NOT NULL)) AS VARIANT))), to_variant_object(map('elementId', \
-         CAST(concat('FOLLOWS:', CAST(v1.follower_id AS STRING), '->', \
+         CAST(concat('FOLLOWS:', concat(CASE WHEN v1.follow_id IS NULL THEN '\\\\N' ELSE \
+         replace(replace(replace(CAST(v1.follow_id AS STRING), '\\\\', '\\\\\\\\'), ':', \
+         '\\\\:'), '|', '\\\\|') END), ':', CAST(v1.follower_id AS STRING), '->', \
          CAST(v1.followed_id AS STRING), '-') AS VARIANT)",
     ] {
         assert!(got.contains(part), "missing `{part}` in\n{got}");
@@ -9374,4 +9399,226 @@ graph_schema:
     // Spark: as before.
     let got = squash(&databricks_sql("MATCH (n) RETURN count(DISTINCT n)", &mixed).unwrap());
     assert!(!got.contains("AS STRING)"), "{got}");
+}
+
+/// ELEMENT_IDENTITY.md I3 (#1334): a relationship whose schema declares an
+/// `edge_id` carries it in its element id (escaped) and returns it as a
+/// column, from which Bolt spells the same; its ends' ids are spelled as
+/// their nodes spell theirs (a `Date` node's `D:2020-01-01-`, not its
+/// `DateTime` end's text), in its value, its columns and `id(r)`.
+#[test]
+fn relationship_element_ids_carry_edge_ids_and_their_nodes_ids_1334() {
+    const YAML: &str = r#"
+name: lower_rel_element_ids
+graph_schema:
+  nodes:
+    - label: U
+      database: db
+      table: u
+      node_id: id
+      column_types: {id: UInt64}
+      property_mappings: {name: name}
+    - label: D
+      database: db
+      table: d
+      node_id: day
+      column_types: {day: Date}
+      property_mappings: {name: name}
+    - label: T
+      database: db
+      table: t
+      node_id: ts
+      column_types: {ts: "DateTime('Asia/Tokyo')"}
+      property_mappings: {name: name}
+  edges:
+    - type: P
+      database: db
+      table: p
+      from_node: U
+      to_node: U
+      from_id: a
+      to_id: b
+      edge_id: pid
+      column_types: {a: UInt64, b: UInt64, pid: String}
+      property_mappings: {w: w}
+    - type: DU
+      database: db
+      table: du
+      from_node: D
+      to_node: U
+      from_id: at
+      to_id: u
+      column_types: {at: DateTime, u: UInt64}
+      property_mappings: {}
+    - type: TT
+      database: db
+      table: tt
+      from_node: T
+      to_node: T
+      from_id: at
+      to_id: bt
+      column_types: {at: "DateTime('UTC')", bt: "DateTime('Asia/Tokyo')"}
+      property_mappings: {}
+    - type: PE
+      database: db
+      table: pe
+      from_node: U
+      to_node: U
+      from_id: a
+      to_id: b
+      edge_id: pid
+      column_types: {a: UInt64, b: UInt64, pid: String, x: String}
+      property_mappings: {edge_id: pid, elementId: x}
+    - type: FD
+      database: db
+      table: fd
+      from_node: U
+      to_node: U
+      from_id: a
+      to_id: b
+      edge_id: e
+      column_types: {a: UInt64, b: UInt64, e: Date}
+      property_mappings: {}
+    - type: FDT
+      database: db
+      table: fdt
+      from_node: U
+      to_node: U
+      from_id: a
+      to_id: b
+      edge_id: e
+      column_types: {a: UInt64, b: UInt64, e: DateTime}
+      property_mappings: {}
+    - type: TM
+      database: db
+      table: tm
+      from_node: T
+      to_node: T
+      from_id: at
+      to_id: bt
+      column_types: {at: "DateTime64(3, 'Asia/Tokyo')", bt: "DateTime('Asia/Tokyo')"}
+      property_mappings: {}
+"#;
+    let schema = crate::graph_catalog::config::GraphSchemaConfig::from_yaml_str(YAML)
+        .unwrap()
+        .to_graph_schema()
+        .unwrap();
+    let options = LowerOptions::default();
+    let has = |q: &str, parts: &[&str]| {
+        let got = lowered(q, &schema, &options);
+        for p in parts {
+            assert!(got.contains(p), "{q}: `{p}` missing:\n{got}");
+        }
+    };
+    let edge = format!("concat({}), ':'", edge_text("v1.pid"));
+    // Returned whole: its element id a column after its properties (Bolt's),
+    // a value's element id, `id(r)`.
+    has(
+        "MATCH (a:U)-[r:P]->(b:U) RETURN r",
+        &[&format!(
+            r#"v1.b AS "r.to_id", v1.w AS "r.w", concat('P:', {edge}, toString(v1.a), '->', toString(v1.b), '-') AS "r.elementId" FROM"#
+        )],
+    );
+    has(
+        "MATCH p = (a:U)-[r:P]->(b:U) RETURN p",
+        &[&format!(
+            "concat('P:', {edge}, toString(v1.a), '->', toString(v1.b), '-')"
+        )],
+    );
+    has(
+        "MATCH (a:U)-[r:P]->(b:U) RETURN id(r) AS i",
+        &[&format!("concat('P:', {edge}, toString(v1.a)")],
+    );
+    // In a list and a walk.
+    has(
+        "MATCH (a:U)-[r:P]->(b:U) WITH collect(r) AS rs RETURN rs",
+        &["concat('P:', concat(CASE WHEN tupleElement("],
+    );
+    has(
+        "MATCH p = (a:U)-[:P*1..2]->(b:U) RETURN p",
+        &[&format!(
+            "concat('P:', concat({}), ':'",
+            edge_text("rel.pid")
+        )],
+    );
+    // A `DateTime` end of a `Date` node: the node's text where `=` holds.
+    let day = r#"replaceRegexpOne(toString(v1.at), ' 00:00:00(\\.0+)?$', '')"#;
+    has(
+        "MATCH (a:D)-[r:DU]->(b:U) RETURN r",
+        &[&format!(
+            r#"SELECT {day} AS "r.from_id", v1.u AS "r.to_id""#
+        )],
+    );
+    has(
+        "MATCH p = (a:D)-[r:DU]->(b:U) RETURN p",
+        &[
+            &format!("'elementId', CAST(concat('DU:', toString({day}), '->'"),
+            &format!("'startNodeElementId', CAST(concat('D:', toString({day}), '-')"),
+        ],
+    );
+    // Rows equal in its columns are one relationship: the spelling is one to
+    // one, so DISTINCT with an aggregation still lowers.
+    has(
+        "MATCH (a:D)-[r:DU]->(b:U) RETURN DISTINCT r, count(*) AS c",
+        &[&format!("GROUP BY {day}, v1.u, v1.at")],
+    );
+    // A time of another zone: as an instant in the node's; of its own, as is.
+    has(
+        "MATCH (a:T)-[r:TT]->(b:T) RETURN r",
+        &[
+            r#"SELECT CAST(v1.at AS Nullable(DateTime('Asia/Tokyo'))) AS "r.from_id", v1.bt AS "r.to_id""#,
+        ],
+    );
+    // Properties named `edge_id` and `elementId` keep their columns; the
+    // element id's is another, under a key no property has.
+    let (sql, shape) = {
+        let t = crate::server::query_context::with_query_context_sync(
+            crate::server::query_context::QueryContext::new(None),
+            || {
+                crate::server::query_context::set_current_schema(std::sync::Arc::new(
+                    schema.clone(),
+                ));
+                translate_bound_plan(
+                    "MATCH (a:U)-[r:PE]->(b:U) RETURN r",
+                    &schema,
+                    &ReadOptions::default(),
+                )
+                .unwrap()
+            },
+        );
+        (squash(&t.sql), t.shape)
+    };
+    assert!(
+        sql.contains(r#"v1.pid AS "r.edge_id", v1.x AS "r.elementId", concat('PE:'"#)
+            && sql.contains(r#"AS "r.elementId_2" FROM"#),
+        "{sql}"
+    );
+    assert!(
+        shape[0]
+            .columns
+            .iter()
+            .any(|(k, c)| k == crate::bound_plan::lower::REL_ELEMENT_ID_KEY && c == "r.elementId_2"),
+        "{:?}",
+        shape[0].columns
+    );
+    // A union holds a `Date` edge id with a `DateTime` one as a time: each
+    // read back in its own type.
+    has(
+        "MATCH (a:U)-[r:FD|FDT]->(b:U) RETURN r",
+        &["CASE WHEN CAST(v1.__cg_rid_0 AS Nullable(Date)) IS NULL"],
+    );
+    // A time finer than its node's: the node's text where its value in the
+    // node's type is it, else its own.
+    has(
+        "MATCH (a:T)-[r:TM]->(b:T) RETURN r",
+        &[
+            r#"SELECT CASE WHEN CAST(v1.at AS Nullable(DateTime('Asia/Tokyo'))) = v1.at THEN toString(CAST(v1.at AS Nullable(DateTime('Asia/Tokyo')))) ELSE toString(v1.at) END AS "r.from_id""#,
+        ],
+    );
+    // Spark spells the escapes with `replace`.
+    let got = squash(&databricks_sql("MATCH p = (a:U)-[r:P]->(b:U) RETURN p", &schema).unwrap());
+    assert!(
+        got.contains(r#"concat('P:', concat(CASE WHEN v1.pid IS NULL THEN '\\N' ELSE replace(replace(replace(CAST(v1.pid AS STRING), '\\', '\\\\'), ':', '\\:'), '|', '\\|') END), ':'"#),
+        "{got}"
+    );
 }

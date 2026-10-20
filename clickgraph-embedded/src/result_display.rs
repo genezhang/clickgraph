@@ -46,6 +46,8 @@ pub const INTERNAL_FIELDS: &[&str] = &[
     "_version",
     "from_id",
     "to_id",
+    // A relationship's element id (one whose schema declares an `edge_id`).
+    "elementId",
     "__label__",
     "start_id",
     "end_id",

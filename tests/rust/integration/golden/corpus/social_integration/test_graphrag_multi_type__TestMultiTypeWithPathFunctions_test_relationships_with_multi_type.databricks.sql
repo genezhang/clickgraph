@@ -55,7 +55,7 @@ SELECT
       'User' AS `__cg_start_label`, 
       'User' AS `__cg_end_label`, 
       concat('FOLLOWS:User:User:', CAST(e.follow_id AS STRING)) AS `__cg_key`, 
-      to_variant_object(map('elementId', CAST(concat('FOLLOWS:', CAST(e.follower_id AS STRING), '->', CAST(e.followed_id AS STRING), '-') AS VARIANT), 'startNodeElementId', CAST(concat('User:', CAST(e.follower_id AS STRING), '-') AS VARIANT), 'endNodeElementId', CAST(concat('User:', CAST(e.followed_id AS STRING), '-') AS VARIANT), 'type', CAST('FOLLOWS' AS VARIANT), 'properties', CAST(to_variant_object(map_filter(map('follow_date', CAST(e.follow_date AS VARIANT)), (__k, __v) -> __v IS NOT NULL)) AS VARIANT))) AS `__cg_value`
+      to_variant_object(map('elementId', CAST(concat('FOLLOWS:', concat(CASE WHEN e.follow_id IS NULL THEN '\\N' ELSE replace(replace(replace(CAST(e.follow_id AS STRING), '\\', '\\\\'), ':', '\\:'), '|', '\\|') END), ':', CAST(e.follower_id AS STRING), '->', CAST(e.followed_id AS STRING), '-') AS VARIANT), 'startNodeElementId', CAST(concat('User:', CAST(e.follower_id AS STRING), '-') AS VARIANT), 'endNodeElementId', CAST(concat('User:', CAST(e.followed_id AS STRING), '-') AS VARIANT), 'type', CAST('FOLLOWS' AS VARIANT), 'properties', CAST(to_variant_object(map_filter(map('follow_date', CAST(e.follow_date AS VARIANT)), (__k, __v) -> __v IS NOT NULL)) AS VARIANT))) AS `__cg_value`
 FROM test_integration.user_follows_test AS e
 ), 
 vlp_v1_trails AS (

@@ -128,6 +128,9 @@ pub(super) struct PathCall<'a> {
     /// need one; a single-column id's BFS joins the columns typed, which
     /// compares in ClickHouse's common type already.
     pub key_casts: Vec<Option<String>>,
+    /// The edge's ends' ids as their nodes spell theirs, in its values
+    /// (`Lowerer::end_spellings`).
+    pub ends: super::value::EndSpellings,
 }
 
 impl PathCall<'_> {
@@ -258,7 +261,7 @@ pub(super) fn path_cte(schema: &GraphSchema, call: PathCall<'_>) -> Result<PathC
             },
             rel: match call.rel_values {
                 true => Some((
-                    super::value::table_rel_object(&g, call.edge, call.rel_type, REL)?,
+                    super::value::table_rel_object(&g, call.edge, call.rel_type, REL, &call.ends)?,
                     (g.list)(&[]),
                 )),
                 false => None,
@@ -546,6 +549,7 @@ impl PathCall<'_> {
                 self.edge,
                 self.rel_type,
                 REL,
+                &self.ends,
             )?),
             None => None,
         };

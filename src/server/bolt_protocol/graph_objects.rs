@@ -91,7 +91,8 @@ pub struct Relationship {
     /// Relationship properties as JSON values
     pub properties: HashMap<String, Value>,
     /// Neo4j 5.0+ STRING-based element ID for this relationship
-    /// Format: "Type:from_id->to_id"
+    /// Format: "Type:from_id->to_id", "Type:edge_id:from_id->to_id" where
+    /// its schema declares an `edge_id` (`element_id::relationship_element_id`)
     pub element_id: String,
     /// Neo4j 5.0+ STRING-based element ID for start node
     pub start_node_element_id: String,
