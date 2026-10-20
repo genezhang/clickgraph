@@ -251,9 +251,8 @@ ACTIVE_SESSION_CACHES: RwLock<HashMap<u64, Arc<RwLock<SessionCache>>>>
 
 - Each `IdMapper` instance registers itself on creation, unregisters on drop (when `Arc::strong_count ≤ 2`)
 - **Forward lookup** (`element_id → i64`): local cache only
-- **Reverse lookup** (`i64 → element_id`): local cache first, then cross-session chaining
-- `static_lookup_element_id()`: searches all sessions without needing an instance
-- `decode_for_query()`: tries cache lookup first, falls back to bit-pattern extraction for small numeric IDs
+- **Reverse lookup** (`i64 → element_id`): local cache first, then cross-session chaining to sessions of the same scope (graph and tenant) only
+- `decode_for_query()`: bit-pattern extraction for small numeric IDs only; never another scope's cache (#1388). `resolve_node_id()` reads the session's (scoped) mapper first
 
 ## 7. ID Rewriting for Neo4j Browser Expand
 

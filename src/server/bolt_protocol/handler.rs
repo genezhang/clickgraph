@@ -742,133 +742,6 @@ fn substitute_cypher_parameters(query: &str, parameters: &HashMap<String, Value>
     result
 }
 
-/// Legacy function - replaced by substitute_cypher_parameters
-/// Kept for potential future use but currently unused
-#[allow(dead_code)]
-fn decode_id_parameters(
-    query: &str,
-    mut parameters: HashMap<String, Value>,
-) -> HashMap<String, Value> {
-    use super::id_mapper::IdMapper;
-    use regex::Regex;
-
-    // Pattern: id(alias) IN $paramName
-    let id_in_param = Regex::new(r"(?i)\bid\s*\(\s*\w+\s*\)\s+IN\s+\$(\w+)").unwrap();
-    // Pattern: id(alias) = $paramName
-    let id_eq_param = Regex::new(r"(?i)\bid\s*\(\s*\w+\s*\)\s*=\s*\$(\w+)").unwrap();
-
-    // Collect parameter names used with id()
-    let mut id_params: Vec<String> = Vec::new();
-
-    for cap in id_in_param.captures_iter(query) {
-        if let Some(param_name) = cap.get(1) {
-            id_params.push(param_name.as_str().to_string());
-        }
-    }
-    for cap in id_eq_param.captures_iter(query) {
-        if let Some(param_name) = cap.get(1) {
-            id_params.push(param_name.as_str().to_string());
-        }
-    }
-
-    if id_params.is_empty() {
-        return parameters;
-    }
-
-    log::info!(
-        "🔧 decode_id_parameters: Found id() parameters: {:?}",
-        id_params
-    );
-
-    // Decode each id() parameter
-    for param_name in id_params {
-        if let Some(value) = parameters.get_mut(&param_name) {
-            match value {
-                Value::Array(arr) => {
-                    // Decode each element in the array
-                    let decoded: Vec<Value> = arr
-                        .iter()
-                        .map(|v| {
-                            if let Some(encoded_id) = v.as_i64() {
-                                // Use IdMapper to decode (tries cache first)
-                                if let Some((_label, raw_value)) =
-                                    IdMapper::decode_for_query(encoded_id)
-                                {
-                                    log::debug!(
-                                        "  Decoded {} -> {} (from cache)",
-                                        encoded_id,
-                                        raw_value
-                                    );
-                                    // Try to parse as integer, fallback to string
-                                    if let Ok(int_val) = raw_value.parse::<i64>() {
-                                        return Value::Number(int_val.into());
-                                    }
-                                    return Value::String(raw_value);
-                                } else {
-                                    // Fallback: extract raw_value directly from bit pattern
-                                    // This handles cross-session IDs where cache doesn't have the mapping
-                                    // Use 47-bit mask (matching the JS-safe encoding in id_encoding.rs)
-                                    const ID_MASK: i64 = (1i64 << 47) - 1; // 0x7FFFFFFFFFFF
-                                    let raw_value = encoded_id & ID_MASK;
-                                    log::debug!(
-                                        "  Decoded {} -> {} (from bit pattern)",
-                                        encoded_id,
-                                        raw_value
-                                    );
-                                    return Value::Number(raw_value.into());
-                                }
-                            }
-                            // Keep original if not a number
-                            v.clone()
-                        })
-                        .collect();
-
-                    log::info!(
-                        "🔧 Decoded parameter '{}': {} values (from {} original)",
-                        param_name,
-                        decoded.len(),
-                        arr.len()
-                    );
-                    *value = Value::Array(decoded);
-                }
-                Value::Number(n) => {
-                    // Single value
-                    if let Some(encoded_id) = n.as_i64() {
-                        if let Some((_label, raw_value)) = IdMapper::decode_for_query(encoded_id) {
-                            log::info!(
-                                "🔧 Decoded parameter '{}': {} -> {} (from cache)",
-                                param_name,
-                                encoded_id,
-                                raw_value
-                            );
-                            if let Ok(int_val) = raw_value.parse::<i64>() {
-                                *value = Value::Number(int_val.into());
-                            } else {
-                                *value = Value::String(raw_value);
-                            }
-                        } else {
-                            // Fallback: extract raw_value directly from bit pattern
-                            // Use 47-bit mask (matching the JS-safe encoding in id_encoding.rs)
-                            const ID_MASK: i64 = (1i64 << 47) - 1; // 0x7FFFFFFFFFFF
-                            let raw_value = encoded_id & ID_MASK;
-                            log::info!(
-                                "🔧 Decoded parameter '{}': {} -> {} (from bit pattern)",
-                                param_name,
-                                encoded_id,
-                                raw_value
-                            );
-                            *value = Value::Number(raw_value.into());
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-
-    parameters
-}
-
 /// Bolt protocol message handler
 pub struct BoltHandler {
     /// Connection context
@@ -2492,10 +2365,12 @@ impl BoltHandler {
         // schema if query contains a USE clause)
         {
             let mut context = lock_context!(self.context);
-            let scope_tenant = context.tenant_id.clone();
-            context
-                .id_mapper
-                .set_scope(Some(effective_schema.clone()), scope_tenant);
+            let scope_tenant = tenant_id.clone().or_else(|| context.tenant_id.clone());
+            context.id_mapper.set_scope_with_views(
+                Some(effective_schema.clone()),
+                scope_tenant.as_deref(),
+                view_parameters.as_ref(),
+            );
         }
 
         let graph_schema = if let Some(schemas_lock) = crate::server::GLOBAL_SCHEMAS.get() {
@@ -2583,10 +2458,12 @@ impl BoltHandler {
             crate::server::query_context::set_current_schema(Arc::new(graph_schema_obj.clone()));
 
             // Translate inner Cypher → SQL
+            let session_ids = { lock_context!(self.context).id_mapper.clone() };
             let inner_sql = crate::translate::translate_inner_read(
                 &inner_query,
                 &graph_schema_obj,
                 &effective_schema,
+                session_ids,
             )
             .map_err(BoltError::from_translate)?;
 
@@ -2844,10 +2721,12 @@ impl BoltHandler {
                         // `cypher_query` is a Cypher string-literal ARGUMENT to
                         // apoc.export.*.query(...), read through the front end
                         // (its own comments, a USE naming another graph refused).
+                        let session_ids = { lock_context!(self.context).id_mapper.clone() };
                         let inner_sql = crate::translate::translate_inner_read(
                             &export_args.cypher_query,
                             &graph_schema,
                             &effective_schema,
+                            session_ids,
                         )
                         .map_err(BoltError::from_translate)?;
 

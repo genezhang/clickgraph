@@ -358,7 +358,11 @@ async fn sql_generation_handler_inner(
         // SQL `/query` would run (`id()` values read through this mapper).
         use crate::server::bolt_protocol::id_mapper::IdMapper;
         let mut id_mapper = IdMapper::new();
-        id_mapper.set_scope(Some(schema_name.to_string()), None);
+        id_mapper.set_scope_with_views(
+            Some(schema_name.to_string()),
+            None,
+            view_parameter_values.as_ref(),
+        );
         let read_options = crate::translate::ReadOptions {
             view_parameter_values,
             cypher: clean_query.to_string(),
