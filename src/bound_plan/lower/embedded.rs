@@ -189,11 +189,13 @@ impl<'s> Lowerer<'s> {
                     .map(|(_, c)| col_at(ROW, c))
             };
             let mut items = Vec::new();
-            for p in &relation.id {
+            // Each source's id as the label's ids are compared (I1): the
+            // sources' columns meet in this union.
+            for (i, p) in relation.id.iter().enumerate() {
                 let Some(c) = column(p) else {
                     return unsupported(format!("internal: a source of {name} without its id"));
                 };
-                items.push(select(c, p));
+                items.push(select(self.comparable(&relation.label, i, c), p));
             }
             for p in &others {
                 for j in held(p) {

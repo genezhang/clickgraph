@@ -8972,3 +8972,157 @@ graph_schema:
     .unwrap();
     assert!(!spark.contains("CAST("), "{spark}");
 }
+
+/// ELEMENT_IDENTITY.md I1 (#1358): where a `UInt64` node id meets `Int64`
+/// relationship ends, every producer of an identity part for comparison casts
+/// it to the label's comparable type (`Int128`), so every site agrees: a
+/// hop's tie, an undirected relationship's two directions, a union of types,
+/// a several-labels node, a directed walk's edge, a union walk's node CTE, an
+/// OPTIONAL MATCH (no elided endpoint). Without a gap, the SQL is as before.
+#[test]
+fn identity_parts_meet_in_one_comparable_type_1358() {
+    const YAML: &str = r#"
+name: lower_identity_comparable
+graph_schema:
+  nodes:
+    - label: U
+      database: db
+      table: u
+      node_id: id
+      column_types: {id: UInt64}
+      property_mappings: {id: id, name: name}
+    - label: T
+      database: db
+      table: t
+      node_id: id
+      column_types: {id: Int64}
+      property_mappings: {id: id, name: name}
+    - label: V
+      database: db
+      table: v
+      node_id: id
+      column_types: {id: UInt64}
+      property_mappings: {id: id, name: name}
+    - label: X
+      database: db
+      table: x
+      node_id: id
+      column_types: {id: UInt128}
+      property_mappings: {id: id, name: name}
+  edges:
+    - type: XX
+      database: db
+      table: xx
+      from_node: X
+      to_node: X
+      from_id: src
+      to_id: dst
+      column_types: {src: UInt128, dst: UInt128}
+      property_mappings: {}
+    - type: VV
+      database: db
+      table: vv
+      from_node: V
+      to_node: V
+      from_id: src
+      to_id: dst
+      column_types: {src: UInt64, dst: UInt64}
+      property_mappings: {}
+    - type: F
+      database: db
+      table: fe
+      from_node: U
+      to_node: U
+      from_id: src
+      to_id: dst
+      column_types: {src: UInt64, dst: Int64}
+      property_mappings: {}
+    - type: H
+      database: db
+      table: h
+      from_node: U
+      to_node: T
+      from_id: uid
+      to_id: tid
+      column_types: {uid: UInt64, tid: Int64}
+      property_mappings: {}
+"#;
+    let schema = |yaml: &str| {
+        crate::graph_catalog::config::GraphSchemaConfig::from_yaml_str(yaml)
+            .unwrap()
+            .to_graph_schema()
+            .unwrap()
+    };
+    let mixed = schema(YAML);
+    let options = crate::bound_plan::lower::LowerOptions::default();
+    let sql = |q: &str| lowered(q, &mixed, &options);
+    let has = |q: &str, parts: &[&str]| {
+        let got = sql(q);
+        for p in parts {
+            assert!(got.contains(p), "{q}: `{p}` missing:\n{got}");
+        }
+    };
+    has(
+        "MATCH (a:U)-[:F]->(b:U) RETURN a.name, b.name",
+        &["CAST(v1.dst AS Int128) = CAST(v2.id AS Int128)"],
+    );
+    has(
+        "MATCH (a:U)-[:F]-(b:U) RETURN count(*)",
+        &[
+            r#"CAST(e.src AS Int128) AS "__cg_start_0""#,
+            r#"CAST(e.dst AS Int128) AS "__cg_start_0""#,
+        ],
+    );
+    has(
+        "MATCH (x:U|T)-[:H]-(y) RETURN x.name, y.name",
+        &[r#"CAST(e.id AS Int128) AS "__cg_id_0""#],
+    );
+    has(
+        "MATCH (a:U)-[:F*1..2]->(b:U) RETURN count(*)",
+        &[
+            "v1_ends AS ( SELECT",
+            r#"CAST(e.dst AS Int128) AS "__cg_end_0""#,
+        ],
+    );
+    has(
+        "MATCH (x)-[:H*1..2]-(y) RETURN count(*)",
+        &[
+            "vlp_v1_nodes AS ( SELECT",
+            r#"CAST(e.id AS Int128) AS "__cg_id_0""#,
+        ],
+    );
+    has(
+        "MATCH (a:U) OPTIONAL MATCH (a)<-[:F]-(b:U) RETURN a.name, b.name",
+        &["AS Int128) = CAST("],
+    );
+    // A label whose own ids and ends agree keeps its SQL, whatever other
+    // labels' gaps (a cast join key blocks ClickHouse's key pushdown).
+    for q in [
+        "MATCH (v:V)-[:VV]->(w:V) WHERE v.id = 1 RETURN w.name",
+        "MATCH (v:V)-[:VV*1..2]->(w:V) RETURN count(*)",
+        "MATCH (v:V) OPTIONAL MATCH (v)<-[:VV]-(w:V) RETURN v.name, w.name",
+    ] {
+        assert!(!sql(q).contains("Int128"), "{q}:\n{}", sql(q));
+    }
+    // A wider id is never cast to `Int128` (it would wrap): in a column that
+    // mixes it with a gap label, it meets the cast ids as itself.
+    let wide = sql("MATCH (a:X|U) WITH a MATCH (a)-[:XX]->(b) RETURN a.name, b.name");
+    assert!(wide.contains("CAST(e.id AS Int128)"), "{wide}");
+    assert!(
+        !wide.contains("CAST(e.id AS Int128) AS \"__cg_id_0\" FROM db.x"),
+        "{wide}"
+    );
+    assert!(!wide.contains("CAST(v1.src AS Int128)"), "{wide}");
+    // No gap (every id and end UInt64): the SQL of before.
+    let agreeing = schema(&YAML.replace("Int64}", "UInt64}"));
+    for q in [
+        "MATCH (a:U)-[:F]->(b:U) RETURN a.name, b.name",
+        "MATCH (a:U)-[:F]-(b:U) RETURN count(*)",
+        "MATCH (a:U)-[:F*1..2]->(b:U) RETURN count(*)",
+        "MATCH (x)-[:H*1..2]-(y) RETURN count(*)",
+    ] {
+        let got = lowered(q, &agreeing, &options);
+        assert!(!got.contains("Int128"), "{q}:\n{got}");
+        assert!(!got.contains("_ends AS"), "{q}:\n{got}");
+    }
+}
