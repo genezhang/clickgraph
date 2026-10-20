@@ -188,7 +188,10 @@ one of the three.
   value spells it (`Lowerer::rel_element_id_sql`, of one definition or a
   union of them) is compared with it; an id of another type, or one never
   given, names none. `RETURN id(r)` of a union of definitions is lowered
-  too. Left: Bolt's `elementId(r) IN $ids` rewrite still drops a
+  too. Such SQL holds only while the ids are known
+  (`ReadTranslation::session_ids`): HTTP does not cache it (review; a
+  node's `id(n) = N` alike, which a cache answered stale on main), and the
+  comparisons are `=` / OR of `=` (a RETURN item of one a boolean). Left: Bolt's `elementId(r) IN $ids` rewrite still drops a
   relationship's predicate (Browser's dedup), and the library has no number
   to decode (refused).
 - [ ] **I4 — Bolt ids** (#1388): scoped static lookup; stable hash; label

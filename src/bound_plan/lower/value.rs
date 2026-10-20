@@ -338,7 +338,7 @@ fn labeled_node_object(
 
 /// The SQL string literal of the text `text` (`string` reads a Cypher
 /// literal's body, in which a backslash escapes).
-pub(super) fn text_literal(text: &str) -> String {
+fn text_literal(text: &str) -> String {
     string(&text.replace('\\', "\\\\"))
 }
 

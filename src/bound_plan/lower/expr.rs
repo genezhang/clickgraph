@@ -1291,14 +1291,22 @@ impl Lowerer<'_> {
             // NULL where the relationship is.
             return Ok(Some(self.unless_null(&[v], boolean(negated))?));
         }
-        let texts: Vec<String> = named
-            .iter()
-            .map(|e| super::value::text_literal(e))
-            .collect();
-        let holds = RenderExpr::Raw(match texts.as_slice() {
-            [one] => format!("({text} = {one})"),
-            _ => format!("({text} IN ({}))", texts.join(", ")),
-        });
+        // Comparisons, so a RETURN item of one is a boolean (as a node's).
+        // An element id's text as a literal's body, where `\` escapes.
+        let holds = super::or_all(
+            named
+                .iter()
+                .map(|e| {
+                    RenderExpr::OperatorApplicationExp(OperatorApplication {
+                        operator: O::Equal,
+                        operands: vec![
+                            RenderExpr::Raw(text.clone()),
+                            RenderExpr::Literal(Literal::String(e.replace('\\', "\\\\"))),
+                        ],
+                    })
+                })
+                .collect(),
+        );
         Ok(Some(if negated {
             RenderExpr::OperatorApplicationExp(OperatorApplication {
                 operator: O::Not,

@@ -7195,17 +7195,17 @@ fn ids_compared_with_integers() {
     );
     on_server(
         "MATCH (a:User)-[r:FOLLOWS]->(b) WHERE id(r) = 201 RETURN b.name",
-        &[&format!("WHERE ({follows} = 'FOLLOWS:7:1->2-')")],
+        &[&format!("WHERE {follows} = 'FOLLOWS:7:1->2-'")],
     );
     on_server(
         "MATCH (a:User)-[r:FOLLOWS]->(b) WHERE id(r) IN [201, 202, 203, 204] RETURN b.name",
         &[&format!(
-            r"WHERE ({follows} IN ('FOLLOWS:7:1->2-', 'FOLLOWS:a\\:''b:1->2-'))"
+            r"WHERE ({follows} = 'FOLLOWS:7:1->2-' OR {follows} = 'FOLLOWS:a\\:''b:1->2-')"
         )],
     );
     on_server(
         "MATCH (a:User)-[r:FOLLOWS]->(b) WHERE NOT id(r) IN [201] RETURN b.name",
-        &[&format!("WHERE NOT ({follows} = 'FOLLOWS:7:1->2-')")],
+        &[&format!("WHERE NOT {follows} = 'FOLLOWS:7:1->2-'")],
     );
     on_server(
         "MATCH (a:User)-[r:FOLLOWS]->(b) WHERE id(r) = 202 RETURN b.name",
@@ -7216,8 +7216,36 @@ fn ids_compared_with_integers() {
         "MATCH (a:User)-[r:FOLLOWS|LIKED]->(b) WHERE id(r) = 202 RETURN b",
         &[
             "concat(v1.__cg_type, ':', CASE WHEN",
-            "-') = 'LIKED:9:1->5-')",
+            "-') = 'LIKED:9:1->5-'",
         ],
+    );
+    // SQL that read the server's ids holds only while they are known: the
+    // translation says so, and the server does not cache it (review).
+    let with_mapper = |q: &str| {
+        translate_bound_plan(
+            q,
+            &social(),
+            &ReadOptions {
+                id_mapper: Some(crate::server::bolt_protocol::id_mapper::IdMapper::new()),
+                ..ReadOptions::default()
+            },
+        )
+        .unwrap()
+        .session_ids
+    };
+    assert!(with_mapper(
+        "MATCH (a:User)-[r:FOLLOWS]->(b) WHERE id(r) = 201 RETURN b.name"
+    ));
+    assert!(with_mapper("MATCH (a:User) WHERE id(a) = 5 RETURN a.name"));
+    assert!(!with_mapper(
+        "MATCH (a:User) WHERE a.user_id = 5 RETURN a.name"
+    ));
+    // A RETURN item of one is a boolean (review).
+    on_server(
+        "MATCH (a:User)-[r:FOLLOWS]->(b) RETURN id(r) = 201 AS x",
+        &[&format!(
+            "CAST({follows} = 'FOLLOWS:7:1->2-' AS Nullable(Bool)) AS \"x\""
+        )],
     );
     // An OPTIONAL MATCH's NULL relationship: NULL.
     on_server(
