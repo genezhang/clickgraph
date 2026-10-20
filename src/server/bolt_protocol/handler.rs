@@ -2365,10 +2365,12 @@ impl BoltHandler {
         // schema if query contains a USE clause)
         {
             let mut context = lock_context!(self.context);
-            let scope_tenant = context.tenant_id.clone();
-            context
-                .id_mapper
-                .set_scope(Some(effective_schema.clone()), scope_tenant);
+            let scope_tenant = tenant_id.clone().or_else(|| context.tenant_id.clone());
+            context.id_mapper.set_scope_with_views(
+                Some(effective_schema.clone()),
+                scope_tenant.as_deref(),
+                view_parameters.as_ref(),
+            );
         }
 
         let graph_schema = if let Some(schemas_lock) = crate::server::GLOBAL_SCHEMAS.get() {
@@ -2456,10 +2458,12 @@ impl BoltHandler {
             crate::server::query_context::set_current_schema(Arc::new(graph_schema_obj.clone()));
 
             // Translate inner Cypher → SQL
+            let session_ids = { lock_context!(self.context).id_mapper.clone() };
             let inner_sql = crate::translate::translate_inner_read(
                 &inner_query,
                 &graph_schema_obj,
                 &effective_schema,
+                session_ids,
             )
             .map_err(BoltError::from_translate)?;
 
@@ -2717,10 +2721,12 @@ impl BoltHandler {
                         // `cypher_query` is a Cypher string-literal ARGUMENT to
                         // apoc.export.*.query(...), read through the front end
                         // (its own comments, a USE naming another graph refused).
+                        let session_ids = { lock_context!(self.context).id_mapper.clone() };
                         let inner_sql = crate::translate::translate_inner_read(
                             &export_args.cypher_query,
                             &graph_schema,
                             &effective_schema,
+                            session_ids,
                         )
                         .map_err(BoltError::from_translate)?;
 

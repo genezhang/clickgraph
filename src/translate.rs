@@ -306,6 +306,7 @@ pub fn translate_inner_read(
     cypher: &str,
     schema: &GraphSchema,
     graph: &str,
+    id_mapper: crate::server::bolt_protocol::id_mapper::IdMapper,
 ) -> Result<String, TranslateError> {
     let prepared = PreparedStatement::parse(cypher)
         .and_then(|p| p.targets.within(graph).map(|()| p))
@@ -319,8 +320,7 @@ pub fn translate_inner_read(
         ));
     }
     let cypher = prepared.text();
-    // Stateless for export: no IdMapper scope.
-    let id_mapper = crate::server::bolt_protocol::id_mapper::IdMapper::new();
+    // The caller's ids (its session's or request's scope, #1388).
     let options = || ReadOptions {
         cypher: cypher.to_string(),
         id_mapper: Some(id_mapper.clone()),
@@ -811,18 +811,35 @@ mod tests {
     fn an_inner_export_query_translates_as_a_query_does() {
         let schema = social();
         let text_only = "MATCH (a:User) ORDER BY a.name LIMIT 1 RETURN a.name";
-        let sql = super::translate_inner_read(text_only, &schema, "g").unwrap();
+        let sql = super::translate_inner_read(
+            text_only,
+            &schema,
+            "g",
+            crate::server::bolt_protocol::id_mapper::IdMapper::new(),
+        )
+        .unwrap();
         assert_eq!(
             Ok(sql),
             crate::clickhouse_query_generator::cypher_to_sql(text_only, &schema)
         );
         let read = "MATCH (a:User) RETURN a.name";
         assert_eq!(
-            super::translate_inner_read(read, &schema, "g").map_err(|e| e.to_string()),
+            super::translate_inner_read(
+                read,
+                &schema,
+                "g",
+                crate::server::bolt_protocol::id_mapper::IdMapper::new()
+            )
+            .map_err(|e| e.to_string()),
             crate::clickhouse_query_generator::cypher_to_sql(read, &schema)
         );
-        let err = super::translate_inner_read("MATCH (a:User) RETRUN a", &schema, "g")
-            .map_err(|e| e.to_string());
+        let err = super::translate_inner_read(
+            "MATCH (a:User) RETRUN a",
+            &schema,
+            "g",
+            crate::server::bolt_protocol::id_mapper::IdMapper::new(),
+        )
+        .map_err(|e| e.to_string());
         assert!(
             matches!(&err, Err(e) if e.starts_with("Inner Cypher parse error")),
             "{err:?}"
@@ -831,6 +848,7 @@ mod tests {
             "MATCH (a:User) ORDER BY a.name LIMIT 1 RETURN z.name",
             &schema,
             "g",
+            crate::server::bolt_protocol::id_mapper::IdMapper::new(),
         )
         .map_err(|e| e.to_string());
         assert!(
@@ -840,8 +858,13 @@ mod tests {
         // It runs on the statement's graph: a USE naming another is refused
         // (it was ignored); naming the statement's graph, or a prelude and
         // comments, are read.
-        let err = super::translate_inner_read("USE h MATCH (a:User) RETURN a.name", &schema, "g")
-            .map_err(|e| e.to_string());
+        let err = super::translate_inner_read(
+            "USE h MATCH (a:User) RETURN a.name",
+            &schema,
+            "g",
+            crate::server::bolt_protocol::id_mapper::IdMapper::new(),
+        )
+        .map_err(|e| e.to_string());
         assert!(
             matches!(&err, Err(e) if e.contains("Multiple graphs")),
             "{err:?}"
@@ -850,7 +873,8 @@ mod tests {
             super::translate_inner_read(
                 "// note\nCYPHER replan=force USE g MATCH (a:User) RETURN a.name",
                 &schema,
-                "g"
+                "g",
+                crate::server::bolt_protocol::id_mapper::IdMapper::new(),
             )
             .map_err(|e| e.to_string()),
             crate::clickhouse_query_generator::cypher_to_sql(read, &schema)

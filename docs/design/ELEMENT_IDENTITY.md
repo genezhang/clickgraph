@@ -212,13 +212,15 @@ one of the three.
   relationship's predicate (Browser's dedup), and the library has no number
   to decode (refused).
 - [x] **I4a — scoped lookup** (#1388). An `id()` number is read through
-  the session's mapper only, which chains to sessions of its scope (graph
-  and tenant): `IdMapper::decode_for_query` no longer reads every
-  session's cache (bit pattern alone), the unused Bolt parameter decoder
-  that did is gone, HTTP's per-request mapper carries the request's tenant,
-  and a session naming no graph is of the default graph's scope (Bolt
-  without a database, HTTP without a schema). Two names of one graph are
-  two scopes.
+  the session's mapper only, which reads ids given in its scope: its graph
+  (the default one where it names none: Bolt without a database, HTTP
+  without a schema) and its tenant and view parameter values
+  (`set_scope_with_views`; Bolt per RUN, HTTP per request). Each cached id
+  carries the scope it was given in, so a session that changes scope keeps
+  the ids of the one it left. `IdMapper::decode_for_query` no longer reads
+  every session's cache (bit pattern alone), the unused Bolt parameter
+  decoder that did is gone, and exports (COPY TO, apoc export) read through
+  the caller's mapper. Two names of one graph are two scopes.
 - [ ] **I4b — Bolt ids**: stable hash (not `DefaultHasher`); label codes
   per schema (process-global, clamped at 63, first-seen ordered).
 - [ ] **I5 — ids as values** (#1387, #1383): `id()` of a composite node and

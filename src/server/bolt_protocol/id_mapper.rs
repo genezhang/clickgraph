@@ -34,12 +34,16 @@ use crate::utils::id_encoding::{IdEncoding, LABEL_CODE_REGISTRY};
 
 lazy_static! {
     /// Registry of active session entries for cross-session lookups.
-    /// Maps connection_id → SessionEntry (cache + scope metadata).
-    /// Cross-session lookups only chain to sessions with matching scope
-    /// (same schema_name and tenant_id) to prevent cross-tenant data leakage.
+    /// Maps connection_id → SessionEntry (its cache). A cached id is read
+    /// back only in the scope it was given in (`Scope`): its graph and
+    /// tenant, so tenants and graphs stay apart (#1388).
     static ref ACTIVE_SESSION_CACHES: RwLock<HashMap<u64, SessionEntry>> =
         RwLock::new(HashMap::new());
 }
+
+/// The scope an id was given in: the graph, and the tenant (its view
+/// parameter values, `IdMapper::set_scope_with_views`).
+type Scope = (Option<String>, Option<String>);
 
 /// Counter for generating unique connection IDs
 static NEXT_CONNECTION_ID: AtomicU64 = AtomicU64::new(1);
@@ -49,16 +53,15 @@ static NEXT_CONNECTION_ID: AtomicU64 = AtomicU64::new(1);
 struct SessionCache {
     /// Map from element_id to assigned integer ID
     element_to_int: HashMap<String, i64>,
-    /// Map from integer ID to element_id (for reverse lookup)
-    int_to_element: HashMap<i64, String>,
+    /// Map from the scope it was given in and integer ID to element_id (for
+    /// reverse lookup): a session that changes scope keeps the ids of each.
+    int_to_element: HashMap<(Scope, i64), String>,
 }
 
-/// A registered session entry: cache + scope metadata for cross-session filtering.
+/// A registered session entry: its cache.
 #[derive(Debug)]
 struct SessionEntry {
     cache: Arc<RwLock<SessionCache>>,
-    schema_name: Option<String>,
-    tenant_id: Option<String>,
 }
 
 /// Deterministic mapper between integer IDs and element_ids
@@ -119,8 +122,6 @@ impl IdMapper {
                 connection_id,
                 SessionEntry {
                     cache: Arc::clone(&cache),
-                    schema_name: graph_scope(None),
-                    tenant_id: None,
                 },
             );
             log::debug!(
@@ -138,33 +139,31 @@ impl IdMapper {
         }
     }
 
-    /// Update the scope (schema + tenant) for this session.
-    /// Called when schema_name or tenant_id becomes known (HELLO, LOGON, or RUN).
-    /// Updates both the local fields and the global registry entry.
-    /// Clears the session cache when scope changes to prevent stale mappings
-    /// from a previous scope leaking into the new one.
+    /// Update the scope (graph + tenant) for this session, as known at
+    /// HELLO, LOGON or BEGIN: [`Self::set_scope_with_views`] without view
+    /// parameters.
     pub fn set_scope(&mut self, schema_name: Option<String>, tenant_id: Option<String>) {
-        let schema_name = graph_scope(schema_name);
-        let scope_changed = self.schema_name != schema_name || self.tenant_id != tenant_id;
+        self.set_scope_with_views(schema_name, tenant_id.as_deref(), None);
+    }
 
-        self.schema_name = schema_name.clone();
-        self.tenant_id = tenant_id.clone();
+    /// Update the scope for this session's next ids (a RUN's, a request's):
+    /// its graph (the default one where it names none), and its tenant and
+    /// view parameter values, which decide the rows it reads. Ids are given
+    /// and read back in their scope; the ids of a scope this session left
+    /// are kept for when it returns (#1388).
+    pub fn set_scope_with_views(
+        &mut self,
+        schema_name: Option<String>,
+        tenant_id: Option<&str>,
+        view_parameters: Option<&HashMap<String, String>>,
+    ) {
+        self.schema_name = graph_scope(schema_name);
+        self.tenant_id = tenant_scope(tenant_id, view_parameters);
+    }
 
-        // Clear cache when scope changes so stale reverse mappings don't bleed across
-        if scope_changed {
-            if let Ok(mut cache) = self.cache.write() {
-                cache.element_to_int.clear();
-                cache.int_to_element.clear();
-            }
-        }
-
-        // Update the registry entry
-        if let Ok(mut registry) = ACTIVE_SESSION_CACHES.write() {
-            if let Some(entry) = registry.get_mut(&self.connection_id) {
-                entry.schema_name = schema_name;
-                entry.tenant_id = tenant_id;
-            }
-        }
+    /// This session's current scope.
+    fn scope(&self) -> Scope {
+        (self.schema_name.clone(), self.tenant_id.clone())
     }
 
     /// Get or compute a deterministic integer ID for the given element_id
@@ -172,20 +171,20 @@ impl IdMapper {
     /// The ID encodes the label in the high byte and the hash of the id_value
     /// in the lower 56 bits, ensuring globally unique IDs across labels.
     pub fn get_or_assign(&mut self, element_id: &str) -> i64 {
-        // Check local cache first (fastest)
-        if let Ok(cache) = self.cache.read() {
-            if let Some(&id) = cache.element_to_int.get(element_id) {
-                return id;
-            }
-        }
-
+        let known = self
+            .cache
+            .read()
+            .ok()
+            .and_then(|cache| cache.element_to_int.get(element_id).copied());
         // Compute deterministic ID with label encoding
-        let id = Self::compute_deterministic_id(element_id);
+        let id = known.unwrap_or_else(|| Self::compute_deterministic_id(element_id));
 
-        // Cache locally
+        // Cache locally, read back in this scope (given in another, too).
         if let Ok(mut cache) = self.cache.write() {
             cache.element_to_int.insert(element_id.to_string(), id);
-            cache.int_to_element.insert(id, element_id.to_string());
+            cache
+                .int_to_element
+                .insert((self.scope(), id), element_id.to_string());
         }
 
         log::debug!(
@@ -284,32 +283,28 @@ impl IdMapper {
     /// Uses session cache chaining: first checks own cache, then searches
     /// other active sessions' caches with matching scope (schema + tenant).
     pub fn get_element_id(&self, id: i64) -> Option<String> {
+        let key = (self.scope(), id);
         // Check own cache first
         if let Ok(cache) = self.cache.read() {
-            if let Some(element_id) = cache.int_to_element.get(&id) {
+            if let Some(element_id) = cache.int_to_element.get(&key) {
                 return Some(element_id.clone());
             }
         }
 
-        // Search other active sessions' caches with matching scope
+        // Search other active sessions' caches, for an id given in this scope
         if let Ok(registry) = ACTIVE_SESSION_CACHES.read() {
             for (&conn_id, entry) in registry.iter() {
                 if conn_id == self.connection_id {
                     continue; // Skip own cache (already checked)
                 }
-                // Only chain to sessions with matching scope
-                if entry.schema_name != self.schema_name || entry.tenant_id != self.tenant_id {
-                    continue;
-                }
                 if let Ok(cache) = entry.cache.read() {
-                    if let Some(element_id) = cache.int_to_element.get(&id) {
+                    if let Some(element_id) = cache.int_to_element.get(&key) {
                         log::debug!(
-                            "IdMapper: Cross-session lookup found {} -> {} (from session {}, schema={:?}, tenant={:?})",
+                            "IdMapper: Cross-session lookup found {} -> {} (from session {}, scope {:?})",
                             id,
                             element_id,
                             conn_id,
-                            entry.schema_name,
-                            entry.tenant_id,
+                            key.0,
                         );
                         return Some(element_id.clone());
                     }
@@ -460,6 +455,29 @@ impl IdMapper {
             .map(|label| format!("{}:{}", label, id_value))
             .collect()
     }
+}
+
+/// The tenant part of a session's scope: its view parameter values, the
+/// tenant among them (as the read merges it, `tenant_id`), in one text;
+/// `None` without any.
+fn tenant_scope(
+    tenant_id: Option<&str>,
+    view_parameters: Option<&HashMap<String, String>>,
+) -> Option<String> {
+    let mut values: Vec<(String, String)> = view_parameters
+        .map(|v| v.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+        .unwrap_or_default();
+    if let Some(t) = tenant_id {
+        if !values.iter().any(|(k, _)| k == "tenant_id") {
+            values.push(("tenant_id".to_string(), t.to_string()));
+        }
+    }
+    if values.is_empty() {
+        return None;
+    }
+    values.sort();
+    // Unambiguous: each key and value as a JSON string.
+    Some(serde_json::to_string(&values).unwrap_or_default())
 }
 
 /// The graph a session's ids are scoped to: the one it names, else the
@@ -759,11 +777,55 @@ mod tests {
             resolve_node_id(&default, None, unnamed_id),
             Some(("S1388Sentinel".to_string(), "y".to_string()))
         );
-        // A small integer key decodes by its bit pattern, in any scope.
-        let small = bolt.get_or_assign("S1388Sentinel:2-");
+        // A session that changes scope keeps the ids of the one it left, for
+        // when it returns; they are not read in the other.
+        bolt.set_scope(Some("elsewhere".to_string()), None);
+        assert_eq!(bolt.get_element_id(id), None);
+        bolt.set_scope(Some("s1388".to_string()), Some("t1".to_string()));
         assert_eq!(
-            IdMapper::decode_for_query(small),
-            Some(("S1388Sentinel".to_string(), "2".to_string()))
+            bolt.get_element_id(id),
+            Some("S1388Sentinel:x-".to_string())
+        );
+        // View parameter values are part of the tenant's scope; a tenant
+        // named or given as its view parameter is one scope.
+        let views = |pairs: &[(&str, &str)]| -> HashMap<String, String> {
+            pairs
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect()
+        };
+        let mut a = IdMapper::new();
+        a.set_scope_with_views(
+            Some("s1388".to_string()),
+            None,
+            Some(&views(&[("region", "eu")])),
+        );
+        let a_id = a.get_or_assign("S1388Sentinel:eu-");
+        let mut b = IdMapper::new();
+        b.set_scope_with_views(
+            Some("s1388".to_string()),
+            None,
+            Some(&views(&[("region", "us")])),
+        );
+        assert_eq!(b.get_element_id(a_id), None);
+        b.set_scope_with_views(
+            Some("s1388".to_string()),
+            None,
+            Some(&views(&[("region", "eu")])),
+        );
+        assert_eq!(
+            b.get_element_id(a_id),
+            Some("S1388Sentinel:eu-".to_string())
+        );
+        let mut named = IdMapper::new();
+        named.set_scope_with_views(
+            Some("s1388".to_string()),
+            None,
+            Some(&views(&[("tenant_id", "t1")])),
+        );
+        assert_eq!(
+            named.get_element_id(id),
+            Some("S1388Sentinel:x-".to_string())
         );
     }
 }

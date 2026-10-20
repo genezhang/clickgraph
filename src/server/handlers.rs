@@ -644,8 +644,12 @@ async fn query_handler_body(
         let export_sql = with_query_context(context, async {
             crate::server::query_context::set_current_schema(Arc::new(graph_schema.clone()));
 
-            let inner_sql =
-                translate_cypher_to_sql(&inner_query, &graph_schema, &schema_name_for_export)?;
+            let inner_sql = translate_cypher_to_sql(
+                &inner_query,
+                &graph_schema,
+                &schema_name_for_export,
+                request_id_mapper(&schema_name_for_export, &payload),
+            )?;
 
             crate::procedures::apoc_export::build_export_sql(
                 &inner_sql,
@@ -869,6 +873,7 @@ async fn query_handler_body(
                     &export_args.cypher_query,
                     &graph_schema,
                     &schema_name_for_export,
+                    request_id_mapper(&schema_name_for_export, &payload),
                 )?;
                 crate::procedures::apoc_export::build_export_sql(
                     &inner_sql,
@@ -1474,13 +1479,8 @@ async fn query_handler_inner(
             };
 
         // The bound plan reads `id()` values through this mapper. HTTP is
-        // stateless: a temporary IdMapper per request.
-        use crate::server::bolt_protocol::id_mapper::IdMapper;
-
-        let mut id_mapper = IdMapper::new();
-        // Scoped as a Bolt session of this graph and tenant: an id another
-        // scope's session gave is not read here (#1388).
-        id_mapper.set_scope(Some(schema_name.clone()), payload.tenant_id.clone());
+        // stateless: a temporary IdMapper per request, of its scope.
+        let id_mapper = request_id_mapper(&schema_name, &payload);
         let cypher_statement = parsed_stmt;
 
         metrics.parse_time = parse_start.elapsed().as_secs_f64();
@@ -2303,27 +2303,59 @@ pub async fn get_schema_handler(
     }
 }
 
+/// The id mapper of a request on graph `schema_name`: scoped as a Bolt
+/// session of its graph, tenant and view parameter values, so an id
+/// another scope's session gave is not read here (#1388).
+fn request_id_mapper(
+    schema_name: &str,
+    payload: &QueryRequest,
+) -> crate::server::bolt_protocol::id_mapper::IdMapper {
+    let views: Option<HashMap<String, String>> = payload.view_parameters.as_ref().map(|params| {
+        params
+            .iter()
+            .map(|(k, v)| {
+                let s = match v {
+                    serde_json::Value::String(s) => s.clone(),
+                    other => other.to_string(),
+                };
+                (k.clone(), s)
+            })
+            .collect()
+    });
+    let mut id_mapper = crate::server::bolt_protocol::id_mapper::IdMapper::new();
+    id_mapper.set_scope_with_views(
+        Some(schema_name.to_string()),
+        payload.tenant_id.as_deref(),
+        views.as_ref(),
+    );
+    id_mapper
+}
+
 /// Translate a Cypher query string into ClickHouse SQL.
 ///
 /// Used by export procedures to compile the inner Cypher query.
-/// Runs the read seam (`translate::translate_inner_read`).
+/// Runs the read seam (`translate::translate_inner_read`), reading `id()`
+/// numbers through `id_mapper` (the request's).
 fn translate_cypher_to_sql(
     cypher: &str,
     graph_schema: &GraphSchema,
     schema_name: &str,
+    id_mapper: crate::server::bolt_protocol::id_mapper::IdMapper,
 ) -> Result<String, (StatusCode, String)> {
     log::debug!(
         "Translating inner Cypher query for schema '{}'",
         schema_name
     );
     // A broken invariant is the server's (500), anything else the query's.
-    crate::translate::translate_inner_read(cypher, graph_schema, schema_name).map_err(|e| {
-        let status = match e {
-            crate::translate::TranslateError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
-            _ => StatusCode::BAD_REQUEST,
-        };
-        (status, e.to_string())
-    })
+    crate::translate::translate_inner_read(cypher, graph_schema, schema_name, id_mapper).map_err(
+        |e| {
+            let status = match e {
+                crate::translate::TranslateError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
+                _ => StatusCode::BAD_REQUEST,
+            };
+            (status, e.to_string())
+        },
+    )
 }
 
 fn extract_result_count(_response: &axum::response::Response) -> Option<usize> {
