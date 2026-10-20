@@ -551,6 +551,31 @@ pub fn text_spelling(parts: &[KeyPartType]) -> TextSpelling {
     })
 }
 
+/// How a relationship end's id part, of type `end`, is spelled as the id of
+/// the node it ends at, of type `node`: its element id and the relationship's
+/// `startNodeElementId` / `endNodeElementId` (ELEMENT_IDENTITY.md I3). Where
+/// `=` holds of the two, as the node's text. Only a day or time met by a time
+/// or day of another type is spelled other than as its own text (integers of
+/// different types spell one value alike): a time met by a `Date` as
+/// [`TextSpelling::DayOrTime`], whose text is the date's where `=` holds of
+/// them; a day or time met by a time of another zone or scale as an instant of
+/// the node's type. One to one: no two ends spell one text (a time finer than
+/// the node's, which its type would round, is its own text).
+pub fn end_spelling(node: &KeyPartType, end: &KeyPartType) -> TextSpelling {
+    if node.raw.is_empty() || end.raw.is_empty() || node.raw == end.raw {
+        return TextSpelling::Own;
+    }
+    let scale = |t: &KeyPartType| t.datetime64_scale().unwrap_or(0);
+    match (node.schema, end.schema) {
+        (SchemaType::Date, SchemaType::DateTime) => TextSpelling::DayOrTime,
+        (SchemaType::DateTime, SchemaType::Date) => TextSpelling::In(node.clone()),
+        (SchemaType::DateTime, SchemaType::DateTime) if scale(end) <= scale(node) => {
+            TextSpelling::In(node.clone())
+        }
+        _ => TextSpelling::Own,
+    }
+}
+
 /// The type values of `parts` meet in where ClickHouse has no common type
 /// for them, or `None` where it has one (docs/design/VALUE_TYPES.md T4a,
 /// #1396). Its own common type compares them as Cypher does; the gap is a

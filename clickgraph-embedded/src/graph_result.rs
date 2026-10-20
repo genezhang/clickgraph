@@ -8,11 +8,11 @@ use std::collections::{HashMap, HashSet};
 
 use serde_json::Value as JsonValue;
 
-use clickgraph::graph_catalog::element_id::{
-    generate_node_element_id, generate_relationship_element_id,
-};
+use clickgraph::graph_catalog::element_id::generate_node_element_id;
 use clickgraph::graph_catalog::graph_schema::GraphSchema;
-use clickgraph::server::bolt_protocol::result_transformer::{ReturnItemMetadata, ReturnItemType};
+use clickgraph::server::bolt_protocol::result_transformer::{
+    transform_to_relationship, ReturnItemMetadata, ReturnItemType,
+};
 
 use super::value::Value;
 
@@ -365,7 +365,10 @@ fn infer_node_label(
     None
 }
 
-/// Extract a `GraphEdge` from a result row.
+/// Extract a `GraphEdge` from a result row: the server's relationship of its
+/// columns (`transform_to_relationship`), so its element id (with its
+/// `edge_id`, #1334) and its ends' are the ones Bolt and the HTTP graph
+/// output give it.
 fn extract_edge_from_row(
     row: &HashMap<String, JsonValue>,
     var_name: &str,
@@ -374,85 +377,19 @@ fn extract_edge_from_row(
     to_label: Option<&str>,
     schema: &GraphSchema,
 ) -> Option<GraphEdge> {
-    let prefix = format!("{}.", var_name);
-    let mut properties = HashMap::new();
-
-    for (key, value) in row.iter() {
-        if let Some(prop_name) = key.strip_prefix(&prefix) {
-            properties.insert(prop_name.to_string(), value.clone());
-        }
-    }
-
-    // Get the relationship type
-    let rel_type = rel_types.first()?.clone();
-
-    // Find a matching relationship schema from the available schemas for this type.
-    // Prefer schemas that match from/to labels if provided.
-    let rel_schemas = schema.rel_schemas_for_type(&rel_type);
-    let rel_schema = if rel_schemas.is_empty() {
-        return None;
-    } else if let (Some(fl), Some(tl)) = (from_label, to_label) {
-        rel_schemas
-            .iter()
-            .find(|rs| rs.from_node == fl && rs.to_node == tl)
-            .or_else(|| rel_schemas.first())
-            .copied()?
-    } else {
-        rel_schemas.first().copied()?
-    };
-
-    let from_id_cols = rel_schema.from_id.columns();
-    let to_id_cols = rel_schema.to_id.columns();
-
-    // Extract from/to ID values from properties.
-    // The SQL generator may normalize FK columns to `from_id`/`to_id` aliases,
-    // so we also try those as fallbacks if the schema column names don't match.
-    let from_id = from_id_cols
-        .iter()
-        .filter_map(|col| properties.get(*col).and_then(json_value_to_string))
-        .next()
-        .or_else(|| properties.get("from_id").and_then(json_value_to_string))?;
-
-    let to_id = to_id_cols
-        .iter()
-        .filter_map(|col| properties.get(*col).and_then(json_value_to_string))
-        .next()
-        .or_else(|| properties.get("to_id").and_then(json_value_to_string))?;
-
-    // Determine from/to labels for element IDs
-    let from_label_str = from_label
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| rel_schema.from_node.clone());
-    let to_label_str = to_label
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| rel_schema.to_node.clone());
-
-    let from_element_id = generate_node_element_id(&from_label_str, &[&from_id]);
-    let to_element_id = generate_node_element_id(&to_label_str, &[&to_id]);
-
-    let element_id = generate_relationship_element_id(&rel_type, &from_id, &to_id);
-
-    // Remove from/to ID columns from edge properties (they are structural, not properties)
-    for col in from_id_cols.iter().chain(to_id_cols.iter()) {
-        properties.remove(*col);
-    }
-    // Also remove the normalized aliases if present.
-    // Note: this assumes `from_id`/`to_id` are structural FK aliases, not user
-    // properties. Graph data rarely has properties with these exact names.
-    properties.remove("from_id");
-    properties.remove("to_id");
-
-    let embedded_properties: HashMap<String, Value> = properties
-        .into_iter()
-        .map(|(k, v)| (k, Value::from(v)))
-        .collect();
-
+    let rel = transform_to_relationship(row, var_name, rel_types, from_label, to_label, schema)
+        .map_err(|e| log::debug!("Skipping relationship '{var_name}' in graph output: {e}"))
+        .ok()?;
     Some(GraphEdge {
-        id: element_id,
-        type_name: rel_type,
-        from_id: from_element_id,
-        to_id: to_element_id,
-        properties: embedded_properties,
+        id: rel.element_id,
+        type_name: rel.rel_type,
+        from_id: rel.start_node_element_id,
+        to_id: rel.end_node_element_id,
+        properties: rel
+            .properties
+            .into_iter()
+            .map(|(k, v)| (k, Value::from(v)))
+            .collect(),
     })
 }
 
@@ -510,6 +447,63 @@ mod tests {
             result.nodes()[0].properties.get("user_id"),
             Some(&Value::Int64(1))
         );
+    }
+
+    /// A returned relationship's edge is the server's: parallel ones are two
+    /// edges by their `edge_id` (#1334), a composite end its whole id.
+    #[test]
+    fn returned_relationships_are_the_servers() {
+        const YAML: &str = r#"
+name: parallel
+graph_schema:
+  nodes:
+    - {label: U, database: db, table: u, node_id: [t, id], property_mappings: {name: name}}
+  edges:
+    - {type: F, database: db, table: f, from_node: U, to_node: U, from_id: [ta, a],
+       to_id: [tb, b], edge_id: fid, property_mappings: {w: w}}
+"#;
+        let schema = clickgraph::graph_catalog::config::GraphSchemaConfig::from_yaml_str(YAML)
+            .unwrap()
+            .to_graph_schema()
+            .unwrap();
+        let keys = [
+            "from_id_1",
+            "from_id_2",
+            "to_id_1",
+            "to_id_2",
+            "edge_id",
+            "w",
+        ];
+        let meta = vec![ReturnItemMetadata {
+            field_name: "r".to_string(),
+            item_type: ReturnItemType::Relationship {
+                rel_types: vec!["F".to_string()],
+                from_label: Some("U".to_string()),
+                to_label: Some("U".to_string()),
+                direction: Some("Outgoing".to_string()),
+            },
+            columns: Some(
+                keys.iter()
+                    .map(|k| (k.to_string(), format!("r.{k}")))
+                    .collect(),
+            ),
+        }];
+        let row = |fid: u32| {
+            serde_json::json!({
+                "r.from_id_1": "t", "r.from_id_2": 6, "r.to_id_1": "t", "r.to_id_2": 7,
+                "r.edge_id": fid, "r.w": 1
+            })
+        };
+        let result = transform_rows_to_graph(&[row(10), row(11), row(10)], &meta, &schema);
+        let mut ids: Vec<&str> = result.edges().iter().map(|e| e.id.as_str()).collect();
+        ids.sort();
+        assert_eq!(ids, vec!["F:10:t|6->t|7-", "F:11:t|6->t|7-"]);
+        let edge = &result.edges()[0];
+        assert_eq!(
+            (edge.from_id.as_str(), edge.to_id.as_str()),
+            ("U:t|6-", "U:t|7-")
+        );
+        assert_eq!(edge.properties.keys().collect::<Vec<_>>(), vec!["w"]);
     }
 
     #[test]

@@ -55,7 +55,7 @@ SELECT
       'User' AS "__cg_start_label", 
       'User' AS "__cg_end_label", 
       concat('FOLLOWS:User:User:', toString(e.follow_id)) AS "__cg_key", 
-      map('elementId', CAST(concat('FOLLOWS:', toString(e.follower_id), '->', toString(e.followed_id), '-'), 'Dynamic'), 'startNodeElementId', CAST(concat('User:', toString(e.follower_id), '-'), 'Dynamic'), 'endNodeElementId', CAST(concat('User:', toString(e.followed_id), '-'), 'Dynamic'), 'type', CAST('FOLLOWS', 'Dynamic'), 'properties', CAST(mapFilter((__k, __v) -> __v IS NOT NULL, map('follow_date', CAST(e.follow_date, 'Dynamic'))), 'Dynamic')) AS "__cg_value"
+      map('elementId', CAST(concat('FOLLOWS:', concat(coalesce(replaceAll(replaceAll(replaceAll(toString(e.follow_id), '\\', '\\\\'), ':', '\\:'), '|', '\\|'), '\\N')), ':', toString(e.follower_id), '->', toString(e.followed_id), '-'), 'Dynamic'), 'startNodeElementId', CAST(concat('User:', toString(e.follower_id), '-'), 'Dynamic'), 'endNodeElementId', CAST(concat('User:', toString(e.followed_id), '-'), 'Dynamic'), 'type', CAST('FOLLOWS', 'Dynamic'), 'properties', CAST(mapFilter((__k, __v) -> __v IS NOT NULL, map('follow_date', CAST(e.follow_date, 'Dynamic'))), 'Dynamic')) AS "__cg_value"
 FROM test_integration.user_follows_test AS e
 ), 
 vlp_v1_trails AS (

@@ -35,7 +35,8 @@
 use crate::{
     graph_catalog::{
         element_id::{
-            generate_node_element_id, generate_relationship_element_id, parse_node_element_id,
+            edge_id_text, generate_node_element_id, generate_relationship_element_id,
+            parse_node_element_id, relationship_element_id,
         },
         graph_schema::GraphSchema,
     },
@@ -722,7 +723,7 @@ fn infer_node_label_from_properties(
 /// # Returns
 ///
 /// Relationship struct with properties and generated elementIds
-pub(crate) fn transform_to_relationship(
+pub fn transform_to_relationship(
     row: &HashMap<String, Value>,
     var_name: &str,
     rel_types: &[String],
@@ -821,9 +822,15 @@ pub(crate) fn transform_to_relationship(
 
     // Get primary relationship type (already extracted above for CTE case)
 
-    // Get relationship schema
+    // Get relationship schema: of the definition between the given labels
+    // (a type's definitions declare their own `edge_id`).
     let rel_schema = schema
-        .get_relationships_schema_opt(&rel_type)
+        .rel_schemas_for_type(&rel_type)
+        .into_iter()
+        .find(|rs| {
+            Some(rs.from_node.as_str()) == from_label && Some(rs.to_node.as_str()) == to_label
+        })
+        .or_else(|| schema.get_relationships_schema_opt(&rel_type))
         .ok_or_else(|| format!("Relationship schema not found for type: {}", rel_type))?;
 
     // Get from/to node labels (use provided or schema defaults)
@@ -1060,8 +1067,31 @@ pub(crate) fn transform_to_relationship(
         properties.remove(&key);
     }
 
+    // Its `edge_id` (the bound plan's `edge_id` / `edge_id_1`, … columns),
+    // which tells parallel relationships apart (#1334).
+    let edge_id = rel_schema.edge_id.as_ref().and_then(|id| {
+        let n = id.columns().len();
+        let keys: Vec<String> = (1..=n)
+            .map(|i| match n {
+                1 => "edge_id".to_string(),
+                _ => format!("edge_id_{i}"),
+            })
+            .collect();
+        if !keys.iter().all(|k| properties.contains_key(k)) {
+            return None;
+        }
+        let parts: Vec<Option<String>> = keys
+            .iter()
+            .map(|k| properties.remove(k).as_ref().and_then(value_to_string))
+            .collect();
+        let parts: Vec<Option<&str>> = parts.iter().map(Option::as_deref).collect();
+        Some(edge_id_text(&parts))
+    });
+
     // Generate relationship elementId: "FOLLOWS:1->2" or "BELONGS_TO:tenant1|user1->tenant1|org1"
-    let element_id = generate_relationship_element_id(&rel_type, &from_id_str, &to_id_str);
+    // ("FOLLOWS:10:1->2" with an edge_id).
+    let element_id =
+        relationship_element_id(&rel_type, edge_id.as_deref(), &from_id_str, &to_id_str);
 
     // Generate node elementIds for start and end nodes (with composite ID support)
     let from_id_refs: Vec<&str> = from_id_values.iter().map(|s| s.as_str()).collect();
@@ -3190,5 +3220,70 @@ graph_schema:
         let err = transform_vlp_path(&row, "p", &schema, &[], &[], &[])
             .expect_err("5-field tuple is neither standard (3) nor multi-type (9+) shape");
         assert!(err.contains("expected 3"), "unexpected error text: {err}");
+    }
+
+    /// #1334: parallel relationships (one type, one pair of nodes) are told
+    /// apart by their `edge_id`, which the bound plan returns as `edge_id`
+    /// (`edge_id_1`, … of a composite one) and which their element ids (and
+    /// so their Bolt numbers) carry, as the SQL spells them
+    /// (`value::rel_element_id`); a type's definitions keep their own.
+    #[test]
+    fn parallel_relationships_have_their_own_element_ids() {
+        const YAML: &str = r#"
+name: parallel
+graph_schema:
+  nodes:
+    - {label: U, database: db, table: u, node_id: id, property_mappings: {name: name}}
+    - {label: G, database: db, table: g, node_id: id, property_mappings: {name: name}}
+  edges:
+    - {type: F, database: db, table: f, from_node: U, to_node: U, from_id: a, to_id: b,
+       edge_id: fid, property_mappings: {w: w}}
+    - {type: F, database: db, table: fg, from_node: U, to_node: G, from_id: a, to_id: g,
+       edge_id: [k1, k2], property_mappings: {}}
+"#;
+        let schema = crate::graph_catalog::config::GraphSchemaConfig::from_yaml_str(YAML)
+            .unwrap()
+            .to_graph_schema()
+            .unwrap();
+        let rel = |cols: &[(&str, Value)], to: &str| {
+            let row: HashMap<String, Value> = cols
+                .iter()
+                .map(|(k, v)| (format!("r.{k}"), v.clone()))
+                .collect();
+            transform_to_relationship(&row, "r", &["F".to_string()], Some("U"), Some(to), &schema)
+                .unwrap()
+        };
+        let parallel = |fid: Value| {
+            rel(
+                &[
+                    ("from_id", Value::from(6)),
+                    ("to_id", Value::from(7)),
+                    ("edge_id", fid),
+                    ("w", Value::from(1)),
+                ],
+                "U",
+            )
+        };
+        let (a, b) = (parallel(Value::from(10)), parallel(Value::from(11)));
+        assert_eq!(a.element_id, "F:10:6->7-");
+        assert_eq!(b.element_id, "F:11:6->7-");
+        assert_ne!(a.id, b.id);
+        assert_eq!(a.start_node_element_id, "U:6-");
+        // The edge id is not a property.
+        assert_eq!(a.properties.keys().collect::<Vec<_>>(), vec!["w"]);
+        assert_eq!(parallel(Value::from("a:b")).element_id, "F:a\\:b:6->7-");
+        // The other definition's composite edge id, a part NULL.
+        let g = rel(
+            &[
+                ("from_id", Value::from(6)),
+                ("to_id", Value::from(7)),
+                ("edge_id_1", Value::from("x|y")),
+                ("edge_id_2", Value::Null),
+            ],
+            "G",
+        );
+        assert_eq!(g.element_id, "F:x\\|y|\\N:6->7-");
+        assert_eq!(g.end_node_element_id, "G:7-");
+        assert!(g.properties.is_empty(), "{:?}", g.properties);
     }
 }

@@ -130,6 +130,10 @@ pub(crate) trait FunctionMapper: Send + Sync {
     /// text, so every year a type holds.
     fn day_or_time_text(&self, expr: &str) -> String;
 
+    /// The text `expr` with every occurrence of the text `search` replaced by
+    /// `replacement` (all three SQL). CH: `replaceAll`; Spark: `replace`.
+    fn replace_text(&self, expr: &str, search: &str, replacement: &str) -> String;
+
     /// Render Cypher `toString(<float>)` so a whole-valued float keeps its
     /// trailing `.0` (#1055). Neo4j preserves the Integer/Float distinction in
     /// the string form: `toString(3.0)` → `"3.0"`, `toString(3)` → `"3"`.

@@ -380,13 +380,28 @@ impl<'s> Lowerer<'s> {
             ),
             Elem::Rel { rel_type, from, to } => {
                 let (from_slots, to_slots) = layout.end_slots();
+                // Its ends' ids as their nodes spell theirs, its edge id's
+                // text (`value.rs`).
+                let ends = match layout.rel {
+                    Some(rs) => self.end_spellings(rs),
+                    None => Default::default(),
+                };
+                let end = |slots: Vec<usize>, targets: &[Option<String>]| {
+                    let parts: Vec<String> = slots.into_iter().map(at).collect();
+                    super::value::element_id_sql(g, &super::value::spelled_end(parts, targets))
+                };
+                let edge = (layout.edge_id > 0).then(|| {
+                    let parts: Vec<String> = layout.identity_slots().into_iter().map(at).collect();
+                    super::value::edge_id_sql(g, &parts)
+                });
                 super::value::rel_object(
                     g,
                     rel_type,
                     from,
                     to,
-                    &id_of(from_slots),
-                    &id_of(to_slots),
+                    edge.as_deref(),
+                    &end(from_slots, &ends.0),
+                    &end(to_slots, &ends.1),
                     &props,
                 )
             }

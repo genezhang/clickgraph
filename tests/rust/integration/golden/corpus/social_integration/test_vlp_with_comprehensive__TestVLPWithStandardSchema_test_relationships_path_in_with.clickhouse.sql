@@ -5,7 +5,7 @@ WITH RECURSIVE vlp_v1_path AS (
         1 as hop_count,
         CAST([] AS Array(String)) as path_relationships,
         [start_node.user_id, end_node.user_id] as path_nodes,
-        [map('elementId', CAST(concat('FOLLOWS:', toString(rel.follower_id), '->', toString(rel.followed_id), '-'), 'Dynamic'), 'startNodeElementId', CAST(concat('User:', toString(rel.follower_id), '-'), 'Dynamic'), 'endNodeElementId', CAST(concat('User:', toString(rel.followed_id), '-'), 'Dynamic'), 'type', CAST('FOLLOWS', 'Dynamic'), 'properties', CAST(mapFilter((__k, __v) -> __v IS NOT NULL, map('follow_date', CAST(rel.follow_date, 'Dynamic'))), 'Dynamic'))] as path_rel_values,
+        [map('elementId', CAST(concat('FOLLOWS:', concat(coalesce(replaceAll(replaceAll(replaceAll(toString(rel.follow_id), '\\', '\\\\'), ':', '\\:'), '|', '\\|'), '\\N')), ':', toString(rel.follower_id), '->', toString(rel.followed_id), '-'), 'Dynamic'), 'startNodeElementId', CAST(concat('User:', toString(rel.follower_id), '-'), 'Dynamic'), 'endNodeElementId', CAST(concat('User:', toString(rel.followed_id), '-'), 'Dynamic'), 'type', CAST('FOLLOWS', 'Dynamic'), 'properties', CAST(mapFilter((__k, __v) -> __v IS NOT NULL, map('follow_date', CAST(rel.follow_date, 'Dynamic'))), 'Dynamic'))] as path_rel_values,
         [tuple(rel.follower_id, rel.followed_id, rel.follow_id, rel.follow_date)] as path_rel_tuples,
         [rel.follow_id] as path_edges
     FROM test_integration.users_test AS start_node
@@ -19,7 +19,7 @@ WITH RECURSIVE vlp_v1_path AS (
         vp.hop_count + 1 as hop_count,
         CAST([] AS Array(String)) as path_relationships,
         arrayConcat(vp.path_nodes, [end_node.user_id]) as path_nodes,
-        arrayConcat(vp.path_rel_values, [map('elementId', CAST(concat('FOLLOWS:', toString(rel.follower_id), '->', toString(rel.followed_id), '-'), 'Dynamic'), 'startNodeElementId', CAST(concat('User:', toString(rel.follower_id), '-'), 'Dynamic'), 'endNodeElementId', CAST(concat('User:', toString(rel.followed_id), '-'), 'Dynamic'), 'type', CAST('FOLLOWS', 'Dynamic'), 'properties', CAST(mapFilter((__k, __v) -> __v IS NOT NULL, map('follow_date', CAST(rel.follow_date, 'Dynamic'))), 'Dynamic'))]) as path_rel_values,
+        arrayConcat(vp.path_rel_values, [map('elementId', CAST(concat('FOLLOWS:', concat(coalesce(replaceAll(replaceAll(replaceAll(toString(rel.follow_id), '\\', '\\\\'), ':', '\\:'), '|', '\\|'), '\\N')), ':', toString(rel.follower_id), '->', toString(rel.followed_id), '-'), 'Dynamic'), 'startNodeElementId', CAST(concat('User:', toString(rel.follower_id), '-'), 'Dynamic'), 'endNodeElementId', CAST(concat('User:', toString(rel.followed_id), '-'), 'Dynamic'), 'type', CAST('FOLLOWS', 'Dynamic'), 'properties', CAST(mapFilter((__k, __v) -> __v IS NOT NULL, map('follow_date', CAST(rel.follow_date, 'Dynamic'))), 'Dynamic'))]) as path_rel_values,
         arrayConcat(vp.path_rel_tuples, [tuple(rel.follower_id, rel.followed_id, rel.follow_id, rel.follow_date)]) as path_rel_tuples,
         arrayConcat(vp.path_edges, [rel.follow_id]) as path_edges
     FROM vlp_v1_path vp

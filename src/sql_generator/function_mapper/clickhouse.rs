@@ -117,6 +117,10 @@ impl FunctionMapper for ClickhouseFunctionMapper {
         format!("replaceRegexpOne(toString({expr}), ' 00:00:00(\\\\.0+)?$', '')")
     }
 
+    fn replace_text(&self, expr: &str, search: &str, replacement: &str) -> String {
+        format!("replaceAll({expr}, {search}, {replacement})")
+    }
+
     fn to_string_float(&self, expr: &str) -> String {
         // CH `toString(toFloat64(3))` returns "3" (drops the decimal), and a
         // whole-valued float literal has already rendered as the integer SQL

@@ -149,11 +149,31 @@ one of the three.
     zone's wall clock matched nothing).
 - [ ] **I2b — one key spelling** (#1390). One `identity_key` for walks,
   searches and path edges (F3 / F4 / F5), from the comparable spelling.
-- [ ] **I3 — relationship ids** (#1334, #1410). `edge_id` in the element
-  id; `id(r) = N` decoded through the session's mapping. Also: a
-  relationship's `startNodeElementId` / `endNodeElementId` are spelled from
-  its end columns' types, not its nodes' (`D:2020-01-01 00:00:00-` for the
-  node `D:2020-01-01-`; I2a review round 2).
+- [x] **I3a — relationship element ids** (#1334). A relationship whose
+  schema declares an `edge_id` carries it: `TYPE:edge_id:from->to-`
+  (`element_id::relationship_element_id`), its parts' texts escaped (`\`,
+  `:`, `|` as `\\`, `\:`, `\|`, a NULL part `\N`) and joined by `|`
+  (`edge_id_text`), so no two edge ids spell one text: it is read up to its
+  first unescaped `:` (`parse_edge_element_id`), placed before the ends,
+  whose texts are not escaped. Without one, `TYPE:from->to-` as before. One
+  definition, three spellers: the SQL (`value::edge_id_sql`,
+  `FunctionMapper::replace_text`; a union's per definition,
+  `Lowerer::union_edge_text`), Bolt and the HTTP graph output from a returned
+  relationship's `edge_id` / `edge_id_{i}` columns (`transform_to_relationship`,
+  of the definition between the returned labels), and embedded
+  `query_graph`, which now reads its edges through the same function (and so
+  a composite end whole). A relationship's ends, in its element id,
+  `startNodeElementId` / `endNodeElementId` and its returned `from_id` /
+  `to_id`, are spelled as their nodes spell their ids
+  (`schema_types::end_spelling`, `Lowerer::end_spellings`): a time end of a
+  `Date` node as `DayOrTime`, a day or time end of a time node of another
+  zone or a coarser scale as an instant of the node's type; one to one (a
+  finer time stays its own text), so a returned end still keys its rows
+  (`ElementColumns`' spelled identity).
+- [ ] **I3b — `id(r) = N`** (#1410): decoded through the session's mapping
+  (`RETURN id(r)` numbers registered in it), compared with the
+  relationship's element id; Bolt's `elementId(r) IN $ids` rewrite, which
+  drops a relationship's predicate today, can then keep it.
 - [ ] **I4 — Bolt ids** (#1388): scoped static lookup; stable hash; label
   codes per schema.
 - [ ] **I5 — ids as values** (#1387, #1383): `id()` of a composite node and
