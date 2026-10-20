@@ -9743,6 +9743,13 @@ graph_schema:
             r#"'FI' AS "__cg_type", 'U' AS "__cg_from_label", 'U' AS "__cg_to_label", CAST(e.e AS Nullable(String)) AS "__cg_rid_0""#,
         ],
     );
+    // A union in a wider type compared with one of texts: each definition's
+    // part read back in its own type first, so it meets its own text (a
+    // `DateTime` as a `DateTime64` spells its fraction; review).
+    has(
+        "MATCH ()-[r1:FDT|FDT64]->() MATCH ()-[r2:FDT|FI]->() WHERE r1 = r2 RETURN count(*) AS c",
+        &["THEN CAST(CAST(v1.__cg_rid_0 AS Nullable(DateTime)) AS Nullable(String))"],
+    );
     has(
         "MATCH p = (a:U)-[:FI|FU*1..2]->(b:U) RETURN p",
         &[r#"CAST(e.e AS Nullable(Int128)) AS "__cg_rid_0", e.a AS "__cg_from_0""#],

@@ -188,6 +188,10 @@ one of the three.
   `identity_part_types`); integers of no common type (`UInt64` with a
   signed one) meet in `Int128` (`common_type_where_none`). Two definitions'
   relationships are never one, so no arm's text needs to meet another's.
+  A union held in a type compared with one held as texts reads each
+  definition's part back in its own type before its text
+  (`union_part_text`; a `Float32` as a `Float64` spells other digits:
+  review, also wrong on main against a union of mixed labels).
   Left (other clusters): `collect()` of relationships of several types
   (lists, cluster 5), a node of several labels whose same-named properties
   differ in type (VALUE_TYPES).

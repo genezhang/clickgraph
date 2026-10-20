@@ -6468,21 +6468,71 @@ impl<'s> Lowerer<'s> {
                 Ok(all)
             }
             // Its identity after its definition's three columns.
-            Some(Scan::Rels { .. }) => {
+            Some(Scan::Rels { arms, .. }) => {
                 let own = self.rel_scan_id_texts(v);
-                Ok(ids
-                    .into_iter()
+                ids.into_iter()
                     .enumerate()
                     .map(|(i, id)| match i.checked_sub(3) {
                         Some(j) if text(j) && !own.get(j).copied().unwrap_or(false) => {
-                            self.any_text(id)
+                            self.union_part_text(v, arms, &own, j, id)
                         }
-                        _ => id,
+                        _ => Ok(id),
                     })
-                    .collect())
+                    .collect()
             }
             _ => unsupported(format!("internal: {v} is not a relationship scan")),
         }
+    }
+
+    /// Identity column `REL_ID_{j}` of union of relationships `v` of `arms`,
+    /// `id`, held in a type (not as a text, `own`), as the text a union
+    /// holding it as one spells (`rel_union_of`): per definition, an
+    /// `edge_id` part read back in its own type where the union holds it in
+    /// a wider one (`own_identity_part`: a `Float32` as a `Float64` spells
+    /// other digits) and then its text, an end part as its label spells it
+    /// (`part_text`), so a relationship compared with one of a union held as
+    /// texts meets its own text (review).
+    fn union_part_text(
+        &self,
+        v: VarId,
+        arms: &[RelArm],
+        own: &[bool],
+        j: usize,
+        id: RenderExpr,
+    ) -> Result<RenderExpr, LowerError> {
+        let mut when_then = Vec::new();
+        let mut seen = BTreeSet::new();
+        for arm in arms {
+            let rs = arm.schema;
+            if !seen.insert(std::ptr::from_ref(rs)) {
+                continue;
+            }
+            let from = rs.from_id.columns().len();
+            let spelled = match &rs.edge_id {
+                Some(edge) => {
+                    let Some(c) = edge.columns().get(j).copied() else {
+                        continue;
+                    };
+                    let back =
+                        self.own_identity_part(arms, own, j, rs.column_types.get(c), id.clone());
+                    self.any_text(back)
+                }
+                None if j < from => self.part_text(&rs.from_node, j, id.clone()),
+                None if j < from + rs.to_id.columns().len() => {
+                    self.part_text(&rs.to_node, j - from, id.clone())
+                }
+                None => continue,
+            };
+            when_then.push((self.definition_is(v, arm)?, spelled));
+        }
+        Ok(match when_then.is_empty() {
+            true => self.any_text(id),
+            false => RenderExpr::Case(RenderCase {
+                expr: None,
+                when_then,
+                else_expr: Some(Box::new(self.any_text(id))),
+            }),
+        })
     }
 
     /// The identity columns relationships `a` and `b` compare as texts:
