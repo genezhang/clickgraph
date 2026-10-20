@@ -123,6 +123,13 @@ pub(crate) trait FunctionMapper: Send + Sync {
     /// Cast to string. CH: `toString`. Spark: `string` (function-call alias).
     fn cast_string(&self) -> &'static str;
 
+    /// A date or a time `expr` as a text equal to another's exactly where
+    /// `=` holds of them (ELEMENT_IDENTITY.md I2, a `Date` id met by times of
+    /// several zones): its text, in its own zone, with a midnight time of day
+    /// dropped (`=` reads a `Date` at midnight in each time's zone). By its
+    /// text, so every year a type holds.
+    fn day_or_time_text(&self, expr: &str) -> String;
+
     /// Render Cypher `toString(<float>)` so a whole-valued float keeps its
     /// trailing `.0` (#1055). Neo4j preserves the Integer/Float distinction in
     /// the string form: `toString(3.0)` → `"3.0"`, `toString(3)` → `"3"`.

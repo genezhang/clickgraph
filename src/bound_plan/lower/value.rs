@@ -235,13 +235,9 @@ pub(super) fn cast_key_part(col_sql: &str, target: Option<&str>) -> String {
 pub(super) const DAY_OR_TIME: &str = "__cg_day_or_time";
 
 /// A date or a time (SQL `col_sql`) as a text equal to another's exactly
-/// where `=` holds of them: a `Date`'s own text, a time's in its own zone with
-/// its time of day dropped where that is midnight (`=` reads a `Date` at
-/// midnight in each time's zone), so a time not at midnight is its time's
-/// text, which no date's is. By its text, so every year a `Date32` or a
-/// `DateTime64` holds (`toStartOfDay` / `toDate` wrap outside 1970-2106).
+/// where `=` holds of them (`FunctionMapper::day_or_time_text`).
 pub(super) fn day_or_time(col_sql: &str) -> String {
-    format!("replaceRegexpOne(toString({col_sql}), ' 00:00:00(\\\\.0+)?$', '')")
+    current_function_mapper().day_or_time_text(col_sql)
 }
 
 /// A node's id parts (SQL) as its element id spells them

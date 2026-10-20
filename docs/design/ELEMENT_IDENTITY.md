@@ -122,7 +122,7 @@ one of the three.
   `DateTime` ends spells the `DateTime`); times of several zones, or a zoned
   time with a `Date`, as instants in one zone (`DateTime64(s, zone)`, which
   walk keys now spell too); a `Date` with times of several zones
-  `DayOrTime` (`value::day_or_time`: its text in its own zone with a
+  `DayOrTime` (`FunctionMapper::day_or_time_text`: its text in its own zone with a
   midnight time of day dropped, every year a `Date32` / `DateTime64` holds),
   as `=` reads the `Date` at midnight in each time's zone; walk keys spell it
   too (`value::DAY_OR_TIME`). The same on its node's and its ends' side,
