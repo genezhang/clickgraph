@@ -384,11 +384,23 @@ impl Lowerer<'_> {
             {
                 return unsupported("a NULL in a list of nodes or relationships");
             }
-            LogicalExpr::List(xs) => RenderExpr::List(
-                xs.iter()
-                    .map(|x| self.element(x, items))
-                    .collect::<Result<_, _>>()?,
-            ),
+            LogicalExpr::List(xs) => {
+                // T4a (#1396): elements of no common type meet in one.
+                let target = self.list_meeting_type(xs);
+                RenderExpr::List(
+                    xs.iter()
+                        .map(|x| {
+                            self.element(x, items).map(|e| match &target {
+                                Some(t) => RenderExpr::Cast {
+                                    expr: Box::new(e),
+                                    target: t.clone(),
+                                },
+                                None => e,
+                            })
+                        })
+                        .collect::<Result<_, _>>()?,
+                )
+            }
             LogicalExpr::MapLiteral(entries)
                 if entries.iter().any(|(_, v)| self.holds_elements(v)) =>
             {

@@ -108,6 +108,15 @@ and is verified live against ClickHouse and the Neo4j oracle.
   (its key parts in the label's comparable type) next to its spelling for
   output: cluster 2, element identity. The several-labels key (`'01'` read as
   `1`, a `Variant`) is the same representation.
+- [x] **T4a — list elements of no common type meet in one** (#1396). A
+  list literal whose elements are a `UInt64` and a signed integer (a
+  property of a known column type, a negative literal) is a `Variant` in
+  ClickHouse, in which equal integers are two values (`count(DISTINCT x)`
+  counted `1` twice). Its elements are cast to `Int128`
+  (`Lowerer::list_meeting_type`, `SqlDialect::common_type_where_none`, the
+  same rule T3 needs for identities): only where the backend has no common
+  type, only on ClickHouse, and only when every element's type is known.
+  Casts are a SQL IR node (`RenderExpr::Cast`).
 - [ ] **T4 — one value key.** Equality, DISTINCT, grouping and ordering of a
   value of mixed or container kind go through one recursive key on ClickHouse
   (#1396, #1482, #1491, #1362), with a sortable form for ORDER BY.

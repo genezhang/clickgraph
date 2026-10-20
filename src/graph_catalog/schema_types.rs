@@ -464,6 +464,43 @@ impl KeyPartType {
     }
 }
 
+/// The type values of `parts` meet in where ClickHouse has no common type
+/// for them, or `None` where it has one (docs/design/VALUE_TYPES.md T4a,
+/// #1396). Its own common type compares them as Cypher does; the gap is a
+/// `UInt64` with a signed integer of at most 64 bits (an array of them is a
+/// `Variant`, in which `1` and `1` are two values; joins and `UNION ALL` of
+/// them fail, Code 386): `Int128` holds every value of each, and spells each
+/// as the same digits. Only a set of integers is cast (a boolean is its own
+/// value, not `1`: review finding); a `UInt256` with a signed integer has no
+/// type to meet in, and is left.
+pub fn common_type_where_none(parts: &[KeyPartType]) -> Option<KeyPartType> {
+    let integers = parts
+        .iter()
+        .all(|p| p.schema == SchemaType::Integer && !p.raw.eq_ignore_ascii_case("Bool"));
+    let gap = parts
+        .iter()
+        .enumerate()
+        .any(|(i, a)| parts[i + 1..].iter().any(|b| unsigned_signed_64(a, b)));
+    (integers && gap).then(|| KeyPartType {
+        schema: SchemaType::Integer,
+        nullable: parts.iter().any(|p| p.nullable),
+        raw: "Int128".to_string(),
+    })
+}
+
+/// One side a `UInt64` and the other a signed integer of at most 64 bits:
+/// the pair ClickHouse has no supertype for (`Int128` / `Int256` with a
+/// `UInt64` meet in themselves).
+fn unsigned_signed_64(a: &KeyPartType, b: &KeyPartType) -> bool {
+    let signed = |t: &KeyPartType| {
+        ["Int8", "Int16", "Int32", "Int64"]
+            .iter()
+            .any(|s| t.raw.eq_ignore_ascii_case(s))
+    };
+    let uint64 = |t: &KeyPartType| t.raw.eq_ignore_ascii_case("UInt64");
+    (uint64(a) && signed(b)) || (uint64(b) && signed(a))
+}
+
 /// `ty` with the spaces before each `(` removed (outside quotes).
 fn no_space_before_parens(ty: &str) -> String {
     let mut out = String::with_capacity(ty.len());
@@ -1015,6 +1052,39 @@ mod tests {
         assert_eq!(format!("{}", SchemaType::String), "string");
     }
 }
+#[cfg(test)]
+mod common_type_where_none_tests {
+    use super::*;
+
+    fn kp(raw: &str) -> KeyPartType {
+        KeyPartType::parse(raw)
+    }
+
+    /// Only a `UInt64` with a signed integer of at most 64 bits has no
+    /// ClickHouse common type; every other set keeps its SQL.
+    #[test]
+    fn only_uint64_and_a_narrow_signed_integer_meet_in_int128() {
+        let t = common_type_where_none(&[kp("UInt64"), kp("Int64")]).unwrap();
+        assert_eq!((t.raw.as_str(), t.nullable), ("Int128", false));
+        let t = common_type_where_none(&[kp("Int8"), kp("Nullable(UInt64)")]).unwrap();
+        assert_eq!((t.raw.as_str(), t.nullable), ("Int128", true));
+        for set in [
+            vec![kp("UInt64"), kp("UInt64")],
+            vec![kp("UInt32"), kp("Int64")],
+            vec![kp("UInt64"), kp("Int128")],
+            vec![kp("UInt64"), kp("Int256")],
+            vec![kp("UInt256"), kp("Int8")],
+            vec![kp("UInt64"), kp("Bool")],
+            vec![kp("UInt64"), kp("Int64"), kp("Bool")],
+            vec![kp("UInt64"), kp("Int64"), kp("String")],
+            vec![kp("Date"), kp("DateTime")],
+            vec![],
+        ] {
+            assert_eq!(common_type_where_none(&set), None, "{set:?}");
+        }
+    }
+}
+
 /// #1360: the walk-key common-type table. Every arm below was checked against
 /// ClickHouse 25.8: for each pair, casting both sides to the target makes their
 /// *text* agree exactly when `=` agrees on the values.

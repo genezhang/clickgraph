@@ -2874,6 +2874,7 @@ impl RenderExpr {
                     format!("map({})", args.join(", "))
                 }
             }
+            RenderExpr::Cast { expr, target } => format!("CAST({} AS {})", expr.to_sql(), target),
             RenderExpr::ArraySubscript { array, index } => {
                 // Cypher uses 0-based indexing; array element access is 1-based on
                 // both CH (`arr[i]`) and Spark (`element_at(arr, i)` — Spark's own
@@ -3253,6 +3254,7 @@ impl RenderExpr {
             | RenderExpr::Case(_)
             | RenderExpr::ArraySubscript { .. }
             | RenderExpr::ArraySlicing { .. }
+            | RenderExpr::Cast { .. }
             | RenderExpr::MapLiteral(_)
             | RenderExpr::ReduceExpr(_) => strip_table_alias_everywhere(self).to_sql(),
             // Other expression types: regular to_sql.
@@ -3317,6 +3319,10 @@ fn strip_table_alias_everywhere(expr: &RenderExpr) -> RenderExpr {
         RenderExpr::ArraySubscript { array, index } => RenderExpr::ArraySubscript {
             array: Box::new(strip_table_alias_everywhere(array)),
             index: Box::new(strip_table_alias_everywhere(index)),
+        },
+        RenderExpr::Cast { expr, target } => RenderExpr::Cast {
+            expr: Box::new(strip_table_alias_everywhere(expr)),
+            target: target.clone(),
         },
         RenderExpr::ArraySlicing { array, from, to } => RenderExpr::ArraySlicing {
             array: Box::new(strip_table_alias_everywhere(array)),

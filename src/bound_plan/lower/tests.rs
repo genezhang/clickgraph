@@ -8918,3 +8918,57 @@ graph_schema:
     let dynamic = sql("MATCH (p:Person) RETURN p.ad, count(*)");
     assert!(!dynamic.contains("GROUP BY v0.ad"), "{dynamic}");
 }
+
+/// VALUE_TYPES.md T4a (#1396): a list of a `UInt64` and a signed column has
+/// no ClickHouse common type (a `Variant`, in which equal integers are two
+/// values), so its elements meet in `Int128`; lists with a common type, or
+/// with an element of unknown type, keep their SQL; Spark has no unsigned
+/// integers.
+#[test]
+fn list_elements_of_mixed_signedness_meet_in_int128_1396() {
+    let schema = crate::graph_catalog::config::GraphSchemaConfig::from_yaml_str(
+        r#"
+name: lower_mixed_signedness_list
+graph_schema:
+  nodes:
+    - label: Item
+      database: db
+      table: item
+      node_id: id
+      column_types: {id: UInt64, k: Int64, u: UInt32, b: Bool}
+      property_mappings: {id: id, k: k, u: u, s: s, b: b}
+  edges: []
+"#,
+    )
+    .unwrap()
+    .to_graph_schema()
+    .unwrap();
+    let options = crate::bound_plan::lower::LowerOptions::default();
+    let sql = |q: &str| lowered(q, &schema, &options);
+    let mixed = sql("MATCH (n:Item) UNWIND [n.id, n.k] AS x RETURN count(DISTINCT x)");
+    assert!(
+        mixed.contains("[CAST(v0.id AS Nullable(Int128)), CAST(v0.k AS Nullable(Int128))]"),
+        "{mixed}"
+    );
+    // A negative literal is signed too.
+    let literal = sql("MATCH (n:Item) RETURN [n.id, -1]");
+    assert!(
+        literal.contains("CAST(v0.id AS Nullable(Int128))"),
+        "{literal}"
+    );
+    for q in [
+        "MATCH (n:Item) RETURN [n.id, 1]",
+        "MATCH (n:Item) RETURN [n.u, n.k]",
+        "MATCH (n:Item) RETURN [n.id, n.k, n.s]",
+        // A boolean is no integer: `[1, -20, true]`, not `[1, -20, 1]`.
+        "MATCH (n:Item) RETURN [n.id, n.k, n.b]",
+    ] {
+        assert!(!sql(q).contains("Int128"), "{q}:\n{}", sql(q));
+    }
+    let spark = databricks_sql(
+        "MATCH (n:Item) UNWIND [n.id, n.k] AS x RETURN count(DISTINCT x)",
+        &schema,
+    )
+    .unwrap();
+    assert!(!spark.contains("CAST("), "{spark}");
+}
