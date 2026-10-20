@@ -51,9 +51,10 @@ and every site reads one of them:
    *comparable type*, which is the one type every column holding that part
    meets in: the node's id column and every relationship end at that label
    (VALUE_TYPES.md T1 types; cast only where the backend has no common type,
-   `common_type_where_none`). Joins, correlations, constraint joins,
-   unions of ends and `a = b` all compare this spelling, so they agree by
-   construction. Unknown types: the columns as today.
+   `common_type_where_none`). Joins, constraint joins and unions of ends
+   compare this spelling, so they agree by construction (`a = b` and
+   correlations compare one label's raw columns, or label unions' cast ones,
+   on both sides). Unknown types: the columns as today.
 2. **As a key** (F4 / F5, text): one canonical text, `label`, a separator and
    the parts' unambiguous text (`toString(tuple(..))` of the comparable
    parts), used wherever a key must be one column: walks, searches, path
@@ -84,9 +85,12 @@ one of the three.
   (label, id part): the fold of the node's id part type and every
   relationship end at that label in the schema, cast only where the backend
   has no common type (`SqlDialect::common_type_where_none`, VALUE_TYPES.md
-  T4a; `Lowerer::comparable_targets` / `comparable`). An integer part is
-  folded across every label's integer parts, since unions mix labels (a
-  node of several labels, a walk over them). Every producer of an identity part for comparison casts to it, so
+  T4a; `Lowerer::comparable_targets` / `comparable`). In a column that
+  mixes labels (a node of several labels, a walk over them, a union of
+  relationships between them) an integer part is folded across every
+  label's integer parts; elsewhere the label's own fold is used, so a label
+  whose ids and ends agree keeps its SQL (a cast join key keeps ClickHouse
+  from pushing a filter into the other table's key). Also closes #1390. Every producer of an identity part for comparison casts to it, so
   every comparison agrees by construction (the parked attempt folded per
   site and broke where two sites met):
   - a node's id columns where tied (`tie_end`), its label-union arm ids

@@ -369,6 +369,7 @@ impl Query<'_> {
             list_nulls: HashMap::new(),
             held_items: RefCell::new(HashMap::new()),
             no_column_kinds: std::cell::Cell::new(false),
+            comparable_cache: RefCell::new(HashMap::new()),
             kinds: HashMap::new(),
             kinds_before: HashMap::new(),
             never_boolean: HashSet::new(),
@@ -634,7 +635,20 @@ impl Lowerer<'_> {
     /// CAST target. Every producer of an identity part for comparison casts
     /// to it ([`Self::comparable`]), so every comparison agrees. `None`: no
     /// cast, the SQL as before.
-    fn comparable_targets(&self, label: &str) -> Vec<Option<String>> {
+    fn comparable_targets(&self, label: &str, across: bool) -> Vec<Option<String>> {
+        let key = (label.to_string(), across);
+        if let Some(t) = self.comparable_cache.borrow().get(&key) {
+            return t.clone();
+        }
+        let targets = self.comparable_fold(label, across);
+        self.comparable_cache
+            .borrow_mut()
+            .insert(key, targets.clone());
+        targets
+    }
+
+    /// [`Self::comparable_targets`], computed.
+    fn comparable_fold(&self, label: &str, across: bool) -> Vec<Option<String>> {
         // The id part types where nodes of each label meet relationship ends:
         // the node's own, and every end at it.
         let mut by_label: std::collections::BTreeMap<String, Vec<Vec<KeyPartType>>> =
@@ -665,10 +679,13 @@ impl Lowerer<'_> {
         own.iter()
             .enumerate()
             .map(|(i, set)| {
-                // An integer part meets the integer parts of every other
-                // label in the unions that mix labels (a node of several
-                // labels, a walk over them): one type for all of them.
-                let set: Vec<KeyPartType> = match !set.is_empty() && integers(set) {
+                // In a column that mixes labels (a node of several labels, a
+                // walk over them, a union of relationships between them), an
+                // integer part meets every other label's integer parts: one
+                // type for all of them. Elsewhere, the label's own (a cast
+                // join key keeps ClickHouse from pushing a filter into the
+                // other table's key: review finding).
+                let set: Vec<KeyPartType> = match across && !set.is_empty() && integers(set) {
                     true => by_label
                         .values()
                         .filter_map(|sets| sets.get(i))
@@ -689,7 +706,17 @@ impl Lowerer<'_> {
     /// Id part `i` of a node of `label` (or a relationship end at one), `e`,
     /// as it is compared ([`Self::comparable_targets`]).
     pub(super) fn comparable(&self, label: &str, i: usize, e: RenderExpr) -> RenderExpr {
-        match self.comparable_targets(label).get(i).cloned().flatten() {
+        self.compared_as(label, i, e, false)
+    }
+
+    /// [`Self::comparable`] in a column that mixes labels (`across`).
+    fn compared_as(&self, label: &str, i: usize, e: RenderExpr, across: bool) -> RenderExpr {
+        match self
+            .comparable_targets(label, across)
+            .get(i)
+            .cloned()
+            .flatten()
+        {
             Some(target) => RenderExpr::Cast {
                 expr: Box::new(e),
                 target,
@@ -700,9 +727,15 @@ impl Lowerer<'_> {
 
     /// Whether some id part of `label` is compared in a cast type.
     fn compared_cast(&self, label: &str) -> bool {
-        self.comparable_targets(label).iter().any(Option::is_some)
+        self.comparable_targets(label, false)
+            .iter()
+            .any(Option::is_some)
     }
 }
+
+/// A label's comparable id part types, as CAST targets
+/// ([`Lowerer::comparable_targets`]).
+type ComparableTargets = Vec<Option<String>>;
 
 /// How [`Lowerer::edge_ends`] reads an edge table's rows.
 #[derive(Clone, Copy, PartialEq)]
@@ -909,6 +942,9 @@ struct Lowerer<'s> {
     /// (VALUE_TYPES.md T2a): what a check written before the column types
     /// were known asks ([`Self::kind_before_column_types`]).
     no_column_kinds: std::cell::Cell<bool>,
+    /// Each label's comparable id part types (`comparable_targets`), by
+    /// label and whether across labels: computed once per lowering.
+    comparable_cache: RefCell<HashMap<(String, bool), ComparableTargets>>,
     /// What each projected, unwound, subquery or collected-map value is
     /// (`unwind.rs`, set by `set_kind` only).
     kinds: HashMap<VarId, unwind::Kind>,
@@ -2307,7 +2343,7 @@ impl<'s> Lowerer<'s> {
             // Each arm's id as its label's is compared (I1).
             for (i, c) in ns.id_physical_columns().iter().enumerate() {
                 items.push(select(
-                    self.comparable(label, i, col_at(ROW, c)),
+                    self.compared_as(label, i, col_at(ROW, c), true),
                     &indexed_column(LABEL_ID, i),
                 ));
             }
@@ -3093,6 +3129,13 @@ impl<'s> Lowerer<'s> {
             .iter()
             .map(|p| (p, self.rel_value_definitions(p, arms)))
             .collect();
+        // Its columns mix labels where its arms' ends are of several.
+        let mixed_labels = arms
+            .iter()
+            .flat_map(|a| [a.schema.from_node.as_str(), a.schema.to_node.as_str()])
+            .collect::<BTreeSet<_>>()
+            .len()
+            > 1;
         let mut input = Vec::new();
         for (i, arm) in arms.iter().enumerate() {
             let rs = arm.schema;
@@ -3118,7 +3161,9 @@ impl<'s> Lowerer<'s> {
                 let e = identity
                     .get(i)
                     .map_or(RenderExpr::Literal(Literal::Null), |c| match id_label(i) {
-                        Some((label, part)) => self.comparable(label, part, col_at(ROW, c)),
+                        Some((label, part)) => {
+                            self.compared_as(label, part, col_at(ROW, c), mixed_labels)
+                        }
                         None => col_at(ROW, c),
                     });
                 items.push(select(e, &indexed_column(REL_ID, i)));
@@ -3145,7 +3190,7 @@ impl<'s> Lowerer<'s> {
             {
                 for (i, c) in cols.iter().enumerate() {
                     items.push(select(
-                        self.comparable(label, i, col_at(ROW, c)),
+                        self.compared_as(label, i, col_at(ROW, c), mixed_labels),
                         &indexed_column(side, i),
                     ));
                 }
@@ -4440,7 +4485,7 @@ impl<'s> Lowerer<'s> {
                 (true, _) => key.clone(),
                 // As its label's ids are compared (I1): the walk's steps join
                 // it to its relationships' ends, cast so.
-                (false, [id]) => self.comparable(label, 0, col_at(ROW, id)),
+                (false, [id]) => self.compared_as(label, 0, col_at(ROW, id), labels.len() > 1),
                 (false, _) => return unsupported("internal: a composite id not walked by keys"),
             };
             let mut items = vec![

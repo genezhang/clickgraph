@@ -8997,7 +8997,22 @@ graph_schema:
       node_id: id
       column_types: {id: Int64}
       property_mappings: {id: id, name: name}
+    - label: V
+      database: db
+      table: v
+      node_id: id
+      column_types: {id: UInt64}
+      property_mappings: {id: id, name: name}
   edges:
+    - type: VV
+      database: db
+      table: vv
+      from_node: V
+      to_node: V
+      from_id: src
+      to_id: dst
+      column_types: {src: UInt64, dst: UInt64}
+      property_mappings: {}
     - type: F
       database: db
       table: fe
@@ -9065,6 +9080,15 @@ graph_schema:
         "MATCH (a:U) OPTIONAL MATCH (a)<-[:F]-(b:U) RETURN a.name, b.name",
         &["AS Int128) = CAST("],
     );
+    // A label whose own ids and ends agree keeps its SQL, whatever other
+    // labels' gaps (a cast join key blocks ClickHouse's key pushdown).
+    for q in [
+        "MATCH (v:V)-[:VV]->(w:V) WHERE v.id = 1 RETURN w.name",
+        "MATCH (v:V)-[:VV*1..2]->(w:V) RETURN count(*)",
+        "MATCH (v:V) OPTIONAL MATCH (v)<-[:VV]-(w:V) RETURN v.name, w.name",
+    ] {
+        assert!(!sql(q).contains("Int128"), "{q}:\n{}", sql(q));
+    }
     // No gap (every id and end UInt64): the SQL of before.
     let agreeing = schema(&YAML.replace("Int64}", "UInt64}"));
     for q in [
