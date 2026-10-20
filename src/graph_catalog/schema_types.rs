@@ -470,6 +470,19 @@ impl KeyPartType {
     }
 }
 
+/// Whether `parts` (of known types) are of more than one kind of value: an
+/// integer and a string, a date and a number. One column of them (a union's)
+/// has no common type in ClickHouse, which makes it a `Variant`, and casts a
+/// string `'01'` into it as the integer `1` (#1393); so such ids are held as
+/// texts (docs/design/ELEMENT_IDENTITY.md I2).
+pub fn of_several_kinds(parts: &[KeyPartType]) -> bool {
+    let mut kinds = parts.iter().filter(|p| !p.raw.is_empty()).map(|p| p.schema);
+    match kinds.next() {
+        Some(first) => kinds.any(|k| k != first),
+        None => false,
+    }
+}
+
 /// The type values of `parts` meet in where ClickHouse has no common type
 /// for them, or `None` where it has one (docs/design/VALUE_TYPES.md T4a,
 /// #1396). Its own common type compares them as Cypher does; the gap is a

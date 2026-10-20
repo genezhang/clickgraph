@@ -1047,7 +1047,7 @@ impl<'s> Lowerer<'s> {
     /// matches nothing.
     fn node_id_parts(&self, v: VarId) -> Result<Vec<String>, LowerError> {
         Ok(match self.id_columns(v)? {
-            Some(ids) => ids.iter().map(sql).collect(),
+            Some(ids) => self.own_texts(v, ids)?.iter().map(sql).collect(),
             None => vec![sql(&RenderExpr::Literal(Literal::Null))],
         })
     }
@@ -1109,7 +1109,11 @@ impl<'s> Lowerer<'s> {
             let column = |c: &str| self.physical(v, c).map(|e| sql(&e));
             let end = |side: &str, arity: usize| -> Result<String, LowerError> {
                 let ids = (0..arity)
-                    .map(|i| column(&super::indexed_column(side, i)))
+                    .map(|i| {
+                        let id = self.physical(v, &super::indexed_column(side, i))?;
+                        self.own_end_text(v, arms, side == super::REL_TO, i, id)
+                            .map(|e| sql(&e))
+                    })
                     .collect::<Result<Vec<_>, _>>()?;
                 Ok(element_id_sql(s, &ids))
             };

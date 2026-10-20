@@ -70,10 +70,16 @@ fn identities_over(
     let mut l = query.lowerer(&mut ctes);
     l.relation(&stmt.plan)?;
     l.finish_relation()?;
-    let Some(ids) = l.identity(var)? else {
+    let Some(mut ids) = l.identity(var)? else {
         return Ok(None);
     };
     let labeled = matches!(l.scans.get(&var), Some(Scan::Labels { .. }));
+    // A node of several labels' id parts as its label's texts (I2): what
+    // its table's id column reads back.
+    if labeled && !ids.is_empty() {
+        let parts = ids.split_off(1);
+        ids.extend(l.own_texts(var, parts)?);
+    }
     let mut body = Body {
         distinct,
         ..Body::default()

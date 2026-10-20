@@ -370,6 +370,7 @@ impl Query<'_> {
             held_items: RefCell::new(HashMap::new()),
             no_column_kinds: std::cell::Cell::new(false),
             comparable_cache: RefCell::new(HashMap::new()),
+            text_parts: RefCell::new(None),
             kinds: HashMap::new(),
             kinds_before: HashMap::new(),
             never_boolean: HashSet::new(),
@@ -650,10 +651,9 @@ impl Lowerer<'_> {
         targets
     }
 
-    /// [`Self::comparable_targets`], computed.
-    fn comparable_fold(&self, label: &str, across: bool) -> Vec<Option<String>> {
-        // The id part types where nodes of each label meet relationship ends:
-        // the node's own, and every end at it.
+    /// The id part types where nodes of each label meet relationship ends:
+    /// the node's own, and every end at it, by label and part.
+    fn id_part_sets(&self) -> std::collections::BTreeMap<String, Vec<Vec<KeyPartType>>> {
         let mut by_label: std::collections::BTreeMap<String, Vec<Vec<KeyPartType>>> =
             std::collections::BTreeMap::new();
         let mut add = |label: &str, types: &[KeyPartType]| {
@@ -674,6 +674,12 @@ impl Lowerer<'_> {
             add(rs.from_node.as_str(), &rs.from_node_id_part_types);
             add(rs.to_node.as_str(), &rs.to_node_id_part_types);
         }
+        by_label
+    }
+
+    /// [`Self::comparable_targets`], computed.
+    fn comparable_fold(&self, label: &str, across: bool) -> Vec<Option<String>> {
+        let by_label = self.id_part_sets();
         // Integers of at most 64 bits: `Int128` holds every one of them.
         let integers = |set: &[KeyPartType]| {
             set.iter().all(|t| {
@@ -715,8 +721,12 @@ impl Lowerer<'_> {
         self.compared_as(label, i, e, false)
     }
 
-    /// [`Self::comparable`] in a column that mixes labels (`across`).
+    /// [`Self::comparable`] in a column that mixes labels (`across`): there,
+    /// an id part held as a text ([`Self::held_as_text`]) is its text.
     fn compared_as(&self, label: &str, i: usize, e: RenderExpr, across: bool) -> RenderExpr {
+        if across && self.held_as_text(i) {
+            return self.part_text(label, i, e);
+        }
         match self
             .comparable_targets(label, across)
             .get(i)
@@ -728,6 +738,267 @@ impl Lowerer<'_> {
                 target,
             },
             None => e,
+        }
+    }
+
+    /// ELEMENT_IDENTITY.md I2 (#1393): whether id part `i`, in a column that
+    /// mixes labels (a node of several labels, a walk over them, a union of
+    /// relationships between them), is held as a text: where the schema's
+    /// labels hold that part in values of several kinds (an integer id and a
+    /// string one), which one column has no common type for (ClickHouse
+    /// makes it a `Variant`, and reads a string `'01'` into it as `1`). Over
+    /// every label, as the cross-label fold is (I1), so any two such columns
+    /// agree. Unknown types tell nothing: the SQL as before.
+    fn held_as_text(&self, i: usize) -> bool {
+        if let Some(parts) = self.text_parts.borrow().as_ref() {
+            return parts.get(i).copied().unwrap_or(false);
+        }
+        let mut sets: Vec<Vec<KeyPartType>> = Vec::new();
+        for label_sets in self.id_part_sets().into_values() {
+            for (i, set) in label_sets.into_iter().enumerate() {
+                if sets.len() <= i {
+                    sets.resize(i + 1, Vec::new());
+                }
+                sets[i].extend(set);
+            }
+        }
+        let parts: Vec<bool> = sets
+            .iter()
+            .map(|set| self.options.dialect.ids_held_as_text(set))
+            .collect();
+        let held = parts.get(i).copied().unwrap_or(false);
+        *self.text_parts.borrow_mut() = Some(parts);
+        held
+    }
+
+    /// Id part `i` of a node of `label` (or a relationship end at one), `e`,
+    /// as a text ([`Self::held_as_text`]): spelled in the type its label's
+    /// ids and ends meet in (`schema_types::fold_common`, as a walk's key
+    /// spells them, #1360), so a node and the ends at it spell one text.
+    fn part_text(&self, label: &str, i: usize, e: RenderExpr) -> RenderExpr {
+        let set = self.id_part_set(label, i);
+        // A string id is its text.
+        if !set.is_empty() && set.iter().all(|t| t.raw.eq_ignore_ascii_case("String")) {
+            return e;
+        }
+        let e = match crate::graph_catalog::schema_types::fold_common(&set) {
+            Some(t) => RenderExpr::Cast {
+                expr: Box::new(e),
+                target: self.options.dialect.cast_target(&t),
+            },
+            None => e,
+        };
+        RenderExpr::Cast {
+            expr: Box::new(e),
+            target: self.text_target(set.iter().any(|t| t.nullable)),
+        }
+    }
+
+    /// The types id part `i` of `label` is held in: its nodes' and the ends'
+    /// at it ([`Self::id_part_sets`]).
+    fn id_part_set(&self, label: &str, i: usize) -> Vec<KeyPartType> {
+        self.id_part_sets()
+            .remove(label)
+            .and_then(|mut sets| (i < sets.len()).then(|| sets.swap_remove(i)))
+            .unwrap_or_default()
+    }
+
+    /// The type [`Self::part_text`] spells id part `i` of `label` in, other
+    /// than its own (`None`: its own).
+    fn text_fold(&self, label: &str, i: usize) -> Option<KeyPartType> {
+        crate::graph_catalog::schema_types::fold_common(&self.id_part_set(label, i))
+    }
+
+    /// `e`, of any type and maybe NULL, as a text.
+    fn any_text(&self, e: RenderExpr) -> RenderExpr {
+        RenderExpr::Cast {
+            expr: Box::new(e),
+            target: self.text_target(true),
+        }
+    }
+
+    /// The CAST target of a text, nullable or not.
+    fn text_target(&self, nullable: bool) -> String {
+        self.options.dialect.cast_target(&KeyPartType {
+            schema: crate::graph_catalog::schema_types::SchemaType::String,
+            nullable,
+            raw: "String".to_string(),
+        })
+    }
+
+    /// Id part `i` of a node of `label` (or a relationship end at one), `e`,
+    /// spelled as it is compared with a column that mixes labels: its text
+    /// where that column holds one ([`Self::held_as_text`]; over `e` as its
+    /// label compares it, which spells the same text), else `e` (the two
+    /// types meet, I1).
+    fn as_held(&self, label: &str, i: usize, e: RenderExpr) -> RenderExpr {
+        match self.held_as_text(i) {
+            true => self.part_text(label, i, e),
+            false => e,
+        }
+    }
+
+    /// The id parts `ids` of node `v` (without its label) as their own
+    /// labels' texts: a node of several labels holds a part as a text folded
+    /// with its relationships' ends (`held_as_text`, `part_text`), which is
+    /// read back in each row's label's type and spelled from it there (its
+    /// element id, `id()`'s value, are a node of one label's).
+    fn own_texts(&self, v: VarId, ids: Vec<RenderExpr>) -> Result<Vec<RenderExpr>, LowerError> {
+        let Some(Scan::Labels { arms, .. }) = self.scans.get(&v) else {
+            return Ok(ids);
+        };
+        let label = self.physical(v, LABEL_COLUMN)?;
+        Ok(ids
+            .into_iter()
+            .enumerate()
+            .map(|(i, id)| {
+                if !self.held_as_text(i) {
+                    return id;
+                }
+                // Only a text spelled in another type than its own differs.
+                let when_then: Vec<(RenderExpr, RenderExpr)> = arms
+                    .iter()
+                    .filter(|(l, _)| self.text_fold(l, i).is_some())
+                    .filter_map(|(l, ns)| {
+                        let own = ns.node_id.part_types.get(i).filter(|t| !t.raw.is_empty())?;
+                        let back = RenderExpr::Cast {
+                            expr: Box::new(RenderExpr::Cast {
+                                expr: Box::new(id.clone()),
+                                target: self.options.dialect.cast_target(own),
+                            }),
+                            target: self.text_target(own.nullable),
+                        };
+                        Some((
+                            RenderExpr::OperatorApplicationExp(eq(
+                                label.clone(),
+                                RenderExpr::Literal(Literal::String(l.clone())),
+                            )),
+                            back,
+                        ))
+                    })
+                    .collect();
+                match when_then.is_empty() {
+                    true => id,
+                    false => RenderExpr::Case(RenderCase {
+                        expr: None,
+                        when_then,
+                        else_expr: Some(Box::new(id)),
+                    }),
+                }
+            })
+            .collect())
+    }
+
+    /// Id part `i` of the `to` (else `from`) ends of union of relationships
+    /// `v` of `arms`, `id`, as its own end's text: a union that mixes labels
+    /// holds a part as a text folded with its label's ids and ends
+    /// (`held_as_text`, `part_text`), read back in each row's end column's
+    /// type where that differs (its element id is a relationship of one
+    /// definition's).
+    fn own_end_text(
+        &self,
+        v: VarId,
+        arms: &[RelArm],
+        to: bool,
+        i: usize,
+        id: RenderExpr,
+    ) -> Result<RenderExpr, LowerError> {
+        if !arms_mix_labels(arms) || !self.held_as_text(i) {
+            return Ok(id);
+        }
+        let mut when_then = Vec::new();
+        let mut seen = BTreeSet::new();
+        for arm in arms {
+            let rs = arm.schema;
+            let (label, types) = match to {
+                true => (&rs.to_node, &rs.to_node_id_part_types),
+                false => (&rs.from_node, &rs.from_node_id_part_types),
+            };
+            let Some(own) = types.get(i).filter(|t| !t.raw.is_empty()) else {
+                continue;
+            };
+            if self.text_fold(label, i).is_none() || !seen.insert(std::ptr::from_ref(rs)) {
+                continue;
+            }
+            let is = |c: &str, value: &str| -> Result<RenderExpr, LowerError> {
+                Ok(RenderExpr::OperatorApplicationExp(eq(
+                    self.physical(v, c)?,
+                    RenderExpr::Literal(Literal::String(value.to_string())),
+                )))
+            };
+            let definition = and_all(vec![
+                is(REL_TYPE, &arm.rel_type)?,
+                is(REL_FROM_LABEL, &rs.from_node)?,
+                is(REL_TO_LABEL, &rs.to_node)?,
+            ])
+            .expect("a definition has columns");
+            when_then.push((
+                definition,
+                RenderExpr::Cast {
+                    expr: Box::new(RenderExpr::Cast {
+                        expr: Box::new(id.clone()),
+                        target: self.options.dialect.cast_target(own),
+                    }),
+                    target: self.text_target(own.nullable),
+                },
+            ));
+        }
+        Ok(match when_then.is_empty() {
+            true => id,
+            false => RenderExpr::Case(RenderCase {
+                expr: None,
+                when_then,
+                else_expr: Some(Box::new(id)),
+            }),
+        })
+    }
+
+    /// Whether the end columns relationship `r` is tied by mix labels
+    /// ([`Self::compared_as`] `across`): a union's of several labels, or a
+    /// relationship between two labels read in both orientations (`turned`,
+    /// [`Self::turned_ends`]).
+    fn ends_mix_labels(&self, r: VarId, turned: bool) -> bool {
+        match self.scans.get(&r) {
+            Some(Scan::Rel { schema, .. }) => turned && schema.from_node != schema.to_node,
+            Some(Scan::Rels { arms, .. }) => arms_mix_labels(arms),
+            _ => false,
+        }
+    }
+
+    /// Which identity columns (`REL_ID_{i}`) of a union of relationships
+    /// `arms` are texts (I2): those where some arm's stored end holds an id
+    /// part as a text there ([`Self::held_as_text`], in a union that mixes
+    /// labels); every arm's is then a text, an `edge_id`'s too.
+    fn rel_id_texts(&self, arms: &[RelArm]) -> Vec<bool> {
+        let Ok(shape) = rel_union_shape(arms) else {
+            return Vec::new();
+        };
+        let mut texts = vec![false; shape.identity];
+        if !arms_mix_labels(arms) {
+            return texts;
+        }
+        for rs in arms.iter().map(|a| a.schema) {
+            if rs.edge_id.is_some() {
+                continue;
+            }
+            let from = rs.from_id.columns().len();
+            for (i, text) in texts
+                .iter_mut()
+                .enumerate()
+                .take(from + rs.to_id.columns().len())
+            {
+                let part = if i < from { i } else { i - from };
+                *text |= self.held_as_text(part);
+            }
+        }
+        texts
+    }
+
+    /// [`Self::rel_id_texts`] of relationship `v`'s scan (none but a union's).
+    fn rel_scan_id_texts(&self, v: VarId) -> Vec<bool> {
+        match self.scans.get(&v) {
+            Some(Scan::Rels { arms, .. }) => self.rel_id_texts(arms),
+            _ => Vec::new(),
         }
     }
 
@@ -951,6 +1222,9 @@ struct Lowerer<'s> {
     /// Each label's comparable id part types (`comparable_targets`), by
     /// label and whether across labels: computed once per lowering.
     comparable_cache: RefCell<HashMap<(String, bool), ComparableTargets>>,
+    /// Which id parts a column that mixes labels holds as texts
+    /// (`held_as_text`): computed once per lowering.
+    text_parts: RefCell<Option<Vec<bool>>>,
     /// What each projected, unwound, subquery or collected-map value is
     /// (`unwind.rs`, set by `set_kind` only).
     kinds: HashMap<VarId, unwind::Kind>,
@@ -1166,6 +1440,16 @@ fn walk_key_sql(
         value::string(":"),
         value::identity_text(g, ids),
     ])
+}
+
+/// Whether a union of relationships `arms` has columns that mix labels: its
+/// arms' ends are of several.
+fn arms_mix_labels(arms: &[RelArm]) -> bool {
+    arms.iter()
+        .flat_map(|a| [a.schema.from_node.as_str(), a.schema.to_node.as_str()])
+        .collect::<BTreeSet<_>>()
+        .len()
+        > 1
 }
 
 fn rel_union_shape(arms: &[RelArm]) -> Result<RelUnionShape, LowerError> {
@@ -2566,8 +2850,9 @@ impl<'s> Lowerer<'s> {
             }
             (ends, false)
         };
+        let mixed = self.ends_mix_labels(r.var, turned);
         for (end, label, cols) in ends {
-            self.tie_end(r.var, end, label, cols, turned)?;
+            self.tie_end(r.var, end, label, cols, turned, mixed)?;
         }
         Ok(())
     }
@@ -2888,6 +3173,20 @@ impl<'s> Lowerer<'s> {
         if fc.len() != tc.len() {
             return unsupported("an undirected relationship whose ends' ids differ in arity (S8)");
         }
+        // Each end is either one: of two labels, a column that mixes them,
+        // held as such (I2; a union's are already).
+        let (fc, tc) = match (&fl, &tl) {
+            (EndLabel::Is(a), EndLabel::Is(b)) if a != b => {
+                let held = |label: &str, cols: Vec<RenderExpr>| -> Vec<RenderExpr> {
+                    cols.into_iter()
+                        .enumerate()
+                        .map(|(i, c)| self.as_held(label, i, c))
+                        .collect()
+                };
+                (held(a, fc), held(b, tc))
+            }
+            _ => (fc, tc),
+        };
         let turned = self.turns(r)?;
         let pick = |reversed: &RenderExpr, stored: &RenderExpr| {
             RenderExpr::Case(RenderCase {
@@ -2995,7 +3294,8 @@ impl<'s> Lowerer<'s> {
     /// relationship's label column; one the relationship cannot be at
     /// makes the relation empty. A tie of a relationship read in both
     /// orientations (`turned`) to a node already joined is a WHERE: the
-    /// orientation join comes after the node's.
+    /// orientation join comes after the node's. `mixed`: `cols` mix labels
+    /// ([`Self::ends_mix_labels`]).
     fn tie_end(
         &mut self,
         r: VarId,
@@ -3003,11 +3303,13 @@ impl<'s> Lowerer<'s> {
         label: EndLabel,
         cols: Vec<RenderExpr>,
         turned: bool,
+        mixed: bool,
     ) -> Result<(), LowerError> {
         let labels = self.labels_of(end)?;
         if labels.is_empty() {
             return Ok(()); // an endpoint that matches nothing
         }
+        let end_labels = label.labels();
         let mut eqs = Vec::new();
         match label {
             EndLabel::Is(l) if labels.contains(&l) => self.holds_label(end, &l)?,
@@ -3036,15 +3338,31 @@ impl<'s> Lowerer<'s> {
         }
         // The node's id as it is compared (I1); the relationship's columns
         // are, where they were read. A several-labels node's id columns are
-        // its arms', each cast there (`label_union`).
-        let ids: Vec<RenderExpr> = match (labels.as_slice(), self.scans.get(&end)) {
-            (_, Some(Scan::Labels { .. })) => ids,
-            ([one], _) => ids
+        // its arms', each cast there (`label_union`). Where only one side
+        // mixes labels, the other is spelled as that side holds its ids (I2).
+        let node_mixed = matches!(self.scans.get(&end), Some(Scan::Labels { .. }));
+        let ids: Vec<RenderExpr> = match (labels.as_slice(), node_mixed) {
+            (_, true) => ids,
+            ([one], false) => ids
                 .into_iter()
                 .enumerate()
-                .map(|(i, id)| self.comparable(one, i, id))
+                .map(|(i, id)| {
+                    let id = self.comparable(one, i, id);
+                    match mixed {
+                        true => self.as_held(one, i, id),
+                        false => id,
+                    }
+                })
                 .collect(),
             _ => ids,
+        };
+        let cols: Vec<RenderExpr> = match (node_mixed && !mixed, end_labels.as_slice()) {
+            (true, [one]) => cols
+                .into_iter()
+                .enumerate()
+                .map(|(i, c)| self.as_held(one, i, c))
+                .collect(),
+            _ => cols,
         };
         eqs.extend(cols.into_iter().zip(ids));
         if turned && self.is_emitted(end) {
@@ -3135,13 +3453,8 @@ impl<'s> Lowerer<'s> {
             .iter()
             .map(|p| (p, self.rel_value_definitions(p, arms)))
             .collect();
-        // Its columns mix labels where its arms' ends are of several.
-        let mixed_labels = arms
-            .iter()
-            .flat_map(|a| [a.schema.from_node.as_str(), a.schema.to_node.as_str()])
-            .collect::<BTreeSet<_>>()
-            .len()
-            > 1;
+        let mixed_labels = arms_mix_labels(arms);
+        let id_texts = self.rel_id_texts(arms);
         let mut input = Vec::new();
         for (i, arm) in arms.iter().enumerate() {
             let rs = arm.schema;
@@ -3164,13 +3477,21 @@ impl<'s> Lowerer<'s> {
                 (None, false) => Some((rs.to_node.as_str(), i - from.len())),
             };
             for i in 0..shape.identity {
+                // A text where some arm's is one (I2).
+                let text = id_texts.get(i).copied().unwrap_or(false);
                 let e = identity
                     .get(i)
-                    .map_or(RenderExpr::Literal(Literal::Null), |c| match id_label(i) {
-                        Some((label, part)) => {
-                            self.compared_as(label, part, col_at(ROW, c), mixed_labels)
+                    .map_or(RenderExpr::Literal(Literal::Null), |c| {
+                        match (id_label(i), text) {
+                            (Some((label, part)), true) => {
+                                self.part_text(label, part, col_at(ROW, c))
+                            }
+                            (Some((label, part)), false) => {
+                                self.compared_as(label, part, col_at(ROW, c), mixed_labels)
+                            }
+                            (None, true) => self.any_text(col_at(ROW, c)),
+                            (None, false) => col_at(ROW, c),
                         }
-                        None => col_at(ROW, c),
                     });
                 items.push(select(e, &indexed_column(REL_ID, i)));
             }
@@ -4242,7 +4563,10 @@ impl<'s> Lowerer<'s> {
             match by_keys {
                 // Its id is its key (S8d2b).
                 true => self.tie_end_by_key(r.var, end, label, column(id))?,
-                false => self.tie_end(r.var, end, label, vec![column(id)], false)?,
+                // Its ends' ids mix labels where its nodes are of several.
+                false => {
+                    self.tie_end(r.var, end, label, vec![column(id)], false, labels.len() > 1)?
+                }
             }
         }
         // The walk is built — its ties were spelled while its folds still
@@ -4403,13 +4727,45 @@ impl<'s> Lowerer<'s> {
                 .cloned()
                 .unwrap_or_default()
         };
-        let spell = |targets: &[Option<String>]| {
+        // A node of several labels may hold an id part as a text (I2,
+        // `held_as_text`): each row's is read back in its label's type (`of`),
+        // which its key spells, as the walk's nodes spell it.
+        // A text of its own type is its key's, as one part (a part of a
+        // composite one is spelled as a tuple's, its type's).
+        let read_back_of = |of: &str, i: usize| {
+            self.held_as_text(i) && (ids.len() > 1 || self.text_fold(of, i).is_some())
+        };
+        let held = match self.scans.get(&v) {
+            Some(Scan::Labels { arms, .. }) => arms
+                .iter()
+                .any(|(l, _)| (0..ids.len()).any(|i| read_back_of(l, i))),
+            _ => false,
+        };
+        let read_back = |of: &str, i: usize, id: &RenderExpr| -> RenderExpr {
+            let own = self
+                .schema
+                .node_schema_opt(of)
+                .and_then(|ns| ns.node_id.part_types.get(i))
+                .filter(|t| !t.raw.is_empty());
+            match (read_back_of(of, i), own) {
+                (true, Some(t)) => RenderExpr::Cast {
+                    expr: Box::new(id.clone()),
+                    target: self.options.dialect.cast_target(t),
+                },
+                _ => id.clone(),
+            }
+        };
+        let spell = |targets: &[Option<String>], of: Option<&str>| {
             let ids: Vec<String> = ids
                 .iter()
                 .enumerate()
                 .map(|(i, id)| {
+                    let id = match of {
+                        Some(of) => read_back(of, i, id),
+                        None => id.clone(),
+                    };
                     value::cast_key_part(
-                        &render_expr_to_sql_plain(id),
+                        &render_expr_to_sql_plain(&id),
                         targets.get(i).and_then(|t| t.as_deref()),
                     )
                 })
@@ -4423,14 +4779,18 @@ impl<'s> Lowerer<'s> {
                 let folds: Vec<(&String, Vec<Option<String>>)> =
                     arms.iter().map(|(l, _)| (l, fold(l))).collect();
                 match folds.split_first() {
-                    Some(((_, first), rest)) if rest.iter().all(|(_, f)| f == first) => {
+                    Some(((_, first), rest)) if !held && rest.iter().all(|(_, f)| f == first) => {
                         first.clone()
                     }
                     _ => {
                         let whens: Vec<String> = folds
                             .iter()
                             .map(|(l, f)| {
-                                format!("WHEN {label} = {} THEN {}", value::string(l), spell(f))
+                                format!(
+                                    "WHEN {label} = {} THEN {}",
+                                    value::string(l),
+                                    spell(f, Some(l))
+                                )
                             })
                             .collect();
                         return Ok(Some(RenderExpr::Raw(format!(
@@ -4442,7 +4802,7 @@ impl<'s> Lowerer<'s> {
             }
             (None, _) => Vec::new(),
         };
-        Ok(Some(RenderExpr::Raw(spell(&targets))))
+        Ok(Some(RenderExpr::Raw(spell(&targets, None))))
     }
 
     fn walk_nodes(
@@ -4645,13 +5005,23 @@ impl<'s> Lowerer<'s> {
                     (label, key)
                 }
                 (Some(Scan::Labels { .. }), [label, id]) => (label.clone(), id.clone()),
-                (Some(Scan::Node { label, .. }), [id]) => (
-                    RenderExpr::Literal(Literal::String(label.clone())),
-                    id.clone(),
+                // As the walk's nodes hold it where they mix labels (I2).
+                (Some(Scan::Node { label: l, .. }), [id]) => (
+                    RenderExpr::Literal(Literal::String(l.clone())),
+                    match among.len() > 1 {
+                        true => self.as_held(l, 0, id.clone()),
+                        false => id.clone(),
+                    },
                 ),
                 _ => {
                     return unsupported("a variable-length relationship between composite ids (S8)")
                 }
+            };
+            // A node of several labels holds its id as the walk's nodes do
+            // where they mix labels; else as that one label's, its walk's.
+            let id_column = match (self.walks_by_keys(among), self.scans.get(&v), among) {
+                (false, Some(Scan::Labels { .. }), [one]) => self.as_held(one, 0, id_column),
+                _ => id_column,
             };
             rows.select = SelectItems {
                 items: vec![select(label, "label"), select(id, "id")],
@@ -5661,7 +6031,11 @@ impl<'s> Lowerer<'s> {
         }
         // Definition, then identity, column by column. Past a definition's
         // own arity a union's identity is NULL in both (each has its arms).
-        let (ia, ib) = (self.definition_identity(a)?, self.definition_identity(b)?);
+        let texts = self.definition_texts(a, b);
+        let (ia, ib) = (
+            self.definition_identity(a, &texts)?,
+            self.definition_identity(b, &texts)?,
+        );
         Ok(Some(or_all(
             ia.into_iter().zip(ib).map(|(x, y)| differ(x, y)).collect(),
         )))
@@ -5751,8 +6125,9 @@ impl<'s> Lowerer<'s> {
 
     /// A relationship's definition (type, labels of its stored ends) and
     /// identity, as a union of several ([`Self::rel_union`]) carries them.
-    fn definition_identity(&self, v: VarId) -> Result<Vec<RenderExpr>, LowerError> {
+    fn definition_identity(&self, v: VarId, texts: &[bool]) -> Result<Vec<RenderExpr>, LowerError> {
         let ids = self.identity(v)?.unwrap_or_default();
+        let text = |i: usize| texts.get(i).copied().unwrap_or(false);
         match self.scans.get(&v) {
             Some(Scan::Rel {
                 schema, rel_type, ..
@@ -5763,12 +6138,44 @@ impl<'s> Lowerer<'s> {
                     string(&schema.from_node),
                     string(&schema.to_node),
                 ];
-                all.extend(ids);
+                // As a union's arm of its definition spells it where that
+                // union's are texts (`rel_union_of`).
+                let from = schema.from_id.columns().len();
+                all.extend(ids.into_iter().enumerate().map(|(i, id)| {
+                    match (text(i), &schema.edge_id, i < from) {
+                        (false, ..) => id,
+                        (true, Some(_), _) => self.any_text(id),
+                        (true, None, true) => self.part_text(&schema.from_node, i, id),
+                        (true, None, false) => self.part_text(&schema.to_node, i - from, id),
+                    }
+                }));
                 Ok(all)
             }
-            Some(Scan::Rels { .. }) => Ok(ids),
+            // Its identity after its definition's three columns.
+            Some(Scan::Rels { .. }) => {
+                let own = self.rel_scan_id_texts(v);
+                Ok(ids
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, id)| match i.checked_sub(3) {
+                        Some(j) if text(j) && !own.get(j).copied().unwrap_or(false) => {
+                            self.any_text(id)
+                        }
+                        _ => id,
+                    })
+                    .collect())
+            }
             _ => unsupported(format!("internal: {v} is not a relationship scan")),
         }
+    }
+
+    /// The identity columns relationships `a` and `b` compare as texts:
+    /// where either's are ([`Self::rel_scan_id_texts`]).
+    fn definition_texts(&self, a: VarId, b: VarId) -> Vec<bool> {
+        let (ta, tb) = (self.rel_scan_id_texts(a), self.rel_scan_id_texts(b));
+        (0..ta.len().max(tb.len()))
+            .map(|i| ta.get(i).copied().unwrap_or(false) || tb.get(i).copied().unwrap_or(false))
+            .collect()
     }
 
     /// Add a decided scan to the join tree (once per variable). An element
