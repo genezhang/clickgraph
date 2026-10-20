@@ -122,13 +122,14 @@ one of the three.
   `DateTime` ends spells the `DateTime`); times of several zones, or a zoned
   time with a `Date`, as instants in one zone (`DateTime64(s, zone)`, which
   walk keys now spell too); a `Date` with times of several zones
-  `DayOrTime`, a time being its date's text where it is midnight in its own
-  zone, else its time's (`=` reads the `Date` at midnight in each time's
-  zone). The same on its node's and its ends' side, nullable (a typed side
-  may be an OPTIONAL MATCH's NULL). A union of relationships between nodes
-  of one such label holds its ends as texts too (`union_holds_texts`: typed,
-  its column took one zone). A walk over such a label is refused
-  (`walk_keys_spellable`: its keys are casts, and no cast spells them).
+  `DayOrTime` (`value::day_or_time`: its text in its own zone with a
+  midnight time of day dropped, every year a `Date32` / `DateTime64` holds),
+  as `=` reads the `Date` at midnight in each time's zone; walk keys spell it
+  too (`value::DAY_OR_TIME`). The same on its node's and its ends' side,
+  nullable (a typed side may be an OPTIONAL MATCH's NULL). A union of
+  relationships, and a walk, between nodes of one such label hold their ids
+  as texts too (`union_holds_texts`, `walk_holds_texts`: typed, a column of
+  them took one zone and matched the wrong nodes, also on main).
   - Producers: every `compared_as(.., across)` (several-labels nodes,
     union-walk nodes and their relationship unions' ends), a relationship
     between two labels read in both orientations (`turned_ends`), and a

@@ -223,9 +223,25 @@ pub(super) fn node_key_text(g: &GraphValues, label: &str, id: &str) -> String {
 /// matches that `=` correctly refuses.
 pub(super) fn cast_key_part(col_sql: &str, target: Option<&str>) -> String {
     match target {
+        Some(DAY_OR_TIME) => day_or_time(col_sql),
         Some(t) => format!("CAST({col_sql} AS {t})"),
         None => col_sql.to_string(),
     }
+}
+
+/// The key "target" of a `Date` id part met by times of several zones
+/// (`schema_types::TextSpelling::DayOrTime`, ELEMENT_IDENTITY.md I2): no type
+/// spells them alike, so [`cast_key_part`] spells [`day_or_time`] instead.
+pub(super) const DAY_OR_TIME: &str = "__cg_day_or_time";
+
+/// A date or a time (SQL `col_sql`) as a text equal to another's exactly
+/// where `=` holds of them: a `Date`'s own text, a time's in its own zone with
+/// its time of day dropped where that is midnight (`=` reads a `Date` at
+/// midnight in each time's zone), so a time not at midnight is its time's
+/// text, which no date's is. By its text, so every year a `Date32` or a
+/// `DateTime64` holds (`toStartOfDay` / `toDate` wrap outside 1970-2106).
+pub(super) fn day_or_time(col_sql: &str) -> String {
+    format!("replaceRegexpOne(toString({col_sql}), ' 00:00:00(\\\\.0+)?$', '')")
 }
 
 /// A node's id parts (SQL) as its element id spells them

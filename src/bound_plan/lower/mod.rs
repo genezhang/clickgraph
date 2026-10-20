@@ -599,27 +599,35 @@ impl Lowerer<'_> {
                 // `Bool` / `Integer` rule.
                 set.retain(|t| !t.raw.is_empty());
                 // As an id's text is spelled where labels mix (I2): times as
-                // instants of one zone (a `Date` with times of several zones,
-                // which no cast spells, is refused: `walk_keys_spellable`).
+                // instants of one zone, a `Date` with times of several zones
+                // as a day or a time (`value::DAY_OR_TIME`).
                 match crate::graph_catalog::schema_types::text_spelling(&set) {
                     TextSpelling::In(t) => Some(self.options.dialect.cast_target(&t)),
-                    TextSpelling::Own | TextSpelling::DayOrTime => None,
+                    TextSpelling::DayOrTime => Some(value::DAY_OR_TIME.to_string()),
+                    TextSpelling::Own => None,
                 }
             })
             .collect()
     }
 
-    /// Refuse a walk keyed by texts ([`Self::key_part_targets`]) over `node`
-    /// whose id part is a `Date` met by times of several zones among `sides`
-    /// (`TextSpelling::DayOrTime`): no one cast spells their keys alike, so
-    /// such a walk would silently miss the relationships of some zones.
-    fn walk_keys_spellable(
-        &self,
-        node: &NodeSchema,
-        sides: &[&[KeyPartType]],
-    ) -> Result<(), LowerError> {
-        let arity = node.node_id.part_types.len();
-        for i in 0..arity {
+    /// Whether the nodes of a walk over `labels` (of the walk being lowered,
+    /// whose key folds `key_targets_by_label` holds) hold their ids as texts,
+    /// as its relationships' ends do ([`Self::union_holds_texts`]): of several
+    /// labels, or of one whose `Date` id its relationships end at in times of
+    /// several zones (its key fold `value::DAY_OR_TIME`).
+    fn walk_holds_texts(&self, labels: &[String]) -> bool {
+        labels.len() > 1
+            || labels.iter().any(|l| {
+                self.key_targets_by_label
+                    .get(l)
+                    .is_some_and(|t| t.iter().flatten().any(|t| t == value::DAY_OR_TIME))
+            })
+    }
+
+    /// Whether a part of `node`'s id is a `Date` met by times of several
+    /// zones among `sides` (`TextSpelling::DayOrTime`).
+    fn day_or_time(&self, node: &NodeSchema, sides: &[&[KeyPartType]]) -> bool {
+        (0..node.node_id.part_types.len()).any(|i| {
             let mut set: Vec<KeyPartType> = node
                 .node_id
                 .part_types
@@ -630,13 +638,8 @@ impl Lowerer<'_> {
             for side in sides {
                 set.extend(side.get(i).cloned());
             }
-            if crate::graph_catalog::schema_types::text_spelling(&set) == TextSpelling::DayOrTime {
-                return unsupported(
-                    "a variable-length relationship between Date ids whose relationships' ends are times of several time zones",
-                );
-            }
-        }
-        Ok(())
+            crate::graph_catalog::schema_types::text_spelling(&set) == TextSpelling::DayOrTime
+        })
     }
 
     /// Whether a union of relationships `arms` holds its ends' ids as texts
@@ -664,31 +667,7 @@ impl Lowerer<'_> {
                 ]
             })
             .collect();
-        self.walk_keys_spellable(ns, &sides).is_err()
-    }
-
-    /// [`Self::walk_keys_spellable`] of every label of a walk over `arms`.
-    fn walk_labels_spellable(&self, labels: &[String], arms: &[RelArm]) -> Result<(), LowerError> {
-        for label in labels {
-            let Some(ns) = self.schema.node_schema_opt(label) else {
-                continue;
-            };
-            let sides: Vec<&[KeyPartType]> = arms
-                .iter()
-                .flat_map(|arm| {
-                    let mut out = Vec::new();
-                    if arm.end_label(0) == label {
-                        out.push(arm.end_part_types(0));
-                    }
-                    if arm.end_label(1) == label {
-                        out.push(arm.end_part_types(1));
-                    }
-                    out
-                })
-                .collect();
-            self.walk_keys_spellable(ns, &sides)?;
-        }
-        Ok(())
+        self.day_or_time(ns, &sides)
     }
 
     /// #1360 (item 6, S8d2a): the CAST target for each part of a
@@ -879,13 +858,8 @@ impl Lowerer<'_> {
                 expr: Box::new(e),
                 target: self.nullable_target(&t),
             }),
-            // Its date where it is midnight in its own zone (a `Date` always
-            // is), else its time.
             TextSpelling::DayOrTime => {
-                let e = render_expr_to_sql_plain(&e);
-                RenderExpr::Raw(format!(
-                    "if(toStartOfDay({e}) = {e}, toString(toDate({e})), toString({e}))"
-                ))
+                RenderExpr::Raw(value::day_or_time(&render_expr_to_sql_plain(&e)))
             }
         }
     }
@@ -4377,12 +4351,6 @@ impl<'s> Lowerer<'s> {
         // #1360 (item 6): the walk's BFS keys are texts (S8d2a) and need the
         // fold of the node and both of the edge's ends, spelled now (single-
         // column ids walk typed joins and get none).
-        if node.id_physical_columns().len() > 1 {
-            self.walk_keys_spellable(
-                node,
-                &[&edge.from_node_id_part_types, &edge.to_node_id_part_types],
-            )?;
-        }
         let key_casts = self.path_key_targets(node, edge);
         let call = path::PathCall {
             var: &var,
@@ -4564,7 +4532,6 @@ impl<'s> Lowerer<'s> {
         // filtered query returns rows none, and queries main gets right lose
         // them. Scoped to the call: what a later walk reads, it computes from
         // its own (label, arms).
-        self.walk_labels_spellable(&labels, &arms)?;
         for label in &labels {
             let targets = self.walk_key_targets(label, &arms);
             self.key_targets_by_label.insert(label.clone(), targets);
@@ -4690,15 +4657,14 @@ impl<'s> Lowerer<'s> {
             (first, first_labels, path::START_LABEL, "start_id"),
             (last, labels.clone(), path::END_LABEL, "end_id"),
         ];
+        let walk_mixes = self.walk_holds_texts(&labels);
         for (end, held, label, id) in ends {
             let label = EndLabel::of(held, column(label));
             match by_keys {
                 // Its id is its key (S8d2b).
                 true => self.tie_end_by_key(r.var, end, label, column(id))?,
                 // Its ends' ids mix labels where its nodes are of several.
-                false => {
-                    self.tie_end(r.var, end, label, vec![column(id)], false, labels.len() > 1)?
-                }
+                false => self.tie_end(r.var, end, label, vec![column(id)], false, walk_mixes)?,
             }
         }
         // The walk is built — its ties were spelled while its folds still
@@ -4980,7 +4946,9 @@ impl<'s> Lowerer<'s> {
                 (true, _) => key.clone(),
                 // As its label's ids are compared (I1): the walk's steps join
                 // it to its relationships' ends, cast so.
-                (false, [id]) => self.compared_as(label, 0, col_at(ROW, id), labels.len() > 1),
+                (false, [id]) => {
+                    self.compared_as(label, 0, col_at(ROW, id), self.walk_holds_texts(labels))
+                }
                 (false, _) => return unsupported("internal: a composite id not walked by keys"),
             };
             let mut items = vec![
@@ -5137,7 +5105,7 @@ impl<'s> Lowerer<'s> {
                 // As the walk's nodes hold it where they mix labels (I2).
                 (Some(Scan::Node { label: l, .. }), [id]) => (
                     RenderExpr::Literal(Literal::String(l.clone())),
-                    match among.len() > 1 {
+                    match self.walk_holds_texts(among) {
                         true => self.as_held(l, 0, id.clone()),
                         false => id.clone(),
                     },
@@ -5149,7 +5117,9 @@ impl<'s> Lowerer<'s> {
             // A node of several labels holds its id as the walk's nodes do
             // where they mix labels; else as that one label's, its walk's.
             let id_column = match (self.walks_by_keys(among), self.scans.get(&v), among) {
-                (false, Some(Scan::Labels { .. }), [one]) => self.as_held(one, 0, id_column),
+                (false, Some(Scan::Labels { .. }), [one]) if !self.walk_holds_texts(among) => {
+                    self.as_held(one, 0, id_column)
+                }
                 _ => id_column,
             };
             rows.select = SelectItems {

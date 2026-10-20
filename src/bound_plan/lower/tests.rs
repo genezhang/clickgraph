@@ -9292,7 +9292,9 @@ graph_schema:
     ));
     let got = lowered("MATCH (n) RETURN count(DISTINCT n)", &several, &options);
     assert!(
-        got.contains(r#"if(toStartOfDay(e.day) = e.day, toString(toDate(e.day)), toString(e.day)) AS "__cg_id_0""#),
+        got.contains(
+            r#"replaceRegexpOne(toString(e.day), ' 00:00:00(\\.0+)?$', '') AS "__cg_id_0""#
+        ),
         "{got}"
     );
     // So does a union of relationships between nodes of that one label,
@@ -9304,20 +9306,23 @@ graph_schema:
     );
     assert!(
         got.contains(
-            r#"if(toStartOfDay(e.s) = e.s, toString(toDate(e.s)), toString(e.s)) AS "__cg_from_0""#
+            r#"replaceRegexpOne(toString(e.s), ' 00:00:00(\\.0+)?$', '') AS "__cg_from_0""#
         ),
         "{got}"
     );
-    assert!(got.contains("toString(toDate(v0.day))"), "{got}");
-    // A walk keys its nodes by texts no cast spells alike: refused.
-    let (_, stmt) = crate::open_cypher_parser::clause_list::parse_clause_statement(
+    assert!(got.contains("replaceRegexpOne(toString(v0.day)"), "{got}");
+    // So does a walk: its nodes, its relationships' ends and its keys.
+    let got = lowered(
         "MATCH (x:D)-[:DD|DT*1..2]->(y:D) RETURN y.name",
-    )
-    .unwrap();
-    let bound = crate::bound_plan::bind_statement(&stmt, &several).unwrap();
-    match lower_statement(&bound, &several, &options) {
-        Err(e) => assert!(e.to_string().contains("time zones"), "{e}"),
-        Ok(_) => panic!("a walk over Date ids with times of several zones was lowered"),
+        &several,
+        &options,
+    );
+    for part in [
+        r#"replaceRegexpOne(toString(e.day), ' 00:00:00(\\.0+)?$', '') AS "__cg_id_0""#,
+        r#"replaceRegexpOne(toString(e.s), ' 00:00:00(\\.0+)?$', '') AS "__cg_start_0""#,
+        "concat('D', ':', toString(replaceRegexpOne(toString(e.day)",
+    ] {
+        assert!(got.contains(part), "`{part}` missing:\n{got}");
     }
     // A walk whose ends are times of several zones keys them as instants of
     // one zone (each in its own zone's wall clock matched nothing).
