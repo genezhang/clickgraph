@@ -483,16 +483,28 @@ pub fn of_several_kinds(parts: &[KeyPartType]) -> bool {
     }
 }
 
-/// The type the id parts `parts` (one label's id part and the relationship
-/// ends at it) are spelled in as texts, so that two texts are equal exactly
-/// where `=` holds of the values (docs/design/ELEMENT_IDENTITY.md I2), or
-/// `None` where each is its own text: [`fold_common`], but times are
-/// instants. A text of a time is its wall clock in one zone, so every
-/// `DateTime` side is spelled in one zone (`DateTime64` of the finest
-/// scale): the zone they share, else UTC. A `Date` among them is midnight in
-/// the zone of the times it is compared with (as `=` reads it), so with times
-/// of several zones there is none: `Err`.
-pub fn text_type(parts: &[KeyPartType]) -> Result<Option<KeyPartType>, String> {
+/// How the id parts `parts` (one label's id part and the relationship ends
+/// at it) are spelled as texts, so that two texts are equal exactly where `=`
+/// holds of the values (docs/design/ELEMENT_IDENTITY.md I2).
+#[derive(Debug, Clone, PartialEq)]
+pub enum TextSpelling {
+    /// Each as its own text.
+    Own,
+    /// Each as the text of its value in this type.
+    In(KeyPartType),
+    /// A `Date` among times of several zones: `=` reads the `Date` at
+    /// midnight in each time's own zone, so a time is its date's text where
+    /// it is midnight in its zone, else its own text (which no date's is).
+    DayOrTime,
+}
+
+/// [`TextSpelling`] of `parts`: [`fold_common`]'s type, but times are
+/// instants. A text of a time is its wall clock in one zone, so times of
+/// several zones (or a zoned one with a `Date`, which `=` reads at midnight
+/// in that zone) are spelled in one zone, `DateTime64` of the finest scale:
+/// the zone they share, else UTC; a `Date` with times of several zones is
+/// [`TextSpelling::DayOrTime`].
+pub fn text_spelling(parts: &[KeyPartType]) -> TextSpelling {
     let parts: Vec<&KeyPartType> = parts.iter().filter(|p| !p.raw.is_empty()).collect();
     let times: Vec<&KeyPartType> = parts
         .iter()
@@ -513,15 +525,14 @@ pub fn text_type(parts: &[KeyPartType]) -> Result<Option<KeyPartType>, String> {
     };
     if one_zone {
         let owned: Vec<KeyPartType> = parts.iter().map(|p| (*p).clone()).collect();
-        return Ok(fold_common(&owned));
+        return match fold_common(&owned) {
+            Some(t) => TextSpelling::In(t),
+            None => TextSpelling::Own,
+        };
     }
     let zone = match zones.as_slice() {
         [one] => *one,
-        _ if date => {
-            return Err(
-                "a Date id compared with DateTime columns of several time zones".to_string(),
-            )
-        }
+        _ if date => return TextSpelling::DayOrTime,
         _ => Some("UTC"),
     };
     let scale = times
@@ -533,11 +544,11 @@ pub fn text_type(parts: &[KeyPartType]) -> Result<Option<KeyPartType>, String> {
         Some(z) => format!("DateTime64({scale}, '{z}')"),
         None => format!("DateTime64({scale})"),
     };
-    Ok(Some(KeyPartType {
+    TextSpelling::In(KeyPartType {
         schema: SchemaType::DateTime,
         nullable: parts.iter().any(|p| p.nullable),
         raw,
-    }))
+    })
 }
 
 /// The type values of `parts` meet in where ClickHouse has no common type

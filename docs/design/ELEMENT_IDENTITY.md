@@ -117,14 +117,18 @@ one of the three.
   labels holds that part as a text instead of a `Variant` (in which a string
   `'01'` reads as `1`): `Lowerer::held_as_text`, decided over every label as
   I1's cross-label fold is, so any two such columns agree. Each label spells
-  its text in the type its ids and ends meet in (`part_text`,
-  `schema_types::text_type`: the #1360 lattice, a `Date` id with `DateTime`
-  ends spells the `DateTime`; times of several zones, or a zoned time with a
-  `Date`, as instants in one zone, `DateTime64(s, zone)`, which walk keys
-  now spell too), the same on its node's and its ends' side, nullable (a
-  typed side may be an OPTIONAL MATCH's NULL). A `Date` id compared with
-  times of several zones has no one text: a column mixing its label is
-  refused (`texts_spellable`).
+  its text as its ids and ends spell theirs (`part_text`,
+  `schema_types::text_spelling`): the #1360 lattice (a `Date` id with
+  `DateTime` ends spells the `DateTime`); times of several zones, or a zoned
+  time with a `Date`, as instants in one zone (`DateTime64(s, zone)`, which
+  walk keys now spell too); a `Date` with times of several zones
+  `DayOrTime`, a time being its date's text where it is midnight in its own
+  zone, else its time's (`=` reads the `Date` at midnight in each time's
+  zone). The same on its node's and its ends' side, nullable (a typed side
+  may be an OPTIONAL MATCH's NULL). A union of relationships between nodes
+  of one such label holds its ends as texts too (`union_holds_texts`: typed,
+  its column took one zone). A walk over such a label is refused
+  (`walk_keys_spellable`: its keys are casts, and no cast spells them).
   - Producers: every `compared_as(.., across)` (several-labels nodes,
     union-walk nodes and their relationship unions' ends), a relationship
     between two labels read in both orientations (`turned_ends`), and a
@@ -139,11 +143,16 @@ one of the three.
     (`own_texts`, `own_end_text`, `walk_key`): element ids (a node's is a node
     of one label's, `P:2020-01-01-`), `id()` lookups, a walk's search keys,
     embedded write targets.
-  - Ids of one kind, unknown types, Databricks: the SQL as before.
+  - Ids of one kind, unknown types, Databricks: the SQL as before, but for
+    walk keys over times of several zones (instants of one zone, where each
+    zone's wall clock matched nothing).
 - [ ] **I2b — one key spelling** (#1390). One `identity_key` for walks,
   searches and path edges (F3 / F4 / F5), from the comparable spelling.
 - [ ] **I3 — relationship ids** (#1334, #1410). `edge_id` in the element
-  id; `id(r) = N` decoded through the session's mapping.
+  id; `id(r) = N` decoded through the session's mapping. Also: a
+  relationship's `startNodeElementId` / `endNodeElementId` are spelled from
+  its end columns' types, not its nodes' (`D:2020-01-01 00:00:00-` for the
+  node `D:2020-01-01-`; I2a review round 2).
 - [ ] **I4 — Bolt ids** (#1388): scoped static lookup; stable hash; label
   codes per schema.
 - [ ] **I5 — ids as values** (#1387, #1383): `id()` of a composite node and

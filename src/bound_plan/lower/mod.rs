@@ -85,7 +85,7 @@ use std::sync::Arc;
 use crate::graph_catalog::config::Identifier;
 use crate::graph_catalog::expression_parser::PropertyValue;
 use crate::graph_catalog::graph_schema::{GraphSchema, NodeSchema, RelationshipSchema};
-use crate::graph_catalog::schema_types::KeyPartType;
+use crate::graph_catalog::schema_types::{KeyPartType, TextSpelling};
 use crate::render_plan::render_expr::{
     visit_render_expr_mut, ColumnAlias, Literal, MutVisit, Operator, OperatorApplication,
     PropertyAccess, RenderCase, RenderExpr, TableAlias,
@@ -599,13 +599,96 @@ impl Lowerer<'_> {
                 // `Bool` / `Integer` rule.
                 set.retain(|t| !t.raw.is_empty());
                 // As an id's text is spelled where labels mix (I2): times as
-                // instants of one zone.
-                crate::graph_catalog::schema_types::text_type(&set)
-                    .ok()
-                    .flatten()
-                    .map(|t| self.options.dialect.cast_target(&t))
+                // instants of one zone (a `Date` with times of several zones,
+                // which no cast spells, is refused: `walk_keys_spellable`).
+                match crate::graph_catalog::schema_types::text_spelling(&set) {
+                    TextSpelling::In(t) => Some(self.options.dialect.cast_target(&t)),
+                    TextSpelling::Own | TextSpelling::DayOrTime => None,
+                }
             })
             .collect()
+    }
+
+    /// Refuse a walk keyed by texts ([`Self::key_part_targets`]) over `node`
+    /// whose id part is a `Date` met by times of several zones among `sides`
+    /// (`TextSpelling::DayOrTime`): no one cast spells their keys alike, so
+    /// such a walk would silently miss the relationships of some zones.
+    fn walk_keys_spellable(
+        &self,
+        node: &NodeSchema,
+        sides: &[&[KeyPartType]],
+    ) -> Result<(), LowerError> {
+        let arity = node.node_id.part_types.len();
+        for i in 0..arity {
+            let mut set: Vec<KeyPartType> = node
+                .node_id
+                .part_types
+                .get(i)
+                .cloned()
+                .into_iter()
+                .collect();
+            for side in sides {
+                set.extend(side.get(i).cloned());
+            }
+            if crate::graph_catalog::schema_types::text_spelling(&set) == TextSpelling::DayOrTime {
+                return unsupported(
+                    "a variable-length relationship between Date ids whose relationships' ends are times of several time zones",
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// Whether a union of relationships `arms` holds its ends' ids as texts
+    /// ([`Self::compared_as`] `across`): where it mixes labels
+    /// ([`arms_mix_labels`]), and between nodes of one label whose `Date` id
+    /// part it ends at in times of several zones (`TextSpelling::DayOrTime`):
+    /// typed, one column of them takes one zone, and `=` reads the `Date` at
+    /// midnight in it, not in each end's own.
+    fn union_holds_texts(&self, arms: &[RelArm]) -> bool {
+        if arms_mix_labels(arms) {
+            return true;
+        }
+        let Some(ns) = arms
+            .first()
+            .and_then(|a| self.schema.node_schema_opt(&a.schema.from_node))
+        else {
+            return false;
+        };
+        let sides: Vec<&[KeyPartType]> = arms
+            .iter()
+            .flat_map(|a| {
+                [
+                    a.schema.from_node_id_part_types.as_slice(),
+                    a.schema.to_node_id_part_types.as_slice(),
+                ]
+            })
+            .collect();
+        self.walk_keys_spellable(ns, &sides).is_err()
+    }
+
+    /// [`Self::walk_keys_spellable`] of every label of a walk over `arms`.
+    fn walk_labels_spellable(&self, labels: &[String], arms: &[RelArm]) -> Result<(), LowerError> {
+        for label in labels {
+            let Some(ns) = self.schema.node_schema_opt(label) else {
+                continue;
+            };
+            let sides: Vec<&[KeyPartType]> = arms
+                .iter()
+                .flat_map(|arm| {
+                    let mut out = Vec::new();
+                    if arm.end_label(0) == label {
+                        out.push(arm.end_part_types(0));
+                    }
+                    if arm.end_label(1) == label {
+                        out.push(arm.end_part_types(1));
+                    }
+                    out
+                })
+                .collect();
+            self.walk_keys_spellable(ns, &sides)?;
+        }
+        Ok(())
     }
 
     /// #1360 (item 6, S8d2a): the CAST target for each part of a
@@ -776,66 +859,64 @@ impl Lowerer<'_> {
     }
 
     /// Id part `i` of a node of `label` (or a relationship end at one), `e`,
-    /// as a text ([`Self::held_as_text`]): spelled in the type its label's
-    /// ids and ends meet in (`schema_types::fold_common`, as a walk's key
-    /// spells them, #1360), so a node and the ends at it spell one text.
+    /// as a text ([`Self::held_as_text`]): spelled as its label's ids and ends
+    /// spell theirs (`schema_types::text_spelling`), so a node and the ends at
+    /// it spell one text exactly where `=` holds. Nullable: a typed side may be
+    /// an OPTIONAL MATCH's NULL.
     fn part_text(&self, label: &str, i: usize, e: RenderExpr) -> RenderExpr {
         let set = self.id_part_set(label, i);
         // A string id is its text.
         if !set.is_empty() && set.iter().all(|t| t.raw.eq_ignore_ascii_case("String")) {
             return e;
         }
-        // (`texts_spellable` refused a set with no text type.)
-        let e = match crate::graph_catalog::schema_types::text_type(&set) {
-            Ok(Some(t)) => RenderExpr::Cast {
-                expr: Box::new(e),
-                target: self.options.dialect.cast_target(&t),
-            },
-            _ => e,
-        };
-        // Nullable: a typed side may be an OPTIONAL MATCH's NULL.
-        RenderExpr::Cast {
+        let text = |e: RenderExpr| RenderExpr::Cast {
             expr: Box::new(e),
             target: self.text_target(true),
-        }
-    }
-
-    /// Refuse a column that mixes `labels` where one of them holds an id
-    /// part as a text no spelling makes equal exactly where `=` holds
-    /// (`schema_types::text_type`: a `Date` with times of several zones).
-    fn texts_spellable<'l>(
-        &self,
-        labels: impl IntoIterator<Item = &'l str>,
-    ) -> Result<(), LowerError> {
-        for label in labels {
-            let arity = self.id_part_sets().get(label).map_or(0, Vec::len);
-            for i in (0..arity).filter(|i| self.held_as_text(*i)) {
-                if let Err(e) =
-                    crate::graph_catalog::schema_types::text_type(&self.id_part_set(label, i))
-                {
-                    return unsupported(format!(
-                        "nodes of several labels where {label}'s ids are of several kinds: {e}"
-                    ));
-                }
+        };
+        match crate::graph_catalog::schema_types::text_spelling(&set) {
+            TextSpelling::Own => text(e),
+            TextSpelling::In(t) => text(RenderExpr::Cast {
+                expr: Box::new(e),
+                target: self.nullable_target(&t),
+            }),
+            // Its date where it is midnight in its own zone (a `Date` always
+            // is), else its time.
+            TextSpelling::DayOrTime => {
+                let e = render_expr_to_sql_plain(&e);
+                RenderExpr::Raw(format!(
+                    "if(toStartOfDay({e}) = {e}, toString(toDate({e})), toString({e}))"
+                ))
             }
         }
-        Ok(())
     }
 
     /// Text `text` of id part `i` of `label` ([`Self::part_text`]) read back
     /// in type `own`, one of that part's columns: through the type it was
-    /// spelled in, whose text it parses exactly (a time's in its zone).
+    /// spelled in, whose text it parses exactly (a time's in its zone; a
+    /// day's text is midnight in `own`'s).
     fn read_back(&self, label: &str, i: usize, own: &KeyPartType, text: RenderExpr) -> RenderExpr {
-        let text = match self.text_fold(label, i) {
-            Some(t) => RenderExpr::Cast {
+        let text = match self.text_spelling(label, i) {
+            TextSpelling::In(t) => RenderExpr::Cast {
                 expr: Box::new(text),
-                target: self.options.dialect.cast_target(&t),
+                target: self.nullable_target(&t),
             },
-            None => text,
+            TextSpelling::Own | TextSpelling::DayOrTime => text,
         };
         RenderExpr::Cast {
             expr: Box::new(text),
-            target: self.options.dialect.cast_target(own),
+            target: self.nullable_target(own),
+        }
+    }
+
+    /// The CAST target of type `t`, nullable where the dialect allows it of
+    /// that type (a NULL of an OPTIONAL MATCH).
+    fn nullable_target(&self, t: &KeyPartType) -> String {
+        match t.raw.to_ascii_lowercase().starts_with("lowcardinality(") {
+            true => self.options.dialect.cast_target(t),
+            false => self.options.dialect.cast_target(&KeyPartType {
+                nullable: true,
+                ..t.clone()
+            }),
         }
     }
 
@@ -848,12 +929,15 @@ impl Lowerer<'_> {
             .unwrap_or_default()
     }
 
-    /// The type [`Self::part_text`] spells id part `i` of `label` in, other
-    /// than its own (`None`: its own).
-    fn text_fold(&self, label: &str, i: usize) -> Option<KeyPartType> {
-        crate::graph_catalog::schema_types::text_type(&self.id_part_set(label, i))
-            .ok()
-            .flatten()
+    /// How [`Self::part_text`] spells id part `i` of `label`.
+    fn text_spelling(&self, label: &str, i: usize) -> TextSpelling {
+        crate::graph_catalog::schema_types::text_spelling(&self.id_part_set(label, i))
+    }
+
+    /// Whether [`Self::part_text`] spells id part `i` of `label` other than
+    /// as its own text, so that a reader of it reads it back.
+    fn read_back_differs(&self, label: &str, i: usize) -> bool {
+        self.text_spelling(label, i) != TextSpelling::Own
     }
 
     /// `e`, of any type and maybe NULL, as a text.
@@ -905,7 +989,7 @@ impl Lowerer<'_> {
                 // Only a text spelled in another type than its own differs.
                 let when_then: Vec<(RenderExpr, RenderExpr)> = arms
                     .iter()
-                    .filter(|(l, _)| self.text_fold(l, i).is_some())
+                    .filter(|(l, _)| self.read_back_differs(l, i))
                     .filter_map(|(l, ns)| {
                         let own = ns.node_id.part_types.get(i).filter(|t| !t.raw.is_empty())?;
                         let back = RenderExpr::Cast {
@@ -947,7 +1031,7 @@ impl Lowerer<'_> {
         i: usize,
         id: RenderExpr,
     ) -> Result<RenderExpr, LowerError> {
-        if !arms_mix_labels(arms) || !self.held_as_text(i) {
+        if !self.union_holds_texts(arms) || !self.held_as_text(i) {
             return Ok(id);
         }
         let mut when_then = Vec::new();
@@ -961,7 +1045,7 @@ impl Lowerer<'_> {
             let Some(own) = types.get(i).filter(|t| !t.raw.is_empty()) else {
                 continue;
             };
-            if self.text_fold(label, i).is_none() || !seen.insert(std::ptr::from_ref(rs)) {
+            if !self.read_back_differs(label, i) || !seen.insert(std::ptr::from_ref(rs)) {
                 continue;
             }
             let is = |c: &str, value: &str| -> Result<RenderExpr, LowerError> {
@@ -1001,7 +1085,7 @@ impl Lowerer<'_> {
     fn ends_mix_labels(&self, r: VarId, turned: bool) -> bool {
         match self.scans.get(&r) {
             Some(Scan::Rel { schema, .. }) => turned && schema.from_node != schema.to_node,
-            Some(Scan::Rels { arms, .. }) => arms_mix_labels(arms),
+            Some(Scan::Rels { arms, .. }) => self.union_holds_texts(arms),
             _ => false,
         }
     }
@@ -1015,7 +1099,7 @@ impl Lowerer<'_> {
             return Vec::new();
         };
         let mut texts = vec![false; shape.identity];
-        if !arms_mix_labels(arms) {
+        if !self.union_holds_texts(arms) {
             return texts;
         }
         for rs in arms.iter().map(|a| a.schema) {
@@ -2660,7 +2744,6 @@ impl<'s> Lowerer<'s> {
         for (_, ns) in arms {
             self.node_table(ns)?;
         }
-        self.texts_spellable(arms.iter().map(|(l, _)| l.as_str()))?;
         let props = self.label_union_props(v, arms);
         let mut input = Vec::new();
         let definitions: Vec<(&String, Vec<Option<usize>>)> = props
@@ -3219,7 +3302,6 @@ impl<'s> Lowerer<'s> {
         // held as such (I2; a union's are already).
         let (fc, tc) = match (&fl, &tl) {
             (EndLabel::Is(a), EndLabel::Is(b)) if a != b => {
-                self.texts_spellable([a.as_str(), b.as_str()])?;
                 let held = |label: &str, cols: Vec<RenderExpr>| -> Vec<RenderExpr> {
                     cols.into_iter()
                         .enumerate()
@@ -3496,13 +3578,7 @@ impl<'s> Lowerer<'s> {
             .iter()
             .map(|p| (p, self.rel_value_definitions(p, arms)))
             .collect();
-        let mixed_labels = arms_mix_labels(arms);
-        if mixed_labels {
-            self.texts_spellable(
-                arms.iter()
-                    .flat_map(|a| [a.schema.from_node.as_str(), a.schema.to_node.as_str()]),
-            )?;
-        }
+        let mixed_labels = self.union_holds_texts(arms);
         let id_texts = self.rel_id_texts(arms);
         let mut input = Vec::new();
         for (i, arm) in arms.iter().enumerate() {
@@ -4301,6 +4377,12 @@ impl<'s> Lowerer<'s> {
         // #1360 (item 6): the walk's BFS keys are texts (S8d2a) and need the
         // fold of the node and both of the edge's ends, spelled now (single-
         // column ids walk typed joins and get none).
+        if node.id_physical_columns().len() > 1 {
+            self.walk_keys_spellable(
+                node,
+                &[&edge.from_node_id_part_types, &edge.to_node_id_part_types],
+            )?;
+        }
         let key_casts = self.path_key_targets(node, edge);
         let call = path::PathCall {
             var: &var,
@@ -4482,6 +4564,7 @@ impl<'s> Lowerer<'s> {
         // filtered query returns rows none, and queries main gets right lose
         // them. Scoped to the call: what a later walk reads, it computes from
         // its own (label, arms).
+        self.walk_labels_spellable(&labels, &arms)?;
         for label in &labels {
             let targets = self.walk_key_targets(label, &arms);
             self.key_targets_by_label.insert(label.clone(), targets);
@@ -4782,7 +4865,7 @@ impl<'s> Lowerer<'s> {
         // A text of its own type is its key's, as one part (a part of a
         // composite one is spelled as a tuple's, its type's).
         let read_back_of = |of: &str, i: usize| {
-            self.held_as_text(i) && (ids.len() > 1 || self.text_fold(of, i).is_some())
+            self.held_as_text(i) && (ids.len() > 1 || self.read_back_differs(of, i))
         };
         let held = match self.scans.get(&v) {
             Some(Scan::Labels { arms, .. }) => arms
@@ -4859,9 +4942,6 @@ impl<'s> Lowerer<'s> {
         arms: &[RelArm],
     ) -> Result<String, LowerError> {
         let by_keys = self.walks_by_keys(labels);
-        if labels.len() > 1 {
-            self.texts_spellable(labels.iter().map(String::as_str))?;
-        }
         let g = value::spelling()?;
         let name = format!("vlp_{}_nodes", v.name());
         const ROW: &str = "e";

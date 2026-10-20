@@ -9216,7 +9216,7 @@ graph_schema:
         &[
             r#"CAST(e.id AS Nullable(String)) AS "__cg_id_0" FROM db.a"#,
             r#"e.code AS "__cg_id_0" FROM db.b"#,
-            r#"CAST(CAST(e.day AS DateTime64(3)) AS Nullable(String)) AS "__cg_id_0" FROM db.d"#,
+            r#"CAST(CAST(e.day AS Nullable(DateTime64(3))) AS Nullable(String)) AS "__cg_id_0" FROM db.d"#,
         ],
     );
     // Its ties to one label's ends, an equality with a node of one label,
@@ -9249,7 +9249,7 @@ graph_schema:
     // is its `Date`'s, as of a node of label `D`.
     has(
         "MATCH (n) RETURN n",
-        &["CASE WHEN v0.__cg_label = 'D' THEN CAST(CAST(CAST(v0.__cg_id_0 AS DateTime64(3)) AS Date) AS Nullable(String)) ELSE v0.__cg_id_0 END"],
+        &["CASE WHEN v0.__cg_label = 'D' THEN CAST(CAST(CAST(v0.__cg_id_0 AS Nullable(DateTime64(3))) AS Nullable(Date)) AS Nullable(String)) ELSE v0.__cg_id_0 END"],
     );
     // Times are spelled as instants of one zone: a `DateTime` id with ends
     // in another zone meets them (review finding: each side's own zone's
@@ -9268,7 +9268,7 @@ graph_schema:
     let got = lowered("MATCH (n) RETURN count(DISTINCT n)", &zoned, &options);
     assert!(
         got.contains(
-            r#"CAST(CAST(e.day AS DateTime64(0, 'UTC')) AS Nullable(String)) AS "__cg_id_0""#
+            r#"CAST(CAST(e.day AS Nullable(DateTime64(0, 'UTC'))) AS Nullable(String)) AS "__cg_id_0""#
         ),
         "{got}"
     );
@@ -9278,26 +9278,58 @@ graph_schema:
         &options,
     );
     assert!(
-        got.contains(".at AS DateTime64(0, 'UTC')) AS Nullable(String)) = w"),
+        got.contains(".at AS Nullable(DateTime64(0, 'UTC'))) AS Nullable(String)) = w"),
         "{got}"
     );
-    // A `Date` id with times of several zones has no one text: refused.
+    // A `Date` id with times of several zones: a time is its date's text
+    // where it is midnight in its own zone, else its time's (no one cast).
     let several = schema(&format!(
-        "{}    - type: DD\n      database: db\n      table: dd\n      from_node: D\n      to_node: D\n      from_id: s\n      to_id: t\n      column_types: {{s: 'DateTime(''UTC'')', t: 'DateTime(''UTC'')'}}\n      property_mappings: {{}}\n",
+        "{}    - type: DD\n      database: db\n      table: dd\n      from_node: D\n      to_node: D\n      from_id: s\n      to_id: t\n      column_types: {{s: 'DateTime(''UTC'')', t: 'DateTime(''UTC'')'}}\n      property_mappings: {{}}\n    - type: DT\n      database: db\n      table: dt\n      from_node: D\n      to_node: D\n      from_id: s\n      to_id: t\n      column_types: {{s: 'DateTime(''Asia/Tokyo'')', t: 'DateTime(''Asia/Tokyo'')'}}\n      property_mappings: {{}}\n",
         YAML.replace(
             "{at: DateTime, b_code: String}",
             "{at: 'DateTime(''Asia/Tokyo'')', b_code: String}",
         )
     ));
+    let got = lowered("MATCH (n) RETURN count(DISTINCT n)", &several, &options);
+    assert!(
+        got.contains(r#"if(toStartOfDay(e.day) = e.day, toString(toDate(e.day)), toString(e.day)) AS "__cg_id_0""#),
+        "{got}"
+    );
+    // So does a union of relationships between nodes of that one label,
+    // its columns typed one zone otherwise, and the node side meeting them.
+    let got = lowered(
+        "MATCH (x:D)-[r:DD|DT]->(y:D) RETURN y.name",
+        &several,
+        &options,
+    );
+    assert!(
+        got.contains(
+            r#"if(toStartOfDay(e.s) = e.s, toString(toDate(e.s)), toString(e.s)) AS "__cg_from_0""#
+        ),
+        "{got}"
+    );
+    assert!(got.contains("toString(toDate(v0.day))"), "{got}");
+    // A walk keys its nodes by texts no cast spells alike: refused.
     let (_, stmt) = crate::open_cypher_parser::clause_list::parse_clause_statement(
-        "MATCH (n) RETURN count(DISTINCT n)",
+        "MATCH (x:D)-[:DD|DT*1..2]->(y:D) RETURN y.name",
     )
     .unwrap();
     let bound = crate::bound_plan::bind_statement(&stmt, &several).unwrap();
     match lower_statement(&bound, &several, &options) {
         Err(e) => assert!(e.to_string().contains("time zones"), "{e}"),
-        Ok(_) => panic!("a Date id with times of several zones was lowered"),
+        Ok(_) => panic!("a walk over Date ids with times of several zones was lowered"),
     }
+    // A walk whose ends are times of several zones keys them as instants of
+    // one zone (each in its own zone's wall clock matched nothing).
+    let got = lowered(
+        "MATCH (x:D)-[:DB|DD*1..2]->(y) RETURN y.name",
+        &zoned,
+        &options,
+    );
+    assert!(
+        got.contains("toString(CAST(e.day AS DateTime64(0, 'UTC')))"),
+        "{got}"
+    );
     // Ids of one kind (no `B`, no `D`): the SQL of before.
     let one_kind = schema(
         &YAML
