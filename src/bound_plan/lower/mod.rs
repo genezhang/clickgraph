@@ -144,11 +144,17 @@ pub struct LowerOptions {
     pub dialect: crate::sql_generator::SqlDialect,
 }
 
-/// The node an integer `id()` value names on the server: its label and key
-/// (a composite key's parts joined by `|`), `None` for none
-/// (`id_mapper::resolve_node_id`).
+/// What an integer `id()` value names on the server.
 #[derive(Clone)]
-pub struct IdLookup(pub Arc<dyn Fn(i64) -> Option<(String, String)> + Send + Sync>);
+pub struct IdLookup {
+    /// The node: its label and key (a composite key's parts joined by `|`),
+    /// `None` for none (`id_mapper::resolve_node_id`).
+    pub node: Arc<dyn Fn(i64) -> Option<(String, String)> + Send + Sync>,
+    /// The element whose id the server gave as it: its element id (a
+    /// relationship's, ELEMENT_IDENTITY.md I3b), `None` for none
+    /// (`IdMapper::get_element_id`).
+    pub element: Arc<dyn Fn(i64) -> Option<String> + Send + Sync>,
+}
 
 impl std::fmt::Debug for IdLookup {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -7465,9 +7471,9 @@ impl<'s> Lowerer<'s> {
         }
     }
 
-    /// `e` as an `id(r)` RETURN item of a relationship of one definition: its
-    /// element id (`value::rel_element_id`), NULL where it is. `None`: not
-    /// one.
+    /// `e` as an `id(r)` RETURN item of a relationship (of one definition, or
+    /// of several, I3b): its element id (`Lowerer::rel_element_id_sql`), NULL
+    /// where it is. `None`: not one.
     fn rel_id_item(&self, e: &LogicalExpr) -> Result<Option<RenderExpr>, LowerError> {
         let LogicalExpr::ScalarFnCall(f) = e else {
             return Ok(None);
@@ -7478,16 +7484,16 @@ impl<'s> Lowerer<'s> {
         let Some(r) = self.entity_arg(&f.args) else {
             return Ok(None);
         };
-        let Some(Scan::Rel {
-            schema, rel_type, ..
-        }) = self.scans.get(&r)
-        else {
+        if !matches!(
+            self.scans.get(&r),
+            Some(Scan::Rel { .. } | Scan::Rels { .. })
+        ) {
+            return Ok(None);
+        }
+        let g = value::spelling()?;
+        let Some(text) = self.rel_element_id_sql(r, &g)? else {
             return Ok(None);
         };
-        let (schema, rel_type): (&RelationshipSchema, String) = (schema, rel_type.clone());
-        let g = value::spelling()?;
-        let (edge, from, to) = self.rel_identity_texts(r, schema, &g)?;
-        let text = value::rel_element_id(&g, &rel_type, edge.as_deref(), &from, &to);
         Ok(Some(self.unless_null(&[r], RenderExpr::Raw(text))?))
     }
 

@@ -1693,10 +1693,12 @@ async fn query_handler_inner(
 
             // Store in cache (even in sql_only mode for future use). Not a
             // query whose results need the result shape (a cached query is
-            // not translated again). The statement's classification rides
-            // with the template so a later hit is recorded under this type
-            // (see `record_cache_hit`).
-            if let (Some(cache), true) = (GLOBAL_QUERY_CACHE.get(), id_number_columns.is_empty()) {
+            // not translated again), nor one whose SQL holds the server's
+            // reading of `id()` numbers, which holds only now. The
+            // statement's classification rides with the template so a later
+            // hit is recorded under this type (see `record_cache_hit`).
+            let cacheable = id_number_columns.is_empty() && !translation.session_ids;
+            if let (Some(cache), true) = (GLOBAL_QUERY_CACHE.get(), cacheable) {
                 cache.insert_typed(cache_key.clone(), ch_query.clone(), query_type_str.clone());
                 log::debug!("Stored SQL template in cache");
             }

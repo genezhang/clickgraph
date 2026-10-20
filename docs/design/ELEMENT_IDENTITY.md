@@ -180,10 +180,20 @@ one of the three.
 - [ ] **I3c — unions of edge ids of several kinds**: walks over them fail
   (Code 386) and DISTINCT of them (Code 44, a `Variant` in GROUP BY); hold
   such identity columns as texts, as I2a holds ends.
-- [ ] **I3b — `id(r) = N`** (#1410): decoded through the session's mapping
-  (`RETURN id(r)` numbers registered in it), compared with the
-  relationship's element id; Bolt's `elementId(r) IN $ids` rewrite, which
-  drops a relationship's predicate today, can then keep it.
+- [x] **I3b — `id(r) = N`** (#1410). On the server an integer compared
+  with a relationship's `id()` (`=`, `<>`, `[NOT] IN` a list) is decoded
+  through the session's mapping (`IdLookup::element`, `IdMapper::
+  get_element_id`; Bolt now assigns `RETURN id(r)` numbers in it, as it
+  does a returned relationship's), and the relationship's element id as its
+  value spells it (`Lowerer::rel_element_id_sql`, of one definition or a
+  union of them) is compared with it; an id of another type, or one never
+  given, names none. `RETURN id(r)` of a union of definitions is lowered
+  too. Such SQL holds only while the ids are known
+  (`ReadTranslation::session_ids`): HTTP does not cache it (review; a
+  node's `id(n) = N` alike, which a cache answered stale on main), and the
+  comparisons are `=` / OR of `=` (a RETURN item of one a boolean). Left: Bolt's `elementId(r) IN $ids` rewrite still drops a
+  relationship's predicate (Browser's dedup), and the library has no number
+  to decode (refused).
 - [ ] **I4 — Bolt ids** (#1388): scoped static lookup; stable hash; label
   codes per schema.
 - [ ] **I5 — ids as values** (#1387, #1383): `id()` of a composite node and

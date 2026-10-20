@@ -64,6 +64,10 @@ pub struct ReadTranslation {
     /// What each RETURN item is.
     pub shape: Vec<ResultColumn>,
     pub timings: TranslateTimings,
+    /// The SQL holds the server's reading of `id()` numbers
+    /// (`ReadOptions::id_mapper` was consulted), which holds only while the
+    /// ids are known: it is not cached.
+    pub session_ids: bool,
 }
 
 impl ReadTranslation {
@@ -115,6 +119,8 @@ fn return_item_metadata(c: &ResultColumn) -> ReturnItemMetadata {
 pub struct BoundTranslation {
     pub sql: String,
     pub shape: Vec<ResultColumn>,
+    /// As [`ReadTranslation::session_ids`].
+    pub session_ids: bool,
 }
 
 impl BoundTranslation {
@@ -126,6 +132,7 @@ impl BoundTranslation {
                 planning: start.elapsed(),
                 ..Default::default()
             },
+            session_ids: self.session_ids,
         }
     }
 }
@@ -652,6 +659,8 @@ fn bound_plan_or_reason(
         crate::bound_plan::BindError::NotARead(_) => BoundPlanError::NotARead(e.to_string()),
         _ => BoundPlanError::Invalid(e.to_string()),
     })?;
+    // Whether the lowering read the server's `id()` numbers.
+    let consulted = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let lowered = lower_statement(
         &bound,
         schema,
@@ -670,13 +679,22 @@ fn bound_plan_or_reason(
                 // The query's schema (the context's: an `Arc`, not a copy).
                 let schema = crate::server::query_context::get_current_schema()
                     .unwrap_or_else(|| std::sync::Arc::new(schema.clone()));
-                crate::bound_plan::lower::IdLookup(std::sync::Arc::new(move |id| {
-                    crate::server::bolt_protocol::id_mapper::resolve_node_id(
-                        &mapper,
-                        Some(&schema),
-                        id,
-                    )
-                }))
+                let elements = mapper.clone();
+                let (node_read, element_read) = (consulted.clone(), consulted.clone());
+                crate::bound_plan::lower::IdLookup {
+                    node: std::sync::Arc::new(move |id| {
+                        node_read.store(true, std::sync::atomic::Ordering::Relaxed);
+                        crate::server::bolt_protocol::id_mapper::resolve_node_id(
+                            &mapper,
+                            Some(&schema),
+                            id,
+                        )
+                    }),
+                    element: std::sync::Arc::new(move |id| {
+                        element_read.store(true, std::sync::atomic::Ordering::Relaxed);
+                        elements.get_element_id(id)
+                    }),
+                }
             }),
             // The fold's cast targets spell for the query's dialect
             // (`cast_target`): the context carries it (round 3, "dialect") —
@@ -691,6 +709,7 @@ fn bound_plan_or_reason(
             lowered.plan,
         ),
         shape: lowered.shape,
+        session_ids: consulted.load(std::sync::atomic::Ordering::Relaxed),
     })
 }
 

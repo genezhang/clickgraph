@@ -272,11 +272,14 @@ async fn sql_generation_handler_inner(
     let is_read = query_type == QueryType::Read;
     let is_call = query_type == QueryType::Call;
 
-    let (ch_query, logical_plan_str, planning_time, sql_gen_time): (
+    // `session_ids`: the SQL holds the server's reading of `id()` numbers,
+    // which holds only now (`ReadTranslation::session_ids`): not cached.
+    let (ch_query, logical_plan_str, planning_time, sql_gen_time, session_ids): (
         String,
         Option<String>,
         f64,
         f64,
+        bool,
     ) = if is_call {
         // Handle CALL queries (like PageRank)
         // Note: CALL with UNION doesn't make sense, so we use the first query
@@ -344,7 +347,7 @@ async fn sql_generation_handler_inner(
             None
         };
 
-        (ch_sql, plan_str, planning_time, sql_gen_time)
+        (ch_sql, plan_str, planning_time, sql_gen_time, false)
     } else if is_read {
         // Phase 2: Plan query
 
@@ -413,9 +416,10 @@ async fn sql_generation_handler_inner(
         } else {
             None
         };
+        let session_ids = translation.session_ids;
         let ch_query = translation.sql;
 
-        (ch_query, plan_str, planning_time, sql_gen_time)
+        (ch_query, plan_str, planning_time, sql_gen_time, session_ids)
     } else {
         // DDL/Update/Delete operations not supported
         return Err((
@@ -436,7 +440,7 @@ async fn sql_generation_handler_inner(
 
     // Store in cache. The statement's classification rides with the template
     // so a later hit is recorded under this type (see `record_cache_hit`).
-    if let Some(cache) = GLOBAL_QUERY_CACHE.get() {
+    if let (Some(cache), false) = (GLOBAL_QUERY_CACHE.get(), session_ids) {
         cache.insert_typed(cache_key, ch_query.clone(), query_type_str.clone());
     }
 
