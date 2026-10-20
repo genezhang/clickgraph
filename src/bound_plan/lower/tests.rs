@@ -9324,6 +9324,15 @@ graph_schema:
     ] {
         assert!(got.contains(part), "`{part}` missing:\n{got}");
     }
+    // Spark spells that text with its own functions.
+    let got = squash(
+        &databricks_sql("MATCH (x:D)-[:DD|DT*1..2]->(y:D) RETURN y.name", &several).unwrap(),
+    );
+    assert!(
+        got.contains("regexp_replace(CAST(e.day AS STRING), ' 00:00:00(\\\\.0+)?$', '')"),
+        "{got}"
+    );
+    assert!(!got.contains("replaceRegexpOne"), "{got}");
     // A walk whose ends are times of several zones keys them as instants of
     // one zone (each in its own zone's wall clock matched nothing).
     let got = lowered(
@@ -9363,10 +9372,6 @@ graph_schema:
         assert!(!got.contains("AS Nullable(String))"), "{q}:\n{got}");
     }
     // Spark: as before.
-    let spark = crate::bound_plan::lower::LowerOptions {
-        dialect: crate::sql_generator::SqlDialect::Databricks,
-        ..Default::default()
-    };
-    let got = lowered("MATCH (n) RETURN count(DISTINCT n)", &mixed, &spark);
+    let got = squash(&databricks_sql("MATCH (n) RETURN count(DISTINCT n)", &mixed).unwrap());
     assert!(!got.contains("AS STRING)"), "{got}");
 }
