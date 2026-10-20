@@ -1151,23 +1151,7 @@ impl Lowerer<'_> {
         if texts.get(i).copied().unwrap_or(false) {
             return e;
         }
-        let types: Vec<&KeyPartType> = arms
-            .iter()
-            .filter_map(|a| {
-                let rs = a.schema;
-                match &rs.edge_id {
-                    Some(id) => id.columns().get(i).and_then(|c| rs.column_types.get(*c)),
-                    None => {
-                        let from = rs.from_id.columns().len();
-                        match i < from {
-                            true => rs.from_node_id_part_types.get(i),
-                            false => rs.to_node_id_part_types.get(i - from),
-                        }
-                    }
-                }
-            })
-            .filter(|t| !t.raw.is_empty())
-            .collect();
+        let types = identity_part_types(arms, i);
         // Of one family a union holds them in a wider type, whose text is
         // not its own (a day's as a time, a `Float32`'s as a `Float64`):
         // days and times, or floats.
@@ -1240,14 +1224,24 @@ impl Lowerer<'_> {
     }
 
     /// Which identity columns (`REL_ID_{i}`) of a union of relationships
-    /// `arms` are texts (I2): those where some arm's stored end holds an id
-    /// part as a text there ([`Self::held_as_text`], in a union that mixes
-    /// labels); every arm's is then a text, an `edge_id`'s too.
+    /// `arms` are texts: those where the arms' values are of several kinds
+    /// (an `edge_id` of strings and one of integers, or the integer ends of
+    /// a definition without one; I3c), which one column has no type for (a
+    /// `Variant`, which GROUP BY and a walk refuse), and (I2) those where
+    /// some arm's stored end holds an id part as a text there
+    /// ([`Self::held_as_text`], in a union that mixes labels). Every arm's
+    /// is then a text, an `edge_id`'s too.
     fn rel_id_texts(&self, arms: &[RelArm]) -> Vec<bool> {
         let Ok(shape) = rel_union_shape(arms) else {
             return Vec::new();
         };
-        let mut texts = vec![false; shape.identity];
+        let mut texts: Vec<bool> = (0..shape.identity)
+            .map(|i| {
+                let types: Vec<KeyPartType> =
+                    identity_part_types(arms, i).into_iter().cloned().collect();
+                self.options.dialect.ids_held_as_text(&types)
+            })
+            .collect();
         if !self.union_holds_texts(arms) {
             return texts;
         }
@@ -1282,6 +1276,28 @@ impl Lowerer<'_> {
             .iter()
             .any(Option::is_some)
     }
+}
+
+/// The types of identity column `REL_ID_{i}` in the arms of a union of
+/// relationships: each arm's `edge_id` part, else its stored ends' (`from`
+/// then `to`); unknown ones left out.
+fn identity_part_types<'a>(arms: &[RelArm<'a>], i: usize) -> Vec<&'a KeyPartType> {
+    arms.iter()
+        .filter_map(|a| {
+            let rs = a.schema;
+            match &rs.edge_id {
+                Some(id) => id.columns().get(i).and_then(|c| rs.column_types.get(*c)),
+                None => {
+                    let from = rs.from_id.columns().len();
+                    match i < from {
+                        true => rs.from_node_id_part_types.get(i),
+                        false => rs.to_node_id_part_types.get(i - from),
+                    }
+                }
+            }
+        })
+        .filter(|t| !t.raw.is_empty())
+        .collect()
 }
 
 /// A label's comparable id part types, as CAST targets
@@ -3729,6 +3745,17 @@ impl<'s> Lowerer<'s> {
             .collect();
         let mixed_labels = self.union_holds_texts(arms);
         let id_texts = self.rel_id_texts(arms);
+        // Each identity column's type where its arms' have no common one.
+        let edge_common: Vec<Option<String>> = (0..shape.identity)
+            .map(|i| {
+                let types: Vec<KeyPartType> =
+                    identity_part_types(arms, i).into_iter().cloned().collect();
+                self.options
+                    .dialect
+                    .common_type_where_none(&types)
+                    .map(|t| self.nullable_target(&t))
+            })
+            .collect();
         let mut input = Vec::new();
         for (i, arm) in arms.iter().enumerate() {
             let rs = arm.schema;
@@ -3764,7 +3791,15 @@ impl<'s> Lowerer<'s> {
                                 self.compared_as(label, part, col_at(ROW, c), mixed_labels)
                             }
                             (None, true) => self.any_text(col_at(ROW, c)),
-                            (None, false) => col_at(ROW, c),
+                            // Integers of no common type (`UInt64` and
+                            // signed) meet in the one that holds them (I3c).
+                            (None, false) => match edge_common.get(i).and_then(Option::as_ref) {
+                                Some(target) => RenderExpr::Cast {
+                                    expr: Box::new(col_at(ROW, c)),
+                                    target: target.clone(),
+                                },
+                                None => col_at(ROW, c),
+                            },
                         }
                     });
                 items.push(select(e, &indexed_column(REL_ID, i)));
@@ -6290,9 +6325,11 @@ impl<'s> Lowerer<'s> {
                 Some(id) => id.columns().len(),
                 None => ps.from_id.columns().len() + ps.to_id.columns().len(),
             };
-            let ids = indexed_columns(REL_ID, arity)
-                .iter()
-                .map(|c| self.physical(r, c).map(|e| render_expr_to_sql_plain(&e)))
+            let ids = (0..arity)
+                .map(|i| {
+                    self.walked_identity_part(r, ps, &rel_type, i)
+                        .map(|e| render_expr_to_sql_plain(&e))
+                })
                 .collect::<Result<Vec<_>, _>>()?;
             let identity = match ids.as_slice() {
                 [one] => one.clone(),
@@ -6320,6 +6357,60 @@ impl<'s> Lowerer<'s> {
         Ok(Some(or_all(
             ia.into_iter().zip(ib).map(|(x, y)| differ(x, y)).collect(),
         )))
+    }
+
+    /// Identity part `i` of union of relationships `r` as a walk over one of
+    /// its definitions, `ps` of `rel_type`, spells its `path_edges`: the
+    /// union's column, where the union holds it as a text (I3c) read back,
+    /// on that definition's rows only (no other's text is cast), in the
+    /// definition's type: an `edge_id` part in its column's, an end in the
+    /// type the union compares its ends in (`REL_FROM_{i}` / `REL_TO_{i}`,
+    /// as an identity of ends is held typed).
+    fn walked_identity_part(
+        &self,
+        r: VarId,
+        ps: &RelationshipSchema,
+        rel_type: &str,
+        i: usize,
+    ) -> Result<RenderExpr, LowerError> {
+        let id = self.physical(r, &indexed_column(REL_ID, i))?;
+        let Some(Scan::Rels { arms, .. }) = self.scans.get(&r) else {
+            return Ok(id);
+        };
+        if !self.rel_id_texts(arms).get(i).copied().unwrap_or(false) {
+            return Ok(id);
+        }
+        let Some(arm) = arms.iter().find(|a| {
+            a.rel_type == rel_type
+                && a.schema.from_node == ps.from_node
+                && a.schema.to_node == ps.to_node
+        }) else {
+            return Ok(id);
+        };
+        let from = ps.from_id.columns().len();
+        let typed = match &ps.edge_id {
+            Some(edge) => {
+                let own = edge
+                    .columns()
+                    .get(i)
+                    .and_then(|c| ps.column_types.get(*c))
+                    .filter(|t| !t.raw.is_empty());
+                match own {
+                    Some(t) => RenderExpr::Cast {
+                        expr: Box::new(id),
+                        target: self.nullable_target(t),
+                    },
+                    None => return Ok(id),
+                }
+            }
+            None if i < from => self.physical(r, &indexed_column(REL_FROM, i))?,
+            None => self.physical(r, &indexed_column(REL_TO, i - from))?,
+        };
+        Ok(RenderExpr::Case(RenderCase {
+            expr: None,
+            when_then: vec![(self.definition_is(r, arm)?, typed)],
+            else_expr: Some(Box::new(RenderExpr::Literal(Literal::Null))),
+        }))
     }
 
     /// The definitions relationship `v` of a MATCH can be (none for a
@@ -6433,21 +6524,71 @@ impl<'s> Lowerer<'s> {
                 Ok(all)
             }
             // Its identity after its definition's three columns.
-            Some(Scan::Rels { .. }) => {
+            Some(Scan::Rels { arms, .. }) => {
                 let own = self.rel_scan_id_texts(v);
-                Ok(ids
-                    .into_iter()
+                ids.into_iter()
                     .enumerate()
                     .map(|(i, id)| match i.checked_sub(3) {
                         Some(j) if text(j) && !own.get(j).copied().unwrap_or(false) => {
-                            self.any_text(id)
+                            self.union_part_text(v, arms, &own, j, id)
                         }
-                        _ => id,
+                        _ => Ok(id),
                     })
-                    .collect())
+                    .collect()
             }
             _ => unsupported(format!("internal: {v} is not a relationship scan")),
         }
+    }
+
+    /// Identity column `REL_ID_{j}` of union of relationships `v` of `arms`,
+    /// `id`, held in a type (not as a text, `own`), as the text a union
+    /// holding it as one spells (`rel_union_of`): per definition, an
+    /// `edge_id` part read back in its own type where the union holds it in
+    /// a wider one (`own_identity_part`: a `Float32` as a `Float64` spells
+    /// other digits) and then its text, an end part as its label spells it
+    /// (`part_text`), so a relationship compared with one of a union held as
+    /// texts meets its own text (review).
+    fn union_part_text(
+        &self,
+        v: VarId,
+        arms: &[RelArm],
+        own: &[bool],
+        j: usize,
+        id: RenderExpr,
+    ) -> Result<RenderExpr, LowerError> {
+        let mut when_then = Vec::new();
+        let mut seen = BTreeSet::new();
+        for arm in arms {
+            let rs = arm.schema;
+            if !seen.insert(std::ptr::from_ref(rs)) {
+                continue;
+            }
+            let from = rs.from_id.columns().len();
+            let spelled = match &rs.edge_id {
+                Some(edge) => {
+                    let Some(c) = edge.columns().get(j).copied() else {
+                        continue;
+                    };
+                    let back =
+                        self.own_identity_part(arms, own, j, rs.column_types.get(c), id.clone());
+                    self.any_text(back)
+                }
+                None if j < from => self.part_text(&rs.from_node, j, id.clone()),
+                None if j < from + rs.to_id.columns().len() => {
+                    self.part_text(&rs.to_node, j - from, id.clone())
+                }
+                None => continue,
+            };
+            when_then.push((self.definition_is(v, arm)?, spelled));
+        }
+        Ok(match when_then.is_empty() {
+            true => self.any_text(id),
+            false => RenderExpr::Case(RenderCase {
+                expr: None,
+                when_then,
+                else_expr: Some(Box::new(self.any_text(id))),
+            }),
+        })
     }
 
     /// The identity columns relationships `a` and `b` compare as texts:

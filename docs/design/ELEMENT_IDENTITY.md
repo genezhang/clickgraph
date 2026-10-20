@@ -177,9 +177,26 @@ one of the three.
   id (two definitions of one type can share one), properties named
   `from_id` / `to_id` collide with the ends' columns, walks and DISTINCT over
   unions of edge ids of several kinds fail (`Variant`, I3c).
-- [ ] **I3c — unions of edge ids of several kinds**: walks over them fail
-  (Code 386) and DISTINCT of them (Code 44, a `Variant` in GROUP BY); hold
-  such identity columns as texts, as I2a holds ends.
+- [x] **I3c — unions of edge ids of several kinds.** A union's identity
+  column (`REL_ID_{i}`) whose arms' values are of several kinds (a string
+  `edge_id` with an integer one, or with a definition's integer ends; a
+  `Date` with a number) was a `Variant`, which GROUP BY refuses (Code 44:
+  `DISTINCT r`, `WITH DISTINCT r`, grouping by `r`) and a walk's recursive
+  union has no type for (Code 386), and in which `count(DISTINCT r)` read a
+  string `'1'` as the integer `1` (silently 3 for 4). It is now held as
+  each arm's text (`rel_id_texts`, by `SqlDialect::ids_held_as_text` of
+  `identity_part_types`); integers of no common type (`UInt64` with a
+  signed one) meet in `Int128` (`common_type_where_none`). Two definitions'
+  relationships are never one, so no arm's text needs to meet another's.
+  A union held in a type compared with one held as texts reads each
+  definition's part back in its own type before its text
+  (`union_part_text`; a `Float32` as a `Float64` spells other digits:
+  review, also wrong on main against a union of mixed labels). A walk over
+  one definition reads such a union's part back in its own type, on that
+  definition's rows (`walked_identity_part`), before `has(path_edges, …)`.
+  Left (other clusters): `collect()` of relationships of several types
+  (lists, cluster 5), a node of several labels whose same-named properties
+  differ in type (VALUE_TYPES).
 - [x] **I3b — `id(r) = N`** (#1410). On the server an integer compared
   with a relationship's `id()` (`=`, `<>`, `[NOT] IN` a list) is decoded
   through the session's mapping (`IdLookup::element`, `IdMapper::
