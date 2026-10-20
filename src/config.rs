@@ -141,6 +141,18 @@ pub struct ServerConfig {
     #[serde(default)]
     pub check_node_properties: bool,
 
+    /// Where runtime schema registrations survive restarts
+    /// (`CLICKGRAPH_SCHEMA_PERSISTENCE`): `off` (default — this feature
+    /// writes nothing anywhere, exactly the pre-feature behavior) or
+    /// `clickhouse` (registrations are stored as source rows in a
+    /// `clickgraph_schema_registry` table in the configured database and
+    /// replayed at boot, config-defined names winning; the Kafka Connect
+    /// config-topic pattern). Server modes that run without a ClickHouse
+    /// client have none to store to, so `clickhouse` degrades to inert
+    /// there.
+    #[serde(default)]
+    pub schema_persistence: SchemaPersistenceMode,
+
     /// OTLP/HTTP base URL for opt-in per-query tracing
     /// (`CLICKGRAPH_OTLP_ENDPOINT`, traces go to `{endpoint}/v1/traces`).
     /// Unset = tracing off (default): no traffic, no per-query cost.
@@ -188,6 +200,7 @@ impl Default for ServerConfig {
             stats_enabled: false,
             stats_ttl_secs: 300,
             check_node_properties: false,
+            schema_persistence: SchemaPersistenceMode::Off,
             otlp_endpoint: None,
             otlp_include_query: false,
             otlp_headers: String::new(),
@@ -221,6 +234,7 @@ impl ServerConfig {
             stats_enabled: parse_env_var("CLICKGRAPH_STATS_ENABLED", "false")?,
             stats_ttl_secs: parse_env_var("CLICKGRAPH_STATS_TTL_SECS", "300")?,
             check_node_properties: parse_env_var("CLICKGRAPH_CHECK_NODE_PROPERTIES", "false")?,
+            schema_persistence: parse_env_var("CLICKGRAPH_SCHEMA_PERSISTENCE", "off")?,
             otlp_endpoint: env::var("CLICKGRAPH_OTLP_ENDPOINT")
                 .ok()
                 .map(|s| s.trim().to_string())
@@ -262,6 +276,7 @@ impl ServerConfig {
             stats_enabled: parse_env_var("CLICKGRAPH_STATS_ENABLED", "false")?,
             stats_ttl_secs: parse_env_var("CLICKGRAPH_STATS_TTL_SECS", "300")?,
             check_node_properties: parse_env_var("CLICKGRAPH_CHECK_NODE_PROPERTIES", "false")?,
+            schema_persistence: parse_env_var("CLICKGRAPH_SCHEMA_PERSISTENCE", "off")?,
             // Tracing knobs are operational and env-only, like the metrics knobs.
             otlp_endpoint: env::var("CLICKGRAPH_OTLP_ENDPOINT")
                 .ok()
@@ -317,6 +332,7 @@ impl ServerConfig {
         self.stats_enabled = other.stats_enabled;
         self.stats_ttl_secs = other.stats_ttl_secs;
         self.check_node_properties = other.check_node_properties;
+        self.schema_persistence = other.schema_persistence;
     }
 }
 
@@ -378,6 +394,41 @@ fn parse_env_flag(key: &str, default: bool) -> Result<bool, ConfigError> {
     }
 }
 
+/// How runtime schema registrations survive restarts
+/// (`CLICKGRAPH_SCHEMA_PERSISTENCE`, spec: `docs/design/SCHEMA_PERSISTENCE.md`).
+///
+/// A word enum parsed *strictly* (via `FromStr`, so a typo fails startup
+/// rather than silently leaving persistence off): a durability setting that
+/// lies to its operator is worse than a startup error.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SchemaPersistenceMode {
+    /// Nothing is ever written; HTTP registrations behave exactly as before
+    /// the feature existed (lost on restart).
+    #[default]
+    Off,
+    /// Registrations ride in a `clickgraph_schema_registry` table in the
+    /// configured ClickHouse database and are replayed at boot, with
+    /// config-defined names winning (Kafka Connect's `config.storage.topic`
+    /// pattern).
+    Clickhouse,
+}
+
+impl std::str::FromStr for SchemaPersistenceMode {
+    type Err = std::io::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "off" => Ok(Self::Off),
+            "clickhouse" => Ok(Self::Clickhouse),
+            _ => Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "expected one of: off, clickhouse",
+            )),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -415,6 +466,46 @@ mod tests {
             "nonsense is reported rather than silently ignored"
         );
         unsafe { env::remove_var("CLICKGRAPH_OTLP_INCLUDE_QUERY") };
+    }
+
+    #[test]
+    fn schema_persistence_parses_strictly() {
+        // Durability has no lenient aliases ("on"/"true" must not quietly
+        // mean a different backend — a persistence setting that means
+        // something other than it says is a silent data-loss knob), and
+        // unset means Off. Tested on FromStr directly rather than through
+        // from_env: env-touching tests race each other on the process-global
+        // environment (see otlp_include_query_...), and this parse is the
+        // exact one parse_env_var delegates to. `str::parse` is inherent, so
+        // no FromStr import is needed here.
+        assert_eq!(
+            "off".parse::<SchemaPersistenceMode>().expect("parses"),
+            SchemaPersistenceMode::Off
+        );
+        assert_eq!(
+            "clickhouse"
+                .parse::<SchemaPersistenceMode>()
+                .expect("parses"),
+            SchemaPersistenceMode::Clickhouse
+        );
+        assert_eq!(
+            "ClickHouse"
+                .parse::<SchemaPersistenceMode>()
+                .expect("case-insensitive enum value"),
+            SchemaPersistenceMode::Clickhouse
+        );
+        assert_eq!(
+            " off ".parse::<SchemaPersistenceMode>().expect("trims"),
+            SchemaPersistenceMode::Off
+        );
+        assert!(
+            "true".parse::<SchemaPersistenceMode>().is_err(),
+            "a truthy flag is not a backend: refuse rather than guess"
+        );
+        assert!("yes".parse::<SchemaPersistenceMode>().is_err());
+        assert!("ON".parse::<SchemaPersistenceMode>().is_err());
+        assert!("".parse::<SchemaPersistenceMode>().is_err());
+        assert_eq!(SchemaPersistenceMode::default(), SchemaPersistenceMode::Off);
     }
 
     #[test]

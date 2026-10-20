@@ -5,13 +5,13 @@ use std::time::Duration;
 use axum::{
     extract::DefaultBodyLimit,
     http::StatusCode,
-    routing::{get, post},
+    routing::{delete, get, post},
     Router,
 };
 use clickhouse::Client;
 use handlers::{
-    discover_prompt_handler, draft_handler, get_schema_handler, health_check, introspect_handler,
-    list_schemas_handler, load_schema_handler, query_handler,
+    delete_schema_handler, discover_prompt_handler, draft_handler, get_schema_handler,
+    health_check, introspect_handler, list_schemas_handler, load_schema_handler, query_handler,
 };
 use sql_generation_handler::sql_generation_handler;
 use tower_http::catch_panic::CatchPanicLayer;
@@ -39,6 +39,7 @@ pub mod otel;
 mod parameter_substitution;
 mod query_cache;
 pub mod query_context;
+pub mod schema_registry;
 mod sql_generation_handler;
 
 #[derive(Clone)]
@@ -426,6 +427,7 @@ pub fn build_router(app_state: AppState, config: &ServerConfig) -> Router {
         .route("/schemas", get(list_schemas_handler))
         .route("/schemas/load", post(load_schema_handler))
         .route("/schemas/{name}", get(get_schema_handler))
+        .route("/schemas/{name}", delete(delete_schema_handler))
         .route("/schemas/introspect", post(introspect_handler))
         .route("/schemas/discover-prompt", post(discover_prompt_handler))
         .route("/schemas/draft", post(draft_handler))
@@ -451,6 +453,12 @@ pub fn build_router(app_state: AppState, config: &ServerConfig) -> Router {
 
 /// Bind and serve HTTP (and optionally Bolt) using the given `app_state`.
 async fn run_server(app_state: AppState, config: ServerConfig) {
+    // Restore runtime registrations BEFORE anything serves traffic — the
+    // server must answer queries against persisted schemas from the first
+    // request after boot. No-ops when persistence is off or this mode has
+    // no ClickHouse client.
+    schema_registry::replay(&app_state, &config).await;
+
     let http_bind_address = format!("{}:{}", config.http_host, config.http_port);
     log::info!("Starting HTTP server on {}", http_bind_address);
 

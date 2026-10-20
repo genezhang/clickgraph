@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
+    config::{SchemaPersistenceMode, ServerConfig},
     graph_catalog::graph_schema::{GraphSchema, GraphSchemaElement},
     graph_catalog::{DraftOptions, DraftRequest, EdgeHint, FkEdgeHint, NodeHint, SchemaDiscovery},
     open_cypher_parser::{self, ast::CypherStatement},
@@ -23,7 +24,7 @@ use super::{
     models::{GraphQueryResponse, OutputFormat, QueryRequest, QueryStats, SqlOnlyResponse},
     parameter_substitution, query_cache,
     query_context::{with_query_context, QueryContext},
-    AppState, GLOBAL_QUERY_CACHE, GLOBAL_SERVER_METRICS,
+    schema_registry, AppState, GLOBAL_QUERY_CACHE, GLOBAL_SERVER_METRICS,
 };
 
 /// Record a completed query into the global registry (no-op if metrics are off
@@ -1816,7 +1817,13 @@ async fn query_handler_inner(
                     .to_string(),
             )
         })?;
-        ddl_handler(ch_client, ch_sql_queries, maybe_schema_elem).await
+        ddl_handler(
+            ch_client,
+            &app_state.config,
+            ch_sql_queries,
+            maybe_schema_elem,
+        )
+        .await
     };
     metrics.execution_time = execution_start.elapsed().as_secs_f64();
 
@@ -2131,6 +2138,7 @@ async fn execute_cte_queries(
 
 pub async fn ddl_handler(
     clickhouse_client: Client,
+    config: &ServerConfig,
     ch_sql_queries: Vec<String>,
     graph_schema_element_opt: Option<Vec<GraphSchemaElement>>,
 ) -> Result<Response, (StatusCode, String)> {
@@ -2182,7 +2190,7 @@ pub async fn ddl_handler(
             )
         })?;
 
-    graph_catalog::refresh_global_schema(clickhouse_client)
+    graph_catalog::refresh_global_schema(clickhouse_client.clone())
         .await
         .map_err(|e| {
             (
@@ -2190,6 +2198,13 @@ pub async fn ddl_handler(
                 format!("Clickhouse Error: {}", e),
             )
         })?;
+
+    // Persist the mutated schema when durability is configured (the HTTP load
+    // path does the same for its YAML): a restart without GRAPH_CONFIG_PATH
+    // must still restore DDL-created tables. Store failures are logged inside
+    // `persist_ddl_snapshot` and surfaced as `persisted: false` semantics —
+    // they never fail a DDL that already succeeded.
+    schema_registry::persist_ddl_snapshot(config, Some(clickhouse_client), "default").await;
 
     let mut response = (StatusCode::OK, "DDL applied successfully".to_string()).into_response();
     response
@@ -2264,10 +2279,26 @@ pub async fn load_schema_handler(
                 log::info!("Cache invalidated for schema: {}", payload.schema_name);
             }
 
-            Ok(Json(serde_json::json!({
+            // Durability is opt-in: with persistence off the response stays
+            // byte-identical to a server without this feature (no `persisted`
+            // key at all). With it on, a failed store never fails the
+            // registration — the field reports what actually happened.
+            let persisted = schema_registry::persist_yaml_after_load(
+                &app_state.config,
+                app_state.clickhouse_client.clone(),
+                &payload.schema_name,
+                &payload.config_content,
+            )
+            .await;
+
+            let mut body = serde_json::json!({
                 "message": format!("Schema '{}' loaded successfully", payload.schema_name),
                 "schema_name": payload.schema_name
-            })))
+            });
+            if let Some(persisted) = persisted {
+                body["persisted"] = serde_json::json!(persisted);
+            }
+            Ok(Json(body))
         }
         Err(e) => Err((
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -2329,6 +2360,70 @@ fn request_id_mapper(
         views.as_ref(),
     );
     id_mapper
+}
+
+/// `DELETE /schemas/{name}` — complete the runtime-registration lifecycle:
+/// a schema you can register at runtime is a schema you can retire at
+/// runtime (`spec: docs/design/SCHEMA_PERSISTENCE.md`).
+///
+/// Removes the in-memory registration and — when persistence is configured —
+/// the stored row, so the next boot does not resurrect it. With persistence
+/// off the in-memory removal is the whole operation, and the response stays
+/// byte-identical to a server without the feature except for the new
+/// endpoint itself. A config-defined name (`GRAPH_CONFIG_PATH`) is never a
+/// stored row: deleting one works in memory and it simply comes back on the
+/// next boot — retiring a config-defined schema means editing the file.
+pub async fn delete_schema_handler(
+    State(app_state): State<Arc<AppState>>,
+    axum::extract::Path(schema_name): axum::extract::Path<String>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    graph_catalog::remove_schema(&schema_name)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({ "error": e })),
+            )
+        })?;
+
+    // Same invalidation the load path performs — stale SQL for a deleted
+    // schema must never answer a query.
+    if let Some(cache) = GLOBAL_QUERY_CACHE.get() {
+        cache.invalidate_schema(&schema_name);
+        log::info!("Cache invalidated for schema: {}", schema_name);
+    }
+
+    let store_deleted = if app_state.config.schema_persistence == SchemaPersistenceMode::Clickhouse
+    {
+        let store = schema_registry::SchemaStore::from_parts(
+            app_state.config.schema_persistence,
+            app_state.clickhouse_client.clone(),
+        );
+        match store.delete(&schema_name).await {
+            Ok(deleted) => Some(deleted),
+            Err(e) => {
+                // The schema is gone from memory; a failing store must not
+                // turn a retirement into an error, but it must not lie
+                // either — the next boot will resurrect the row.
+                log::warn!(
+                    "stored row for schema '{schema_name}' could not be deleted ({e}); \
+                     it will re-register on the next boot until the store is fixed"
+                );
+                Some(false)
+            }
+        }
+    } else {
+        None
+    };
+
+    let mut body = serde_json::json!({
+        "message": format!("Schema '{}' deleted", schema_name),
+        "schema_name": schema_name
+    });
+    if let Some(deleted) = store_deleted {
+        body["persisted"] = serde_json::json!(deleted);
+    }
+    Ok(Json(body))
 }
 
 /// Translate a Cypher query string into ClickHouse SQL.

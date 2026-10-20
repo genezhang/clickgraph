@@ -9,6 +9,7 @@ mod corpus_sweep;
 #[cfg(feature = "databricks")]
 mod databricks_introspect_tests;
 mod metrics_endpoint_tests;
+mod schema_registry_tests;
 mod sql_generation_handler_comment_tests;
 mod translate_seam_endpoint_tests;
 mod with_cte_column_refs;
