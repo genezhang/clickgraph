@@ -1151,23 +1151,7 @@ impl Lowerer<'_> {
         if texts.get(i).copied().unwrap_or(false) {
             return e;
         }
-        let types: Vec<&KeyPartType> = arms
-            .iter()
-            .filter_map(|a| {
-                let rs = a.schema;
-                match &rs.edge_id {
-                    Some(id) => id.columns().get(i).and_then(|c| rs.column_types.get(*c)),
-                    None => {
-                        let from = rs.from_id.columns().len();
-                        match i < from {
-                            true => rs.from_node_id_part_types.get(i),
-                            false => rs.to_node_id_part_types.get(i - from),
-                        }
-                    }
-                }
-            })
-            .filter(|t| !t.raw.is_empty())
-            .collect();
+        let types = identity_part_types(arms, i);
         // Of one family a union holds them in a wider type, whose text is
         // not its own (a day's as a time, a `Float32`'s as a `Float64`):
         // days and times, or floats.
@@ -1240,14 +1224,24 @@ impl Lowerer<'_> {
     }
 
     /// Which identity columns (`REL_ID_{i}`) of a union of relationships
-    /// `arms` are texts (I2): those where some arm's stored end holds an id
-    /// part as a text there ([`Self::held_as_text`], in a union that mixes
-    /// labels); every arm's is then a text, an `edge_id`'s too.
+    /// `arms` are texts: those where the arms' values are of several kinds
+    /// (an `edge_id` of strings and one of integers, or the integer ends of
+    /// a definition without one; I3c), which one column has no type for (a
+    /// `Variant`, which GROUP BY and a walk refuse), and (I2) those where
+    /// some arm's stored end holds an id part as a text there
+    /// ([`Self::held_as_text`], in a union that mixes labels). Every arm's
+    /// is then a text, an `edge_id`'s too.
     fn rel_id_texts(&self, arms: &[RelArm]) -> Vec<bool> {
         let Ok(shape) = rel_union_shape(arms) else {
             return Vec::new();
         };
-        let mut texts = vec![false; shape.identity];
+        let mut texts: Vec<bool> = (0..shape.identity)
+            .map(|i| {
+                let types: Vec<KeyPartType> =
+                    identity_part_types(arms, i).into_iter().cloned().collect();
+                self.options.dialect.ids_held_as_text(&types)
+            })
+            .collect();
         if !self.union_holds_texts(arms) {
             return texts;
         }
@@ -1282,6 +1276,28 @@ impl Lowerer<'_> {
             .iter()
             .any(Option::is_some)
     }
+}
+
+/// The types of identity column `REL_ID_{i}` in the arms of a union of
+/// relationships: each arm's `edge_id` part, else its stored ends' (`from`
+/// then `to`); unknown ones left out.
+fn identity_part_types<'a>(arms: &[RelArm<'a>], i: usize) -> Vec<&'a KeyPartType> {
+    arms.iter()
+        .filter_map(|a| {
+            let rs = a.schema;
+            match &rs.edge_id {
+                Some(id) => id.columns().get(i).and_then(|c| rs.column_types.get(*c)),
+                None => {
+                    let from = rs.from_id.columns().len();
+                    match i < from {
+                        true => rs.from_node_id_part_types.get(i),
+                        false => rs.to_node_id_part_types.get(i - from),
+                    }
+                }
+            }
+        })
+        .filter(|t| !t.raw.is_empty())
+        .collect()
 }
 
 /// A label's comparable id part types, as CAST targets
@@ -3729,6 +3745,17 @@ impl<'s> Lowerer<'s> {
             .collect();
         let mixed_labels = self.union_holds_texts(arms);
         let id_texts = self.rel_id_texts(arms);
+        // Each identity column's type where its arms' have no common one.
+        let edge_common: Vec<Option<String>> = (0..shape.identity)
+            .map(|i| {
+                let types: Vec<KeyPartType> =
+                    identity_part_types(arms, i).into_iter().cloned().collect();
+                self.options
+                    .dialect
+                    .common_type_where_none(&types)
+                    .map(|t| self.nullable_target(&t))
+            })
+            .collect();
         let mut input = Vec::new();
         for (i, arm) in arms.iter().enumerate() {
             let rs = arm.schema;
@@ -3764,7 +3791,15 @@ impl<'s> Lowerer<'s> {
                                 self.compared_as(label, part, col_at(ROW, c), mixed_labels)
                             }
                             (None, true) => self.any_text(col_at(ROW, c)),
-                            (None, false) => col_at(ROW, c),
+                            // Integers of no common type (`UInt64` and
+                            // signed) meet in the one that holds them (I3c).
+                            (None, false) => match &edge_common[i] {
+                                Some(target) => RenderExpr::Cast {
+                                    expr: Box::new(col_at(ROW, c)),
+                                    target: target.clone(),
+                                },
+                                None => col_at(ROW, c),
+                            },
                         }
                     });
                 items.push(select(e, &indexed_column(REL_ID, i)));

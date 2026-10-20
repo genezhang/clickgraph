@@ -9577,6 +9577,36 @@ graph_schema:
       edge_id: e
       column_types: {a: UInt64, b: UInt64, e: DateTime}
       property_mappings: {}
+    - type: FDT64
+      database: db
+      table: fdt64
+      from_node: U
+      to_node: U
+      from_id: a
+      to_id: b
+      edge_id: e
+      column_types: {a: UInt64, b: UInt64, e: "DateTime64(3)"}
+      property_mappings: {}
+    - type: FI
+      database: db
+      table: fi
+      from_node: U
+      to_node: U
+      from_id: a
+      to_id: b
+      edge_id: e
+      column_types: {a: UInt64, b: UInt64, e: Int64}
+      property_mappings: {}
+    - type: FU
+      database: db
+      table: fu
+      from_node: U
+      to_node: U
+      from_id: a
+      to_id: b
+      edge_id: e
+      column_types: {a: UInt64, b: UInt64, e: UInt64}
+      property_mappings: {}
     - type: TM
       database: db
       table: tm
@@ -9689,11 +9719,35 @@ graph_schema:
         "{:?}",
         shape[0].columns
     );
-    // A union holds a `Date` edge id with a `DateTime` one as a time: each
-    // read back in its own type.
+    // A union holds a `DateTime` edge id with a `DateTime64` one in the
+    // wider type: each read back in its own.
     has(
-        "MATCH (a:U)-[r:FD|FDT]->(b:U) RETURN r",
-        &["CASE WHEN CAST(v1.__cg_rid_0 AS Nullable(Date)) IS NULL"],
+        "MATCH (a:U)-[r:FDT|FDT64]->(b:U) RETURN r",
+        &["CASE WHEN CAST(v1.__cg_rid_0 AS Nullable(DateTime)) IS NULL"],
+    );
+    // I3c: edge ids of several kinds (a `Date` and a `DateTime`, a string
+    // and an integer) are held as texts, which a GROUP BY and a walk take
+    // (a `Variant` they refuse); integers of no common type meet in
+    // `Int128`.
+    has(
+        "MATCH (a:U)-[r:FD|FDT]->(b:U) RETURN DISTINCT r",
+        &[
+            r#"'FD' AS "__cg_type", 'U' AS "__cg_from_label", 'U' AS "__cg_to_label", CAST(e.e AS Nullable(String)) AS "__cg_rid_0""#,
+            r#"'FDT' AS "__cg_type", 'U' AS "__cg_from_label", 'U' AS "__cg_to_label", CAST(e.e AS Nullable(String)) AS "__cg_rid_0""#,
+        ],
+    );
+    has(
+        "MATCH (a:U)-[r:P|FI]->(b:U) RETURN DISTINCT r",
+        &[
+            r#"CAST(e.pid AS Nullable(String)) AS "__cg_rid_0""#,
+            r#"'FI' AS "__cg_type", 'U' AS "__cg_from_label", 'U' AS "__cg_to_label", CAST(e.e AS Nullable(String)) AS "__cg_rid_0""#,
+        ],
+    );
+    has(
+        "MATCH p = (a:U)-[:FI|FU*1..2]->(b:U) RETURN p",
+        &[
+            r#"CAST(e.e AS Nullable(Int128)) AS "__cg_rid_0", e.a AS "__cg_from_0""#,
+        ],
     );
     // A time finer than its node's: the node's text where its value in the
     // node's type is it, else its own.
