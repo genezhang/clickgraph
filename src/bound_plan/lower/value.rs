@@ -223,9 +223,21 @@ pub(super) fn node_key_text(g: &GraphValues, label: &str, id: &str) -> String {
 /// matches that `=` correctly refuses.
 pub(super) fn cast_key_part(col_sql: &str, target: Option<&str>) -> String {
     match target {
+        Some(DAY_OR_TIME) => day_or_time(col_sql),
         Some(t) => format!("CAST({col_sql} AS {t})"),
         None => col_sql.to_string(),
     }
+}
+
+/// The key "target" of a `Date` id part met by times of several zones
+/// (`schema_types::TextSpelling::DayOrTime`, ELEMENT_IDENTITY.md I2): no type
+/// spells them alike, so [`cast_key_part`] spells [`day_or_time`] instead.
+pub(super) const DAY_OR_TIME: &str = "__cg_day_or_time";
+
+/// A date or a time (SQL `col_sql`) as a text equal to another's exactly
+/// where `=` holds of them (`FunctionMapper::day_or_time_text`).
+pub(super) fn day_or_time(col_sql: &str) -> String {
+    current_function_mapper().day_or_time_text(col_sql)
 }
 
 /// A node's id parts (SQL) as its element id spells them
@@ -1047,7 +1059,7 @@ impl<'s> Lowerer<'s> {
     /// matches nothing.
     fn node_id_parts(&self, v: VarId) -> Result<Vec<String>, LowerError> {
         Ok(match self.id_columns(v)? {
-            Some(ids) => ids.iter().map(sql).collect(),
+            Some(ids) => self.own_texts(v, ids)?.iter().map(sql).collect(),
             None => vec![sql(&RenderExpr::Literal(Literal::Null))],
         })
     }
@@ -1109,7 +1121,11 @@ impl<'s> Lowerer<'s> {
             let column = |c: &str| self.physical(v, c).map(|e| sql(&e));
             let end = |side: &str, arity: usize| -> Result<String, LowerError> {
                 let ids = (0..arity)
-                    .map(|i| column(&super::indexed_column(side, i)))
+                    .map(|i| {
+                        let id = self.physical(v, &super::indexed_column(side, i))?;
+                        self.own_end_text(v, arms, side == super::REL_TO, i, id)
+                            .map(|e| sql(&e))
+                    })
                     .collect::<Result<Vec<_>, _>>()?;
                 Ok(element_id_sql(s, &ids))
             };

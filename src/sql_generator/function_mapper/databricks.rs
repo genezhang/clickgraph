@@ -149,6 +149,10 @@ impl FunctionMapper for DatabricksFunctionMapper {
         "string"
     }
 
+    fn day_or_time_text(&self, expr: &str) -> String {
+        format!("regexp_replace(CAST({expr} AS STRING), ' 00:00:00(\\\\.0+)?$', '')")
+    }
+
     fn to_string_float(&self, expr: &str) -> String {
         // Neo4j `toString(3.0)` = "3.0". Spark keeps a double's decimal in its
         // string form (`string(3.0d)` = "3.0"), BUT a whole-valued float LITERAL

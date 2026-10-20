@@ -102,6 +102,20 @@ impl SqlDialect {
         }
     }
 
+    /// Whether ids of `parts` held in one column (a union of labels') are
+    /// held as texts there, as their values have no common type in this
+    /// dialect (`schema_types::of_several_kinds`, ELEMENT_IDENTITY.md I2).
+    /// Spark: as before.
+    pub fn ids_held_as_text(
+        &self,
+        parts: &[crate::graph_catalog::schema_types::KeyPartType],
+    ) -> bool {
+        match self {
+            SqlDialect::ClickHouse => crate::graph_catalog::schema_types::of_several_kinds(parts),
+            _ => false,
+        }
+    }
+
     /// Whether this dialect supports the `FINAL` table modifier. `FINAL` is a
     /// ClickHouse MergeTree-family read-time dedup hint; it is invalid SQL on
     /// other backends (notably Databricks/Spark, which has no such storage

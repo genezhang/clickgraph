@@ -9126,3 +9126,252 @@ graph_schema:
         assert!(!got.contains("_ends AS"), "{q}:\n{got}");
     }
 }
+
+/// ELEMENT_IDENTITY.md I2 (#1393): where the schema's labels hold an id part
+/// in values of several kinds (an integer id and a string one), a column
+/// that mixes labels holds it as a text, so the string `'01'` is not read as
+/// the integer `1` (a `Variant`'s), joins of it meet, and it groups. Each
+/// label spells its text in the type its ids and ends meet in (a `Date` id
+/// with `DateTime` ends: the `DateTime`'s), and a typed side compared with
+/// such a column spells it so too; a node's element id reads its text back in
+/// its own type. Ids of one kind: the SQL of before.
+#[test]
+fn ids_of_several_kinds_meet_as_texts_1393() {
+    const YAML: &str = r#"
+name: lower_identity_texts
+graph_schema:
+  nodes:
+    - label: A
+      database: db
+      table: a
+      node_id: id
+      column_types: {id: UInt64}
+      property_mappings: {name: name}
+    - label: B
+      database: db
+      table: b
+      node_id: code
+      column_types: {code: String}
+      property_mappings: {name: name}
+    - label: C
+      database: db
+      table: c
+      node_id: id
+      column_types: {id: Int64}
+      property_mappings: {name: name}
+    - label: D
+      database: db
+      table: d
+      node_id: day
+      column_types: {day: Date}
+      property_mappings: {name: name}
+  edges:
+    - type: AB
+      database: db
+      table: ab
+      from_node: A
+      to_node: B
+      from_id: a_id
+      to_id: b_code
+      column_types: {a_id: UInt64, b_code: String}
+      property_mappings: {}
+    - type: CA
+      database: db
+      table: ca
+      from_node: C
+      to_node: A
+      from_id: c_id
+      to_id: a_id
+      column_types: {c_id: Int64, a_id: UInt64}
+      property_mappings: {}
+    - type: DB
+      database: db
+      table: dbe
+      from_node: D
+      to_node: B
+      from_id: at
+      to_id: b_code
+      column_types: {at: DateTime, b_code: String}
+      property_mappings: {}
+"#;
+    let schema = |yaml: &str| {
+        crate::graph_catalog::config::GraphSchemaConfig::from_yaml_str(yaml)
+            .unwrap()
+            .to_graph_schema()
+            .unwrap()
+    };
+    let mixed = schema(YAML);
+    let options = crate::bound_plan::lower::LowerOptions::default();
+    let sql = |q: &str| lowered(q, &mixed, &options);
+    let has = |q: &str, parts: &[&str]| {
+        let got = sql(q);
+        for p in parts {
+            assert!(got.contains(p), "{q}: `{p}` missing:\n{got}");
+        }
+    };
+    // A node of several labels: each arm's id as a text (a string's as
+    // itself), a `Date` in its ends' `DateTime`.
+    has(
+        "MATCH (n) RETURN count(DISTINCT n)",
+        &[
+            r#"CAST(e.id AS Nullable(String)) AS "__cg_id_0" FROM db.a"#,
+            r#"e.code AS "__cg_id_0" FROM db.b"#,
+            r#"CAST(CAST(e.day AS Nullable(DateTime64(3))) AS Nullable(String)) AS "__cg_id_0" FROM db.d"#,
+        ],
+    );
+    // Its ties to one label's ends, an equality with a node of one label,
+    // a walk's ties and restriction, and the two orientations of a
+    // relationship between two labels spell those as texts too.
+    has(
+        "MATCH (n) WITH n MATCH (n)-[:AB]->(b) RETURN b.name",
+        &["ON CAST(v2.a_id AS Nullable(String)) = w2.v1____cg_id_0"],
+    );
+    has(
+        "MATCH (a:A), (n) WHERE a = n RETURN count(*)",
+        &["CAST(v0.id AS Nullable(String)) = v1.__cg_id_0"],
+    );
+    has(
+        "MATCH (x:C)-[*1..2]-(y) RETURN y.name",
+        &[
+            r#"CAST(e.c_id AS Nullable(String)) AS "__cg_start_0""#,
+            "ON v1.start_id = CAST(v0.id AS Nullable(String))",
+        ],
+    );
+    has(
+        "MATCH (x:C) WHERE x.name = 'c' MATCH (x)-[*1..2]-(y) RETURN y.name",
+        &[r#"CAST(v0.id AS Nullable(String)) AS "id""#],
+    );
+    has(
+        "MATCH ()-[r:AB]->() MATCH (x)-[r]-(y) RETURN x.name",
+        &["THEN v1.b_code ELSE CAST(v1.a_id AS Nullable(String)) END = v3.__cg_id_0"],
+    );
+    // An element id reads its text back in its label's own type: a `D`'s
+    // is its `Date`'s, as of a node of label `D`.
+    has(
+        "MATCH (n) RETURN n",
+        &["CASE WHEN v0.__cg_label = 'D' THEN CAST(CAST(CAST(v0.__cg_id_0 AS Nullable(DateTime64(3))) AS Nullable(Date)) AS Nullable(String)) ELSE v0.__cg_id_0 END"],
+    );
+    // Times are spelled as instants of one zone: a `DateTime` id with ends
+    // in another zone meets them (review finding: each side's own zone's
+    // wall clock matched nothing).
+    let zoned = schema(
+        &YAML
+            .replace(
+                "{at: DateTime, b_code: String}",
+                "{at: 'DateTime(''Asia/Tokyo'')', b_code: String}",
+            )
+            .replace(
+                "column_types: {day: Date}",
+                "column_types: {day: 'DateTime(''UTC'')'}",
+            ),
+    );
+    let got = lowered("MATCH (n) RETURN count(DISTINCT n)", &zoned, &options);
+    assert!(
+        got.contains(
+            r#"CAST(CAST(e.day AS Nullable(DateTime64(0, 'UTC'))) AS Nullable(String)) AS "__cg_id_0""#
+        ),
+        "{got}"
+    );
+    let got = lowered(
+        "MATCH (n) WITH n MATCH (n)-[:DB]->(b) RETURN b.name",
+        &zoned,
+        &options,
+    );
+    assert!(
+        got.contains(".at AS Nullable(DateTime64(0, 'UTC'))) AS Nullable(String)) = w"),
+        "{got}"
+    );
+    // A `Date` id with times of several zones: a time is its date's text
+    // where it is midnight in its own zone, else its time's (no one cast).
+    let several = schema(&format!(
+        "{}    - type: DD\n      database: db\n      table: dd\n      from_node: D\n      to_node: D\n      from_id: s\n      to_id: t\n      column_types: {{s: 'DateTime(''UTC'')', t: 'DateTime(''UTC'')'}}\n      property_mappings: {{}}\n    - type: DT\n      database: db\n      table: dt\n      from_node: D\n      to_node: D\n      from_id: s\n      to_id: t\n      column_types: {{s: 'DateTime(''Asia/Tokyo'')', t: 'DateTime(''Asia/Tokyo'')'}}\n      property_mappings: {{}}\n",
+        YAML.replace(
+            "{at: DateTime, b_code: String}",
+            "{at: 'DateTime(''Asia/Tokyo'')', b_code: String}",
+        )
+    ));
+    let got = lowered("MATCH (n) RETURN count(DISTINCT n)", &several, &options);
+    assert!(
+        got.contains(
+            r#"replaceRegexpOne(toString(e.day), ' 00:00:00(\\.0+)?$', '') AS "__cg_id_0""#
+        ),
+        "{got}"
+    );
+    // So does a union of relationships between nodes of that one label,
+    // its columns typed one zone otherwise, and the node side meeting them.
+    let got = lowered(
+        "MATCH (x:D)-[r:DD|DT]->(y:D) RETURN y.name",
+        &several,
+        &options,
+    );
+    assert!(
+        got.contains(
+            r#"replaceRegexpOne(toString(e.s), ' 00:00:00(\\.0+)?$', '') AS "__cg_from_0""#
+        ),
+        "{got}"
+    );
+    assert!(got.contains("replaceRegexpOne(toString(v0.day)"), "{got}");
+    // So does a walk: its nodes, its relationships' ends and its keys.
+    let got = lowered(
+        "MATCH (x:D)-[:DD|DT*1..2]->(y:D) RETURN y.name",
+        &several,
+        &options,
+    );
+    for part in [
+        r#"replaceRegexpOne(toString(e.day), ' 00:00:00(\\.0+)?$', '') AS "__cg_id_0""#,
+        r#"replaceRegexpOne(toString(e.s), ' 00:00:00(\\.0+)?$', '') AS "__cg_start_0""#,
+        "concat('D', ':', toString(replaceRegexpOne(toString(e.day)",
+    ] {
+        assert!(got.contains(part), "`{part}` missing:\n{got}");
+    }
+    // Spark spells that text with its own functions.
+    let got = squash(
+        &databricks_sql("MATCH (x:D)-[:DD|DT*1..2]->(y:D) RETURN y.name", &several).unwrap(),
+    );
+    assert!(
+        got.contains("regexp_replace(CAST(e.day AS STRING), ' 00:00:00(\\\\.0+)?$', '')"),
+        "{got}"
+    );
+    assert!(!got.contains("replaceRegexpOne"), "{got}");
+    // A walk whose ends are times of several zones keys them as instants of
+    // one zone (each in its own zone's wall clock matched nothing).
+    let got = lowered(
+        "MATCH (x:D)-[:DB|DD*1..2]->(y) RETURN y.name",
+        &zoned,
+        &options,
+    );
+    assert!(
+        got.contains("toString(CAST(e.day AS DateTime64(0, 'UTC')))"),
+        "{got}"
+    );
+    // Ids of one kind (no `B`, no `D`): the SQL of before.
+    let one_kind = schema(
+        &YAML
+            .replace(
+                "column_types: {code: String}",
+                "column_types: {code: UInt64}",
+            )
+            .replace(
+                "{a_id: UInt64, b_code: String}",
+                "{a_id: UInt64, b_code: UInt64}",
+            )
+            .replace(
+                "{at: DateTime, b_code: String}",
+                "{at: UInt64, b_code: UInt64}",
+            )
+            .replace("column_types: {day: Date}", "column_types: {day: UInt64}"),
+    );
+    for q in [
+        "MATCH (n) RETURN count(DISTINCT n)",
+        "MATCH (n) WITH n MATCH (n)-[:AB]->(b) RETURN b.name",
+        "MATCH (a:A), (n) WHERE a = n RETURN count(*)",
+        "MATCH (x:C)-[*1..2]-(y) RETURN y.name",
+        "MATCH (n) RETURN n",
+    ] {
+        let got = lowered(q, &one_kind, &options);
+        assert!(!got.contains("AS Nullable(String))"), "{q}:\n{got}");
+    }
+    // Spark: as before.
+    let got = squash(&databricks_sql("MATCH (n) RETURN count(DISTINCT n)", &mixed).unwrap());
+    assert!(!got.contains("AS STRING)"), "{got}");
+}

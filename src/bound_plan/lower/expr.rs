@@ -1134,6 +1134,9 @@ impl Lowerer<'_> {
             }
             _ => return Ok(None),
         };
+        // Its key's texts as its label's (I2).
+        let own = self.own_texts(v, key.to_vec())?;
+        let key: &[RenderExpr] = &own;
         let equal = |a: RenderExpr, b: RenderExpr| {
             RenderExpr::OperatorApplicationExp(OperatorApplication {
                 operator: O::Equal,
@@ -1712,7 +1715,11 @@ impl Lowerer<'_> {
         b: VarId,
         equal: bool,
     ) -> Result<RenderExpr, LowerError> {
-        let (ia, ib) = (self.definition_identity(a)?, self.definition_identity(b)?);
+        let texts = self.definition_texts(a, b);
+        let (ia, ib) = (
+            self.definition_identity(a, &texts)?,
+            self.definition_identity(b, &texts)?,
+        );
         let same: Vec<RenderExpr> = ia
             .into_iter()
             .zip(ib)
@@ -1764,6 +1771,18 @@ impl Lowerer<'_> {
         if ia.len() != ib.len() {
             return unsupported("comparing nodes whose ids have different arities (S8)");
         }
+        // A node of one label compared with one of several: its id as theirs
+        // holds it (I2).
+        let mixed = |v: VarId| matches!(self.scans.get(&v), Some(Scan::Labels { .. }));
+        let held = |labels: &[String], ids: Vec<RenderExpr>, other: VarId| match labels {
+            [one] if mixed(other) => ids
+                .into_iter()
+                .enumerate()
+                .map(|(i, id)| self.as_held(one, i, id))
+                .collect(),
+            _ => ids,
+        };
+        let (ia, ib) = (held(la, ia, b), held(lb, ib, a));
         let op = if equal {
             lx::Operator::Equal
         } else {
