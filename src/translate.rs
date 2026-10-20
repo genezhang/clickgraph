@@ -670,13 +670,17 @@ fn bound_plan_or_reason(
                 // The query's schema (the context's: an `Arc`, not a copy).
                 let schema = crate::server::query_context::get_current_schema()
                     .unwrap_or_else(|| std::sync::Arc::new(schema.clone()));
-                crate::bound_plan::lower::IdLookup(std::sync::Arc::new(move |id| {
-                    crate::server::bolt_protocol::id_mapper::resolve_node_id(
-                        &mapper,
-                        Some(&schema),
-                        id,
-                    )
-                }))
+                let elements = mapper.clone();
+                crate::bound_plan::lower::IdLookup {
+                    node: std::sync::Arc::new(move |id| {
+                        crate::server::bolt_protocol::id_mapper::resolve_node_id(
+                            &mapper,
+                            Some(&schema),
+                            id,
+                        )
+                    }),
+                    element: std::sync::Arc::new(move |id| elements.get_element_id(id)),
+                }
             }),
             // The fold's cast targets spell for the query's dialect
             // (`cast_target`): the context carries it (round 3, "dialect") —

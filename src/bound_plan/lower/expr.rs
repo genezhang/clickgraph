@@ -750,6 +750,9 @@ impl Lowerer<'_> {
         if let Some(e) = self.id_comparison(op)? {
             return Ok(e);
         }
+        if let Some(e) = self.rel_id_comparison(op)? {
+            return Ok(e);
+        }
         // `id(a) = id(b)` / `<>` (S11l): ids are equal exactly when the
         // elements are (each endpoint's ids are unique per element).
         if let (O::Equal | O::NotEqual, [a, b]) = (op.operator, op.operands.as_slice()) {
@@ -1171,7 +1174,7 @@ impl Lowerer<'_> {
                 matches.push(key_is(k, &id.to_string()));
                 continue;
             };
-            let Some((label, value)) = (lookup.0)(id) else {
+            let Some((label, value)) = (lookup.node)(id) else {
                 continue;
             };
             // A composite key's parts are joined by `|`; a key of one column
@@ -1200,6 +1203,102 @@ impl Lowerer<'_> {
         } else {
             super::or_all(matches)
         };
+        Ok(Some(if negated {
+            RenderExpr::OperatorApplicationExp(OperatorApplication {
+                operator: O::Not,
+                operands: vec![holds],
+            })
+        } else {
+            holds
+        }))
+    }
+
+    /// `id(r) = N`, `id(r) <> N`, `id(r) [NOT] IN [N, …]` of a relationship
+    /// `r` and integer literals, on the server (#1410, ELEMENT_IDENTITY.md
+    /// I3b): an `N` is an id the server gave (`LowerOptions::id_lookup`'s
+    /// `element`), the relationship of that element id, compared with `r`'s
+    /// as its value spells it (`Lowerer::rel_element_id_sql`); an id it did
+    /// not give, or of another type, names none. `None`: not such a
+    /// comparison, or no server (the number is the server's).
+    fn rel_id_comparison(&self, op: &LOp) -> Result<Option<RenderExpr>, LowerError> {
+        use lx::Operator as O;
+        let Some(lookup) = &self.options.id_lookup else {
+            return Ok(None);
+        };
+        let rel_id = |e: &LogicalExpr| match e {
+            LogicalExpr::ScalarFnCall(f) if f.name.eq_ignore_ascii_case("id") => {
+                self.entity_arg(&f.args).filter(|v| {
+                    matches!(
+                        self.scans.get(v),
+                        Some(Scan::Rel { .. } | Scan::Rels { .. } | Scan::Impossible)
+                    ) && !matches!(self.binding(*v).kind, BindingKind::Node { .. })
+                })
+            }
+            _ => None,
+        };
+        let integer = |e: &LogicalExpr| match e {
+            LogicalExpr::Literal(lx::Literal::Integer(i)) => Some(*i),
+            _ => None,
+        };
+        let (v, ids, negated) = match (op.operator, op.operands.as_slice()) {
+            (O::Equal | O::NotEqual, [a, b]) => {
+                let (v, id) = match (rel_id(a), integer(b), rel_id(b), integer(a)) {
+                    (Some(v), Some(id), _, _) | (_, _, Some(v), Some(id)) => (v, id),
+                    _ => return Ok(None),
+                };
+                (v, vec![id], op.operator == O::NotEqual)
+            }
+            (O::In | O::NotIn, [a, LogicalExpr::List(xs)]) => {
+                let (Some(v), Some(ids)) = (
+                    rel_id(a),
+                    xs.iter().map(integer).collect::<Option<Vec<_>>>(),
+                ) else {
+                    return Ok(None);
+                };
+                (v, ids, op.operator == O::NotIn)
+            }
+            _ => return Ok(None),
+        };
+        let boolean = |b: bool| RenderExpr::Literal(Literal::Boolean(b));
+        // `x IN []` is false, NULL `x` included.
+        if ids.is_empty() {
+            return Ok(Some(boolean(negated)));
+        }
+        let types: Vec<&str> = match self.scans.get(&v) {
+            Some(Scan::Rel { rel_type, .. }) => vec![rel_type.as_str()],
+            Some(Scan::Rels { arms, .. }) => arms.iter().map(|a| a.rel_type.as_str()).collect(),
+            // NULL on every row.
+            _ => return Ok(Some(RenderExpr::Literal(Literal::Null))),
+        };
+        let g = super::value::spelling()?;
+        let Some(text) = self.rel_element_id_sql(v, &g)? else {
+            return Ok(None);
+        };
+        let mut named: Vec<String> = Vec::new();
+        for id in ids {
+            let Some(element) = (lookup.element)(id) else {
+                continue;
+            };
+            // Of one of its types: an element id starts `TYPE:`.
+            let of_its_types = element
+                .split_once(':')
+                .is_some_and(|(t, _)| types.contains(&t));
+            if of_its_types && !named.contains(&element) {
+                named.push(element);
+            }
+        }
+        if named.is_empty() {
+            // NULL where the relationship is.
+            return Ok(Some(self.unless_null(&[v], boolean(negated))?));
+        }
+        let texts: Vec<String> = named
+            .iter()
+            .map(|e| super::value::text_literal(e))
+            .collect();
+        let holds = RenderExpr::Raw(match texts.as_slice() {
+            [one] => format!("({text} = {one})"),
+            _ => format!("({text} IN ({}))", texts.join(", ")),
+        });
         Ok(Some(if negated {
             RenderExpr::OperatorApplicationExp(OperatorApplication {
                 operator: O::Not,

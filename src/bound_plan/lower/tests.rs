@@ -7124,12 +7124,20 @@ fn ids_compared_with_integers() {
     // On the server an integer is one of its ids: the node of that label
     // and key, or none.
     let server = LowerOptions {
-        id_lookup: Some(IdLookup(std::sync::Arc::new(|id| match id {
-            101 => Some(("User".to_string(), "2".to_string())),
-            102 => Some(("Post".to_string(), "5".to_string())),
-            104 => Some(("User".to_string(), "p|q".to_string())),
-            _ => None,
-        }))),
+        id_lookup: Some(IdLookup {
+            node: std::sync::Arc::new(|id| match id {
+                101 => Some(("User".to_string(), "2".to_string())),
+                102 => Some(("Post".to_string(), "5".to_string())),
+                104 => Some(("User".to_string(), "p|q".to_string())),
+                _ => None,
+            }),
+            element: std::sync::Arc::new(|id| match id {
+                201 => Some("FOLLOWS:7:1->2-".to_string()),
+                202 => Some("LIKED:9:1->5-".to_string()),
+                203 => Some("FOLLOWS:a\\:'b:1->2-".to_string()),
+                _ => None,
+            }),
+        }),
         ..LowerOptions::default()
     };
     let on_server = |q: &str, parts: &[&str]| {
@@ -7178,6 +7186,44 @@ fn ids_compared_with_integers() {
         "MATCH (a:User)-[r:FOLLOWS]->(b) WHERE id(r) = 1 RETURN b.name",
         "id() of a relationship other than",
     );
+    // On the server (#1410): the relationship of the element id it gave the
+    // number, compared with the relationship's (`value.rs`); of another
+    // type, or a number it did not give, none.
+    let follows = format!(
+        "concat('FOLLOWS:', concat({}), ':', toString(v1.follower_id), '->', toString(v1.followed_id), '-')",
+        edge_text("v1.follow_id")
+    );
+    on_server(
+        "MATCH (a:User)-[r:FOLLOWS]->(b) WHERE id(r) = 201 RETURN b.name",
+        &[&format!("WHERE ({follows} = 'FOLLOWS:7:1->2-')")],
+    );
+    on_server(
+        "MATCH (a:User)-[r:FOLLOWS]->(b) WHERE id(r) IN [201, 202, 203, 204] RETURN b.name",
+        &[&format!(
+            r"WHERE ({follows} IN ('FOLLOWS:7:1->2-', 'FOLLOWS:a\\:''b:1->2-'))"
+        )],
+    );
+    on_server(
+        "MATCH (a:User)-[r:FOLLOWS]->(b) WHERE NOT id(r) IN [201] RETURN b.name",
+        &[&format!("WHERE NOT ({follows} = 'FOLLOWS:7:1->2-')")],
+    );
+    on_server(
+        "MATCH (a:User)-[r:FOLLOWS]->(b) WHERE id(r) = 202 RETURN b.name",
+        &["WHERE false"],
+    );
+    // A relationship of several types: by its element id of its row's type.
+    on_server(
+        "MATCH (a:User)-[r:FOLLOWS|LIKED]->(b) WHERE id(r) = 202 RETURN b",
+        &[
+            "concat(v1.__cg_type, ':', CASE WHEN",
+            "-') = 'LIKED:9:1->5-')",
+        ],
+    );
+    // An OPTIONAL MATCH's NULL relationship: NULL.
+    on_server(
+        "MATCH (a:User) OPTIONAL MATCH (a)-[r:FOLLOWS]->(b:User) RETURN id(r) = 999 AS x",
+        &["CASE WHEN", "IS NULL THEN NULL ELSE false END AS \"x\""],
+    );
 }
 
 /// S11l (user 2026-10-11): `id()` as a value. A node's is its key; ids
@@ -7224,6 +7270,20 @@ fn ids_as_values() {
         ),
         "{}",
         rel.sql
+    );
+    // Of several types: its element id of its row's type (I3b).
+    let rels = translate_bound_plan(
+        "MATCH (a:User)-[r:FOLLOWS|LIKED]->(b) RETURN id(r) AS i",
+        &social(),
+        &ReadOptions::default(),
+    )
+    .unwrap();
+    assert!(
+        matches!(rels.shape[0].kind, ResultKind::RelId)
+            && squash(&rels.sql).contains("concat(v1.__cg_type, ':', CASE WHEN"),
+        "{:?}\n{}",
+        rels.shape,
+        rels.sql
     );
     // Bolt's number is computed after the query: nothing orders by it.
     for q in [

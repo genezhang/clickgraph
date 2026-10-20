@@ -338,7 +338,7 @@ fn labeled_node_object(
 
 /// The SQL string literal of the text `text` (`string` reads a Cypher
 /// literal's body, in which a backslash escapes).
-fn text_literal(text: &str) -> String {
+pub(super) fn text_literal(text: &str) -> String {
     string(&text.replace('\\', "\\\\"))
 }
 
@@ -436,7 +436,6 @@ fn labeled_rel_object(
     (from, to): (&str, &str),
     props: &[(String, String)],
 ) -> String {
-    let (after_type, between, suffix) = relationship_element_id_separators();
     let (after_label, node_suffix) = node_element_id_separators();
     let node_id = |label: &str, id: &str| {
         (g.text)(&[
@@ -449,24 +448,37 @@ fn labeled_rel_object(
     (g.object)(&[
         (
             string("elementId"),
-            (g.text)(
-                &[rel_type.to_string(), string(after_type)]
-                    .into_iter()
-                    .chain(edge.map(str::to_string))
-                    .chain([
-                        (g.to_text)(from),
-                        string(between),
-                        (g.to_text)(to),
-                        string(suffix),
-                    ])
-                    .collect::<Vec<_>>(),
-            ),
+            labeled_rel_element_id(g, rel_type, edge, from, to),
         ),
         (string("startNodeElementId"), node_id(from_label, from)),
         (string("endNodeElementId"), node_id(to_label, to)),
         (string("type"), rel_type.to_string()),
         (string("properties"), properties(g, props)),
     ])
+}
+
+/// The element id of a relationship whose type is the SQL `rel_type` (a
+/// column), else as [`rel_element_id`].
+fn labeled_rel_element_id(
+    g: &GraphValues,
+    rel_type: &str,
+    edge: Option<&str>,
+    from: &str,
+    to: &str,
+) -> String {
+    let (after_type, between, suffix) = relationship_element_id_separators();
+    (g.text)(
+        &[rel_type.to_string(), string(after_type)]
+            .into_iter()
+            .chain(edge.map(str::to_string))
+            .chain([
+                (g.to_text)(from),
+                string(between),
+                (g.to_text)(to),
+                string(suffix),
+            ])
+            .collect::<Vec<_>>(),
+    )
 }
 
 fn properties(g: &GraphValues, props: &[(String, String)]) -> String {
@@ -1220,18 +1232,8 @@ impl<'s> Lowerer<'s> {
     /// A fixed relationship of the current relation.
     fn rel_value(&self, v: VarId, s: &GraphValues) -> Result<String, LowerError> {
         if let Some(Scan::Rels { arms, .. }) = self.scans.get(&v) {
-            let shape = super::rel_union_shape(arms)?;
             let column = |c: &str| self.physical(v, c).map(|e| sql(&e));
-            let end = |side: &str, arity: usize| -> Result<String, LowerError> {
-                let ids = (0..arity)
-                    .map(|i| {
-                        let id = self.physical(v, &super::indexed_column(side, i))?;
-                        self.own_end_text(v, arms, side == super::REL_TO, i, id)
-                            .map(|e| sql(&e))
-                    })
-                    .collect::<Result<Vec<_>, _>>()?;
-                Ok(element_id_sql(s, &ids))
-            };
+            let (edge, from, to) = self.union_identity_texts(v, arms, s)?;
             let mut props = Vec::new();
             for name in self.all_property_names(v) {
                 let e = self.property(v, &name)?;
@@ -1244,11 +1246,8 @@ impl<'s> Lowerer<'s> {
                     &column(super::REL_FROM_LABEL)?,
                     &column(super::REL_TO_LABEL)?,
                 ),
-                self.union_edge_text(v, arms, s)?.as_deref(),
-                (
-                    &end(super::REL_FROM, shape.from)?,
-                    &end(super::REL_TO, shape.to)?,
-                ),
+                edge.as_deref(),
+                (&from, &to),
                 &props,
             ));
         }
@@ -1274,6 +1273,70 @@ impl<'s> Lowerer<'s> {
             &to,
             &props,
         ))
+    }
+
+    /// The texts (SQL) a relationship `v` of a union of definitions `arms`
+    /// spells its element id from ([`labeled_rel_element_id`]): its `edge_id`'s
+    /// where its definition declares one (`Lowerer::union_edge_text`), and
+    /// its ends' ids', as their nodes spell theirs (`Lowerer::own_end_text`).
+    fn union_identity_texts(
+        &self,
+        v: VarId,
+        arms: &[super::RelArm],
+        s: &GraphValues,
+    ) -> Result<(Option<String>, String, String), LowerError> {
+        let shape = super::rel_union_shape(arms)?;
+        let end = |side: &str, arity: usize| -> Result<String, LowerError> {
+            let ids = (0..arity)
+                .map(|i| {
+                    let id = self.physical(v, &super::indexed_column(side, i))?;
+                    self.own_end_text(v, arms, side == super::REL_TO, i, id)
+                        .map(|e| sql(&e))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(element_id_sql(s, &ids))
+        };
+        Ok((
+            self.union_edge_text(v, arms, s)?,
+            end(super::REL_FROM, shape.from)?,
+            end(super::REL_TO, shape.to)?,
+        ))
+    }
+
+    /// The element id (SQL) of relationship `v` of one definition or of a
+    /// union of them, as its value spells it (Bolt's, from which its `id()`
+    /// number is computed); `None`: not a relationship of such a scan.
+    pub(super) fn rel_element_id_sql(
+        &self,
+        v: VarId,
+        s: &GraphValues,
+    ) -> Result<Option<String>, LowerError> {
+        match self.scans.get(&v) {
+            Some(Scan::Rel {
+                schema, rel_type, ..
+            }) => {
+                let (edge, from, to) = self.rel_identity_texts(v, schema, s)?;
+                Ok(Some(rel_element_id(
+                    s,
+                    rel_type,
+                    edge.as_deref(),
+                    &from,
+                    &to,
+                )))
+            }
+            Some(Scan::Rels { arms, .. }) => {
+                let (edge, from, to) = self.union_identity_texts(v, arms, s)?;
+                let rel_type = sql(&self.physical(v, super::REL_TYPE)?);
+                Ok(Some(labeled_rel_element_id(
+                    s,
+                    &rel_type,
+                    edge.as_deref(),
+                    &from,
+                    &to,
+                )))
+            }
+            _ => Ok(None),
+        }
     }
 
     /// The texts (SQL) relationship `v` of one definition, `schema`, spells

@@ -471,8 +471,15 @@ pub fn transform_row(
                 result.push(BoltValue::Json(Value::Number(encoded_id.into())));
             }
             ReturnItemType::ElementIdNumber => {
-                let value = meta.value(&row).cloned().unwrap_or(Value::Null);
-                result.push(BoltValue::Json(element_id_number(value)));
+                // Assigned in the session, so that `id(r) = N` of the number
+                // reads it back (#1410).
+                let value = match meta.value(&row).cloned().unwrap_or(Value::Null) {
+                    Value::String(element_id) => {
+                        Value::Number(id_mapper.get_or_assign(&element_id).into())
+                    }
+                    other => other,
+                };
+                result.push(BoltValue::Json(value));
             }
             ReturnItemType::Scalar => {
                 // For scalars, just extract the value and wrap in BoltValue::Json
