@@ -1,27 +1,32 @@
 //! Persistent schema registry — the durability behind `POST /schemas/load`
-//! and DDL-created tables (spec: `docs/design/SCHEMA_PERSISTENCE.md`).
+//! (spec: `docs/design/SCHEMA_PERSISTENCE.md`).
 //!
 //! # The problem it solves
 //!
 //! `load_schema_from_content` registers into the in-memory `GLOBAL_SCHEMAS` /
-//! `GLOBAL_SCHEMA_CONFIGS` maps and drops the YAML text it was given; the
-//! legacy DDL path serializes a lossy `GraphSchema` JSON into the
-//! `graph_catalog` table but nothing boots from it unless *no* YAML is
-//! configured. Net effect: a restart or upgrade loses every runtime
-//! registration. Systems that ship this guarantee (Kafka Connect's
-//! `config.storage.topic`, Debezium's `schema.history.internal`) externalize
-//! the source text to storage owned by the platform itself and replay it at
-//! boot; this module is that pattern against ClickHouse, which is already a
-//! hard dependency.
+//! `GLOBAL_SCHEMA_CONFIGS` maps and drops the YAML text it was given. Net
+//! effect: a restart or upgrade loses every runtime registration. Systems
+//! that ship this guarantee (Kafka Connect's `config.storage.topic`,
+//! Debezium's `schema.history.internal`) externalize the source text to
+//! storage owned by the platform itself and replay it at boot; this module is
+//! that pattern against ClickHouse, which is already a hard dependency.
+//!
+//! Not covered here: **DDL-created tables** (`ddl_handler` was never
+//! reachable from query dispatch — every non-read statement is refused with
+//! 400, so no DDL row was ever written). DDL-created schemas keep bouncing on
+//! the pre-existing recovery they always had on `main`: the lossy
+//! `graph_catalog` table that `add_to_schema` feeds unconditionally (its
+//! serializations lose `#[serde(skip)]` fields — vector/fulltext indexes,
+//! engine info, denormalized metadata; `graph_schema.rs`). Wiring real DDL
+//! durability through this module is future work recorded in the spec.
 //!
 //! # What is stored, and why source text (not decoded structs)
 //!
-//! One row per registered name carries the **original YAML** for an HTTP
-//! registration and the serialized `GraphSchema` JSON for a DDL mutation.
-//! Decoded structs are lossy today (vector/fulltext indexes, engine info and
-//! denormalized metadata are `#[serde(skip)]` on `graph_schema.rs:1678`), so
-//! restore-at-boot must start from the source. The YAML additionally keeps
-//! every schema feature the parser grew after the JSON path was written.
+//! One row per registered name carries the **original YAML** the caller
+//! posted. Decoded structs are lossy today (vector/fulltext indexes, engine
+//! info and denormalized metadata are `#[serde(skip)]` on `graph_schema.rs`),
+//! so restore-at-boot must start from the source — the YAML also keeps every
+//! schema feature the parser grew after the lossy serialization was written.
 //!
 //! # Guarantees (and their boundaries)
 //!
@@ -58,14 +63,13 @@ pub const REGISTRY_TABLE: &str = "clickgraph_schema_registry";
 /// stays additive so far).
 pub const REGISTRY_VERSION: u16 = 1;
 
-/// Who wrote the row. `api-load` rows carry replayable YAML; `ddl` rows carry
-/// a `GraphSchema` snapshot that inherits the documented round-trip losses.
+/// Who wrote the row. Only `api-load` rows are produced today (the HTTP
+/// registration path); replay skips unknown sources/formats with a warning so
+/// an older row left in the table can't confuse a newer (or older) server.
 pub const SOURCE_API_LOAD: &str = "api-load";
-pub const SOURCE_DDL: &str = "ddl";
 
 /// Serialization format of `payload`.
 pub const FORMAT_YAML: &str = "yaml";
-pub const FORMAT_GRAPH_SCHEMA_JSON: &str = "graph-schema-json";
 
 /// One persisted registration (`registry-v1`).
 ///
@@ -157,23 +161,19 @@ pub enum SchemaStore {
 
 impl SchemaStore {
     /// The one construction point: mode from the server config, client from
-    /// whatever built `AppState` this boot.
+    /// whatever built `AppState` this boot. Stays log-quiet: the boot-time
+    /// "no client in this server mode" notice belongs to `replay` (once per
+    /// boot), and per-request constructions must not spam it.
     pub fn from_parts(mode: SchemaPersistenceMode, clickhouse_client: Option<Client>) -> Self {
-        match (mode, clickhouse_client) {
-            (SchemaPersistenceMode::Clickhouse, Some(client)) => {
-                SchemaStore::Clickhouse(Box::new(ClickhouseSchemaStore::new(client)))
-            }
-            (mode, client) => {
-                if mode == SchemaPersistenceMode::Clickhouse && client.is_none() {
-                    log::warn!(
-                        "CLICKGRAPH_SCHEMA_PERSISTENCE=clickhouse but this server \
-                         mode has no ClickHouse client — schema persistence stays \
-                         off (no-client server modes carry none)"
-                    );
+        if mode == SchemaPersistenceMode::Clickhouse {
+            return match clickhouse_client {
+                Some(client) => {
+                    SchemaStore::Clickhouse(Box::new(ClickhouseSchemaStore::new(client)))
                 }
-                SchemaStore::Off
-            }
+                None => SchemaStore::Off,
+            };
         }
+        SchemaStore::Off
     }
 
     /// Persist a YAML registration. `Ok(false)` = the store refused — the
@@ -189,20 +189,10 @@ impl SchemaStore {
         }
     }
 
-    /// Persist a DDL-mutated schema snapshot. Same never-fail contract.
-    pub async fn save_schema_snapshot(&self, name: &str, json: &str) -> Result<(), String> {
-        match self {
-            SchemaStore::Off => Ok(()),
-            SchemaStore::Clickhouse(store) => {
-                store
-                    .upsert(name, SOURCE_DDL, FORMAT_GRAPH_SCHEMA_JSON, json.to_string())
-                    .await
-            }
-        }
-    }
-
-    /// Remove a registration row. `Ok(false)` = nothing was stored under the
-    /// name (never persisted, or already deleted).
+    /// Remove a registration row. Returns `Ok(true)` when the row is gone:
+    /// the ClickHouse store reports success even when the name never had a
+    /// row (`DELETE FROM` matches nothing there) — the end state is the same,
+    /// so callers treat both as "not persisted anymore", not as an error.
     pub async fn delete(&self, name: &str) -> Result<bool, String> {
         match self {
             SchemaStore::Off => Ok(false),
@@ -210,13 +200,35 @@ impl SchemaStore {
         }
     }
 
-    /// All rows, oldest first; future versions filtered with a warning.
-    pub async fn load_oldest_first(&self) -> Result<Vec<Registration>, String> {
+    /// Boot replay's one read, bounded: the deduped row count plus (at most)
+    /// `max_rows` oldest-first `restorable` rows. Restoring everything a
+    /// compartment-compromised or runaway client ever persisted, unbounded,
+    /// converts a one-time write burst into a per-restart cost that can push
+    /// boot past any readiness window — the row budget makes that worst case
+    /// visible and operator-dialable instead of silent. Total rows beyond the
+    /// cap are counted in [`ReplayFetch`] so the caller can warn with exact
+    /// numbers.
+    pub async fn load_replay_rows(&self, max_rows: usize) -> Result<ReplayFetch, String> {
         match self {
-            SchemaStore::Off => Ok(Vec::new()),
-            SchemaStore::Clickhouse(store) => store.load_oldest_first().await,
+            SchemaStore::Off => Ok(ReplayFetch::default()),
+            SchemaStore::Clickhouse(store) => store.load_replay_rows(max_rows).await,
         }
     }
+}
+
+/// A single bounded replay read.
+#[derive(Debug, Default)]
+pub struct ReplayFetch {
+    /// Current-version rows, oldest first, within the row budget.
+    pub restorable: Vec<Registration>,
+    /// Rows whose `registry_version` is newer than this server (never
+    /// restored; the store warns with each name at fetch time).
+    pub future_versioned: Vec<Registration>,
+    /// Deduped rows in the table (`FINAL` count) — rows beyond the row
+    /// budget were never fetched, so this may exceed both vectors' lengths.
+    pub total_rows: u64,
+    /// Rows actually fetched (`restorable + future_versioned` lengths).
+    pub fetched: usize,
 }
 
 /// ClickHouse-backed store. Statement text is fixed; every operator-supplied
@@ -224,6 +236,11 @@ impl SchemaStore {
 /// are never interpolated into SQL text.
 pub struct ClickhouseSchemaStore {
     client: Client,
+    /// Serializes table creation. A CREATE TABLE IF NOT EXISTS per store op is
+    /// racy when two first-boot registrations run concurrently (one can lose
+    /// the metadata race and fail the op, degrading `persisted: false`); one
+    /// write path at a time removes the race without error-string sniffing.
+    table_creation: tokio::sync::Mutex<()>,
 }
 
 impl ClickhouseSchemaStore {
@@ -232,10 +249,12 @@ impl ClickhouseSchemaStore {
         // its table exists makes the first registration racy.
         Self {
             client: client.clone().with_option("wait_end_of_query", "1"),
+            table_creation: tokio::sync::Mutex::new(()),
         }
     }
 
     async fn ensure_table(&self) -> Result<(), String> {
+        let _guard = self.table_creation.lock().await;
         let create = format!(
             "CREATE TABLE IF NOT EXISTS {REGISTRY_TABLE} (\
              name String, \
@@ -244,7 +263,7 @@ impl ClickhouseSchemaStore {
              payload String, \
              registry_version UInt16, \
              registered_at_ms UInt64\
-             ) ENGINE = ReplacingMergeTree() ORDER BY name"
+             ) ENGINE = ReplacingMergeTree(registered_at_ms) ORDER BY name"
         );
         self.client
             .query(&create)
@@ -285,30 +304,35 @@ impl ClickhouseSchemaStore {
         Ok(())
     }
 
-    /// Persist a YAML registration (`api-load` source).
-    pub async fn save_yaml(&self, name: &str, yaml: &str) -> Result<(), String> {
-        self.upsert(name, SOURCE_API_LOAD, FORMAT_YAML, yaml.to_string())
-            .await
-    }
-
-    /// Persist a serialized `GraphSchema` snapshot (`ddl` source).
-    pub async fn save_schema_snapshot(&self, name: &str, json: &str) -> Result<(), String> {
-        self.upsert(name, SOURCE_DDL, FORMAT_GRAPH_SCHEMA_JSON, json.to_string())
-            .await
-    }
-
     /// `FINAL` collapses superseded rows of the same name to the last write
     /// (ReplacingMergeTree's compaction, read live — the same idiom the
-    /// legacy `graph_catalog` read uses).
-    pub async fn load_oldest_first(&self) -> Result<Vec<Registration>, String> {
+    /// legacy `graph_catalog` read uses). The version column
+    /// (`registered_at_ms`) makes the collapse deterministic: two same-name
+    /// writes can land in the same millisecond, and with the version column
+    /// the merge keeps the one registered later in the same part cycle.
+    pub async fn load_replay_rows(&self, max_rows: usize) -> Result<ReplayFetch, String> {
         self.ensure_table().await?;
+
+        // Count first so "N rows skipped over the budget" is an exact
+        // statement, not a guess. Two small reads instead of one unbounded
+        // one: the count on FINAL is cheap on this table (one row per
+        // registration, boot-time only), and the LIMIT below then bounds
+        // payload transfer regardless of what is in the table.
+        let total_rows: u64 = self
+            .client
+            .query(&format!("SELECT count() FROM {REGISTRY_TABLE} FINAL"))
+            .fetch_one::<u64>()
+            .await
+            .map_err(|e| format!("registry read failed: {e}"))?;
+
+        let select = format!(
+            "SELECT name, source, format, payload, registry_version, \
+             registered_at_ms FROM {REGISTRY_TABLE} FINAL \
+             ORDER BY registered_at_ms, name LIMIT {max_rows}"
+        );
         let rows: Vec<Registration> = self
             .client
-            .query(&format!(
-                "SELECT name, source, format, payload, registry_version, \
-                 registered_at_ms FROM {REGISTRY_TABLE} FINAL \
-                 ORDER BY registered_at_ms, name"
-            ))
+            .query(&select)
             .fetch_all::<Registration>()
             .await
             .map_err(|e| format!("registry read failed: {e}"))?;
@@ -318,16 +342,24 @@ impl ClickhouseSchemaStore {
             log::warn!(
                 "registry row '{}' was written by registry_version {} \
                  (newer than this server's {REGISTRY_VERSION}); skipping it",
-                row.name,
+                log_safe(&row.name),
                 row.registry_version
             );
         }
-        Ok(gate.restorable)
+        Ok(ReplayFetch {
+            fetched: gate.restorable.len() + gate.future_versioned.len(),
+            restorable: gate.restorable,
+            future_versioned: gate.future_versioned,
+            total_rows,
+        })
     }
 
     /// `DELETE FROM` (lightweight delete) first; the mutation-based
     /// `ALTER TABLE ... DELETE` is the fallback for servers that disable
-    /// lightweight deletes. Both are synchronous before returning.
+    /// lightweight deletes. Both are synchronous before returning. Success is
+    /// reported even when the name has no row (an idempotent end state), and
+    /// note the write-on-read surprise: on a database where nothing was ever
+    /// registered, this creates the (empty) registry table.
     pub async fn delete(&self, name: &str) -> Result<bool, String> {
         self.ensure_table().await?;
         let lightweight = self
@@ -376,67 +408,36 @@ pub async fn persist_yaml_after_load(
     // registration succeeded in memory, the response reports what persisted.
     let store = SchemaStore::from_parts(config.schema_persistence, clickhouse_client);
     let outcome = match &store {
-        SchemaStore::Off => Err("no ClickHouse client in this server mode".to_string()),
-        SchemaStore::Clickhouse(store) => store.save_yaml(schema_name, yaml_content).await,
+        SchemaStore::Off => {
+            // No-client modes must not re-WARN per request (boot's `replay`
+            // logged the condition once); a persisted:false response is the
+            // contract surface. Debug keeps the trail for support.
+            log::debug!(
+                "schema persistence: no ClickHouse client in this server \
+                 mode — '{}' stays memory-only",
+                log_safe(schema_name)
+            );
+            return Some(false);
+        }
+        SchemaStore::Clickhouse(store) => {
+            store
+                .upsert(
+                    schema_name,
+                    SOURCE_API_LOAD,
+                    FORMAT_YAML,
+                    yaml_content.to_string(),
+                )
+                .await
+        }
     };
     if let Err(e) = &outcome {
         log::warn!(
             "schema '{}' could not be persisted for restart ({e}); \
              the registration is live, it just will not survive one",
-            schema_name
+            log_safe(schema_name)
         );
     }
     Some(outcome.is_ok())
-}
-/// Persist after a successful DDL mutation (`add_to_schema`): snapshot the
-/// mutated `GraphSchema` so a boot without the config file restores the
-/// created tables. Inherits the documented lossy round-trip — the same
-/// caveat the legacy `graph_catalog` path carries.
-pub async fn persist_ddl_snapshot(
-    config: &ServerConfig,
-    clickhouse_client: Option<Client>,
-    schema_name: &str,
-) -> Option<bool> {
-    if config.schema_persistence != SchemaPersistenceMode::Clickhouse {
-        return None;
-    }
-    let store = SchemaStore::from_parts(config.schema_persistence, clickhouse_client);
-    // Attempt is real: no client (no-client server modes) reports `false`,
-    // the same honest answer a store error gets.
-    let outcome = match &store {
-        SchemaStore::Off => Err("no ClickHouse client in this server mode".to_string()),
-        SchemaStore::Clickhouse(_) => match snapshot_registered_schema(schema_name).await {
-            Ok(json) => store.save_schema_snapshot(schema_name, &json).await,
-            Err(e) => {
-                log::warn!("DDL snapshot for '{schema_name}' not persisted ({e})");
-                return Some(false);
-            }
-        },
-    };
-    if let Err(e) = &outcome {
-        log::warn!(
-            "schema '{schema_name}' DDL mutation not persisted ({e}); \
-             the created table is live, it just will not survive a restart"
-        );
-        return Some(false);
-    }
-    Some(true)
-}
-
-/// Serialize the current in-memory `GraphSchema` of `schema_name`.
-///
-/// Point-in-time read: another DDL in flight may mutate the same schema after
-/// this snapshot; the store's last-write-wins rows keep it convergent with
-/// the in-memory registry either way.
-async fn snapshot_registered_schema(schema_name: &str) -> Result<String, String> {
-    let schemas_lock = super::GLOBAL_SCHEMAS
-        .get()
-        .ok_or_else(|| "GLOBAL_SCHEMAS not initialized".to_string())?;
-    let schemas = schemas_lock.read().await;
-    let schema = schemas
-        .get(schema_name)
-        .ok_or_else(|| format!("schema '{schema_name}' not registered"))?;
-    serde_json::to_string(schema).map_err(|e| format!("DDL snapshot serialization failed: {e}"))
 }
 
 // --------------------------------------------------------------- boot replay
@@ -446,45 +447,106 @@ async fn snapshot_registered_schema(schema_name: &str) -> Result<String, String>
 /// Call exactly once, before the listener binds (single site: `run_server`).
 /// No-op when the flag is unset, or when the server mode has no ClickHouse
 /// client — the guaranteed behavior there is today's behavior.
+///
+/// Bounded: restores at most `CLICKGRAPH_SCHEMA_REPLAY_MAX_ROWS` rows whose
+/// cumulative payload stays under `CLICKGRAPH_SCHEMA_REPLAY_MAX_BYTES`, in
+/// `registered_at_ms` order (oldest first). Every row left un-restored by a
+/// budget is named in a WARN with the exact count — bounded work at boot is
+/// the point, silent truncation would be a data-loss bug pretending to be a
+/// cap.
 pub async fn replay(app_state: &super::AppState, config: &ServerConfig) {
+    // The boot notice lives here (not in `from_parts`, which the per-request
+    // write paths also construct) so a no-client mode logs it exactly once.
+    if config.schema_persistence == SchemaPersistenceMode::Clickhouse
+        && app_state.clickhouse_client.is_none()
+    {
+        log::warn!(
+            "CLICKGRAPH_SCHEMA_PERSISTENCE=clickhouse but this server mode \
+             has no ClickHouse client — schema persistence stays off: nothing \
+             is stored or replayed (no-client server modes carry none)"
+        );
+    }
+
     let store = SchemaStore::from_parts(
         config.schema_persistence,
         app_state.clickhouse_client.clone(),
     );
+    // Off stays fully silent (byte-for-byte the pre-feature boot).
     if matches!(store, SchemaStore::Off) {
         return;
     }
-
-    let rows = match store.load_oldest_first().await {
-        Ok(rows) => rows,
+    let mut fetch = match store.load_replay_rows(config.schema_replay_max_rows).await {
+        Ok(fetch) => fetch,
         Err(e) => {
             log::warn!(
                 "schema persistence: could not read {REGISTRY_TABLE} ({e}) — \
                  booting without restoring runtime registrations"
             );
+            // The spec's degraded-boot contract: one knockout line, all
+            // zeros, so log scrapers see the same shape they see on a
+            // successful pass.
+            log::info!(
+                "schema persistence: 0 restored / 0 config-shadowed / 0 failed \
+                 (store unreachable at boot)"
+            );
             return;
         }
     };
-    if rows.is_empty() {
-        return;
+
+    let over_row_cap = fetch.total_rows - fetch.fetched as u64;
+    if over_row_cap > 0 {
+        log::warn!(
+            "registry holds {total} rows but the replay budget allows only \
+             {fetched} (CLICKGRAPH_SCHEMA_REPLAY_MAX_ROWS={max}) — \
+             {over} oldest-first rows were not fetched and will not be \
+             restored; raise the budget or clean {REGISTRY_TABLE}",
+            total = fetch.total_rows,
+            fetched = fetch.fetched,
+            max = config.schema_replay_max_rows,
+            over = over_row_cap,
+        );
     }
 
     // Names the config file already satisfied this boot; the replay restores
     // through the *same* load path a live registration uses, so alias and
     // cache semantics are identical by construction.
     let configured_names = graph_catalog::list_available_schemas().await;
-    let (to_restore, shadowed) = partition_for_replay(rows, &configured_names);
+    let (to_restore, shadowed) =
+        partition_for_replay(std::mem::take(&mut fetch.restorable), &configured_names);
     for row in &shadowed {
         log::info!(
             "config-defined schema '{}' shadows a persisted registration; \
              the config file wins (edit the file to change the schema)",
-            row.name
+            log_safe(&row.name)
         );
     }
 
     let mut restored = 0usize;
-    let mut failed_names: Vec<&str> = Vec::new();
+    let mut byte_skipped = 0usize;
+    let mut used_bytes = 0u64;
+    let mut failed_names: Vec<String> = Vec::new();
     for row in &to_restore {
+        // Byte budget, enforced in registered_at_ms order: stop before a row
+        // would exceed it and skip the deterministic remainder (a newer
+        // registration that fits drops nothing from the budget already used),
+        // counting what is left so the WARN tells an exact number.
+        let row_bytes = row.payload.len() as u64;
+        if used_bytes + row_bytes > config.schema_replay_max_bytes {
+            byte_skipped = to_restore.len() - restored - failed_names.len();
+            log::warn!(
+                "replay payload budget exhausted before '{}': \
+                 {} of {} bytes used, {} remaining rows not restored \
+                 (CLICKGRAPH_SCHEMA_REPLAY_MAX_BYTES={})",
+                log_safe(&row.name),
+                used_bytes,
+                config.schema_replay_max_bytes,
+                byte_skipped,
+                config.schema_replay_max_bytes
+            );
+            break;
+        }
+        used_bytes += row_bytes;
+
         let outcome = match row.format.as_str() {
             FORMAT_YAML => {
                 graph_catalog::load_schema_from_content(
@@ -495,54 +557,45 @@ pub async fn replay(app_state: &super::AppState, config: &ServerConfig) {
                 )
                 .await
             }
-            FORMAT_GRAPH_SCHEMA_JSON => restore_graph_schema_json(&row.name, &row.payload).await,
-            other => Err(format!("unknown registry format '{other}'")),
+            other => Err(format!(
+                "unknown registry format '{other}'; \
+                    skipping it — rows written by another source/format \
+                    are never guessed at"
+            )),
         };
         match outcome {
             Ok(()) => restored += 1,
             Err(e) => {
-                failed_names.push(&row.name);
+                failed_names.push(row.name.clone());
                 log::warn!(
                     "persisted schema '{}' could not be restored ({e}) — \
                      register it again, or drop it with DELETE /schemas/{}",
-                    row.name,
-                    row.name
+                    log_safe(&row.name),
+                    log_safe(&row.name)
                 );
             }
         }
     }
+
     log::info!(
         "schema persistence: {} restored / {} config-shadowed / {} failed \
-         (failed: {:?})",
+         / {} skipped over replay budget (failed: {:?})",
         restored,
         shadowed.len(),
         failed_names.len(),
+        over_row_cap + byte_skipped as u64,
         failed_names
     );
 }
 
-/// Restore a `graph-schema-json` row without the live-ClickHouse re-discovery
-/// the YAML rows get: the DDL path has no YAML to re-derive from, so this
-/// takes the snapshot at its word — the same trade the legacy
-/// `get_graph_catalog` fallback makes. The schema is registered before the
-/// query cache is invalidated so stale SQL for a re-created table can never
-/// outlive the boot.
-async fn restore_graph_schema_json(name: &str, json: &str) -> Result<(), String> {
-    let mut schema: crate::graph_catalog::graph_schema::GraphSchema =
-        serde_json::from_str(json).map_err(|e| format!("snapshot parse failed: {e}"))?;
-    schema.rebuild_derived_indexes();
-
-    let schemas_lock = super::GLOBAL_SCHEMAS
-        .get()
-        .ok_or_else(|| "GLOBAL_SCHEMAS not initialized".to_string())?;
-    let mut schemas = schemas_lock.write().await;
-    schemas.insert(name.to_string(), schema);
-    drop(schemas);
-
-    if let Some(cache) = super::GLOBAL_QUERY_CACHE.get() {
-        cache.invalidate_schema(name);
-    }
-    Ok(())
+/// A schema name is operator input routed into log lines: replace control
+/// characters so a `\n` in a name cannot forge entries after this one. Names
+/// in `Vec/Option` debug output (`{:?}`) are already escaped by the formatter
+/// and need no scrubbing.
+pub(crate) fn log_safe(name: &str) -> String {
+    name.chars()
+        .map(|c| if c.is_control() { '?' } else { c })
+        .collect()
 }
 
 // --------------------------------------------------------------------- tests
@@ -598,8 +651,8 @@ mod tests {
     fn serialization_round_trips_through_row_fields() {
         let row = Registration {
             name: "a'b\"c`d".to_string(), // adversarial: a name, never SQL
-            source: SOURCE_DDL.to_string(),
-            format: FORMAT_GRAPH_SCHEMA_JSON.to_string(),
+            source: SOURCE_API_LOAD.to_string(),
+            format: FORMAT_YAML.to_string(),
             payload: "{}".to_string(),
             registry_version: 1,
             registered_at_ms: 42,
@@ -608,5 +661,25 @@ mod tests {
         let back: Registration = serde_json::from_str(&json).unwrap();
         assert_eq!(back.name, "a'b\"c`d");
         assert_eq!(back.registered_at_ms, 42);
+    }
+
+    #[test]
+    fn log_safe_strips_newlines_from_operated_names() {
+        // Log-forging: the "name" is a second log line smuggled in via \n.
+        assert_eq!(
+            log_safe("legit\n2024-01-01 ERROR injected"),
+            "legit?2024-01-01 ERROR injected"
+        );
+        assert_eq!(log_safe("carriage-return\r"), "carriage-return?");
+        assert_eq!(log_safe("normal-name.0"), "normal-name.0");
+    }
+
+    #[test]
+    fn replay_fetch_reports_bounds_for_off_store() {
+        let fetch = ReplayFetch::default();
+        assert_eq!(fetch.total_rows, 0);
+        assert_eq!(fetch.fetched, 0);
+        assert!(fetch.restorable.is_empty());
+        assert!(fetch.future_versioned.is_empty());
     }
 }

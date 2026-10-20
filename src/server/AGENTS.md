@@ -205,6 +205,7 @@ All use `OnceCell<RwLock<...>>` — set exactly once at startup. `GLOBAL_QUERY_C
 | GET | `/schemas` | `list_schemas_handler` | List loaded schemas |
 | POST | `/schemas/load` | `load_schema_handler` | Load YAML schema at runtime |
 | GET | `/schemas/{name}` | `get_schema_handler` | Get schema details |
+| DELETE | `/schemas/{name}` | `delete_schema_handler` | Delete a runtime-registered schema (memory +, with `clickhouse` persistence, its stored row) |
 
 ## Key Types
 
@@ -377,3 +378,6 @@ Neo4j Browser/Driver → TCP or WebSocket
 | `CLICKGRAPH_QUERY_CACHE_ENABLED` | `true` | Enable/disable query cache |
 | `CLICKGRAPH_QUERY_CACHE_MAX_ENTRIES` | `1000` | Max cached queries |
 | `CLICKGRAPH_QUERY_CACHE_MAX_SIZE_MB` | `100` | Max cache memory |
+| `CLICKGRAPH_SCHEMA_PERSISTENCE` | `off` | Persistence mode: `off` (runtime registrations die at restart) or `clickhouse` (rows in `clickgraph_schema_registry` replayed at boot). Strictly parsed. |
+| `CLICKGRAPH_SCHEMA_REPLAY_MAX_ROWS` | `500` | Boot-replay row budget: most rows restored, the rest skipped with an exact WARN. |
+| `CLICKGRAPH_SCHEMA_REPLAY_MAX_BYTES` | `67108864` | Boot-replay payload budget in bytes (64 MiB). |

@@ -153,6 +153,19 @@ pub struct ServerConfig {
     #[serde(default)]
     pub schema_persistence: SchemaPersistenceMode,
 
+    /// Boot-replay row budget (`CLICKGRAPH_SCHEMA_REPLAY_MAX_ROWS`): the
+    /// oldest-first rows restored at most, everything beyond it skipped with
+    /// an exact WARN. Bounds how much durable, API-written state one boot
+    /// re-plays. Default: 500. 0 restores nothing (the store is still read;
+    /// the WARN accounts every row).
+    pub schema_replay_max_rows: usize,
+
+    /// Boot-replay payload budget in bytes
+    /// (`CLICKGRAPH_SCHEMA_REPLAY_MAX_BYTES`): restored rows' cumulative
+    /// payload stops before exceeding it (deterministic oldest-first
+    /// cutoff, exact WARN about the remainder). Default: 64 MiB.
+    pub schema_replay_max_bytes: u64,
+
     /// OTLP/HTTP base URL for opt-in per-query tracing
     /// (`CLICKGRAPH_OTLP_ENDPOINT`, traces go to `{endpoint}/v1/traces`).
     /// Unset = tracing off (default): no traffic, no per-query cost.
@@ -201,6 +214,8 @@ impl Default for ServerConfig {
             stats_ttl_secs: 300,
             check_node_properties: false,
             schema_persistence: SchemaPersistenceMode::Off,
+            schema_replay_max_rows: 500,
+            schema_replay_max_bytes: 67_108_864, // 64 MiB
             otlp_endpoint: None,
             otlp_include_query: false,
             otlp_headers: String::new(),
@@ -235,6 +250,11 @@ impl ServerConfig {
             stats_ttl_secs: parse_env_var("CLICKGRAPH_STATS_TTL_SECS", "300")?,
             check_node_properties: parse_env_var("CLICKGRAPH_CHECK_NODE_PROPERTIES", "false")?,
             schema_persistence: parse_env_var("CLICKGRAPH_SCHEMA_PERSISTENCE", "off")?,
+            schema_replay_max_rows: parse_env_var("CLICKGRAPH_SCHEMA_REPLAY_MAX_ROWS", "500")?,
+            schema_replay_max_bytes: parse_env_var(
+                "CLICKGRAPH_SCHEMA_REPLAY_MAX_BYTES",
+                "67108864",
+            )?,
             otlp_endpoint: env::var("CLICKGRAPH_OTLP_ENDPOINT")
                 .ok()
                 .map(|s| s.trim().to_string())
@@ -277,6 +297,13 @@ impl ServerConfig {
             stats_ttl_secs: parse_env_var("CLICKGRAPH_STATS_TTL_SECS", "300")?,
             check_node_properties: parse_env_var("CLICKGRAPH_CHECK_NODE_PROPERTIES", "false")?,
             schema_persistence: parse_env_var("CLICKGRAPH_SCHEMA_PERSISTENCE", "off")?,
+            // Replay budgets are operational and env-only, like the metrics
+            // and stats knobs.
+            schema_replay_max_rows: parse_env_var("CLICKGRAPH_SCHEMA_REPLAY_MAX_ROWS", "500")?,
+            schema_replay_max_bytes: parse_env_var(
+                "CLICKGRAPH_SCHEMA_REPLAY_MAX_BYTES",
+                "67108864",
+            )?,
             // Tracing knobs are operational and env-only, like the metrics knobs.
             otlp_endpoint: env::var("CLICKGRAPH_OTLP_ENDPOINT")
                 .ok()
@@ -333,6 +360,8 @@ impl ServerConfig {
         self.stats_ttl_secs = other.stats_ttl_secs;
         self.check_node_properties = other.check_node_properties;
         self.schema_persistence = other.schema_persistence;
+        self.schema_replay_max_rows = other.schema_replay_max_rows;
+        self.schema_replay_max_bytes = other.schema_replay_max_bytes;
     }
 }
 
@@ -506,6 +535,17 @@ mod tests {
         assert!("ON".parse::<SchemaPersistenceMode>().is_err());
         assert!("".parse::<SchemaPersistenceMode>().is_err());
         assert_eq!(SchemaPersistenceMode::default(), SchemaPersistenceMode::Off);
+    }
+
+    #[test]
+    fn schema_replay_budget_defaults_are_operator_dialable() {
+        // The budgets bound how much durable, API-written state one boot
+        // re-plays; their defaults are the shipped worst case. Pinned here
+        // (not through from_env: env tests race the process-global
+        // environment) so a silent change of the default boot cost fails.
+        let config = ServerConfig::default();
+        assert_eq!(config.schema_replay_max_rows, 500);
+        assert_eq!(config.schema_replay_max_bytes, 67_108_864);
     }
 
     #[test]

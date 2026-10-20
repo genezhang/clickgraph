@@ -554,16 +554,18 @@ DELETE /schemas/ecommerce HTTP/1.1
 
 Notes:
 - A schema declared in the config file (`GRAPH_CONFIG_PATH`) can be deleted in memory, but
-  it is never a stored row — it comes back on the next boot. Retiring a config-defined
-  schema means editing the file.
+  unless the file is edited it comes back on the next boot: the config file re-registers it.
+  Its stored row, if one exists (a runtime registration persisted before the name moved
+  into the config, or a POST that re-registered it), is deleted as well.
 - Deleting is cache-safe: query-cache entries for the name are invalidated the same way the
   load path does.
 
 ### Persistence
 
 Runtime registrations normally live only in memory: a restart (deploy, crash, upgrade) loses
-every `/schemas/load` registration and every DDL-created table registration. Enabled
-persistence stores them in ClickHouse — the same system that serves the queries — as source
+every `/schemas/load` registration. (DDL-created tables are not part of this registry; they
+keep the pre-existing legacy `graph_catalog`-table recovery.) Enabled persistence stores them
+in ClickHouse — the same system that serves the queries — as source
 rows that are replayed at boot:
 
 ```bash
@@ -582,11 +584,14 @@ Semantics (Kafka Connect's `config.storage.topic` pattern, applied on ClickHouse
 - **Registration first, durability best-effort**: a store failure never fails a registration —
   the response reports `persisted: false` instead. A promotion/deploy that kills the existing
   server loses nothing; a degraded store only breaks restart-survival, announced in the logs.
+- **Bounded boot replay**: at most `CLICKGRAPH_SCHEMA_REPLAY_MAX_ROWS` rows (default 500)
+  whose cumulative payload stays under `CLICKGRAPH_SCHEMA_REPLAY_MAX_BYTES` (default 64 MiB)
+  are restored, oldest first; rows left out are counted exactly in a WARN naming the knob.
 - **Version gate**: rows written by a *newer* ClickGraph's registry format are skipped with a
   warning at boot instead of guessing at their shape (old servers survive upgrades that
   returned to them).
 - **Restart restore goes through the same load path** as a live registration (same alias and
-  cache semantics; DDL snapshots restore their wire-format limits).
+  cache semantics).
 - Single instance per registry table is the supported shape: multi-instance replay is out of
   scope for v1 (`docs/design/SCHEMA_PERSISTENCE.md`).
 

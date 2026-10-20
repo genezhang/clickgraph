@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
-    config::{SchemaPersistenceMode, ServerConfig},
+    config::SchemaPersistenceMode,
     graph_catalog::graph_schema::{GraphSchema, GraphSchemaElement},
     graph_catalog::{DraftOptions, DraftRequest, EdgeHint, FkEdgeHint, NodeHint, SchemaDiscovery},
     open_cypher_parser::{self, ast::CypherStatement},
@@ -1817,13 +1817,7 @@ async fn query_handler_inner(
                     .to_string(),
             )
         })?;
-        ddl_handler(
-            ch_client,
-            &app_state.config,
-            ch_sql_queries,
-            maybe_schema_elem,
-        )
-        .await
+        ddl_handler(ch_client, ch_sql_queries, maybe_schema_elem).await
     };
     metrics.execution_time = execution_start.elapsed().as_secs_f64();
 
@@ -2138,7 +2132,6 @@ async fn execute_cte_queries(
 
 pub async fn ddl_handler(
     clickhouse_client: Client,
-    config: &ServerConfig,
     ch_sql_queries: Vec<String>,
     graph_schema_element_opt: Option<Vec<GraphSchemaElement>>,
 ) -> Result<Response, (StatusCode, String)> {
@@ -2199,12 +2192,12 @@ pub async fn ddl_handler(
             )
         })?;
 
-    // Persist the mutated schema when durability is configured (the HTTP load
-    // path does the same for its YAML): a restart without GRAPH_CONFIG_PATH
-    // must still restore DDL-created tables. Store failures are logged inside
-    // `persist_ddl_snapshot` and surfaced as `persisted: false` semantics —
-    // they never fail a DDL that already succeeded.
-    schema_registry::persist_ddl_snapshot(config, Some(clickhouse_client), "default").await;
+    // DDL durability stays with the legacy `graph_catalog` table fallback
+    // (pre-existing on `main`): nothing here writes a persisted-schema row.
+    // The structural migration to the registry (`schema_registry`) is future
+    // work recorded in `docs/design/SCHEMA_PERSISTENCE.md` — `ddl_handler` is
+    // currently unreachable from query dispatch (every non-read statement is
+    // refused), so there is no live behavior to persist.
 
     let mut response = (StatusCode::OK, "DDL applied successfully".to_string()).into_response();
     response
@@ -2370,9 +2363,16 @@ fn request_id_mapper(
 /// the stored row, so the next boot does not resurrect it. With persistence
 /// off the in-memory removal is the whole operation, and the response stays
 /// byte-identical to a server without the feature except for the new
-/// endpoint itself. A config-defined name (`GRAPH_CONFIG_PATH`) is never a
-/// stored row: deleting one works in memory and it simply comes back on the
-/// next boot — retiring a config-defined schema means editing the file.
+/// endpoint itself.
+///
+/// Name classes, stated explicitly:
+/// - runtime-persisted only: fully retired (memory + store row);
+/// - config-defined: may still carry a store row (the same POST that loads a
+///   config-defined name persists it, and a name can move into the config
+///   file after it was registered) — DELETE clears memory and that row, and
+///   the config file re-registers the schema on the next boot regardless, so
+///   the in-memory deletion of a config-defined name is transient by design
+///   (`default` included).
 pub async fn delete_schema_handler(
     State(app_state): State<Arc<AppState>>,
     axum::extract::Path(schema_name): axum::extract::Path<String>,
@@ -2406,8 +2406,10 @@ pub async fn delete_schema_handler(
                 // turn a retirement into an error, but it must not lie
                 // either — the next boot will resurrect the row.
                 log::warn!(
-                    "stored row for schema '{schema_name}' could not be deleted ({e}); \
-                     it will re-register on the next boot until the store is fixed"
+                    "stored row for schema '{}' could not be deleted ({e}); \
+                     it will re-register on the next boot until the store is \
+                     fixed",
+                    schema_registry::log_safe(&schema_name)
                 );
                 Some(false)
             }

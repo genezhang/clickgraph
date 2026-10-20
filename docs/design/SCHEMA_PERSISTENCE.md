@@ -18,8 +18,9 @@ boot.
 
 **Who is the user:** anyone running ClickGraph as a service (binary or container)
 against a remote ClickHouse, who registers schemas through the HTTP API — including
-the LLM discovery workflow (`cg schema discover` → push YAML via `POST /schemas/load`)
-and DDL-created tables (`CREATE NODE`/`CREATE RELATIONSHIP`).
+the LLM discovery workflow (`cg schema discover` → push YAML via `POST /schemas/load`).
+**DDL-created tables are not covered by this registry** (Semantics §2): they keep
+the pre-existing recovery from the legacy `graph_catalog` table.
 
 **Success looks like:** register once → restart or upgrade at will → the schema is
 still served, still queryable, still listed in `GET /schemas`, without any manual
@@ -54,7 +55,7 @@ cargo +1.92.0-x86_64-pc-windows-gnu test --no-default-features
 # live-ClickHouse integration (registry tests need the test instance)
 # (one shell block — env does not persist across shells)
 $env:CLICKHOUSE_URL='http://127.0.0.1:8123'; $env:CLICKHOUSE_USER='test_user'; $env:CLICKHOUSE_PASSWORD='test_pass'
-cargo +1.92.0-x86_64-pc-windows-gnu test --no-default-features --test schema_registry_tests
+cargo +1.92.0-x86_64-pc-windows-gnu test --no-default-features --test integration schema_registry
 
 # regression ratchet + corpus census (unchanged: 1477 queries, both dialects)
 $env:CLICKHOUSE_URL='http://127.0.0.1:8123'; $env:CLICKHOUSE_USER='test_user'; $env:CLICKHOUSE_PASSWORD='test_pass'
@@ -68,13 +69,14 @@ python tests/e2e/test_schema_persistence_e2e.py
 ## Project Structure
 
 ```
-src/graph_catalog/schema_registry.rs   ← NEW. Store trait + ClickHouse impl +
-     │                                    replay/precedence logic + serialization
-     │                                    format v1. SRP: only life of a persisted
-     │                                    registration; does not touch translator.
-src/server/graph_catalog.rs            ← load_schema_from_content saves the YAML
-                                         after a successful in-memory load;
-                                         add_to_schema saves a DDL snapshot
+src/server/schema_registry.rs          ← NEW. Store enum + ClickHouse impl +
+      │                                    bounded replay fetch + precedence
+      │                                    logic + serialization format v1.
+      │                                    SRP: only life of a persisted
+      │                                    registration; does not touch translator.
+src/server/graph_catalog.rs            ← schema lifecycle CRUD; remove_schema
+                                         (DELETE /schemas/{name} in-memory
+                                         half, atomic with the load path)
 src/server/mod.rs                      ← boot: after initialize_global_schema,
                                          call replay (config-file names win);
                                          env plumbing (ServerConfig fields)
@@ -87,11 +89,11 @@ docs/design/SCHEMA_PERSISTENCE.md      ← this file (committed with the PR)
 
 Build order (each slice independently testable):
 
-1. **store** — trait + CH impl + encode/decode + table create (`save`, `load_all`,
-   `delete`, `source` tagging). Unit-testable against the mock ClickHouse client.
-2. **write-path** — persist on successful `POST /schemas/load` and on DDL mutations.
-3. **boot-replay** — restore after config load with precedence; degrade-to-warn when
-   ClickHouse is unreachable.
+1. **store** — closed enum + CH impl + encode/decode + table create (`upsert`,
+   bounded replay fetch, `delete`, `source` tagging).
+2. **write-path** — persist on successful `POST /schemas/load`.
+3. **boot-replay** — restore after config load with precedence; row + payload
+   budgets; degrade-to-warn when ClickHouse is unreachable.
 4. **lifecycle API** — `DELETE /schemas/{name}`(+ store delete); docs.
 
 ## Interface contract
@@ -107,16 +109,18 @@ One row per registered schema name, in the **configured ClickHouse database**
 | column | type | meaning |
 |---|---|---|
 | `name` | `String` | schema name exactly as registered (the `POST` body's `schema_name`) |
-| `source` | `LowCardinality(String)` | `api-load` \| `ddl` |
-| `format` | `LowCardinality(String)` | `yaml` \| `graph-schema-json` |
-| `payload` | `String` | **the original YAML** for `api-load`; the serialized `GraphSchema` JSON for `ddl` |
+| `source` | `LowCardinality(String)` | `api-load` (only value written today) |
+| `format` | `LowCardinality(String)` | `yaml` (only value written today) |
+| `payload` | `String` | **the original YAML** the caller posted |
 | `registry_version` | `UInt16` | 1; read side rejects unknown future versions with a warn (upgrade-safe: new fields newly defaulting paths, never crashes) |
-| `registered_at` | `DateTime64(3, 'UTC')` | last write |
+| `registered_at_ms` | `UInt64` | last write, UTC milliseconds (written by the server, server-side) |
 
-- Engine `MergeTree ORDER BY name`. Writes are idempotent per name (last wins, cf.
-  Kafka Connect config topic semantics). Deletes use ClickHouse **lightweight
-  deletes** (server ≥ 25.x confirmed in deployment images); fallback
-  `ALTER TABLE … DELETE` if unavailable.
+- Engine `ReplacingMergeTree(registered_at_ms) ORDER BY name`: the version
+  column makes the last-write-wins collapse deterministic (two same-name
+  writes may land in the same millisecond; the merge keeps the latter), cf.
+  Kafka Connect config-topic semantics. Reads always go through `FINAL`.
+  Deletes use ClickHouse **lightweight deletes** (server ≥ 25.x confirmed in
+  deployment images); fallback `ALTER TABLE … DELETE` if unavailable.
 - The default-alias duplication behavior of `initialize_global_schema` is NOT
   persisted: the store holds exactly the names that were explicitly registered at
   runtime. On replay, restore goes through the *same* `load_schema_from_content`
@@ -135,8 +139,13 @@ One row per registered schema name, in the **configured ClickHouse database**
   registry table. Byte-for-byte today's behavior — no reads, no writes, no DDL.
 - Embedded (`chdb`) and Databricks modes have no ClickHouse client
   (`src/server/mod.rs:149/253`): `clickhouse` mode logs one clear line and stays
-  inert there. (File-backed store for those modes is deliberately out of scope v1;
-  the trait keeps the door open.)
+  inert there. (A file-backed store for those modes is deliberately out of scope
+  v1; the closed two-variant enum keeps the door open.)
+- Replay budget: `CLICKGRAPH_SCHEMA_REPLAY_MAX_ROWS` (default 500) and
+  `CLICKGRAPH_SCHEMA_REPLAY_MAX_BYTES` (default 64 MiB) bound boot replay — a
+  durable, API-writable store must not convert a one-time write burst into an
+  unbounded per-restart cost. Rows left un-restored are counted exactly in a
+  WARN naming the knob.
 
 ### Semantics
 
@@ -151,28 +160,38 @@ One row per registered schema name, in the **configured ClickHouse database**
      backend health, not request health.)
    - Same name re-registered ⇒ overwrite row (content-hash mismatch warns, exactly
      like the in-memory #463 warning path).
-2. **DDL path**: after `add_to_schema` succeeds, the mutated `GraphSchema` is
-   stored as `format=graph-schema-json, source=ddl` keyed `default` (or the
-   session schema name in effect). Note honestly in docs: this format inherits the
-   known-lossy round-trip (vector/fulltext indexes, engine, denormalized metadata —
-   `graph_schema.rs:1678`), same as the legacy `graph_catalog` table. Users who
-   need byte-perfect restore re-register the YAML.
+2. **DDL path — future work, deliberately not wired in v1.** DDL-created tables
+   (CREATE NODE-style legacy mutations) are NOT persisted through this registry:
+   `ddl_handler` is unreachable from query dispatch (every non-read statement is
+   refused with 400 — the translate seam produces no DDL SQL), so nothing writes
+   `source=ddl` rows and there is nothing to replay. DDL-created schemas keep the
+   recovery they already had on the base commit: the lossy `graph_catalog` table
+   that `add_to_schema` feeds unconditionally (its serializations are
+   `#[serde(skip)]`-lossy: vector/fulltext indexes, engine info, denormalized
+   metadata — `graph_schema.rs`). A structural migration to the registry needs a
+   DDL write seam first — recorded as future work, not a claim of this feature.
 3. **Boot replay** (after `initialize_global_schema`, only when enabled and a CH
    client exists):
-   - Load all rows; for each name **already present** from the config file ⇒ skip
-     with an INFO line (`config-defined schema <name> shadows persisted registration <name>`).
+   - Load rows **bounded**: at most `CLICKGRAPH_SCHEMA_REPLAY_MAX_ROWS`
+     oldest-first rows whose cumulative payload stays under
+     `CLICKGRAPH_SCHEMA_REPLAY_MAX_BYTES`; rows left out are counted exactly in
+     a WARN naming the knob (bounded durable work by default).
+   - For each name **already present** from the config file ⇒ skip with an INFO
+     line (`config-defined schema <name> shadows persisted registration <name>`).
      Determinism over recency — a config file is declared intent, and an upgrade
      that edits the file must preempt stale runtime state. (cf. k8s: declarative
      spec beats what's running.)
-   - Remaining rows replayed in `registered_at` order through the normal load
+   - Remaining rows replayed in `registered_at_ms` order through the normal load
      path (CH client available ⇒ `auto_discover_columns` re-resolve against live
      metadata; a restore re-validates reality instead of trusting a stale
      snapshot).
    - A row that fails to replay (its tables vanished, YAML no longer parses under
-     a stricter new parser, …): WARN with name + error, continue with the others. One
-     bad row may not kill the boot — same convention as ClickGraph's YAML-load fall
-     back to DB discovery.
-   - Knockout summary: `n restored / m skipped / k failed` in one INFO line.
+     a stricter new parser, a newer registry_version, an unknown format): WARN
+     with name + error, continue with the others. One bad row may not kill the
+     boot — same convention as ClickGraph's YAML-load fall back to DB discovery.
+   - Knockout summary: `n restored / m config-shadowed / k failed / b skipped
+     over replay budget` in one INFO line; when the store is unreachable:
+     `0 restored / 0 config-shadowed / 0 failed (store unreachable at boot)`.
 4. **Delete**: `DELETE /schemas/{name}` ⇒ remove from memory registries + query
    cache invalidation (same call the load path makes) + delete the store row ⇒ 200
    `{"message": ..., "schema_name": ...}`; unknown name ⇒ 404 same body shape as
@@ -197,17 +216,15 @@ Follows the house rules already in `src/server/AGENTS.md` and
 - No `unsafe`, no new deps, `unwrap()` only in tests.
 
 ```rust
-// sketch of the trait boundary (DIP: handlers/boot code never sees ClickHouse)
-#[async_trait::async_trait]  // NOTE: currently no async-trait dep; likely
-                             // hand-rolled `fn save(&self, ...) -> Result<..>`
-                             // over blocking send to avoid a new dependency —
-                             // decided in plan phase
-pub trait SchemaStore: Send + Sync {
-    fn save(&self, reg: &Registration) -> Result<(), StoreError>;
-    fn load_all(&self) -> Result<Vec<Registration>, StoreError>;
-    fn delete(&self, name: &str) -> Result<bool, StoreError>;
+// The shipped boundary (DIP: handlers/boot never touch ClickHouse client
+// plumbing directly): a closed two-variant enum — no dyn trait, no
+// async-trait dependency. A third backend (file) is a new variant.
+pub enum SchemaStore {
+    Off,
+    Clickhouse(Box<ClickhouseSchemaStore>),
 }
 ```
+
 
 ## Testing Strategy
 
@@ -219,13 +236,16 @@ Four levels, each with a named concern:
    undeclared test file):
    - encode/decode round-trips (`registry-v1`), unknown-version rejection,
    - precedence filter (config names subtract correctly incl. alias `default`),
-   - mock-store save/load/delete contract via the trait (solid principles: tests
-     pin the *interface*, not ClickHouse).
+   - the off-mode contract on the enum (`Off` degrades every op locally — the
+     closed enum keeps tests monomorphic, no trait).
 2. **Integration (live ClickHouse, env-gated)** — same file:
-   - table auto-create idempotence; save → load_all → delete round-trip;
+   - table auto-create idempotence; save → bounded replay fetch → delete round-trip;
+   - the row budget: a fetch capped below the table's row count returns the cap
+     and states the overage exactly (replay's WARN feeds on this shape);
    - last-write-wins on same name; lightweight-delete path taken;
-   - replay through `load_schema_from_content` produces
-     `GET /schemas/{name}` counts equal to a fresh live registration.
+   - boot replay through `replay()`: a seeded row restores through the live
+     load path (`GET /schemas/{name}` counts equal a fresh live registration)
+     and a name already registered in memory is shadowed, not overwritten.
 3. **Server-level (rust, router-driven)** — POST/DELETE handlers against
    `StateRouter` like `databricks_introspect_tests.rs`: response shapes (incl.
    `persisted: false` degradation field), 404 shape, old-payload compat (a
@@ -251,10 +271,11 @@ Backward-compat proof is a test class of its own: with the flag unset, a full
   feasible).
 - **Never:** persist without opt-in; write to a database the operator didn't
   configure; let a store failure fail a registration request; shadow a
-  config-defined schema with persisted state; swallow unknown
-  `registry_version`s silently (warn, skip row); delete a config-defined schema
-  from the store behind the operator's back (config schemas are never written to
-  the store at all).
+  config-defined schema with persisted state (boot replay always skips it);
+  swallow unknown `registry_version`s silently (warn, skip row). A
+  config-defined name re-registered through the API is persisted like any
+  other runtime registration: boot replay shadows it (config wins), and
+  `DELETE /schemas/{name}` clears both memory and the row.
 
 ## Success Criteria
 
@@ -266,13 +287,15 @@ Backward-compat proof is a test class of its own: with the flag unset, a full
    live-parity with `main` on all schema endpoints (pinned by server-level tests).
 3. Config-file + persisted collision ⇒ config wins; log states the skip; count of
    skipped = expectation in the knockout line.
-4. `CREATE NODE` (persistence on) ⇒ after restart, the created node label is
-   queryable without re-running DDL.
+4. Boot replay bounded: seeding more rows than the budget allows restores the
+   oldest-first prefix and the WARN names the exact overage; with the default
+   budgets (500 rows / 64 MiB) a boot's restore work is a stated, dialable
+   cost, never an unbounded read.
 5. `DELETE /schemas/{name}` ⇒ memory + store + query cache all drop it; 404 on
-   the gone name (both GET and DELETE).
+   the gone name (both GET and DELETE), same body shape.
 6. ClickHouse unreachable at boot with persistence on ⇒ server still boots
-   healthy (WARN, `0 restored / 0 skipped / 0 failed` or retry-less skip) —
-   matches resilient-startup convention.
+   healthy (WARN, `0 restored / 0 config-shadowed / 0 failed (store unreachable
+   at boot)`) — matches resilient-startup convention.
 7. Ratchet + census unchanged (1477 both dialects); no golden churn; no new deps.
 8. Unit+integration counts added and green on Windows `--no-default-features`
    toolchain and in CI (default features).

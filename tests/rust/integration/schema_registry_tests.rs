@@ -260,6 +260,18 @@ async fn delete_removes_a_registered_schema_and_404s_unknowns() {
         .await
         .expect("router answers");
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    // Body shape parity with GET /schemas/{name} (spec criterion 5): one
+    // "error" string field, nothing else.
+    let body: Value = serde_json::from_str(&body_string(resp).await).expect("json body");
+    let keys: Vec<&String> = body.as_object().expect("object").keys().collect();
+    assert_eq!(keys, vec!["error"], "404 body: {body}");
+    assert!(
+        body["error"]
+            .as_str()
+            .expect("error is a string")
+            .contains("no_such_schema"),
+        "{body}"
+    );
 
     let resp = router
         .oneshot(
@@ -323,18 +335,187 @@ async fn store_round_trips_against_live_clickhouse() {
         .await
         .expect("save");
 
-    let rows = store.load_oldest_first().await.expect("read");
-    let mine = rows.iter().find(|r| r.name == name).expect("row present");
+    let fetch = store.load_replay_rows(usize::MAX).await.expect("read");
+    let mine = fetch
+        .restorable
+        .iter()
+        .find(|r| r.name == name)
+        .expect("row present");
     assert_eq!(mine.source, "api-load");
     assert_eq!(mine.format, "yaml");
     assert_eq!(mine.registry_version, 1);
     assert!(mine.payload.contains("roundtrip"));
     assert!(mine.registered_at_ms > 0);
+    assert!(fetch.total_rows >= 1, "count must cover the saved row");
 
     store.delete(&name).await.expect("delete");
-    let rows = store.load_oldest_first().await.expect("read");
+    let fetch = store.load_replay_rows(usize::MAX).await.expect("read");
     assert!(
-        rows.iter().all(|r| r.name != name),
+        fetch.restorable.iter().all(|r| r.name != name),
         "deleted row must not read back"
     );
+}
+
+/// The row-budget contract replay assumes: a fetch capped below the table's
+/// row count returns the cap and states the overage exactly.
+#[tokio::test]
+async fn replay_fetch_is_bounded_by_the_row_budget() {
+    let Some(client) = live_client() else {
+        println!("skipping: CLICKHOUSE_URL not set (offline suite)");
+        return;
+    };
+
+    let store = SchemaStore::Clickhouse(Box::new(ClickhouseSchemaStore::new(client)));
+    let name_a = unique_name();
+    let name_b = unique_name();
+
+    store
+        .save_yaml(&name_a, "name: bounds-a\nnodes: {}")
+        .await
+        .expect("seed a");
+    store
+        .save_yaml(&name_b, "name: bounds-b\nnodes: {}")
+        .await
+        .expect("seed b");
+
+    // Cap at one: exactly one row comes back, and the count states that
+    // more exist in the table.
+    let fetch = store.load_replay_rows(1).await.expect("read");
+    assert_eq!(fetch.fetched, 1, "the LIMIT is the hard bound");
+    assert!(fetch.total_rows > 1, "count sees past the cap");
+    let over = fetch.total_rows - fetch.fetched as u64;
+    assert!(
+        over >= 1,
+        "the overage replay's WARN accounts for must be visible: total={} fetched=1",
+        fetch.total_rows
+    );
+
+    store.delete(&name_a).await.expect("cleanup a");
+    store.delete(&name_b).await.expect("cleanup b");
+}
+
+/// Boot replay end-to-end (spec Testing §2): a row seeded as if written by a
+/// previous process is restored through the same load path a live
+/// registration uses, while a name already registered in memory is shadowed,
+/// not overwritten. This is the wiring the Python e2e exercises against the
+/// real binary — pinned here so a regression in `replay`'s call site, its
+/// `validate_schema=false` restore, or shadowing fails the Rust tier too.
+#[tokio::test]
+async fn boot_replay_restores_persisted_rows_and_shadows_registered_ones() {
+    let Some(client) = live_client() else {
+        println!("skipping: CLICKHOUSE_URL not set (offline suite)");
+        return;
+    };
+    ensure_global_schemas().await;
+
+    // The restore path runs the full live load (auto-discovery through the
+    // ClickHouse client), so both YAMLs' tables must actually exist: the
+    // pre-registration's `it_dummy_table` and the seeded rows' probe table.
+    client
+        .query("CREATE DATABASE IF NOT EXISTS it_registry")
+        .execute()
+        .await
+        .expect("test database");
+    client
+        .query("CREATE TABLE IF NOT EXISTS it_registry.it_replay_dummy (id UInt32) ENGINE = Memory")
+        .execute()
+        .await
+        .expect("probe table");
+    client
+        .query("CREATE TABLE IF NOT EXISTS it_registry.it_dummy_table (id UInt32) ENGINE = Memory")
+        .execute()
+        .await
+        .expect("probe table (tiny_yaml's)");
+
+    let store = SchemaStore::Clickhouse(Box::new(ClickhouseSchemaStore::new(client.clone())));
+
+    // Row A: registered in memory FIRST with one table — the seeded store row
+    // points at a DIFFERENT table, so if replay wrongly overwrote the
+    // registration, the in-memory node table would flip. Shadowing keeps the
+    // original.
+    let shadowed_name = unique_name();
+    let shadowed_yaml = tiny_yaml(&shadowed_name);
+    graph_catalog::load_schema_from_content(
+        &shadowed_name,
+        &shadowed_yaml,
+        Some(client.clone()),
+        false,
+    )
+    .await
+    .expect("pre-register shadow victim");
+
+    // Both rows seeded as a previous process would have left them.
+    store
+        .save_yaml(&shadowed_name, &replay_probe_yaml(shadowed_name.as_str()))
+        .await
+        .expect("seed shadowed row");
+    let restored_name = unique_name();
+    store
+        .save_yaml(&restored_name, &replay_probe_yaml(&restored_name))
+        .await
+        .expect("seed restore row");
+
+    let config = config_with(clickgraph::config::SchemaPersistenceMode::Clickhouse);
+    let app_state = AppState {
+        executor: Arc::new(StubExecutor),
+        clickhouse_client: Some(client.clone()),
+        config: config.clone(),
+        query_semaphore: None,
+        pool: None,
+    };
+    clickgraph::server::schema_registry::replay(&app_state, &config).await;
+
+    // Restored: gone through the live load path, so a queryable schema
+    // exists afterwards with the YAML's own node/relationship tables.
+    let restored = graph_catalog::get_graph_schema_by_name(&restored_name)
+        .await
+        .expect("restored schema is registered");
+    assert!(
+        restored.all_node_schemas().contains_key("Doc"),
+        "restored schema carries the YAML's Doc node, got: {:?}",
+        restored.all_node_schemas().keys().collect::<Vec<_>>()
+    );
+
+    // Shadowed: still the FIRST registration — its node table is the one the
+    // pre-register put there, not the seeded row's table.
+    let kept = graph_catalog::get_graph_schema_by_name(&shadowed_name)
+        .await
+        .expect("shadowed schema stays registered");
+    let kept_nodes = kept
+        .all_node_schemas()
+        .values()
+        .map(|n| format!("{:?}", n))
+        .collect::<Vec<_>>();
+    assert!(
+        kept_nodes
+            .iter()
+            .all(|body| !body.contains("it_replay_dummy")),
+        "boot replay must not overwrite a registered schema; got {kept_nodes:?}"
+    );
+
+    // Cleanup: store rows must not leak into later live runs' replay, and
+    // memory gets back to roughly what it had.
+    store.delete(&shadowed_name).await.expect("delete a");
+    store.delete(&restored_name).await.expect("delete b");
+    let _ = graph_catalog::remove_schema(&shadowed_name).await;
+    let _ = graph_catalog::remove_schema(&restored_name).await;
+}
+
+/// The seeded-row YAML: same shape as `tiny_yaml`, but pointed at the replay
+/// probe table this test creates — table identity is what makes shadowing
+/// observable (an overwrite of the common `it_dummy_table` registration
+/// flips the node to `it_replay_dummy`).
+fn replay_probe_yaml(name: &str) -> String {
+    format!(
+        "name: {name}\n\
+         graph_schema:\n\
+         \x20 nodes:\n\
+         \x20   - label: Doc\n\
+         \x20     database: it_registry\n\
+         \x20     table: it_replay_dummy\n\
+         \x20     node_id: id\n\
+         \x20     property_mappings:\n\
+         \x20       id: id\n\
+         \x20 edges: []"
+    )
 }
