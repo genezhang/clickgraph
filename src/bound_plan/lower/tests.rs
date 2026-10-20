@@ -9775,3 +9775,61 @@ graph_schema:
         "{got}"
     );
 }
+
+/// ELEMENT_IDENTITY.md I6 (#1354, user 2026-10-19): a row whose id has a
+/// NULL part is no node, in every scan of its label (a node of one label,
+/// several labels, a walk's nodes), as a walk's ties already took it; where
+/// its id's columns cannot be NULL, or their types are unknown, the SQL is
+/// as before.
+#[test]
+fn a_row_whose_id_has_a_null_part_is_no_node_1354() {
+    const YAML: &str = r#"
+name: lower_null_id_parts
+graph_schema:
+  nodes:
+    - label: M
+      database: db
+      table: m
+      node_id: [a, b, c]
+      column_types: {a: String, b: UInt32, c: "Nullable(String)"}
+      property_mappings: {name: name}
+    - label: K
+      database: db
+      table: k
+      node_id: [a, b, c]
+      column_types: {a: String, b: UInt32, c: String}
+      property_mappings: {name: name}
+  edges:
+    - type: E
+      database: db
+      table: e
+      from_node: M
+      to_node: M
+      from_id: [fa, fb, fc]
+      to_id: [ta, tb, tc]
+      column_types: {fa: String, fb: UInt32, fc: "Nullable(String)", ta: String, tb: UInt32, tc: "Nullable(String)"}
+      property_mappings: {}
+"#;
+    let schema = crate::graph_catalog::config::GraphSchemaConfig::from_yaml_str(YAML)
+        .unwrap()
+        .to_graph_schema()
+        .unwrap();
+    let options = LowerOptions::default();
+    let sql = |q: &str| lowered(q, &schema, &options);
+    let got = sql("MATCH (n:M) RETURN n.name");
+    assert!(got.contains("WHERE v0.c IS NOT NULL"), "{got}");
+    // Only the part that can be NULL; none of a node whose id cannot be.
+    assert!(!got.contains("v0.a IS NOT NULL"), "{got}");
+    let got = sql("MATCH (n:K) RETURN n.name");
+    assert!(!got.contains("IS NOT NULL"), "{got}");
+    // OPTIONAL MATCH, several labels, a walk's nodes.
+    let got = sql("MATCH (k:K) OPTIONAL MATCH (n:M) RETURN k.name, n.name");
+    assert!(got.contains("c IS NOT NULL"), "{got}");
+    let got = sql("MATCH (n) RETURN count(n) AS c");
+    assert!(
+        got.contains("FROM db.m AS e WHERE e.c IS NOT NULL"),
+        "{got}"
+    );
+    let got = sql("MATCH (a:M)-[:E*0..2]->(b:M) RETURN a.name, b.name");
+    assert!(got.contains("c IS NOT NULL"), "{got}");
+}

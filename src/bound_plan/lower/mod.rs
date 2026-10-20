@@ -2931,13 +2931,18 @@ impl<'s> Lowerer<'s> {
                 let value = self.label_arm_value(ns, p, arms);
                 items.extend(union_property_items(v, p, defs, arm, value));
             }
-            let filters = match &ns.filter {
-                Some(f) => match f.to_sql(ROW) {
-                    Ok(sql) => Some(RenderExpr::Raw(format!("({sql})"))),
-                    Err(e) => return unsupported(format!("schema filter: {e}")),
-                },
-                None => None,
-            };
+            let filters = and_all(
+                match &ns.filter {
+                    Some(f) => match f.to_sql(ROW) {
+                        Ok(sql) => Some(RenderExpr::Raw(format!("({sql})"))),
+                        Err(e) => return unsupported(format!("schema filter: {e}")),
+                    },
+                    None => None,
+                }
+                .into_iter()
+                .chain(self.id_present(ns, ROW))
+                .collect(),
+            );
             let table = ViewTableRef::parameterized_name(
                 &ns.full_table_name(),
                 ns.view_parameters.as_deref(),
@@ -4387,7 +4392,7 @@ impl<'s> Lowerer<'s> {
             rs.view_parameters.is_some(),
             rs.should_use_final(),
         ) || !plain(
-            ns.filter.is_some(),
+            ns.filter.is_some() || self.id_present(ns, "e").is_some(),
             ns.view_parameters.is_some(),
             ns.should_use_final(),
         ) {
@@ -5182,13 +5187,18 @@ impl<'s> Lowerer<'s> {
                     ELEMENT_VALUE,
                 ));
             }
-            let filters = match &ns.filter {
-                Some(f) => match f.to_sql(ROW) {
-                    Ok(sql) => Some(RenderExpr::Raw(format!("({sql})"))),
-                    Err(e) => return unsupported(format!("schema filter: {e}")),
-                },
-                None => None,
-            };
+            let filters = and_all(
+                match &ns.filter {
+                    Some(f) => match f.to_sql(ROW) {
+                        Ok(sql) => Some(RenderExpr::Raw(format!("({sql})"))),
+                        Err(e) => return unsupported(format!("schema filter: {e}")),
+                    },
+                    None => None,
+                }
+                .into_iter()
+                .chain(self.id_present(ns, ROW))
+                .collect(),
+            );
             let table = ViewTableRef::parameterized_name(
                 &self.node_table(ns)?,
                 ns.view_parameters.as_deref(),
@@ -5705,6 +5715,28 @@ impl<'s> Lowerer<'s> {
         Ok(Some((ctes, name, read_paths)))
     }
 
+    /// ELEMENT_IDENTITY.md I6 (#1354, user 2026-10-19): a row of `schema`'s
+    /// table read under `alias` is a node only where no part of its id is
+    /// NULL (Neo4j has no NULL ids; a relationship's NULL end ties to no
+    /// node). The parts its columns' types say may be NULL, `IS NOT NULL`;
+    /// `None` where none may be, or the types are unknown (the SQL as
+    /// before).
+    fn id_present(&self, schema: &NodeSchema, alias: &str) -> Option<RenderExpr> {
+        let conds: Vec<RenderExpr> = schema
+            .id_physical_columns()
+            .iter()
+            .zip(&schema.node_id.part_types)
+            .filter(|(_, t)| t.nullable && !t.raw.is_empty())
+            .map(|(c, _)| {
+                RenderExpr::Raw(format!(
+                    "{} IS NOT NULL",
+                    render_expr_to_sql_plain(&col_at(alias, c))
+                ))
+            })
+            .collect();
+        and_all(conds)
+    }
+
     /// The relation of the nodes of `schema`'s label, as SQL to read under
     /// an alias: its table with its view parameters, FINAL and `filter:` (a
     /// subquery when it has either of the last two), so each node is one
@@ -5717,16 +5749,22 @@ impl<'s> Lowerer<'s> {
             self.options.view_parameter_values.as_ref(),
         );
         let use_final = schema.should_use_final();
-        if schema.filter.is_none() && !use_final {
+        const ROW: &str = "e";
+        let present = self.id_present(schema, ROW);
+        if schema.filter.is_none() && !use_final && present.is_none() {
             return Ok(table);
         }
-        const ROW: &str = "e";
-        let filter = match &schema.filter {
-            Some(f) => match f.to_sql(ROW) {
-                Ok(sql) => format!(" WHERE ({sql})"),
+        let mut conds = Vec::new();
+        if let Some(f) = &schema.filter {
+            match f.to_sql(ROW) {
+                Ok(sql) => conds.push(format!("({sql})")),
                 Err(e) => return unsupported(format!("schema filter: {e}")),
-            },
-            None => String::new(),
+            }
+        }
+        conds.extend(present.iter().map(render_expr_to_sql_plain));
+        let filter = match conds.is_empty() {
+            true => String::new(),
+            false => format!(" WHERE {}", conds.join(" AND ")),
         };
         // Through the dialect: its FINAL, and `*` reading every column a
         // property can map to (ALIAS / MATERIALIZED ones: S11k review).
@@ -6692,6 +6730,11 @@ impl<'s> Lowerer<'s> {
             match f.to_sql(&alias) {
                 Ok(sql) => self.filters.push(RenderExpr::Raw(format!("({sql})"))),
                 Err(e) => return unsupported(format!("schema filter: {e}")),
+            }
+        }
+        if let Scan::Node { schema, .. } = &self.scans[&v] {
+            if let Some(present) = self.id_present(schema, &alias) {
+                self.filters.push(present);
             }
         }
         if self.from.is_none() {

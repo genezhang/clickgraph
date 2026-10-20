@@ -225,4 +225,12 @@ one of the three.
   per schema (process-global, clamped at 63, first-seen ordered).
 - [ ] **I5 — ids as values** (#1387, #1383): `id()` of a composite node and
   across a mixed-label UNION, from the output spelling.
-- [ ] **I6 — NULL id parts** (#1354): not a node (§2).
+- [x] **I6 — NULL id parts** (#1354): not a node (§2). Every scan of a
+  label (a node of one label, each arm of a node of several, a walk's
+  nodes and its node relation, OPTIONAL MATCH) reads a row as a node only
+  where its id's parts its columns' types say may be NULL are not
+  (`Lowerer::id_present`, beside the schema `filter:`): the node scans now
+  agree with walks, searches and the embedded relation, which dropped it
+  already. Unknown types, or no nullable part: the SQL as before. Left: a
+  relationship whose `edge_id` (or an elided end) has a NULL part (#1354
+  comment).
