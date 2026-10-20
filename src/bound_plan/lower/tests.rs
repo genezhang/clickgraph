@@ -9003,7 +9003,22 @@ graph_schema:
       node_id: id
       column_types: {id: UInt64}
       property_mappings: {id: id, name: name}
+    - label: X
+      database: db
+      table: x
+      node_id: id
+      column_types: {id: UInt128}
+      property_mappings: {id: id, name: name}
   edges:
+    - type: XX
+      database: db
+      table: xx
+      from_node: X
+      to_node: X
+      from_id: src
+      to_id: dst
+      column_types: {src: UInt128, dst: UInt128}
+      property_mappings: {}
     - type: VV
       database: db
       table: vv
@@ -9089,6 +9104,15 @@ graph_schema:
     ] {
         assert!(!sql(q).contains("Int128"), "{q}:\n{}", sql(q));
     }
+    // A wider id is never cast to `Int128` (it would wrap): in a column that
+    // mixes it with a gap label, it meets the cast ids as itself.
+    let wide = sql("MATCH (a:X|U) WITH a MATCH (a)-[:XX]->(b) RETURN a.name, b.name");
+    assert!(wide.contains("CAST(e.id AS Int128)"), "{wide}");
+    assert!(
+        !wide.contains("CAST(e.id AS Int128) AS \"__cg_id_0\" FROM db.x"),
+        "{wide}"
+    );
+    assert!(!wide.contains("CAST(v1.src AS Int128)"), "{wide}");
     // No gap (every id and end UInt64): the SQL of before.
     let agreeing = schema(&YAML.replace("Int64}", "UInt64}"));
     for q in [

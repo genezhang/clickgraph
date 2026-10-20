@@ -432,6 +432,12 @@ impl KeyPartType {
         Some(KeyPartType::parse(inner))
     }
 
+    /// Whether this is an integer of more than 64 bits (`Int128`, `UInt256`).
+    pub fn is_wider_than_64_bits(&self) -> bool {
+        let raw = self.raw.to_ascii_lowercase();
+        ["int128", "uint128", "int256", "uint256"].contains(&raw.as_str())
+    }
+
     /// The scale of a `DateTime64` column, if that is what this is.
     fn datetime64_scale(&self) -> Option<u32> {
         let digits: String = self
@@ -474,9 +480,14 @@ impl KeyPartType {
 /// value, not `1`: review finding); a `UInt256` with a signed integer has no
 /// type to meet in, and is left.
 pub fn common_type_where_none(parts: &[KeyPartType]) -> Option<KeyPartType> {
-    let integers = parts
-        .iter()
-        .all(|p| p.schema == SchemaType::Integer && !p.raw.eq_ignore_ascii_case("Bool"));
+    // Integers of at most 64 bits: `Int128` would wrap a wider one (a
+    // `UInt128` of 2^127 or more), which meets the others in itself or
+    // `Int256` (review finding).
+    let integers = parts.iter().all(|p| {
+        p.schema == SchemaType::Integer
+            && !p.raw.eq_ignore_ascii_case("Bool")
+            && !p.is_wider_than_64_bits()
+    });
     let gap = parts
         .iter()
         .enumerate()
@@ -1076,6 +1087,7 @@ mod common_type_where_none_tests {
             vec![kp("UInt256"), kp("Int8")],
             vec![kp("UInt64"), kp("Bool")],
             vec![kp("UInt64"), kp("Int64"), kp("Bool")],
+            vec![kp("UInt64"), kp("Int64"), kp("UInt128")],
             vec![kp("UInt64"), kp("Int64"), kp("String")],
             vec![kp("Date"), kp("DateTime")],
             vec![],

@@ -633,8 +633,11 @@ impl Lowerer<'_> {
     /// them (a `UInt64` id and an `Int64` end: joins and unions of them
     /// fail, Code 386; the dialect's `common_type_where_none`), spelled as a
     /// CAST target. Every producer of an identity part for comparison casts
-    /// to it ([`Self::comparable`]), so every comparison agrees. `None`: no
-    /// cast, the SQL as before.
+    /// to it ([`Self::comparable`]); `across`: in a column that mixes labels,
+    /// where every label's integer ids of at most 64 bits meet in one type.
+    /// The two spellings meet as ClickHouse's integer supertypes allow
+    /// (`Int128` with any integer of at most 64 bits). `None`: no cast, the
+    /// SQL as before. Computed once per lowering.
     fn comparable_targets(&self, label: &str, across: bool) -> Vec<Option<String>> {
         let key = (label.to_string(), across);
         if let Some(t) = self.comparable_cache.borrow().get(&key) {
@@ -671,9 +674,12 @@ impl Lowerer<'_> {
             add(rs.from_node.as_str(), &rs.from_node_id_part_types);
             add(rs.to_node.as_str(), &rs.to_node_id_part_types);
         }
+        // Integers of at most 64 bits: `Int128` holds every one of them.
         let integers = |set: &[KeyPartType]| {
-            set.iter()
-                .all(|t| t.schema == crate::graph_catalog::schema_types::SchemaType::Integer)
+            set.iter().all(|t| {
+                t.schema == crate::graph_catalog::schema_types::SchemaType::Integer
+                    && !t.is_wider_than_64_bits()
+            })
         };
         let own = by_label.get(label).cloned().unwrap_or_default();
         own.iter()

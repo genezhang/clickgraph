@@ -90,9 +90,13 @@ one of the three.
   relationships between them) an integer part is folded across every
   label's integer parts; elsewhere the label's own fold is used, so a label
   whose ids and ends agree keeps its SQL (a cast join key keeps ClickHouse
-  from pushing a filter into the other table's key). Also closes #1390. Every producer of an identity part for comparison casts to it, so
-  every comparison agrees by construction (the parked attempt folded per
-  site and broke where two sites met):
+  from pushing a filter into the other table's key). Also closes #1390.
+  Every producer of an identity part for comparison casts to it, so every
+  comparison agrees (a label's own fold where it meets its ends, the
+  cross-label one in a column that mixes labels; the two meet in
+  ClickHouse's integer supertypes, `Int128` with any integer of at most 64
+  bits, and a wider id is never cast). The parked attempt folded per site
+  and broke where two sites met:
   - a node's id columns where tied (`tie_end`), its label-union arm ids
     (`label_union`'s `LABEL_ID_i`, per arm label), its embedded relation's
     source ids, a union walk's node CTE ids;
