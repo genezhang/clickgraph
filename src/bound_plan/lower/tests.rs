@@ -9745,9 +9745,7 @@ graph_schema:
     );
     has(
         "MATCH p = (a:U)-[:FI|FU*1..2]->(b:U) RETURN p",
-        &[
-            r#"CAST(e.e AS Nullable(Int128)) AS "__cg_rid_0", e.a AS "__cg_from_0""#,
-        ],
+        &[r#"CAST(e.e AS Nullable(Int128)) AS "__cg_rid_0", e.a AS "__cg_from_0""#],
     );
     // A time finer than its node's: the node's text where its value in the
     // node's type is it, else its own.

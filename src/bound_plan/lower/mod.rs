@@ -3793,7 +3793,7 @@ impl<'s> Lowerer<'s> {
                             (None, true) => self.any_text(col_at(ROW, c)),
                             // Integers of no common type (`UInt64` and
                             // signed) meet in the one that holds them (I3c).
-                            (None, false) => match &edge_common[i] {
+                            (None, false) => match edge_common.get(i).and_then(Option::as_ref) {
                                 Some(target) => RenderExpr::Cast {
                                     expr: Box::new(col_at(ROW, c)),
                                     target: target.clone(),
