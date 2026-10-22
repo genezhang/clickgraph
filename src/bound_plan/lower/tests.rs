@@ -9799,6 +9799,11 @@ graph_schema:
       node_id: [a, b, c]
       column_types: {a: String, b: UInt32, c: String}
       property_mappings: {name: name}
+    - label: U
+      database: db
+      table: u
+      node_id: [a, b, c]
+      property_mappings: {name: name}
   edges:
     - type: E
       database: db
@@ -9822,6 +9827,9 @@ graph_schema:
     assert!(!got.contains("v0.a IS NOT NULL"), "{got}");
     let got = sql("MATCH (n:K) RETURN n.name");
     assert!(!got.contains("IS NOT NULL"), "{got}");
+    // An id whose types are unknown is left as it was.
+    let got = sql("MATCH (n:U) RETURN n.name");
+    assert!(!got.contains("IS NOT NULL"), "{got}");
     // OPTIONAL MATCH, several labels, a walk's nodes.
     let got = sql("MATCH (k:K) OPTIONAL MATCH (n:M) RETURN k.name, n.name");
     assert!(got.contains("c IS NOT NULL"), "{got}");
@@ -9830,6 +9838,14 @@ graph_schema:
         got.contains("FROM db.m AS e WHERE e.c IS NOT NULL"),
         "{got}"
     );
+    // A walk's first nodes are filtered in the generator's seed, and the
+    // walk still carries its nodes as tuples (`nodes(p)[…]` needs them).
     let got = sql("MATCH (a:M)-[:E*0..2]->(b:M) RETURN a.name, b.name");
-    assert!(got.contains("c IS NOT NULL"), "{got}");
+    assert!(
+        got.contains("FROM db.m AS start_node WHERE (start_node.c IS NOT NULL)"),
+        "{got}"
+    );
+    let got = sql("MATCH p=(a:M)-[:E*1..2]->(b:M) RETURN [x IN nodes(p) | x.name] AS n");
+    assert!(got.contains("start_node.c IS NOT NULL"), "{got}");
+    assert!(got.contains("path_node_tuples"), "{got}");
 }

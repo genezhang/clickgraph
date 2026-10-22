@@ -4392,7 +4392,7 @@ impl<'s> Lowerer<'s> {
             rs.view_parameters.is_some(),
             rs.should_use_final(),
         ) || !plain(
-            ns.filter.is_some() || self.id_present(ns, "e").is_some(),
+            ns.filter.is_some(),
             ns.view_parameters.is_some(),
             ns.should_use_final(),
         ) {
@@ -4529,9 +4529,18 @@ impl<'s> Lowerer<'s> {
             self.walk_carries(r.var, REL_TUPLES, &label, node, &rel_type, edge),
         );
         let walked = node_values || rel_values || node_tuples || rel_tuples || wants(PATH_KEY);
-        let Some(start) = self.restriction(first, own, path::START)? else {
+        let Some(mut start) = self.restriction(first, own, path::START)? else {
             return Ok(()); // it matches nothing
         };
+        // ELEMENT_IDENTITY.md I6 (#1354): the walk starts only at a row that
+        // is a node (no NULL part of its id). Every node it reaches is one
+        // already (a relationship's end is among its columns, none NULL);
+        // its first nodes come from the table, so the filter goes here — the
+        // generator applies it to the seed of both the zero-hop and the
+        // one-hop case, and the search to its first rows.
+        if let Some(present) = self.id_present(node, path::START) {
+            start.push(present);
+        }
         // A shortest-path search ends once it has reached every value the
         // last node can have.
         let end = match shortest {
