@@ -559,6 +559,14 @@ Notes:
   into the config, or a POST that re-registered it), is deleted as well.
 - Deleting is cache-safe: query-cache entries for the name are invalidated the same way the
   load path does.
+- **Store-only rows are deletable**: a row that failed boot replay exists in the store but was
+  never loaded into memory — `DELETE` on that name still 200s, deletes the stored row, and
+  reports `"persisted": true, "store_only": true` (no in-memory entry ever existed for the name
+  this boot). This is the remedy boot replay's WARN advertises. A name with neither a memory
+  entry nor a stored row keeps the pre-feature `404`.
+- Ordering versus a concurrent re-register of the same name is last-writer-wins (the in-memory
+  removals are guarded; the store delete is a separate statement): if the re-register wins, the
+  name is live again with its row persisted to the next boot — the state the caller asked for.
 
 ### Persistence
 
@@ -584,9 +592,15 @@ Semantics (Kafka Connect's `config.storage.topic` pattern, applied on ClickHouse
 - **Registration first, durability best-effort**: a store failure never fails a registration —
   the response reports `persisted: false` instead. A promotion/deploy that kills the existing
   server loses nothing; a degraded store only breaks restart-survival, announced in the logs.
-- **Bounded boot replay**: at most `CLICKGRAPH_SCHEMA_REPLAY_MAX_ROWS` rows (default 500)
-  whose cumulative payload stays under `CLICKGRAPH_SCHEMA_REPLAY_MAX_BYTES` (default 64 MiB)
-  are restored, oldest first; rows left out are counted exactly in a WARN naming the knob.
+- **Bounded boot replay**: the fetch itself caps at `CLICKGRAPH_SCHEMA_REPLAY_MAX_ROWS` rows
+  (default 500) and a cumulative payload of `CLICKGRAPH_SCHEMA_REPLAY_MAX_BYTES` (default
+  64 MiB), enforced in the read (rows that would tip the cumulative byte window are never
+  materialized), restored oldest first; rows left out are counted exactly in a WARN naming
+  both knobs.
+- **Source gate**: the write path only stamps `api-load`; a stored row whose `source` is
+  anything else (a hand-edit, another tool) is never restored and never guessed at — skipped
+  with a per-name warning, counted in the boot summary. The version check runs first: a row
+  that is simultaneously future-versioned and foreign-sourced is skipped as future-versioned.
 - **Version gate**: rows written by a *newer* ClickGraph's registry format are skipped with a
   warning at boot instead of guessing at their shape (old servers survive upgrades that
   returned to them).

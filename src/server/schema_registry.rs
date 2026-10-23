@@ -96,28 +96,40 @@ impl Registration {
     }
 }
 
-/// A version gate: current rows to restore, and rows whose `registry_version`
-/// was written by a newer ClickGraph (skip + report — never panic, never
-/// guess at an unknown shape).
-pub struct VersionGate {
+/// A replay gate. Three buckets, each conservative:
+/// - `restorable`: this server wrote the row (known source) in a version it
+///   knows how to read (a `yaml` payload).
+/// - `future_versioned`: written by a NEWER ClickGraph — never guessed at,
+///   never crashed into.
+/// - `unknown_source`: correct version, but produced by a writer this server
+///   does not claim (`source != api-load` today). The version check wins over
+///   the source check: a row from an unknown future server can be either
+///   kind, and "future version" is the strictly safer refusal.
+pub struct ReplayGate {
     pub restorable: Vec<Registration>,
     pub future_versioned: Vec<Registration>,
+    pub unknown_source: Vec<Registration>,
 }
 
-/// Gate rows by registry version (pure — unit-tested).
-pub fn gate_registry_versions(rows: Vec<Registration>) -> VersionGate {
+/// Gate rows for boot replay (pure — unit-tested): registry version first,
+/// then the writer source.
+pub fn gate_for_replay(rows: Vec<Registration>) -> ReplayGate {
     let mut restorable = Vec::new();
     let mut future_versioned = Vec::new();
+    let mut unknown_source = Vec::new();
     for row in rows {
-        if row.registry_version <= REGISTRY_VERSION {
-            restorable.push(row);
-        } else {
+        if row.registry_version > REGISTRY_VERSION {
             future_versioned.push(row);
+        } else if row.source != SOURCE_API_LOAD {
+            unknown_source.push(row);
+        } else {
+            restorable.push(row);
         }
     }
-    VersionGate {
+    ReplayGate {
         restorable,
         future_versioned,
+        unknown_source,
     }
 }
 
@@ -176,8 +188,10 @@ impl SchemaStore {
         SchemaStore::Off
     }
 
-    /// Persist a YAML registration. `Ok(false)` = the store refused — the
-    /// registration itself already succeeded in memory.
+    /// Persist a YAML registration. `Err` = the store refused — the
+    /// registration itself already succeeded in memory (the caller reports
+    /// `persisted: false`). `Ok(())` = the row is stored (or the store is
+    /// `Off`, which no-ops by construction).
     pub async fn save_yaml(&self, name: &str, yaml: &str) -> Result<(), String> {
         match self {
             SchemaStore::Off => Ok(()),
@@ -200,18 +214,37 @@ impl SchemaStore {
         }
     }
 
-    /// Boot replay's one read, bounded: the deduped row count plus (at most)
-    /// `max_rows` oldest-first `restorable` rows. Restoring everything a
-    /// compartment-compromised or runaway client ever persisted, unbounded,
-    /// converts a one-time write burst into a per-restart cost that can push
-    /// boot past any readiness window — the row budget makes that worst case
-    /// visible and operator-dialable instead of silent. Total rows beyond the
-    /// cap are counted in [`ReplayFetch`] so the caller can warn with exact
-    /// numbers.
-    pub async fn load_replay_rows(&self, max_rows: usize) -> Result<ReplayFetch, String> {
+    /// Whether a row with this exact name exists. The store-only half of
+    /// `DELETE /schemas/{name}`: a failed-at-replay row is remembered by the
+    /// store but not loaded into memory, and the boot WARN advertises that
+    /// endpoint as its escape hatch — the probe keeps that promise honest
+    /// instead of answering 404 for a name that only lives in the store.
+    pub async fn exists(&self, name: &str) -> Result<bool, String> {
+        match self {
+            SchemaStore::Off => Ok(false),
+            SchemaStore::Clickhouse(store) => store.exists(name).await,
+        }
+    }
+
+    /// Boot replay's one read, bounded on BOTH budgets: at most `max_rows`
+    /// oldest-first rows whose cumulative payload size also stays within
+    /// `max_bytes`. Restoring everything a compartment-compromised or runaway
+    /// client ever persisted, unbounded, converts a one-time write burst into
+    /// a per-restart cost that can push boot past any readiness window — and
+    /// the bound must hold at the fetch itself, not only after the bytes are
+    /// already in memory: the select below stops at the cumulative payload
+    /// budget inside ClickHouse (a window sum over the replay order), so a
+    /// boot with a 64 MiB budget never materializes more than 64 MiB. Total
+    /// rows beyond either cap are counted in [`ReplayFetch`] so the caller
+    /// can warn with exact numbers.
+    pub async fn load_replay_rows(
+        &self,
+        max_rows: usize,
+        max_bytes: u64,
+    ) -> Result<ReplayFetch, String> {
         match self {
             SchemaStore::Off => Ok(ReplayFetch::default()),
-            SchemaStore::Clickhouse(store) => store.load_replay_rows(max_rows).await,
+            SchemaStore::Clickhouse(store) => store.load_replay_rows(max_rows, max_bytes).await,
         }
     }
 }
@@ -219,15 +252,21 @@ impl SchemaStore {
 /// A single bounded replay read.
 #[derive(Debug, Default)]
 pub struct ReplayFetch {
-    /// Current-version rows, oldest first, within the row budget.
+    /// Current-version, api-load rows, oldest first, within both budgets.
     pub restorable: Vec<Registration>,
     /// Rows whose `registry_version` is newer than this server (never
     /// restored; the store warns with each name at fetch time).
     pub future_versioned: Vec<Registration>,
-    /// Deduped rows in the table (`FINAL` count) — rows beyond the row
-    /// budget were never fetched, so this may exceed both vectors' lengths.
+    /// Current-version rows whose `source` this server does not claim
+    /// (`!= api-load`) — never restored either: the writer is unknown, and
+    /// unknown writers' payloads are never guessed at. The store warns with
+    /// each name and source at fetch time.
+    pub unknown_source: Vec<Registration>,
+    /// Deduped rows in the table (`FINAL` count) — rows beyond either
+    /// budget were never fetched, so this may exceed the vectors' lengths.
     pub total_rows: u64,
-    /// Rows actually fetched (`restorable + future_versioned` lengths).
+    /// Rows actually fetched (`restorable + future_versioned +
+    /// unknown_source` lengths).
     pub fetched: usize,
 }
 
@@ -304,19 +343,54 @@ impl ClickhouseSchemaStore {
         Ok(())
     }
 
+    /// Whether a row with this exact name exists (deduped read via
+    /// `FINAL`). Deliberately does **not** `ensure_table`: probing a name on
+    /// a database that never registered anything must answer "no", not
+    /// create the table — write-on-read would turn every failed DELETE
+    /// probe into a DDL side effect. A missing table errors; the caller
+    /// treats that as `false` (nothing was ever persisted there).
+    pub async fn exists(&self, name: &str) -> Result<bool, String> {
+        let count: u64 = self
+            .client
+            .query(&format!(
+                "SELECT count() FROM {REGISTRY_TABLE} FINAL WHERE name = ?"
+            ))
+            .bind(name.to_string())
+            .fetch_one::<u64>()
+            .await
+            .map_err(|e| format!("registry read failed: {e}"))?;
+        Ok(count > 0)
+    }
+
     /// `FINAL` collapses superseded rows of the same name to the last write
     /// (ReplacingMergeTree's compaction, read live — the same idiom the
     /// legacy `graph_catalog` read uses). The version column
     /// (`registered_at_ms`) makes the collapse deterministic: two same-name
     /// writes can land in the same millisecond, and with the version column
     /// the merge keeps the one registered later in the same part cycle.
-    pub async fn load_replay_rows(&self, max_rows: usize) -> Result<ReplayFetch, String> {
+    ///
+    /// Both budgets bound the fetch itself: the inner select runs a
+    /// cumulative `sum(length(payload))` window over the replay order
+    /// (`registered_at_ms, name`), and only rows whose cumulative payload
+    /// still fits `max_bytes` are materialized, then at most `max_rows`.
+    /// A boot with a 64 MiB budget pulls at most 64 MiB of payload over the
+    /// wire, whatever the table holds — the cap cannot be outflanked by a
+    /// fat table. Budget spend is deliberately shared by every fetched row
+    /// kind (a foreign or future-versioned payload is materialized too, so
+    /// it spends the same budget): the bound is on boot work, not only on
+    /// restoration. Rows beyond either cap are counted in `total_rows` vs
+    /// `fetched`, never silently dropped.
+    pub async fn load_replay_rows(
+        &self,
+        max_rows: usize,
+        max_bytes: u64,
+    ) -> Result<ReplayFetch, String> {
         self.ensure_table().await?;
 
         // Count first so "N rows skipped over the budget" is an exact
         // statement, not a guess. Two small reads instead of one unbounded
         // one: the count on FINAL is cheap on this table (one row per
-        // registration, boot-time only), and the LIMIT below then bounds
+        // registration, boot-time only), and the select below then bounds
         // payload transfer regardless of what is in the table.
         let total_rows: u64 = self
             .client
@@ -327,7 +401,13 @@ impl ClickhouseSchemaStore {
 
         let select = format!(
             "SELECT name, source, format, payload, registry_version, \
-             registered_at_ms FROM {REGISTRY_TABLE} FINAL \
+             registered_at_ms FROM (\
+             SELECT name, source, format, payload, registry_version, \
+                    registered_at_ms, \
+                    sum(length(payload)) OVER (ORDER BY registered_at_ms, \
+                     name) AS cum_bytes \
+             FROM {REGISTRY_TABLE} FINAL\
+             ) WHERE cum_bytes <= {max_bytes} \
              ORDER BY registered_at_ms, name LIMIT {max_rows}"
         );
         let rows: Vec<Registration> = self
@@ -337,7 +417,7 @@ impl ClickhouseSchemaStore {
             .await
             .map_err(|e| format!("registry read failed: {e}"))?;
 
-        let gate = gate_registry_versions(rows);
+        let gate = gate_for_replay(rows);
         for row in &gate.future_versioned {
             log::warn!(
                 "registry row '{}' was written by registry_version {} \
@@ -346,10 +426,21 @@ impl ClickhouseSchemaStore {
                 row.registry_version
             );
         }
+        for row in &gate.unknown_source {
+            log::warn!(
+                "registry row '{}' was written by an unclaimed source '{}' \
+                 (this server restores only '{SOURCE_API_LOAD}') — skipping it",
+                log_safe(&row.name),
+                log_safe(&row.source)
+            );
+        }
         Ok(ReplayFetch {
-            fetched: gate.restorable.len() + gate.future_versioned.len(),
+            fetched: gate.restorable.len()
+                + gate.future_versioned.len()
+                + gate.unknown_source.len(),
             restorable: gate.restorable,
             future_versioned: gate.future_versioned,
+            unknown_source: gate.unknown_source,
             total_rows,
         })
     }
@@ -389,6 +480,17 @@ impl ClickhouseSchemaStore {
 
 /// Persist after a successful `POST /schemas/load`.
 ///
+/// Takes the server's one shared store (`AppState.schema_store`) — hoisting
+/// the instance is what makes the table-creation mutex per process instead
+/// of per request (and keeps one serialization point for concurrent first
+/// registrations). The config rides along only to keep the observable
+/// contract exact: with `clickhouse` mode on a server that carries no
+/// ClickHouse client (the embedded and other no-client modes — see
+/// `run_server`'s `AppState` construction), the answer is `Some(false)`
+/// with a debug trail — the attempt was real, the mode just has nothing to
+/// persist into — while a genuinely disabled mode answers `None` so the
+/// response body stays byte-identical to a server without the feature.
+///
 /// `None` = persistence is off (the caller must leave the response body
 /// byte-identical to a server without the feature). `Some(true/false)` = the
 /// attempt happened and the field says whether it stuck. Store failures
@@ -396,48 +498,44 @@ impl ClickhouseSchemaStore {
 /// way, and a flaky store must not make the registration API flaky.
 pub async fn persist_yaml_after_load(
     config: &ServerConfig,
-    clickhouse_client: Option<Client>,
+    store: &SchemaStore,
     schema_name: &str,
     yaml_content: &str,
 ) -> Option<bool> {
-    if config.schema_persistence != SchemaPersistenceMode::Clickhouse {
-        return None;
-    }
-    // From here on the attempt is real: `Some(ok)` is the honest answer even
-    // when a store is unavailable (no client in this server mode) — the
-    // registration succeeded in memory, the response reports what persisted.
-    let store = SchemaStore::from_parts(config.schema_persistence, clickhouse_client);
-    let outcome = match &store {
-        SchemaStore::Off => {
-            // No-client modes must not re-WARN per request (boot's `replay`
-            // logged the condition once); a persisted:false response is the
-            // contract surface. Debug keeps the trail for support.
+    match (config.schema_persistence, store) {
+        (SchemaPersistenceMode::Off, _) => None,
+        // `clickhouse` mode but no client in this server mode: the shared
+        // store is `Off` by construction (`from_parts`). Per-request paths
+        // must not re-WARN (boot's `replay` logged the condition once); a
+        // persisted:false response is the contract surface, debug keeps the
+        // trail for support.
+        (SchemaPersistenceMode::Clickhouse, SchemaStore::Off) => {
             log::debug!(
                 "schema persistence: no ClickHouse client in this server \
                  mode — '{}' stays memory-only",
                 log_safe(schema_name)
             );
-            return Some(false);
+            Some(false)
         }
-        SchemaStore::Clickhouse(store) => {
-            store
+        (SchemaPersistenceMode::Clickhouse, SchemaStore::Clickhouse(clickhouse_store)) => {
+            let outcome = clickhouse_store
                 .upsert(
                     schema_name,
                     SOURCE_API_LOAD,
                     FORMAT_YAML,
                     yaml_content.to_string(),
                 )
-                .await
+                .await;
+            if let Err(e) = &outcome {
+                log::warn!(
+                    "schema '{}' could not be persisted for restart ({e}); \
+                     the registration is live, it just will not survive one",
+                    log_safe(schema_name)
+                );
+            }
+            Some(outcome.is_ok())
         }
-    };
-    if let Err(e) = &outcome {
-        log::warn!(
-            "schema '{}' could not be persisted for restart ({e}); \
-             the registration is live, it just will not survive one",
-            log_safe(schema_name)
-        );
     }
-    Some(outcome.is_ok())
 }
 
 // --------------------------------------------------------------- boot replay
@@ -455,8 +553,9 @@ pub async fn persist_yaml_after_load(
 /// the point, silent truncation would be a data-loss bug pretending to be a
 /// cap.
 pub async fn replay(app_state: &super::AppState, config: &ServerConfig) {
-    // The boot notice lives here (not in `from_parts`, which the per-request
-    // write paths also construct) so a no-client mode logs it exactly once.
+    // The boot notice lives here (not on the per-request write paths — they
+    // share the hoisted store and never warn about this) so a no-client mode
+    // logs it exactly once: `replay` itself runs once per boot.
     if config.schema_persistence == SchemaPersistenceMode::Clickhouse
         && app_state.clickhouse_client.is_none()
     {
@@ -467,15 +566,18 @@ pub async fn replay(app_state: &super::AppState, config: &ServerConfig) {
         );
     }
 
-    let store = SchemaStore::from_parts(
-        config.schema_persistence,
-        app_state.clickhouse_client.clone(),
-    );
+    let store = &app_state.schema_store;
     // Off stays fully silent (byte-for-byte the pre-feature boot).
-    if matches!(store, SchemaStore::Off) {
+    if matches!(**store, SchemaStore::Off) {
         return;
     }
-    let mut fetch = match store.load_replay_rows(config.schema_replay_max_rows).await {
+    let mut fetch = match store
+        .load_replay_rows(
+            config.schema_replay_max_rows,
+            config.schema_replay_max_bytes,
+        )
+        .await
+    {
         Ok(fetch) => fetch,
         Err(e) => {
             log::warn!(
@@ -493,17 +595,23 @@ pub async fn replay(app_state: &super::AppState, config: &ServerConfig) {
         }
     };
 
-    let over_row_cap = fetch.total_rows - fetch.fetched as u64;
-    if over_row_cap > 0 {
+    // Rows the budgets never fetched: the count and the bounded select
+    // disagree under a concurrent write between the two reads (and the byte
+    // cap cuts rows the row cap alone would have admitted) — saturate so a
+    // transient disagreement can never wrap into a bogus seven-figure WARN.
+    let over_budget = fetch.total_rows.saturating_sub(fetch.fetched as u64);
+    if over_budget > 0 {
         log::warn!(
             "registry holds {total} rows but the replay budget allows only \
-             {fetched} (CLICKGRAPH_SCHEMA_REPLAY_MAX_ROWS={max}) — \
-             {over} oldest-first rows were not fetched and will not be \
-             restored; raise the budget or clean {REGISTRY_TABLE}",
+             {fetched} (CLICKGRAPH_SCHEMA_REPLAY_MAX_ROWS={max}, \
+             CLICKGRAPH_SCHEMA_REPLAY_MAX_BYTES={bytes}) — {over} oldest-\
+             first rows were not fetched and will not be restored; raise \
+             the budget or clean {REGISTRY_TABLE}",
             total = fetch.total_rows,
             fetched = fetch.fetched,
             max = config.schema_replay_max_rows,
-            over = over_row_cap,
+            bytes = config.schema_replay_max_bytes,
+            over = over_budget,
         );
     }
 
@@ -526,10 +634,14 @@ pub async fn replay(app_state: &super::AppState, config: &ServerConfig) {
     let mut used_bytes = 0u64;
     let mut failed_names: Vec<String> = Vec::new();
     for row in &to_restore {
-        // Byte budget, enforced in registered_at_ms order: stop before a row
-        // would exceed it and skip the deterministic remainder (a newer
-        // registration that fits drops nothing from the budget already used),
-        // counting what is left so the WARN tells an exact number.
+        // Byte budget, re-checked here in replay order — normally a no-op,
+        // because the fetch itself stops at the same cumulative budget
+        // server-side (a window sum over this exact order); kept as a
+        // belt-and-suspenders net against a store that does not honor it.
+        // Stop before a row would exceed it and skip the deterministic
+        // remainder (a newer registration that fits drops nothing from the
+        // budget already used), counting what is left so the WARN tells an
+        // exact number.
         let row_bytes = row.payload.len() as u64;
         if used_bytes + row_bytes > config.schema_replay_max_bytes {
             byte_skipped = to_restore.len() - restored - failed_names.len();
@@ -577,13 +689,21 @@ pub async fn replay(app_state: &super::AppState, config: &ServerConfig) {
         }
     }
 
+    // The summary accounts for every fetched row — restored, shadowed,
+    // failed, over either budget, newer-versioned, unknown-sourced — so
+    // nothing crosses the fetch and vanishes between the buckets:
+    // total_rows = restored + config-shadowed + failed + skipped over
+    // replay budget + newer-version skipped + unknown-source skipped.
     log::info!(
         "schema persistence: {} restored / {} config-shadowed / {} failed \
-         / {} skipped over replay budget (failed: {:?})",
+         / {} skipped over replay budget / {} newer-version skipped \
+         / {} unknown-source skipped (failed: {:?})",
         restored,
         shadowed.len(),
         failed_names.len(),
-        over_row_cap + byte_skipped as u64,
+        over_budget + byte_skipped as u64,
+        fetch.future_versioned.len(),
+        fetch.unknown_source.len(),
         failed_names
     );
 }
@@ -617,7 +737,7 @@ mod tests {
 
     #[test]
     fn future_registry_version_is_skipped_not_booted() {
-        let gate = gate_registry_versions(vec![
+        let gate = gate_for_replay(vec![
             row("ok", 1),
             Registration {
                 registry_version: REGISTRY_VERSION + 1,
@@ -628,6 +748,54 @@ mod tests {
         assert_eq!(gate.restorable[0].name, "ok");
         assert_eq!(gate.future_versioned.len(), 1);
         assert_eq!(gate.future_versioned[0].name, "from-the-future");
+    }
+
+    #[test]
+    fn unknown_source_rows_are_never_restored() {
+        // The write path only ever stamps SOURCE_API_LOAD; anything else in
+        // the column is an operator hand-edit or another tool's write, and
+        // its payload is never guessed at.
+        let gate = gate_for_replay(vec![Registration {
+            source: "not-api-load".to_string(),
+            ..row("hand-written", 1)
+        }]);
+        assert!(
+            gate.restorable.is_empty(),
+            "an unclaimed source must never restore"
+        );
+        assert_eq!(gate.unknown_source.len(), 1);
+        assert_eq!(gate.unknown_source[0].name, "hand-written");
+        assert_eq!(gate.unknown_source[0].source, "not-api-load");
+        assert!(gate.future_versioned.is_empty());
+    }
+
+    #[test]
+    fn unknown_version_wins_over_unknown_source() {
+        // A row from an unknown future server can be EITHER foreign-sourced
+        // or future-versioned; the version refusal is the strictly safer
+        // bucket, so the version check runs first.
+        let gate = gate_for_replay(vec![Registration {
+            source: "not-api-load".to_string(),
+            registry_version: REGISTRY_VERSION + 1,
+            ..row("doubly-unknown", 1)
+        }]);
+        assert_eq!(gate.future_versioned.len(), 1);
+        assert!(
+            gate.unknown_source.is_empty() && gate.restorable.is_empty(),
+            "one row, exactly one refusal bucket"
+        );
+    }
+
+    #[test]
+    fn empty_source_is_still_unknown() {
+        // Cheap-defect probe: an empty string is a source this server does
+        // not claim and must not restore.
+        let gate = gate_for_replay(vec![Registration {
+            source: String::new(),
+            ..row("blank-stamp", 1)
+        }]);
+        assert_eq!(gate.unknown_source.len(), 1);
+        assert!(gate.restorable.is_empty());
     }
 
     #[test]
@@ -681,5 +849,6 @@ mod tests {
         assert_eq!(fetch.fetched, 0);
         assert!(fetch.restorable.is_empty());
         assert!(fetch.future_versioned.is_empty());
+        assert!(fetch.unknown_source.is_empty());
     }
 }

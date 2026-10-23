@@ -62,8 +62,12 @@ $env:CLICKHOUSE_URL='http://127.0.0.1:8123'; $env:CLICKHOUSE_USER='test_user'; $
 cargo +1.92.0-x86_64-pc-windows-gnu test --no-default-features --test ratchet
 cargo +1.92.0-x86_64-pc-windows-gnu test --no-default-features --test integration the_corpus_lowers
 
-# E2E: register → kill → re-register nothing → query succeeds
+# E2E: register → SIGKILL → re-register nothing → restored + query succeeds →
+# DELETE stays deleted → off mode writes nothing (the spec's acceptance acts)
 python tests/e2e/test_schema_persistence_e2e.py
+# same run under pytest (collectable; skips when CLICKHOUSE_URL/CLICKGRAPH_BIN
+# are unset) — this is how CI drives it:
+pytest tests/e2e/test_schema_persistence_e2e.py -v
 ```
 
 ## Project Structure
@@ -76,7 +80,10 @@ src/server/schema_registry.rs          ← NEW. Store enum + ClickHouse impl +
       │                                    registration; does not touch translator.
 src/server/graph_catalog.rs            ← schema lifecycle CRUD; remove_schema
                                          (DELETE /schemas/{name} in-memory
-                                         half, atomic with the load path)
+                                         half, guarded so one generation is
+                                         removed whole; the store delete is
+                                         last-writer-wins vs a racing
+                                         re-register — Semantics §4)
 src/server/mod.rs                      ← boot: after initialize_global_schema,
                                          call replay (config-file names win);
                                          env plumbing (ServerConfig fields)
@@ -121,6 +128,15 @@ One row per registered schema name, in the **configured ClickHouse database**
   Kafka Connect config-topic semantics. Reads always go through `FINAL`.
   Deletes use ClickHouse **lightweight deletes** (server ≥ 25.x confirmed in
   deployment images); fallback `ALTER TABLE … DELETE` if unavailable.
+- **Read-side gate on stored rows** (`gate_for_replay`): a row is restorable
+  only when its `registry_version` is this server's version AND its `source`
+  is exactly `api-load` — every other combination is refused into a counted
+  bucket with a per-name WARN, never guessed at (a hand-edited or foreign
+  row's payload is not this server's contract). The version check runs
+  first: a row that is simultaneously future-versioned and foreign-sourced
+  belongs to the strictly safer future-version bucket. `format` stays
+  checked at restore time (a current-version `api-load` row with a non-yaml
+  format is a failed restore, not a silent skip).
 - The default-alias duplication behavior of `initialize_global_schema` is NOT
   persisted: the store holds exactly the names that were explicitly registered at
   runtime. On replay, restore goes through the *same* `load_schema_from_content`
@@ -132,9 +148,10 @@ One row per registered schema name, in the **configured ClickHouse database**
 - `CLICKGRAPH_SCHEMA_PERSISTENCE` ∈ {`off`, `clickhouse`}, **default `off`**.
   Parsed strictly (unknown value = startup fails loudly — a config typo should
   never silently disable durability).
-- No other env var in v1. (Deliberate: the ClickHouse connection and database
-  already come from the standard vars; a second knob to point persistence
-  elsewhere is a maintenance trap — migrations would need two stores.)
+- No other env var in v1 besides the two replay-budget knobs below. (Deliberate:
+  the ClickHouse connection and database already come from the standard vars; a
+  second knob to point persistence elsewhere is a maintenance trap — migrations
+  would need two stores.)
 - `off` (and default-on-absence of the flag): the process never touches the
   registry table. Byte-for-byte today's behavior — no reads, no writes, no DDL.
 - Embedded (`chdb`) and Databricks modes have no ClickHouse client
@@ -172,10 +189,18 @@ One row per registered schema name, in the **configured ClickHouse database**
    DDL write seam first — recorded as future work, not a claim of this feature.
 3. **Boot replay** (after `initialize_global_schema`, only when enabled and a CH
    client exists):
-   - Load rows **bounded**: at most `CLICKGRAPH_SCHEMA_REPLAY_MAX_ROWS`
-     oldest-first rows whose cumulative payload stays under
-     `CLICKGRAPH_SCHEMA_REPLAY_MAX_BYTES`; rows left out are counted exactly in
-     a WARN naming the knob (bounded durable work by default).
+   - Load rows **bounded**: the fetch itself caps at
+     `CLICKGRAPH_SCHEMA_REPLAY_MAX_ROWS` oldest-first rows and a cumulative
+     payload of `CLICKGRAPH_SCHEMA_REPLAY_MAX_BYTES` — the byte budget is
+     enforced inside the read (a `sum(length(payload)) OVER (ORDER BY
+     registered_at_ms, name)` window; only rows that still fit are
+     materialized), so a fat table can never make a boot pull 64 MiB+ over
+     the wire whatever its row count; the historical client-side re-check
+     stays as a belt-and-suspenders net. The budget is deliberately spent
+     by every fetched row kind (a foreign or future-versioned payload is
+     materialized too, so it counts against the same bound): the cap
+     bounds boot work, not only restoration. Rows left out are counted
+     exactly in a WARN naming both knobs, never silently dropped.
    - For each name **already present** from the config file ⇒ skip with an INFO
      line (`config-defined schema <name> shadows persisted registration <name>`).
      Determinism over recency — a config file is declared intent, and an upgrade
@@ -186,16 +211,45 @@ One row per registered schema name, in the **configured ClickHouse database**
      metadata; a restore re-validates reality instead of trusting a stale
      snapshot).
    - A row that fails to replay (its tables vanished, YAML no longer parses under
-     a stricter new parser, a newer registry_version, an unknown format): WARN
-     with name + error, continue with the others. One bad row may not kill the
-     boot — same convention as ClickGraph's YAML-load fall back to DB discovery.
+     a stricter new parser, an unknown format): WARN with name + error, continue
+     with the others. One bad row may not kill the boot — same convention as
+     ClickGraph's YAML-load fall back to DB discovery. (Refused rows — newer
+     `registry_version`, unknown `source` — are not failures: they are never
+     attempted and are counted in their own summary segments below.)
    - Knockout summary: `n restored / m config-shadowed / k failed / b skipped
-     over replay budget` in one INFO line; when the store is unreachable:
+     over replay budget / v newer-version skipped / u unknown-source skipped`
+     in one INFO line — the six segments account for every row (`total_rows =
+     restored + config-shadowed + failed + budget-skipped + newer-version +
+     unknown-source`); when the store is unreachable:
      `0 restored / 0 config-shadowed / 0 failed (store unreachable at boot)`.
-4. **Delete**: `DELETE /schemas/{name}` ⇒ remove from memory registries + query
-   cache invalidation (same call the load path makes) + delete the store row ⇒ 200
-   `{"message": ..., "schema_name": ...}`; unknown name ⇒ 404 same body shape as
-   `GET /schemas/{name}`. New endpoint ⇒ additive, backward compatible.
+4. **Delete**: `DELETE /schemas/{name}` removes the in-memory registration +
+   query-cache invalidation (the same call the load path makes) and deletes the
+   store row ⇒ 200 `{"message": ..., "schema_name": ..., "persisted": true}`
+   (`persisted` appears only when persistence is configured — additive).
+   Name classes, stated:
+   - **store-only name** (a row that failed boot replay: in the store, never
+     loaded into memory): the endpoint is the remedy boot replay's WARN
+     advertises — the row is deleted even though `remove_schema` reported
+     not-found, and the response carries `"persisted": true, "store_only": true`
+     (nothing in memory ever existed for the name this boot). A failing store
+     on this path is an honest 500: nothing was deleted, so neither a fake 200
+     nor the 404 would be truthful.
+   - **config-defined name**: DELETE clears memory and its row; the config
+     file re-registers the schema on the next boot regardless, so the
+     in-memory deletion of such a name is transient by design (`default`
+     included).
+   - **unknown name** (no memory entry, no stored row — includes persistence
+     off): pre-feature 404, same body shape as `GET /schemas/{name}`; the
+     store-only probe has no write side effect (it never creates the table).
+   **Delete vs re-register is last-writer-wins, deliberately not atomic**: the
+   memory removals are guarded (one generation removed whole), but the store
+   delete runs after the guard, outside it. If the re-register's insert wins,
+   the name is live in memory and its row persists to the next boot — exactly
+   the state the caller asked for by re-registering; if the DELETE's store
+   statement wins, the schema is retired everywhere. Serializing the two per
+   name would hold the schema write guard across a network round-trip per
+   DELETE; documenting the loser's state instead is the cheaper and honest
+   contract. New endpoint ⇒ additive, backward compatible.
 5. **Concurrency**: two instances replaying simultaneously is out of scope v1
    (documented; single-instance per the deployment profile). Writes are safe
    (row-level last-wins); replay is read-only over the store + in-memory writes
@@ -250,11 +304,23 @@ Four levels, each with a named concern:
    `StateRouter` like `databricks_introspect_tests.rs`: response shapes (incl.
    `persisted: false` degradation field), 404 shape, old-payload compat (a
    pre-feature client that ignores extra fields keeps working).
-4. **E2E (python)** — register → **SIGKILL** → restart → assert `GET /schemas`
-   lists it and a query against it returns rows; assert zero-writes on
-   persistence=off (count `system.tables` rows before/after); assert shadowing
-   (config-file name over persisted name). Kill/restart needs the real binary —
-   patterned after `tests/e2e/test_query_cache_e2e.py`.
+4. **E2E (python, pytest-collectable)** — the restart cycle as CI runs it
+   (`pytest tests/e2e/test_schema_persistence_e2e.py`, skipping when
+   `CLICKHOUSE_URL` / `CLICKGRAPH_BIN` are unset; plain-python `python …`
+   keeps exit 77 as the skip indicator): register → `persisted: true` →
+   **SIGKILL** (no graceful shutdown — POSIX `SIGKILL`, Windows
+   `TerminateProcess`) → restart with the same env and no re-registration →
+   `GET /schemas/{name}` 200 and **a query against the restored schema reads
+   seeded data** (query-after-restore, per-run-unique probe so a crashed
+   earlier run cannot fake it) → DELETE lifecycle (200 then 404) → restart ⇒
+   deleted stays deleted → persistence-off re-register with **no `persisted`
+   key** AND zero writes (the `system.tables` count for the database is
+   unchanged and the registry holds no row for the name). The server
+   lifecycle is the script's (spawn/reap of the real binary), and this step
+   runs in CI after the integration job's smoke subset (`ci.yml`: 
+   "Schema-persistence restart-cycle e2e"), where the test ClickHouse
+   container is already up. Config-file shadowing is pinned at the Rust
+   level (`boot_replay_restores_persisted_rows_and_shadows_registered_ones`).
 
 Backward-compat proof is a test class of its own: with the flag unset, a full
 `/schemas/load` + `/query` session must produce identical responses to `main`
@@ -288,11 +354,15 @@ Backward-compat proof is a test class of its own: with the flag unset, a full
 3. Config-file + persisted collision ⇒ config wins; log states the skip; count of
    skipped = expectation in the knockout line.
 4. Boot replay bounded: seeding more rows than the budget allows restores the
-   oldest-first prefix and the WARN names the exact overage; with the default
-   budgets (500 rows / 64 MiB) a boot's restore work is a stated, dialable
-   cost, never an unbounded read.
+   oldest-first prefix and the WARN names the exact overage; the byte budget
+   is enforced in the fetch itself (rows that would tip it are never pulled
+   over the wire), with the default budgets (500 rows / 64 MiB) making a
+   boot's restore work a stated, dialable cost, never an unbounded read.
 5. `DELETE /schemas/{name}` ⇒ memory + store + query cache all drop it; 404 on
-   the gone name (both GET and DELETE), same body shape.
+   the gone name (both GET and DELETE), same body shape. A store-only row
+   (failed replay) is retirable through the same endpoint: 200
+   `{"persisted": true, "store_only": true}` and the row really leaves the
+   store; a second DELETE 404s.
 6. ClickHouse unreachable at boot with persistence on ⇒ server still boots
    healthy (WARN, `0 restored / 0 config-shadowed / 0 failed (store unreachable
    at boot)`) — matches resilient-startup convention.

@@ -623,12 +623,15 @@ pub async fn list_available_schemas() -> Vec<String> {
 /// The `GLOBAL_SCHEMAS` write guard is held across all three removals, in
 /// exactly the order the load path acquires (`load_schema_from_content` also
 /// nests SCHEMAS → CONFIGS while holding the first guard). Holding across the
-/// removals is what makes a DELETE atomic against a racing re-register
-/// (`POST /schemas/load`): if the load wins first, the DELETE sees the name
-/// gone and 404s; if the DELETE wins first, it removes all three halves of
-/// one generation. Releasing SCHEMAS between the two map deletions (the
-/// earlier shape) let the interleaving "delete → re-register both maps →
-/// delete configs only" leave a schema alive with no view config.
+/// removals is what makes the memory half delete one whole generation
+/// against a racing re-register (`POST /schemas/load`): if the load wins
+/// first, the DELETE sees the name gone and 404s; if the DELETE wins first,
+/// it removes all three halves of one generation. Releasing SCHEMAS between
+/// the two map deletions (the earlier shape) let the interleaving "delete →
+/// re-register both maps → delete configs only" leave a schema alive with no
+/// view config. The store statement of a DELETE, however, runs after this
+/// guard — see the handler's doc: DELETE vs re-register is last-writer-wins,
+/// not an atomic transaction (`SCHEMA_PERSISTENCE.md` §4).
 ///
 /// `forget_default_alias_of` is deliberately NOT touched: removing an alias
 /// source must not silently re-merge `default` with whatever the alias
@@ -654,7 +657,7 @@ pub async fn remove_schema(schema_name: &str) -> Result<(), String> {
 
     log::info!(
         "Schema '{}' removed from the in-memory registry",
-        schema_name
+        crate::server::schema_registry::log_safe(schema_name)
     );
     Ok(())
 }

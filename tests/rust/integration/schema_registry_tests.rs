@@ -87,6 +87,9 @@ fn test_state(config: ServerConfig) -> AppState {
         config,
         query_semaphore: None,
         pool: None,
+        // No client in this mode, so the shared store is `Off` however the
+        // config flag is set (same rule `run_server` applies).
+        schema_store: Arc::new(SchemaStore::Off),
     }
 }
 
@@ -302,6 +305,33 @@ async fn delete_removes_a_registered_schema_and_404s_unknowns() {
     );
 }
 
+/// With `clickhouse` persistence configured but no client (the offline
+/// route CI exercises through), an unknown-name DELETE stays the
+/// pre-feature 404: the shared store is `Off` and answers the store-only
+/// probe `false`, so no DELETE that would create the registry table is
+/// ever issued — the store-only path has no write side effect on misses.
+#[tokio::test]
+async fn delete_unknown_name_stays_404_in_clickhouse_mode_without_client() {
+    ensure_global_schemas().await;
+    let config = config_with(clickgraph::config::SchemaPersistenceMode::Clickhouse);
+    let router = build_router(test_state(config.clone()), &config);
+
+    let resp = router
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri("/schemas/it_schema_registry_no_such_schema")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("router answers");
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    let body: Value = serde_json::from_str(&body_string(resp).await).expect("json body");
+    let keys: Vec<&String> = body.as_object().expect("object").keys().collect();
+    assert_eq!(keys, vec!["error"], "404 body: {body}");
+}
+
 // ------------------------------------------------------- live ClickHouse tier
 
 fn live_client() -> Option<clickhouse::Client> {
@@ -335,7 +365,10 @@ async fn store_round_trips_against_live_clickhouse() {
         .await
         .expect("save");
 
-    let fetch = store.load_replay_rows(usize::MAX).await.expect("read");
+    let fetch = store
+        .load_replay_rows(usize::MAX, u64::MAX)
+        .await
+        .expect("read");
     let mine = fetch
         .restorable
         .iter()
@@ -349,7 +382,10 @@ async fn store_round_trips_against_live_clickhouse() {
     assert!(fetch.total_rows >= 1, "count must cover the saved row");
 
     store.delete(&name).await.expect("delete");
-    let fetch = store.load_replay_rows(usize::MAX).await.expect("read");
+    let fetch = store
+        .load_replay_rows(usize::MAX, u64::MAX)
+        .await
+        .expect("read");
     assert!(
         fetch.restorable.iter().all(|r| r.name != name),
         "deleted row must not read back"
@@ -380,7 +416,7 @@ async fn replay_fetch_is_bounded_by_the_row_budget() {
 
     // Cap at one: exactly one row comes back, and the count states that
     // more exist in the table.
-    let fetch = store.load_replay_rows(1).await.expect("read");
+    let fetch = store.load_replay_rows(1, u64::MAX).await.expect("read");
     assert_eq!(fetch.fetched, 1, "the LIMIT is the hard bound");
     assert!(fetch.total_rows > 1, "count sees past the cap");
     let over = fetch.total_rows - fetch.fetched as u64;
@@ -392,6 +428,170 @@ async fn replay_fetch_is_bounded_by_the_row_budget() {
 
     store.delete(&name_a).await.expect("cleanup a");
     store.delete(&name_b).await.expect("cleanup b");
+}
+
+/// The byte budget bounds the fetch itself: whatever rows come back, their
+/// total payload never exceeds the cap, a zero cap fetches nothing, and a
+/// cap that mathematically cannot fit this test's newer row excludes it.
+/// The cap-shape invariants are asserted over *all* fetched rows so other
+/// tests' rows in the shared database cannot flake them; row identity is
+/// only checked where it is order-guaranteed (this test's own rows, seeded
+/// last).
+#[tokio::test]
+async fn replay_fetch_is_bounded_by_the_byte_budget() {
+    let Some(client) = live_client() else {
+        println!("skipping: CLICKHOUSE_URL not set (offline suite)");
+        return;
+    };
+
+    let store = SchemaStore::Clickhouse(Box::new(ClickhouseSchemaStore::new(client)));
+    let name_a = unique_name();
+    let name_b = unique_name();
+    let payload_a = "name: bytes-a\nnodes: {}";
+    let payload_b = format!("name: bytes-b\nnodes: {{}}\n# {}", "x".repeat(64_000));
+
+    store.save_yaml(&name_a, payload_a).await.expect("seed a");
+    store.save_yaml(&name_b, &payload_b).await.expect("seed b");
+
+    let full = store
+        .load_replay_rows(usize::MAX, u64::MAX)
+        .await
+        .expect("read");
+    let len_a = full
+        .restorable
+        .iter()
+        .find(|r| r.name == name_a)
+        .expect("a seeded and restorable")
+        .payload
+        .len() as u64;
+    let len_b = full
+        .restorable
+        .iter()
+        .find(|r| r.name == name_b)
+        .expect("b seeded and restorable")
+        .payload
+        .len() as u64;
+    assert!(len_b > len_a, "the probe fixture changed");
+
+    // 1. A 0-byte budget fetches nothing (but the count still sees the table).
+    let zero = store.load_replay_rows(usize::MAX, 0).await.expect("read");
+    assert_eq!(zero.fetched, 0, "nothing fits a 0-byte budget");
+    assert!(zero.restorable.is_empty());
+    assert!(zero.total_rows > 0);
+
+    // 2. Any cap bounds exactly what crosses the wire: the fetched rows'
+    //    payloads sum to at most the cap (the fetch is capped server-side;
+    //    the invariant holds whatever else shares the table).
+    let cap = len_a + len_b - 1;
+    let capped = store.load_replay_rows(usize::MAX, cap).await.expect("read");
+    let used: u64 = capped
+        .restorable
+        .iter()
+        .map(|r| r.payload.len() as u64)
+        .sum();
+    assert!(
+        used <= cap,
+        "fetch would exceed the byte budget: {used} > {cap}"
+    );
+    // 3. The newer fat row cannot fit this cap in ANY database state: its
+    //    contribution to the cumulative window is at least len_a + len_b >
+    //    cap, whatever older rows came before it.
+    assert!(
+        capped.restorable.iter().all(|r| r.name != name_b),
+        "the newer fat row must be excluded by the byte cap"
+    );
+
+    // 4. With the cap effectively absent, both rows are restorable (the
+    //    ordinary replay path reads them).
+    assert!(full.restorable.iter().any(|r| r.name == name_b));
+
+    store.delete(&name_a).await.expect("cleanup a");
+    store.delete(&name_b).await.expect("cleanup b");
+}
+
+/// The advertised remedy for a row that failed boot replay: `DELETE
+/// /schemas/{name}` returns 200 and clears the store row even though the
+/// name was never loaded into memory (`store_only: true`, additive), and a
+/// second DELETE is the pre-feature 404. Driven through the real router —
+/// this is the endpoint promise boot replay's WARN makes.
+#[tokio::test]
+async fn delete_retires_a_store_only_row() {
+    let Some(client) = live_client() else {
+        println!("skipping: CLICKHOUSE_URL not set (offline suite)");
+        return;
+    };
+    ensure_global_schemas().await;
+
+    let store = SchemaStore::Clickhouse(Box::new(ClickhouseSchemaStore::new(client.clone())));
+    let name = unique_name();
+    // Seeded directly through the store: exactly the state a row that
+    // failed replay leaves behind — in the store, not in memory.
+    store
+        .save_yaml(&name, "name: store-only\nnodes: {}")
+        .await
+        .expect("seed");
+    assert!(
+        graph_catalog::get_graph_schema_by_name(&name)
+            .await
+            .is_err(),
+        "fixture must not be in memory"
+    );
+
+    let config = config_with(clickgraph::config::SchemaPersistenceMode::Clickhouse);
+    let app_state = AppState {
+        executor: Arc::new(StubExecutor),
+        clickhouse_client: Some(client.clone()),
+        config: config.clone(),
+        query_semaphore: None,
+        pool: None,
+        // Mirrors run_server's hoisting: one store instance inside the
+        // state. (The fixture `store` above stays this test's seeding and
+        // verification handle; both instances point at the same table.)
+        schema_store: Arc::new(SchemaStore::Clickhouse(Box::new(
+            ClickhouseSchemaStore::new(client.clone()),
+        ))),
+    };
+    let router = build_router(app_state, &config);
+
+    // First DELETE: 200 with the additive fields, and the store really
+    // no longer holds the row.
+    let resp = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/schemas/{name}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("router answers");
+    assert_eq!(resp.status(), StatusCode::OK, "store-only DELETE");
+    let body: Value = serde_json::from_str(&body_string(resp).await).expect("json body");
+    assert_eq!(body["persisted"], true, "{body}");
+    assert_eq!(body["store_only"], true, "{body}");
+    assert_eq!(body["schema_name"], name);
+    assert!(
+        !store.exists(&name).await.expect("post-delete probe"),
+        "the row must really be gone from the store"
+    );
+
+    // Second DELETE: neither memory nor store has anything for the name —
+    // the unknown-name 404, unchanged shape.
+    let resp = router
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/schemas/{name}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("router answers");
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    let body: Value = serde_json::from_str(&body_string(resp).await).expect("json body");
+    let keys: Vec<&String> = body.as_object().expect("object").keys().collect();
+    assert_eq!(keys, vec!["error"], "404 body: {body}");
 }
 
 /// Boot replay end-to-end (spec Testing §2): a row seeded as if written by a
@@ -427,7 +627,11 @@ async fn boot_replay_restores_persisted_rows_and_shadows_registered_ones() {
         .await
         .expect("probe table (tiny_yaml's)");
 
-    let store = SchemaStore::Clickhouse(Box::new(ClickhouseSchemaStore::new(client.clone())));
+    // One store, shared between the seeding and the state that boots
+    // replay — the same single-instance discipline `run_server` uses.
+    let store = Arc::new(SchemaStore::Clickhouse(Box::new(
+        ClickhouseSchemaStore::new(client.clone()),
+    )));
 
     // Row A: registered in memory FIRST with one table — the seeded store row
     // points at a DIFFERENT table, so if replay wrongly overwrote the
@@ -462,6 +666,7 @@ async fn boot_replay_restores_persisted_rows_and_shadows_registered_ones() {
         config: config.clone(),
         query_semaphore: None,
         pool: None,
+        schema_store: store.clone(),
     };
     clickgraph::server::schema_registry::replay(&app_state, &config).await;
 
@@ -499,6 +704,17 @@ async fn boot_replay_restores_persisted_rows_and_shadows_registered_ones() {
     store.delete(&restored_name).await.expect("delete b");
     let _ = graph_catalog::remove_schema(&shadowed_name).await;
     let _ = graph_catalog::remove_schema(&restored_name).await;
+    // The probe tables themselves: repeated live runs used to accumulate
+    // them in the shared test database. Drop after use — the next run's
+    // CREATE TABLE IF NOT EXISTS re-creates what it needs.
+    let _ = client
+        .query("DROP TABLE IF EXISTS it_registry.it_replay_dummy")
+        .execute()
+        .await;
+    let _ = client
+        .query("DROP TABLE IF EXISTS it_registry.it_dummy_table")
+        .execute()
+        .await;
 }
 
 /// The seeded-row YAML: same shape as `tiny_yaml`, but pointed at the replay

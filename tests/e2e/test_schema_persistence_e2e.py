@@ -7,14 +7,19 @@ CLICKHOUSE_URL points at. This is the headline acceptance run for
 
   1. boot with CLICKGRAPH_SCHEMA_PERSISTENCE=clickhouse, register a schema
      through POST /schemas/load, assert `persisted: true`
-  2. kill the server, boot it again WITH THE SAME ENV AND NO re-registration
-     — the schema must be there (GET /schemas/{name} = 200)
+  2. SIGKILL the server (the spec's crash transition — no graceful
+     shutdown), boot it again WITH THE SAME ENV AND NO re-registration
+     — the schema must be there (GET /schemas/{name} = 200) and a real
+     Cypher query against it must read seeded data (query-after-restore)
   3. DELETE /schemas/{name} -> 200; DELETE again -> 404 (already gone)
   4. kill and boot again — the deleted name must NOT come back
      (the store row is gone; a 404 is the proof)
   5. boot with CLICKGRAPH_SCHEMA_PERSISTENCE unset and re-register: the
      response must NOT carry a `persisted` key — byte-identical to servers
-     without the feature (the backward-compatibility contract).
+     without the feature (the backward-compatibility contract) — and the
+     off-mode server must write NOTHING: the `system.tables` count for the
+     database is unchanged and the registry holds no row for the name
+     (the spec's zero-writes-off clause).
 
 Requirements:
   - CLICKHOUSE_URL / CLICKHOUSE_USER / CLICKHOUSE_PASSWORD set (a live CH)
@@ -26,7 +31,15 @@ The script owns the server lifecycle: on any failure it still reaps the
 last spawned process, and it refuses to run against a port 7475 that
 already serves something (an orphaned instance from an aborted run would
 silently answer every probe instead of the server under test).
+
+Runners:
+  - pytest (collectable: `pytest tests/e2e/test_schema_persistence_e2e.py`,
+    skips when the env of a live run is absent) — is how CI drives it;
+  - plain `python tests/e2e/test_schema_persistence_e2e.py` keeps exit 77
+    as the skip indicator and exit 1 as failure, printed as FAIL.
 """
+
+import ctypes
 
 import json
 import os
@@ -128,18 +141,12 @@ def port_must_be_free():
     """Fail fast on an orphaned listener: connecting to /health now would hit
     a DIFFERENT server than the one this test spawns, silently desyncing the
     whole restart-cycle."""
-    try:
-        with urllib.request.urlopen(
-            f"{HTTP_BASE}:{HTTP_PORT}/health", timeout=2
-        ) as r:
-            if r.status == 200:
-                raise SystemExit(
-                    "port 7475 already serves a (different) clickgraph — stop "
-                    "it first (Get-NetTCPConnection -LocalPort 7475 | "
-                    "Stop-Process -Id <pid -F)"
-                )
-    except OSError:
-        pass
+    pids = listener_pids()
+    if pids:
+        raise SystemExit(
+            f"port {HTTP_PORT} is already LISTENed by pid(s) {sorted(pids)} — "
+            "stop them first (Get-Process clickgraph | Stop-Process -Id <pid> -Force)"
+        )
 
 
 def request(method, path, body=None):
@@ -165,17 +172,112 @@ def request(method, path, body=None):
 
 
 def kill(proc):
+    """Graceful first, forceful as the guarantee: a server that does not act
+    on the console event (or whose console event never arrives — the agent
+    harness runs this script console-less) MUST still release port 7475, or
+    every later act's probes are answered by the WRONG server (witnessed:
+    act 5's off-mode assertion failed against the still-alive act-3 server,
+    which reported `persisted: true`)."""
     if os.name == "nt":
-        # The child has its own process group (see spawn), so CTRL_BREAK
-        # delivers to it alone; proc.kill() is the fallback for stragglers.
-        proc.send_signal(signal.CTRL_BREAK_EVENT)
+        # The child has its own process group (see spawn): CTRL_BREAK is the
+        # graceful path — tokio's shutdown handler turns it into a clean
+        # stop. If it does not land in 5s, the forceful path follows.
+        try:
+            proc.send_signal(signal.CTRL_BREAK_EVENT)
+        except (OSError, ValueError):
+            pass
+        try:
+            proc.wait(timeout=5)
+            return
+        except subprocess.TimeoutExpired:
+            pass
+        _terminate_windows(proc)
     else:
         proc.send_signal(signal.SIGTERM)
+        try:
+            proc.wait(timeout=15)
+            return
+        except subprocess.TimeoutExpired:
+            pass
+        proc.kill()  # POSIX: SIGKILL
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            pass
+
+
+def _terminate_windows(proc):
+    """Unconditional termination, verified. TerminateProcess is called on the
+    child's own handle IN this process (a handle value is only meaningful in
+    its own table — delegating it to a helper python fails silently with
+    ERROR_INVALID_HANDLE, and a silently-surviving server desyncs every later
+    act). Recourse is `taskkill /F /T`; the final wait verifies, raising on a
+    process that neither ritual can stop."""
+    ok = False
     try:
-        proc.wait(timeout=15)
-    except subprocess.TimeoutExpired:
-        proc.kill()
+        ok = bool(ctypes.windll.kernel32.TerminateProcess(int(proc._handle), 137))
+    except (AttributeError, OSError):
+        pass
+    if not ok:
+        # Access denied on a real process, or the process is already gone
+        # (an invalid handle) — taskkill decides; its error output is
+        # deliberately discarded (a dead pid is not a failure here).
+        subprocess.run(
+            ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+            capture_output=True,
+        )
+    try:
         proc.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        raise SystemExit(f"clickgraph pid {proc.pid} would not terminate")
+
+
+def kill_now(proc):
+    """The SIGKILL transition the spec pins: no graceful shutdown path, no
+    finalization — the process is terminated where it stands (POSIX SIGKILL;
+    Windows TerminateProcess via `_terminate_windows`). Whatever the server
+    had in flight is lost; only the STORE may survive it."""
+    if os.name == "nt":
+        _terminate_windows(proc)
+    else:
+        proc.send_signal(signal.SIGKILL)
+    try:
+        proc.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        pass
+
+
+def listener_pids():
+    """PIDs with a socket still LISTENing on the test port (netstat, not a
+    connection probe: connect_ex can be fooled by loopback TIME_WAIT and
+    accept-cache residue after a terminate, while `LISTENING` states are the
+    exact thing a respawn must not collide with)."""
+    out = subprocess.run(
+        ["netstat", "-ano", "-p", "TCP"], capture_output=True, text=True
+    ).stdout
+    pids = set()
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) >= 5 and parts[3] == "LISTENING":
+            if parts[1].endswith(f":{HTTP_PORT}"):
+                pids.add(parts[4])
+    return pids
+
+
+def wait_port_free(timeout=15):
+    """Between kill and respawn: no LISTENing socket may remain. Task-locality
+    of the replies depends on it — if an old listener survives its kill, the
+    new spawn dies on bind and /health is answered by the old server (silent
+    cross-act desync)."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if not listener_pids():
+            return
+        time.sleep(0.5)
+    raise SystemExit(
+        f"port {HTTP_PORT} is still LISTENed by pid(s) {sorted(listener_pids())} "
+        "after the kill"
+    )
 
 
 def assert_eq(actual, expected, what):
@@ -225,11 +327,15 @@ def main():
     # process to `serve`; `finally` reaps whatever is alive at the end.
     current = None
 
-    def serve(act, env):
+    def serve(act, env, hard=False):
         nonlocal current
         if current is not None:
-            kill(current[0])
+            if hard:
+                kill_now(current[0])
+            else:
+                kill(current[0])
             close_log(current[1])
+            wait_port_free()
         current = spawn(env, clickgraph_bin, f"e2e_server_{act}.log", log_dir)
         wait_healthy(current[0])
 
@@ -245,11 +351,37 @@ def main():
             request("GET", f"/schemas/{name}")[0], 200, f"{name} registered after load"
         )
 
-        # ---- act 2: restart -> restored without any re-registration
-        serve("act2_restore", load_env)
+        # ---- act 2: SIGKILL -> restore, nothing re-registered
+        serve("act2_restore", load_env, hard=True)
         status, restored = request("GET", f"/schemas/{name}")
         assert_eq(status, 200, f"{name} restored on boot (restart lost the schema)")
         assert_eq(restored.get("node_types"), 1, "restored schema contents")
+
+        # The restored schema is genuinely queryable, not just listed: seed
+        # a row through ClickHouse directly, then run a real Cypher query
+        # against the restored graph (query-after-restore). The title is
+        # per-run unique, so a crashed earlier run's leftover rows can
+        # never make this pass spuriously.
+        probe_title = f"e2e probe {name}"
+        probe_row = json.dumps({"id": 42, "title": probe_title})
+        ch_http(
+            url,
+            user,
+            password,
+            database,
+            f"INSERT INTO e2e_dummy_table FORMAT JSONEachRow {probe_row}",
+        )
+        status, qbody = request(
+            "POST",
+            "/query",
+            {"query": "MATCH (d:Doc) WHERE d.id = 42 RETURN d.id, d.title", "schema_name": name},
+        )
+        assert_eq(status, 200, "query against the restored schema")
+        if probe_title not in json.dumps(qbody):
+            raise AssertionError(
+                "query-after-restore did not read the seeded row through the "
+                f"restored schema: {json.dumps(qbody)[:400]}"
+            )
 
         # ---- act 3: DELETE completes the lifecycle; idempotence is a 404
         serve("act3_delete", load_env)
@@ -280,6 +412,16 @@ def main():
     # ---- act 5: off mode — the backward-compatibility contract
     off_env = dict(load_env)
     off_env.pop("CLICKGRAPH_SCHEMA_PERSISTENCE", None)
+    tables_before = int(
+        ch_http(
+            url,
+            user,
+            password,
+            database,
+            f"SELECT count() FROM system.tables WHERE database = '{database}'",
+        ).strip()
+        or "-1"
+    )
     try:
         serve("act5_off_mode", off_env)
         status, body = request(
@@ -296,6 +438,38 @@ def main():
         assert_eq(
             request("GET", f"/schemas/{name}")[0], 200, "off-mode registration live"
         )
+
+        # Zero-writes-off (spec Testing §3.5): with the flag unset the server
+        # must not create OR write anything for this feature — the database's
+        # table count is unchanged, and the (pre-existing) registry table
+        # holds no new row under this name.
+        tables_after = int(
+            ch_http(
+                url,
+                user,
+                password,
+                database,
+                f"SELECT count() FROM system.tables WHERE database = '{database}'",
+            ).strip()
+            or "-2"
+        )
+        assert_eq(
+            tables_after,
+            tables_before,
+            "off mode must not create any table (system.tables count drift)",
+        )
+        registry_rows = int(
+            ch_http(
+                url,
+                user,
+                password,
+                database,
+                f"SELECT count() FROM clickgraph_schema_registry "
+                f"WHERE name = '{name}'",
+            ).strip()
+            or "-3"
+        )
+        assert_eq(registry_rows, 0, "off mode must not write a registry row")
     finally:
         if current is not None:
             kill(current[0])
@@ -306,9 +480,33 @@ def main():
     return 0
 
 
+def test_schema_persistence_restart_cycle():
+    """pytest entry point (CI drives this): full restart-cycle acceptance.
+
+    Skips when the environment of a live run is absent (no ClickHouse URL or
+    no prebuilt clickgraph binary); every act's assertion fails the test.
+    """
+    try:
+        import pytest
+    except ImportError:
+        pytest = None
+
+    # main() returns 77 for the env-absent skip; infra failures raise
+    # SystemExit, which propagates (pytest reports a failure, and the
+    # plain-python __main__ runner maps it to its own error path).
+    rc = main()
+    if rc == 77:
+        if pytest is not None:
+            pytest.skip("CLICKHOUSE_URL / CLICKGRAPH_BIN not set")
+        return  # run without pytest: nothing to assert about skipping
+    assert rc == 0, f"e2e restart cycle failed with exit {rc}"
+
+
 if __name__ == "__main__":
     try:
         sys.exit(main())
-    except AssertionError as failure:
+    except (AssertionError, SystemExit) as failure:
+        if isinstance(failure, SystemExit) and failure.code == 0:
+            raise
         print(f"FAIL: {failure}")
         sys.exit(1)
