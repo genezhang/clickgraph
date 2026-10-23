@@ -5,13 +5,13 @@ use std::time::Duration;
 use axum::{
     extract::DefaultBodyLimit,
     http::StatusCode,
-    routing::{get, post},
+    routing::{delete, get, post},
     Router,
 };
 use clickhouse::Client;
 use handlers::{
-    discover_prompt_handler, draft_handler, get_schema_handler, health_check, introspect_handler,
-    list_schemas_handler, load_schema_handler, query_handler,
+    delete_schema_handler, discover_prompt_handler, draft_handler, get_schema_handler,
+    health_check, introspect_handler, list_schemas_handler, load_schema_handler, query_handler,
 };
 use sql_generation_handler::sql_generation_handler;
 use tower_http::catch_panic::CatchPanicLayer;
@@ -39,6 +39,7 @@ pub mod otel;
 mod parameter_substitution;
 mod query_cache;
 pub mod query_context;
+pub mod schema_registry;
 mod sql_generation_handler;
 
 #[derive(Clone)]
@@ -54,6 +55,14 @@ pub struct AppState {
     /// Remote ClickHouse connection pool, exposed so `/stats` and `/metrics`
     /// can report pool stats. `None` in embedded / Databricks modes.
     pub pool: Option<Arc<RoleConnectionPool>>,
+    /// The process's ONE persistent-schema-registry store (`schema_registry:
+    /// SchemaStore`). `Off` by default and in server modes without a
+    /// ClickHouse client. Hoisted here instead of built per request so the
+    /// store's table-creation mutex serializes first registrations across
+    /// the whole process — two concurrent `POST /schemas/load` calls must
+    /// not race their `CREATE TABLE` — and so every write path (load,
+    /// delete, boot replay) observes the same single instance.
+    pub schema_store: Arc<schema_registry::SchemaStore>,
 }
 
 // ==================================================================================
@@ -183,6 +192,9 @@ pub async fn run_with_config(config: ServerConfig) {
             query_semaphore: make_query_semaphore(&config),
             config: config.clone(),
             pool: None,
+            // No ClickHouse client exists in this mode, so there is nothing
+            // to store into: the store is `Off` however the flag is set.
+            schema_store: Arc::new(schema_registry::SchemaStore::Off),
         };
 
         // Initialize query cache
@@ -274,6 +286,9 @@ pub async fn run_with_config(config: ServerConfig) {
             query_semaphore: make_query_semaphore(&config),
             config: config.clone(),
             pool: None,
+            // No ClickHouse client exists in this mode; the store is `Off`
+            // however the flag is set (same as the embedded branch).
+            schema_store: Arc::new(schema_registry::SchemaStore::Off),
         };
 
         let cache_config = query_cache::QueryCacheConfig::from_env();
@@ -314,6 +329,15 @@ pub async fn run_with_config(config: ServerConfig) {
     };
 
     let query_semaphore = make_query_semaphore(&config);
+    // The process's one registry store: in `clickhouse` mode with a client
+    // it is the real store; anything else (mode off, or a server with no
+    // ClickHouse client) is `Off`. `from_parts` keeps that choice in one
+    // place, so boot replay and the per-request write paths all observe the
+    // same instance.
+    let schema_store = Arc::new(schema_registry::SchemaStore::from_parts(
+        config.schema_persistence,
+        client_opt.clone(),
+    ));
     let app_state = if client_opt.is_some() {
         let executor: Arc<dyn QueryExecutor> = Arc::new(RemoteClickHouseExecutor::with_ch_summary(
             connection_pool.clone(),
@@ -325,6 +349,7 @@ pub async fn run_with_config(config: ServerConfig) {
             query_semaphore: query_semaphore.clone(),
             config: config.clone(),
             pool: Some(connection_pool.clone()),
+            schema_store: schema_store.clone(),
         }
     } else {
         // For YAML-only mode, we need a placeholder client
@@ -344,6 +369,7 @@ pub async fn run_with_config(config: ServerConfig) {
             query_semaphore,
             config: config.clone(),
             pool: Some(connection_pool.clone()),
+            schema_store,
         }
     };
 
@@ -426,6 +452,7 @@ pub fn build_router(app_state: AppState, config: &ServerConfig) -> Router {
         .route("/schemas", get(list_schemas_handler))
         .route("/schemas/load", post(load_schema_handler))
         .route("/schemas/{name}", get(get_schema_handler))
+        .route("/schemas/{name}", delete(delete_schema_handler))
         .route("/schemas/introspect", post(introspect_handler))
         .route("/schemas/discover-prompt", post(discover_prompt_handler))
         .route("/schemas/draft", post(draft_handler))
@@ -451,6 +478,12 @@ pub fn build_router(app_state: AppState, config: &ServerConfig) -> Router {
 
 /// Bind and serve HTTP (and optionally Bolt) using the given `app_state`.
 async fn run_server(app_state: AppState, config: ServerConfig) {
+    // Restore runtime registrations BEFORE anything serves traffic — the
+    // server must answer queries against persisted schemas from the first
+    // request after boot. No-ops when persistence is off or this mode has
+    // no ClickHouse client.
+    schema_registry::replay(&app_state, &config).await;
+
     let http_bind_address = format!("{}:{}", config.http_host, config.http_port);
     log::info!("Starting HTTP server on {}", http_bind_address);
 

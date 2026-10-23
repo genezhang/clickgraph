@@ -130,6 +130,24 @@ jobs:
           tests/integration/test_smoke_schema_variations.py \
           -m smoke -v
 
+    - name: Schema-persistence restart-cycle e2e
+      # The e2e owns its own server lifecycle (spawn / SIGKILL / re-spawn on
+      # port 7475), so the integration job's server must go first; the
+      # ClickHouse container stays up until the job ends. This is the
+      # acceptance run `docs/design/SCHEMA_PERSISTENCE.md` pins: register ->
+      # SIGKILL -> restored -> query returns through the restored schema ->
+      # DELETE stays deleted -> off mode writes nothing.
+      run: |
+        pkill -f clickgraph || true
+        sleep 2
+        pytest tests/e2e/test_schema_persistence_e2e.py -v
+      env:
+        CLICKHOUSE_URL: http://localhost:8123
+        CLICKHOUSE_USER: test_user
+        CLICKHOUSE_PASSWORD: test_pass
+        CLICKHOUSE_DATABASE: test_integration
+        CLICKGRAPH_BIN: ./target/debug/clickgraph
+
     - name: Cleanup
       if: always()
       run: |

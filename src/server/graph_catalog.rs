@@ -617,6 +617,51 @@ pub async fn list_available_schemas() -> Vec<String> {
     }
 }
 
+/// Remove a runtime-registered schema from memory — the in-memory half of
+/// `DELETE /schemas/{name}` (the store half lives in `schema_registry`).
+///
+/// The `GLOBAL_SCHEMAS` write guard is held across all three removals, in
+/// exactly the order the load path acquires (`load_schema_from_content` also
+/// nests SCHEMAS → CONFIGS while holding the first guard). Holding across the
+/// removals is what makes the memory half delete one whole generation
+/// against a racing re-register (`POST /schemas/load`): if the load wins
+/// first, the DELETE sees the name gone and 404s; if the DELETE wins first,
+/// it removes all three halves of one generation. Releasing SCHEMAS between
+/// the two map deletions (the earlier shape) let the interleaving "delete →
+/// re-register both maps → delete configs only" leave a schema alive with no
+/// view config. The store statement of a DELETE, however, runs after this
+/// guard — see the handler's doc: DELETE vs re-register is last-writer-wins,
+/// not an atomic transaction (`SCHEMA_PERSISTENCE.md` §4).
+///
+/// `forget_default_alias_of` is deliberately NOT touched: removing an alias
+/// source must not silently re-merge `default` with whatever the alias
+/// pointed at — the boot duplication logic owns that. A schema re-created
+/// later goes through `load_schema_from_content`, which re-establishes every
+/// alias and hash properly.
+pub async fn remove_schema(schema_name: &str) -> Result<(), String> {
+    let schemas_lock = GLOBAL_SCHEMAS
+        .get()
+        .ok_or("Global schemas not initialized")?;
+    {
+        let mut schemas_guard = schemas_lock.write().await;
+        if schemas_guard.remove(schema_name).is_none() {
+            return Err(format!("Schema '{schema_name}' not found"));
+        }
+        if let Some(configs_lock) = GLOBAL_SCHEMA_CONFIGS.get() {
+            configs_lock.write().await.remove(schema_name);
+        }
+        if let Some(hashes_lock) = GLOBAL_SCHEMA_CONTENT_HASHES.get() {
+            hashes_lock.write().await.remove(schema_name);
+        }
+    }
+
+    log::info!(
+        "Schema '{}' removed from the in-memory registry",
+        crate::server::schema_registry::log_safe(schema_name)
+    );
+    Ok(())
+}
+
 pub async fn load_schema_from_content(
     schema_name: &str,
     yaml_content: &str,

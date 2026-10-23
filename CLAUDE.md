@@ -237,6 +237,9 @@ Five schema variations exist: Standard, FK-edge, Denormalized, Polymorphic, Comp
 | `CLICKGRAPH_OTLP_ENDPOINT` | OTLP/HTTP base URL for opt-in per-query tracing (traces go to `{endpoint}/v1/traces`; unset = off, zero per-query cost). Requires `CLICKGRAPH_METRICS_ENABLED=true`, since spans are emitted from the query registry |
 | `CLICKGRAPH_OTLP_INCLUDE_QUERY` | Include the literals-stripped, comments-stripped, length-capped Cypher text in OTLP spans (default false: shape/timings only, never query text). Accepts `true/false`, `1/0`, `yes/no`, `on/off` |
 | `CLICKGRAPH_OTLP_HEADERS` | Static auth/tenant headers for OTLP exports, comma-separated `key=value` (OTEL's `OTEL_EXPORTER_OTLP_HEADERS` form). Values are percent-decoded, so Langfuse's documented `Authorization=Basic%20…` works as written |
+| `CLICKGRAPH_SCHEMA_PERSISTENCE` | Runtime-registered schema durability: `off` (default — responses keep the exact pre-feature shape) or `clickhouse` (registrations land in a `clickgraph_schema_registry` table and are replayed at boot; `docs/design/SCHEMA_PERSISTENCE.md`). Strictly parsed — an unknown value fails startup |
+| `CLICKGRAPH_SCHEMA_REPLAY_MAX_ROWS` | Boot-replay row budget (default 500): the oldest-first prefix up to the cap is restored; the exact overage is WARNed |
+| `CLICKGRAPH_SCHEMA_REPLAY_MAX_BYTES` | Boot-replay payload budget in bytes (default 67108864 = 64 MiB), enforced in the fetch itself |
 | `CLICKGRAPH_CHDB_TESTS` | Set to `1` to enable chdb e2e tests |
 | `CLICKGRAPH_LLM_PROVIDER` | LLM provider for schema discovery (`anthropic` or `openai`) |
 | `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` | API keys for LLM schema discovery |

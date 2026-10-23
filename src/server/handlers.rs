@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
+    config::SchemaPersistenceMode,
     graph_catalog::graph_schema::{GraphSchema, GraphSchemaElement},
     graph_catalog::{DraftOptions, DraftRequest, EdgeHint, FkEdgeHint, NodeHint, SchemaDiscovery},
     open_cypher_parser::{self, ast::CypherStatement},
@@ -23,7 +24,7 @@ use super::{
     models::{GraphQueryResponse, OutputFormat, QueryRequest, QueryStats, SqlOnlyResponse},
     parameter_substitution, query_cache,
     query_context::{with_query_context, QueryContext},
-    AppState, GLOBAL_QUERY_CACHE, GLOBAL_SERVER_METRICS,
+    schema_registry, AppState, GLOBAL_QUERY_CACHE, GLOBAL_SERVER_METRICS,
 };
 
 /// Record a completed query into the global registry (no-op if metrics are off
@@ -2182,7 +2183,7 @@ pub async fn ddl_handler(
             )
         })?;
 
-    graph_catalog::refresh_global_schema(clickhouse_client)
+    graph_catalog::refresh_global_schema(clickhouse_client.clone())
         .await
         .map_err(|e| {
             (
@@ -2190,6 +2191,13 @@ pub async fn ddl_handler(
                 format!("Clickhouse Error: {}", e),
             )
         })?;
+
+    // DDL durability stays with the legacy `graph_catalog` table fallback
+    // (pre-existing on `main`): nothing here writes a persisted-schema row.
+    // The structural migration to the registry (`schema_registry`) is future
+    // work recorded in `docs/design/SCHEMA_PERSISTENCE.md` — `ddl_handler` is
+    // currently unreachable from query dispatch (every non-read statement is
+    // refused), so there is no live behavior to persist.
 
     let mut response = (StatusCode::OK, "DDL applied successfully".to_string()).into_response();
     response
@@ -2264,10 +2272,29 @@ pub async fn load_schema_handler(
                 log::info!("Cache invalidated for schema: {}", payload.schema_name);
             }
 
-            Ok(Json(serde_json::json!({
+            // Durability is opt-in: with persistence off the response stays
+            // byte-identical to a server without this feature (no `persisted`
+            // key at all). With it on, a failed store never fails the
+            // registration — the field reports what actually happened.
+            // The store is the app state's one shared instance, not a
+            // per-request build: its table-creation mutex must serialize
+            // concurrent first registrations across the server.
+            let persisted = schema_registry::persist_yaml_after_load(
+                &app_state.config,
+                &app_state.schema_store,
+                &payload.schema_name,
+                &payload.config_content,
+            )
+            .await;
+
+            let mut body = serde_json::json!({
                 "message": format!("Schema '{}' loaded successfully", payload.schema_name),
                 "schema_name": payload.schema_name
-            })))
+            });
+            if let Some(persisted) = persisted {
+                body["persisted"] = serde_json::json!(persisted);
+            }
+            Ok(Json(body))
         }
         Err(e) => Err((
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -2329,6 +2356,176 @@ fn request_id_mapper(
         views.as_ref(),
     );
     id_mapper
+}
+
+/// `DELETE /schemas/{name}` — complete the runtime-registration lifecycle:
+/// a schema you can register at runtime is a schema you can retire at
+/// runtime (`spec: docs/design/SCHEMA_PERSISTENCE.md`).
+///
+/// Removes the in-memory registration and — when persistence is configured —
+/// the stored row, so the next boot does not resurrect it. With persistence
+/// off the in-memory removal is the whole operation, and the response stays
+/// byte-identical to a server without the feature except for the new
+/// endpoint itself.
+///
+/// Name classes, stated explicitly:
+/// - runtime-persisted only: fully retired (memory + store row);
+/// - config-defined: may still carry a store row (the same POST that loads a
+///   config-defined name persists it, and a name can move into the config
+///   file after it was registered) — DELETE clears memory and that row, and
+///   the config file re-registers the schema on the next boot regardless, so
+///   the in-memory deletion of a config-defined name is transient by design
+///   (`default` included);
+/// - store-only: a row that failed boot replay lives in the store but was
+///   never loaded into memory, so `remove_schema` reports not-found while
+///   the row is still real — and boot replay's WARN advertises this exact
+///   endpoint as its remedy, which the handler must honor. When the name
+///   owns a stored row but no memory entry, the row is deleted and the
+///   response carries the additive `store_only: true` field (no in-memory
+///   entry ever existed for the name this boot, so nothing else changes).
+///   A name with neither a memory entry nor a stored row keeps the
+///   pre-feature 404, with the same body shape as GET's.
+///
+/// Ordering vs a concurrent re-register (`POST /schemas/load` of the same
+/// name) is last-writer-wins — deliberately NOT claimed atomic: the memory
+/// removals guard against interleaved map edits (one generation is removed
+/// whole), but the store write is a separate ClickHouse statement outside
+/// that guard. If the re-register's insert wins, the name is live in memory
+/// and its row persists to the next boot — exactly the state the caller
+/// asked for by re-registering; if the DELETE's store statement wins, the
+/// schema is retired everywhere. Serializing the two per name would mean
+/// holding the schema write guard across a network round-trip per DELETE;
+/// documenting the loser's state instead (`SCHEMA_PERSISTENCE.md` §4) is
+/// the cheaper and honest contract. The `exists` probe in the store-only
+/// path happens before the store delete for the same reason: between probe
+/// and delete a racing registration may re-add the row, and then the
+/// loser's state is the re-registered schema, not a deleted one.
+pub async fn delete_schema_handler(
+    State(app_state): State<Arc<AppState>>,
+    axum::extract::Path(schema_name): axum::extract::Path<String>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    let memory_removal = graph_catalog::remove_schema(&schema_name).await;
+
+    if let Err(e) = memory_removal {
+        // Store-only retirement. The probe is gated on persistence being
+        // configured (the honest 404 contract is the pre-feature one when
+        // the feature is off) and treats an unreachable store as "no" —
+        // never lie that something was deleted, and never let a failed
+        // probe become a 500.
+        let has_stored_row =
+            if app_state.config.schema_persistence == SchemaPersistenceMode::Clickhouse {
+                app_state
+                    .schema_store
+                    .exists(&schema_name)
+                    .await
+                    .unwrap_or(false)
+            } else {
+                false
+            };
+        if has_stored_row {
+            return match app_state.schema_store.delete(&schema_name).await {
+                Ok(deleted) => {
+                    // `Ok(true)` is the delete side's unconditional success
+                    // (idempotent end state); nothing was deleted only if
+                    // the store refused — handled below. The row that made
+                    // it into the probe demonstrably existed.
+                    if !deleted {
+                        log::warn!(
+                            "store-only delete of schema '{}' reported no \
+                             effect; treating it as the pre-feature 404",
+                            schema_registry::log_safe(&schema_name)
+                        );
+                        return Err((
+                            StatusCode::NOT_FOUND,
+                            Json(serde_json::json!({ "error": e })),
+                        ));
+                    }
+                    log::info!(
+                        "store-only delete: stored row for schema '{}' \
+                         deleted (the schema was not booted into this \
+                         process)",
+                        schema_registry::log_safe(&schema_name)
+                    );
+                    Ok(Json(serde_json::json!({
+                        "message": format!(
+                            "Stored row for schema '{}' deleted",
+                            schema_name
+                        ),
+                        "schema_name": schema_name,
+                        "persisted": true,
+                        "store_only": true
+                    })))
+                }
+                Err(store_err) => {
+                    // Nothing was deleted (no memory entry ever existed,
+                    // the row survived): refusal to lie beats a fake 200.
+                    log::warn!(
+                        "store-only delete of schema '{}' failed ({store_err})",
+                        schema_registry::log_safe(&schema_name)
+                    );
+                    Err((
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(serde_json::json!({
+                            "error": format!(
+                                "stored row for schema '{}' could not be \
+                                 deleted: {store_err}",
+                                schema_name
+                            )
+                        })),
+                    ))
+                }
+            };
+        }
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "error": e })),
+        ));
+    }
+
+    // Same invalidation the load path performs — stale SQL for a deleted
+    // schema must never answer a query. (The store-only path skips this:
+    // with no memory entry there is nothing cached under the name.)
+    if let Some(cache) = GLOBAL_QUERY_CACHE.get() {
+        cache.invalidate_schema(&schema_name);
+        log::info!(
+            "Cache invalidated for schema: {}",
+            schema_registry::log_safe(&schema_name)
+        );
+    }
+
+    let store_deleted = if app_state.config.schema_persistence == SchemaPersistenceMode::Clickhouse
+    {
+        // The process's one shared store (hoisted into AppState): the same
+        // instance the load path persists through, so its table-creation
+        // mutex serializes first registrations across the whole server
+        // instead of within one request's throwaway store.
+        match app_state.schema_store.delete(&schema_name).await {
+            Ok(deleted) => Some(deleted),
+            Err(e) => {
+                // The schema is gone from memory; a failing store must not
+                // turn a retirement into an error, but it must not lie
+                // either — the next boot will resurrect the row.
+                log::warn!(
+                    "stored row for schema '{}' could not be deleted ({e}); \
+                     it will re-register on the next boot until the store is \
+                     fixed",
+                    schema_registry::log_safe(&schema_name)
+                );
+                Some(false)
+            }
+        }
+    } else {
+        None
+    };
+
+    let mut body = serde_json::json!({
+        "message": format!("Schema '{}' deleted", schema_name),
+        "schema_name": schema_name
+    });
+    if let Some(deleted) = store_deleted {
+        body["persisted"] = serde_json::json!(deleted);
+    }
+    Ok(Json(body))
 }
 
 /// Translate a Cypher query string into ClickHouse SQL.
