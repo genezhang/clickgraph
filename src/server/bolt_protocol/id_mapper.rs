@@ -495,7 +495,8 @@ impl Default for IdMapper {
 }
 
 /// The node an integer `id()` value names, as the server reads it: its
-/// label and key (a composite key's parts joined by `|`). The id `id_mapper`
+/// label and key's text (`element_id::node_id_text`: a composite key's
+/// parts escaped and joined by `|`). The id `id_mapper`
 /// gave it (this session's, or another of the same scope), else its bit
 /// pattern decoded (`IdMapper::decode_for_query`: a label code and a small
 /// numeric key), for a label whose key is an integer. `None`: it names no
@@ -506,10 +507,10 @@ pub fn resolve_node_id(
     id_value: i64,
 ) -> Option<(String, String)> {
     if let Some(element_id) = id_mapper.get_element_id(id_value) {
-        if let Ok((label, id_parts)) =
+        if let Ok((label, id_text)) =
             crate::graph_catalog::element_id::parse_node_element_id(&element_id)
         {
-            return Some((label, id_parts.join("|")));
+            return Some((label, id_text));
         }
     }
     // LIMITATION: only simple numeric keys (< 2^31) decode from the bit

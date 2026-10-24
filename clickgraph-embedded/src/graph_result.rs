@@ -8,7 +8,7 @@ use std::collections::{HashMap, HashSet};
 
 use serde_json::Value as JsonValue;
 
-use clickgraph::graph_catalog::element_id::generate_node_element_id;
+use clickgraph::graph_catalog::element_id::node_element_id;
 use clickgraph::graph_catalog::graph_schema::GraphSchema;
 use clickgraph::server::bolt_protocol::result_transformer::{
     transform_to_relationship, ReturnItemMetadata, ReturnItemType,
@@ -282,17 +282,21 @@ fn extract_node_from_row(
     let node_schema = schema.node_schema_opt(&label)?;
     let id_columns = node_schema.node_id.id.columns();
 
-    let id_values: Vec<String> = id_columns
+    // A composite id's part may be NULL (its element id's `\\N`); an id of
+    // no part that is not is no node's.
+    let id_values: Vec<Option<String>> = id_columns
         .iter()
-        .filter_map(|col_name| properties.get(*col_name).and_then(json_value_to_string))
-        .collect();
-
-    if id_values.len() != id_columns.len() {
+        .map(|col_name| match properties.get(*col_name)? {
+            JsonValue::Null if id_columns.len() > 1 => Some(None),
+            v => json_value_to_string(v).map(Some),
+        })
+        .collect::<Option<Vec<_>>>()?;
+    if id_values.iter().all(Option::is_none) {
         return None;
     }
 
-    let id_value_refs: Vec<&str> = id_values.iter().map(|s| s.as_str()).collect();
-    let element_id = generate_node_element_id(&label, &id_value_refs);
+    let id_value_refs: Vec<Option<&str>> = id_values.iter().map(|s| s.as_deref()).collect();
+    let element_id = node_element_id(&label, &id_value_refs);
 
     // Convert JSON properties to embedded Value properties
     let embedded_properties: HashMap<String, Value> = properties

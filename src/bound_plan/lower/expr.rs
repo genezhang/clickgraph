@@ -1177,18 +1177,25 @@ impl Lowerer<'_> {
             let Some((label, value)) = (lookup.node)(id) else {
                 continue;
             };
-            // A composite key's parts are joined by `|`; a key of one column
-            // is the whole text (which can hold a `|`).
-            let parts: Vec<&str> = if key.len() == 1 {
-                vec![value.as_str()]
-            } else {
-                value.split('|').collect()
-            };
-            if !labels.contains(&label.as_str()) || parts.len() != key.len() {
+            // A composite key's parts escaped and joined by `|`, a NULL one
+            // `\\N`; a key of one column is the whole text (which can hold
+            // a `|`): `element_id::node_id_parts`.
+            if !labels.contains(&label.as_str()) {
                 continue;
             }
-            let mut conds: Vec<RenderExpr> =
-                key.iter().zip(&parts).map(|(k, p)| key_is(k, p)).collect();
+            let Some(parts) = crate::graph_catalog::element_id::node_id_parts(&value, key.len())
+            else {
+                continue;
+            };
+            let mut conds: Vec<RenderExpr> = key
+                .iter()
+                .zip(&parts)
+                .map(|(k, p)| match p {
+                    Some(p) => key_is(k, p),
+                    // The node's own NULL part (ELEMENT_IDENTITY.md I6b).
+                    None => RenderExpr::Raw(format!("{} IS NULL", render_expr_to_sql_plain(k))),
+                })
+                .collect();
             if labels.len() > 1 {
                 conds.insert(
                     0,
