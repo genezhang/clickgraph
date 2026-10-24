@@ -5470,25 +5470,50 @@ impl<'s> Lowerer<'s> {
             if id.len() != id_column.len() {
                 return unsupported("internal: a node's identity of another arity than its id");
             }
-            rows.select = SelectItems {
-                items: id
-                    .iter()
-                    .enumerate()
-                    .map(|(k, c)| match id.len() {
-                        1 => select(c.clone(), "id"),
-                        _ => select(c.clone(), &format!("id_{k}")),
-                    })
-                    .collect(),
-                distinct: true,
-            };
-            // A composite id (S8d): its columns as a tuple.
             let columns: Vec<String> = id_column
                 .iter()
                 .map(|c| render_expr_to_sql_plain(&col_at(alias, c)))
                 .collect();
-            let held = match columns.as_slice() {
-                [one] => one.clone(),
-                _ => format!("({})", columns.join(", ")),
+            // A composite id whose part may be NULL in a node (I6c): by its
+            // tuple's text, which spells a NULL part (a tuple holding NULL
+            // is `IN` no rows).
+            let keyed = match self.identity_nullable(v).contains(&true) {
+                true => {
+                    let rendered: Vec<String> = id.iter().map(render_expr_to_sql_plain).collect();
+                    match (
+                        path::composite_key(&rendered),
+                        path::composite_key(&columns),
+                    ) {
+                        (Some(key), Some(held)) => Some((key, held)),
+                        _ => {
+                            return unsupported(
+                                "a walk from rows of a composite id that may be NULL in this \
+                                 SQL dialect",
+                            )
+                        }
+                    }
+                }
+                false => None,
+            };
+            rows.select = SelectItems {
+                items: match &keyed {
+                    Some((key, _)) => vec![select(RenderExpr::Raw(key.clone()), "id")],
+                    None => id
+                        .iter()
+                        .enumerate()
+                        .map(|(k, c)| match id.len() {
+                            1 => select(c.clone(), "id"),
+                            _ => select(c.clone(), &format!("id_{k}")),
+                        })
+                        .collect(),
+                },
+                distinct: true,
+            };
+            // A composite id (S8d): its columns as a tuple.
+            let held = match (&keyed, columns.as_slice()) {
+                (Some((_, held)), _) => held.clone(),
+                (None, [one]) => one.clone(),
+                (None, _) => format!("({})", columns.join(", ")),
             };
             conds.push(RenderExpr::Raw(format!(
                 "{held} IN ({})",
@@ -8879,7 +8904,6 @@ fn realias(e: &RenderExpr, from: &str, to: &str) -> RenderExpr {
     }
 }
 
-/// `a = b`, with NULL equal to NULL, in a form every dialect joins on.
 /// Which parts of `schema`'s id a node's may be NULL in
 /// ([`Lowerer::identity_nullable`]): a composite id's parts whose column
 /// types say so; a single-column id's none (a NULL one is no node).
@@ -8963,6 +8987,7 @@ pub(super) fn same_identity(
     }
 }
 
+/// `a = b`, with NULL equal to NULL, in a form every dialect joins on.
 fn not_distinct(a: RenderExpr, b: RenderExpr) -> OperatorApplication {
     let is_null = |e: RenderExpr| {
         RenderExpr::OperatorApplicationExp(OperatorApplication {

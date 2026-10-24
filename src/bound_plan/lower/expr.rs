@@ -1191,10 +1191,25 @@ impl Lowerer<'_> {
             else {
                 continue;
             };
+            // A part a node's may hold NULL in (I6c): false, not NULL, where
+            // it is NULL and the id's is not.
+            let nullable = match self.scans.get(&v) {
+                Some(Scan::Labels { .. }) => {
+                    self.identity_nullable(v).into_iter().skip(1).collect()
+                }
+                _ => self.identity_nullable(v),
+            };
             let mut conds: Vec<RenderExpr> = key
                 .iter()
                 .zip(&parts)
-                .map(|(k, p)| match p {
+                .enumerate()
+                .map(|(i, (k, p))| match p {
+                    Some(p) if nullable.get(i) == Some(&true) => {
+                        RenderExpr::ScalarFnCall(ScalarFnCall {
+                            name: "coalesce".to_string(),
+                            args: vec![key_is(k, p), RenderExpr::Literal(Literal::Boolean(false))],
+                        })
+                    }
                     Some(p) => key_is(k, p),
                     // The node's own NULL part (ELEMENT_IDENTITY.md I6b).
                     None => RenderExpr::Raw(format!("{} IS NULL", render_expr_to_sql_plain(k))),
@@ -1409,8 +1424,8 @@ impl Lowerer<'_> {
             false => found,
         };
         // Of an empty list, false (`null IN []` too); else NULL where `x` is:
-        // where every column of its presence is (a composite id's part can
-        // be NULL in a node, I6c).
+        // where every column of its presence is where a composite id's part
+        // can be NULL in a node (I6c; else any, the SQL as before).
         let x_absent: Vec<String> = elem_presence(&x_id, &x_elem)
             .iter()
             .map(|c| format!("{} IS NULL", render_expr_to_sql_plain(c)))
@@ -1421,7 +1436,10 @@ impl Lowerer<'_> {
              ELSE {found} END",
             m.list_size(&list_sql),
             if negated { "true" } else { "false" },
-            x_absent.join(" AND ")
+            x_absent.join(match self.elem_nullable(&x_elem).contains(&true) {
+                true => " AND ",
+                false => " OR ",
+            })
         ))))
     }
 
@@ -1607,11 +1625,18 @@ impl Lowerer<'_> {
             (O::Equal | O::NotEqual, [(a, ea), (b, eb)]) => {
                 let equal = op.operator == O::Equal;
                 if ea != eb {
-                    // NULL when either is NULL.
+                    // NULL when either is NULL: where a composite id's part
+                    // can be NULL in a node, every column of its presence
+                    // (I6c), else its first (the SQL as before).
+                    let absent =
+                        |id: &[RenderExpr], e: &Elem| match self.elem_nullable(e).contains(&true) {
+                            true => super::null_test(&elem_presence(id, e), true),
+                            false => is_null(&id[0]),
+                        };
                     return Ok(RenderExpr::Case(RenderCase {
                         expr: None,
                         when_then: vec![(
-                            super::or_all(vec![is_null(&a[0]), is_null(&b[0])]),
+                            super::or_all(vec![absent(a, ea), absent(b, eb)]),
                             RenderExpr::Literal(Literal::Null),
                         )],
                         else_expr: Some(Box::new(RenderExpr::Literal(Literal::Boolean(!equal)))),

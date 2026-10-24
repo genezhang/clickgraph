@@ -265,6 +265,13 @@ one of the three.
   Live: two batteries of 75 queries against Neo4j holding the same graph
   (one node per id, relationships whose ends are whole ids) agree on every
   identity shape; Bolt returns `L:x|\N-` and reads it back.
+  A walk from earlier rows (`restriction`) keys such an id by its tuple's
+  text (a tuple holding NULL is `IN` no rows); `id(n) = N` on the server
+  reads a nullable part `coalesce(k = 'v', false)` (false, not NULL, where
+  the node's is NULL). Consequences of "no relationship attaches": an
+  embedded (denormalized) node exists only as its edges' end, so one whose
+  id has a NULL part is none; on an FK-edge table (node table = edge table)
+  the row is a node but its edge, from its own id, is no relationship.
   Left (I6d): a relationship whose `edge_id` has a NULL part is kept (#1354
   comment) but its identity is not NULL-safe (`count(r)`, uniqueness).
 - [ ] **I4b — Bolt ids**: stable hash (not `DefaultHasher`); label codes

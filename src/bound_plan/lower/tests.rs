@@ -9944,8 +9944,47 @@ graph_schema:
         got.contains("WHEN v2.a IS NULL AND v2.b IS NULL AND v2.c IS NULL THEN NULL"),
         "{got}"
     );
+    // Of an id that cannot be NULL, a list's `x` is NULL where any column
+    // is, as before.
+    let got = sql("MATCH (x:K) WITH collect(x) AS l MATCH (y:K) WHERE y IN l RETURN y.name");
+    assert!(
+        got.contains("WHEN v2.a IS NULL OR v2.b IS NULL OR v2.c IS NULL THEN NULL"),
+        "{got}"
+    );
+    // A walk from earlier rows: its first nodes by their tuple's text (a
+    // tuple holding NULL is `IN` no rows).
+    let got = sql("MATCH (x:M) WITH x MATCH (x)-[:E*0..2]->(y:M) RETURN x.name, y.name");
+    assert!(
+        got.contains(
+            "toString(tuple(start_node.a, start_node.b, start_node.c)) IN (SELECT DISTINCT"
+        ),
+        "{got}"
+    );
+    let got = sql("MATCH (x:K) WITH x MATCH (x)-[:E*0..2]->(y:M) RETURN x.name");
+    assert!(!got.contains("toString(tuple(start_node"), "{got}");
     // Spark spells it `<=>`.
     let got =
         squash(&databricks_sql("MATCH (x:M), (y:M) WHERE x = y RETURN x.name", &schema).unwrap());
     assert!(got.contains("((v0.c <=> v1.c) AND true)"), "{got}");
+    // On the server, `id(n) = N`'s part the node's may hold NULL in is false,
+    // not NULL, where it is NULL.
+    let server = LowerOptions {
+        id_lookup: Some(IdLookup {
+            node: std::sync::Arc::new(|id| match id {
+                1 => Some(("M".to_string(), "x|1|y".to_string())),
+                _ => None,
+            }),
+            element: std::sync::Arc::new(|_| None),
+        }),
+        ..LowerOptions::default()
+    };
+    let got = lowered(
+        "MATCH (x:M) WHERE id(x) <> 1 RETURN x.name",
+        &schema,
+        &server,
+    );
+    assert!(
+        got.contains("v0.a = 'x' AND v0.b = '1' AND coalesce(v0.c = 'y', false)"),
+        "{got}"
+    );
 }
