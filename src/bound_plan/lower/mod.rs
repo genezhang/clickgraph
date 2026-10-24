@@ -1434,7 +1434,9 @@ struct Correlated {
 struct Tie {
     a: VarId,
     b: VarId,
-    eqs: Vec<(RenderExpr, RenderExpr)>,
+    /// The two columns, and whether they are compared NULL-safely (a node's
+    /// identity read back as itself, I6c: [`Lowerer::tie_identity`]).
+    eqs: Vec<(RenderExpr, RenderExpr, bool)>,
 }
 
 struct Lowerer<'s> {
@@ -2462,8 +2464,12 @@ impl<'s> Lowerer<'s> {
                 } else {
                     self.endpoint_of(pattern, *v)
                 };
+            // Its own table's ids, or a relationship's ends (a tie: `=`, so
+            // no relationship attaches to a node with a NULL part, I6c).
+            let mut tied = false;
             let (at, inner): (At, Vec<RenderExpr>) = match endpoint {
                 Some((r, cols)) if cols.len() == columns.len() => {
+                    tied = true;
                     q.elided.insert(*v, r);
                     let alias = r.name();
                     let inner = cols.iter().map(|c| col_at(&alias, c)).collect();
@@ -2483,12 +2489,20 @@ impl<'s> Lowerer<'s> {
                     (At::Table(v.name()), inner)
                 }
             };
-            for (c, (outer, inner)) in columns.iter().zip(outer.into_iter().zip(inner)) {
+            // A composite id's part a node's may hold NULL in: NULL-safely,
+            // the node being itself (I6c).
+            let nullable = match tied {
+                true => Vec::new(),
+                false => self.identity_nullable(*v),
+            };
+            for (i, (c, (outer, inner))) in
+                columns.iter().zip(outer.into_iter().zip(inner)).enumerate()
+            {
                 correlation.push(Correlated {
                     column: format!("{v}__{c}"),
                     outer,
                     inner,
-                    null_safe: false,
+                    null_safe: nullable.get(i) == Some(&true),
                 });
             }
             q.scans.insert(*v, scan.with_at(at));
@@ -2737,6 +2751,7 @@ impl<'s> Lowerer<'s> {
                     });
                 }
             }
+            let nullable = self.identity_nullable(*v);
             for (i, c) in self
                 .identity_physical(*v)
                 .unwrap_or_default()
@@ -2749,8 +2764,11 @@ impl<'s> Lowerer<'s> {
                     outer: col_at(&w, &column),
                     inner: col_at(&d, &column),
                     // A union's identity past its definition's own arity is
-                    // NULL; its first column is NULL exactly when it is.
-                    null_safe: null_safe || (i > 0 && matches!(scan, Scan::Rels { .. })),
+                    // NULL; its first column is NULL exactly when it is. A
+                    // composite node id's part may be NULL in a node (I6c).
+                    null_safe: null_safe
+                        || (i > 0 && matches!(scan, Scan::Rels { .. }))
+                        || nullable.get(i) == Some(&true),
                 });
             }
             let at = At::Exported {
@@ -4687,11 +4705,25 @@ impl<'s> Lowerer<'s> {
                     };
                     vec![(col_at(&r.var.name(), column), RenderExpr::Raw(key))]
                 }
-                (ids, cols) if ids.len() == cols.len() => cols
-                    .iter()
-                    .zip(ids)
-                    .map(|(c, id)| (col_at(&r.var.name(), &format!("{side}_{c}")), id.clone()))
-                    .collect(),
+                (ids, cols) if ids.len() == cols.len() => {
+                    // The walk's end columns are read from the end node's row:
+                    // its identity, NULL-safely where a part may be NULL (I6c).
+                    let nullable = self.identity_nullable(end);
+                    let eqs = cols
+                        .iter()
+                        .zip(ids)
+                        .enumerate()
+                        .map(|(i, (c, id))| {
+                            (
+                                col_at(&r.var.name(), &format!("{side}_{c}")),
+                                id.clone(),
+                                nullable.get(i) == Some(&true),
+                            )
+                        })
+                        .collect();
+                    self.tie_identity(r.var, end, eqs);
+                    continue;
+                }
                 _ => return unsupported("internal: a path's end of another arity than its id"),
             };
             self.tie(r.var, end, eqs);
@@ -5724,26 +5756,34 @@ impl<'s> Lowerer<'s> {
         Ok(Some((ctes, name, read_paths)))
     }
 
-    /// ELEMENT_IDENTITY.md I6 (#1354, user 2026-10-19): a row of `schema`'s
-    /// table read under `alias` is a node only where no part of its id is
-    /// NULL (Neo4j has no NULL ids; a relationship's NULL end ties to no
-    /// node). The parts its columns' types say may be NULL, `IS NOT NULL`;
-    /// `None` where none may be, or the types are unknown (the SQL as
-    /// before).
+    /// ELEMENT_IDENTITY.md I6 / I6c (#1354; user 2026-10-19, revised
+    /// 2026-10-24): a row of `schema`'s table read under `alias` is a node
+    /// only where some part of its id is not NULL. A composite id with a
+    /// NULL part is a node (its element id's part `\\N`, compared as itself:
+    /// `Lowerer::same_part`); one that is all NULL, or a single-column NULL
+    /// id, is none (every such row would be one node). Where every part's
+    /// column type says it may be NULL, `IS NOT NULL` of the one, or of any;
+    /// `None` where some part may not be, or the types are unknown (the SQL
+    /// as before).
     fn id_present(&self, schema: &NodeSchema, alias: &str) -> Option<RenderExpr> {
-        let conds: Vec<RenderExpr> = schema
-            .id_physical_columns()
+        let cols = schema.id_physical_columns();
+        let types = &schema.node_id.part_types;
+        if types.len() != cols.len() || !types.iter().all(|t| t.nullable && !t.raw.is_empty()) {
+            return None;
+        }
+        let conds: Vec<String> = cols
             .iter()
-            .zip(&schema.node_id.part_types)
-            .filter(|(_, t)| t.nullable && !t.raw.is_empty())
-            .map(|(c, _)| {
-                RenderExpr::Raw(format!(
+            .map(|c| {
+                format!(
                     "{} IS NOT NULL",
                     render_expr_to_sql_plain(&col_at(alias, c))
-                ))
+                )
             })
             .collect();
-        and_all(conds)
+        Some(RenderExpr::Raw(match conds.as_slice() {
+            [one] => one.clone(),
+            _ => format!("({})", conds.join(" OR ")),
+        }))
     }
 
     /// The relation of the nodes of `schema`'s label, as SQL to read under
@@ -6223,6 +6263,40 @@ impl<'s> Lowerer<'s> {
         match self.scans.get(&v) {
             Some(Scan::Node { .. }) if ids.len() > 1 => ids.to_vec(),
             _ => ids.iter().take(1).cloned().collect(),
+        }
+    }
+
+    /// Which of `v`'s identity columns ([`Lowerer::identity`]) a real
+    /// element's may hold NULL in (ELEMENT_IDENTITY.md I6c, user
+    /// 2026-10-24): a composite node id's parts whose column types say they
+    /// may be (a label union's part where any arm's may). Those are compared
+    /// NULL-safely ([`same_part`]): such a node is itself. A single-column
+    /// id (NULL: no node), a relationship's, or unknown types: none.
+    pub(super) fn identity_nullable(&self, v: VarId) -> Vec<bool> {
+        match self.scans.get(&v) {
+            Some(Scan::Node { schema, .. }) => nullable_id_parts(schema),
+            Some(Scan::Labels { arms, .. }) => {
+                let arity = arms[0].1.id_physical_columns().len();
+                let parts: Vec<Vec<bool>> =
+                    arms.iter().map(|(_, ns)| nullable_id_parts(ns)).collect();
+                std::iter::once(false)
+                    .chain((0..arity).map(|i| parts.iter().any(|p| p.get(i) == Some(&true))))
+                    .collect()
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    /// [`Lowerer::identity_nullable`] of a list's element (`elements.rs`),
+    /// its identity slots in order.
+    pub(super) fn elem_nullable(&self, elem: &elements::Elem) -> Vec<bool> {
+        match elem {
+            elements::Elem::Node(label) => self
+                .schema
+                .node_schema_opt(label)
+                .map(nullable_id_parts)
+                .unwrap_or_default(),
+            _ => Vec::new(),
         }
     }
 
@@ -6783,10 +6857,20 @@ impl<'s> Lowerer<'s> {
         self.position(v).is_some()
     }
 
-    fn tie(&mut self, a: VarId, b: VarId, mut eqs: Vec<(RenderExpr, RenderExpr)>) {
+    fn tie(&mut self, a: VarId, b: VarId, eqs: Vec<(RenderExpr, RenderExpr)>) {
+        let eqs = eqs.into_iter().map(|(x, y)| (x, y, false)).collect();
+        self.tie_identity(a, b, eqs);
+    }
+
+    /// [`Self::tie`] of columns of which some (`true`) are an element's
+    /// identity on both sides, compared NULL-safely ([`same_part`]): a walk's
+    /// end columns, read from its node's row, to that node (a composite id's
+    /// part may be NULL in a node, I6c). A relationship's ends are tied
+    /// with `=` (none attaches to a NULL part).
+    fn tie_identity(&mut self, a: VarId, b: VarId, mut eqs: Vec<(RenderExpr, RenderExpr, bool)>) {
         // A node read from its relationship's endpoint column is tied to it
         // already.
-        eqs.retain(|(x, y)| x != y);
+        eqs.retain(|(x, y, _)| x != y);
         if eqs.is_empty() {
             return;
         }
@@ -6808,7 +6892,10 @@ impl<'s> Lowerer<'s> {
             .position(t.a)
             .max(self.position(t.b))
             .expect("both emitted");
-        let eqs = t.eqs.into_iter().map(|(x, y)| eq(x, y));
+        let eqs = t
+            .eqs
+            .into_iter()
+            .map(|(x, y, null_safe)| tie_condition(x, y, null_safe));
         if later == 0 {
             self.filters
                 .extend(eqs.map(RenderExpr::OperatorApplicationExp));
@@ -8793,6 +8880,89 @@ fn realias(e: &RenderExpr, from: &str, to: &str) -> RenderExpr {
 }
 
 /// `a = b`, with NULL equal to NULL, in a form every dialect joins on.
+/// Which parts of `schema`'s id a node's may be NULL in
+/// ([`Lowerer::identity_nullable`]): a composite id's parts whose column
+/// types say so; a single-column id's none (a NULL one is no node).
+fn nullable_id_parts(schema: &NodeSchema) -> Vec<bool> {
+    let parts = schema.id_physical_columns().len();
+    if parts < 2 {
+        return vec![false; parts];
+    }
+    (0..parts)
+        .map(|i| {
+            schema
+                .node_id
+                .part_type(i)
+                .is_some_and(|t| t.nullable && !t.raw.is_empty())
+        })
+        .collect()
+}
+
+/// A tie's condition ([`Tie`]): `x = y`, or NULL-safely (as one condition
+/// of a join's ON, conjoined with `true`).
+/// A boolean operator, so its value is read as one where it is a value
+/// (`a = b` returned).
+fn tie_condition(x: RenderExpr, y: RenderExpr, null_safe: bool) -> OperatorApplication {
+    match null_safe {
+        false => eq(x, y),
+        true => {
+            OperatorApplication {
+                operator: Operator::And,
+                operands: vec![
+                    RenderExpr::Raw(current_function_mapper().null_safe_equal(
+                        &render_expr_to_sql_plain(&x),
+                        &render_expr_to_sql_plain(&y),
+                    )),
+                    RenderExpr::Literal(Literal::Boolean(true)),
+                ],
+            }
+        }
+    }
+}
+
+/// `x` and `y`, one identity part of two elements, the same: `=`, or where
+/// a real element's part may be NULL (`nullable`, [`Lowerer::
+/// identity_nullable`]) NULL-safely, as one condition a join can key on
+/// (`FunctionMapper::null_safe_equal`): a node with a NULL id part is
+/// itself (ELEMENT_IDENTITY.md I6c).
+pub(super) fn same_part(x: RenderExpr, y: RenderExpr, nullable: bool) -> RenderExpr {
+    RenderExpr::OperatorApplicationExp(tie_condition(x, y, nullable))
+}
+
+/// Two identities `a`, `b` (part by part, `nullable` as [`same_part`]) the
+/// same (`equal`), else different: the parts' `=` / `<>` where none may be
+/// NULL (the SQL as before), else NULL-safely.
+pub(super) fn same_identity(
+    a: Vec<RenderExpr>,
+    b: Vec<RenderExpr>,
+    nullable: &[bool],
+    equal: bool,
+) -> Option<RenderExpr> {
+    let parts: Vec<RenderExpr> = a
+        .into_iter()
+        .zip(b)
+        .enumerate()
+        .map(|(i, (x, y))| {
+            let nullable = nullable.get(i) == Some(&true);
+            match (equal, nullable) {
+                (true, _) => same_part(x, y, nullable),
+                (false, false) => RenderExpr::OperatorApplicationExp(OperatorApplication {
+                    operator: Operator::NotEqual,
+                    operands: vec![x, y],
+                }),
+                (false, true) => RenderExpr::OperatorApplicationExp(OperatorApplication {
+                    operator: Operator::Not,
+                    operands: vec![same_part(x, y, true)],
+                }),
+            }
+        })
+        .collect();
+    match equal {
+        true => and_all(parts),
+        false => Some(or_all(parts)),
+    }
+}
+
 fn not_distinct(a: RenderExpr, b: RenderExpr) -> OperatorApplication {
     let is_null = |e: RenderExpr| {
         RenderExpr::OperatorApplicationExp(OperatorApplication {

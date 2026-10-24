@@ -9824,13 +9824,16 @@ graph_schema:
     );
 }
 
-/// ELEMENT_IDENTITY.md I6 (#1354, user 2026-10-19): a row whose id has a
-/// NULL part is no node, in every scan of its label (a node of one label,
-/// several labels, a walk's nodes), as a walk's ties already took it; where
+/// ELEMENT_IDENTITY.md I6 / I6c (#1354; user 2026-10-19, revised
+/// 2026-10-24): a row whose composite id has a NULL part is a node, whose
+/// part is compared NULL-safely where it is the node's own identity (`a =
+/// b`, a walk's ends, a subquery's correlation, a list's elements) and with
+/// `=` where a relationship's end ties to it; a row whose id is all NULL, or
+/// a single-column NULL id, is no node, in every scan of its label. Where
 /// its id's columns cannot be NULL, or their types are unknown, the SQL is
 /// as before.
 #[test]
-fn a_row_whose_id_has_a_null_part_is_no_node_1354() {
+fn a_composite_id_with_a_null_part_is_a_node_1354() {
     const YAML: &str = r#"
 name: lower_null_id_parts
 graph_schema:
@@ -9852,6 +9855,18 @@ graph_schema:
       table: u
       node_id: [a, b, c]
       property_mappings: {name: name}
+    - label: A
+      database: db
+      table: an
+      node_id: [a, b, c]
+      column_types: {a: "Nullable(String)", b: "Nullable(UInt32)", c: "Nullable(String)"}
+      property_mappings: {name: name}
+    - label: S
+      database: db
+      table: s
+      node_id: id
+      column_types: {id: "Nullable(Int64)"}
+      property_mappings: {name: name}
   edges:
     - type: E
       database: db
@@ -9869,31 +9884,68 @@ graph_schema:
         .unwrap();
     let options = LowerOptions::default();
     let sql = |q: &str| lowered(q, &schema, &options);
+    // A part that may be NULL is no filter: such a row is a node.
     let got = sql("MATCH (n:M) RETURN n.name");
-    assert!(got.contains("WHERE v0.c IS NOT NULL"), "{got}");
-    // Only the part that can be NULL; none of a node whose id cannot be.
-    assert!(!got.contains("v0.a IS NOT NULL"), "{got}");
-    let got = sql("MATCH (n:K) RETURN n.name");
     assert!(!got.contains("IS NOT NULL"), "{got}");
-    // An id whose types are unknown is left as it was.
-    let got = sql("MATCH (n:U) RETURN n.name");
-    assert!(!got.contains("IS NOT NULL"), "{got}");
-    // OPTIONAL MATCH, several labels, a walk's nodes.
-    let got = sql("MATCH (k:K) OPTIONAL MATCH (n:M) RETURN k.name, n.name");
-    assert!(got.contains("c IS NOT NULL"), "{got}");
-    let got = sql("MATCH (n) RETURN count(n) AS c");
+    // An id that is all NULL, or of one NULL column, is none.
+    let got = sql("MATCH (n:A) RETURN n.name");
     assert!(
-        got.contains("FROM db.m AS e WHERE e.c IS NOT NULL"),
+        got.contains("(v0.a IS NOT NULL OR v0.b IS NOT NULL OR v0.c IS NOT NULL)"),
         "{got}"
     );
-    // A walk's first nodes are filtered in the generator's seed, and the
-    // walk still carries its nodes as tuples (`nodes(p)[…]` needs them).
-    let got = sql("MATCH (a:M)-[:E*0..2]->(b:M) RETURN a.name, b.name");
+    let got = sql("MATCH (n:S) RETURN n.name");
+    assert!(got.contains("WHERE v0.id IS NOT NULL"), "{got}");
+    // Each arm of a node of several labels.
+    let got = sql("MATCH (n:M|A) RETURN count(n) AS c");
     assert!(
-        got.contains("FROM db.m AS start_node WHERE (start_node.c IS NOT NULL)"),
+        got.contains(
+            "FROM db.an AS e WHERE (e.a IS NOT NULL OR e.b IS NOT NULL OR e.c IS NOT NULL)"
+        ),
         "{got}"
     );
-    let got = sql("MATCH p=(a:M)-[:E*1..2]->(b:M) RETURN [x IN nodes(p) | x.name] AS n");
-    assert!(got.contains("start_node.c IS NOT NULL"), "{got}");
-    assert!(got.contains("path_node_tuples"), "{got}");
+    assert!(!got.contains("FROM db.m AS e WHERE"), "{got}");
+    // A node is itself: its NULL-able part compared NULL-safely, the others
+    // with `=`; of an id that cannot be NULL, or of unknown types, as before.
+    let got = sql("MATCH (x:M), (y:M) WHERE x = y RETURN x.name");
+    assert!(
+        got.contains("v0.a = v1.a AND v0.b = v1.b AND (isNotDistinctFrom(v0.c, v1.c) AND true)"),
+        "{got}"
+    );
+    let got = sql("MATCH (x:M), (y:M) WHERE x <> y RETURN x.name");
+    assert!(
+        got.contains("NOT (isNotDistinctFrom(v0.c, v1.c) AND true)"),
+        "{got}"
+    );
+    for label in ["K", "U"] {
+        let got = sql(&format!(
+            "MATCH (x:{label}), (y:{label}) WHERE x = y RETURN x.name"
+        ));
+        assert!(!got.contains("isNotDistinctFrom"), "{got}");
+    }
+    // A relationship's end ties with `=` (none attaches to a NULL part); a
+    // walk's ends, read from its nodes' rows, are its nodes.
+    let got = sql("MATCH (x:M)-[:E]->(y:M) RETURN x.name, y.name");
+    assert!(!got.contains("isNotDistinctFrom"), "{got}");
+    let got = sql("MATCH (x:M)-[:E*0..2]->(y:M) RETURN x.name, y.name");
+    assert!(
+        got.contains("(isNotDistinctFrom(v1.start_c, v0.c) AND true)"),
+        "{got}"
+    );
+    assert!(got.contains("vp.end_c = rel.fc"), "{got}");
+    // A subquery's correlation and a list's elements.
+    let got = sql("MATCH (x:M) WHERE EXISTS { MATCH (x) WHERE x.name = 'n' } RETURN x.name");
+    assert!(got.contains("isNotDistinctFrom(v0.c, s1.v0__c)"), "{got}");
+    let got = sql("MATCH (x:M) WITH collect(x) AS l MATCH (y:M) WHERE y IN l RETURN y.name");
+    assert!(
+        got.contains("isNotDistinctFrom(tupleElement(__cg_in, 3), v2.c)"),
+        "{got}"
+    );
+    assert!(
+        got.contains("WHEN v2.a IS NULL AND v2.b IS NULL AND v2.c IS NULL THEN NULL"),
+        "{got}"
+    );
+    // Spark spells it `<=>`.
+    let got =
+        squash(&databricks_sql("MATCH (x:M), (y:M) WHERE x = y RETURN x.name", &schema).unwrap());
+    assert!(got.contains("((v0.c <=> v1.c) AND true)"), "{got}");
 }

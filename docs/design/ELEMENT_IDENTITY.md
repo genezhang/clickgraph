@@ -246,14 +246,32 @@ one of the three.
   (now texts, not split on `|` and joined again) and embedded `query_graph`
   spell it through it, a composite id's NULL part as `\N`. Single-column
   ids keep their text.
-- [ ] **I6c — a composite id with a NULL part is a node** (§2, revised
-  2026-10-24): `id_present` only where every part may be NULL; identity
-  comparisons NULL-safe (with I2b's one key spelling); ties stay `=`.
+- [x] **I6c — a composite id with a NULL part is a node** (§2, revised
+  2026-10-24). `id_present` filters a row only where its id is all NULL
+  (every part's column may be NULL: `IS NOT NULL` of the one, or of any),
+  so a single-column NULL id stays no node. Where a node is compared as
+  itself, a part its column type says may be NULL is compared NULL-safely
+  (`Lowerer::identity_nullable` / `elem_nullable`, `same_part` /
+  `same_identity`: `FunctionMapper::null_safe_equal`, a join key, in a
+  boolean `… AND true`): `a = b` / `a <> b` (one label, several labels, a
+  list's elements, NULL where an element is), `x IN list` (NULL where `x`
+  is: every part of a composite id NULL), the correlation of OPTIONAL
+  MATCH, subqueries and drives to the node's own rows, and a walk's
+  `start_*` / `end_*` columns to its end nodes (read from their rows:
+  `Lowerer::tie_identity`). A relationship's ends still tie with `=`
+  (`tie_end`, the walk's recursion, an elided endpoint's correlation), so
+  no relationship attaches to such a node, as in Neo4j. Text keys (walk
+  keys, search keys) spell NULL in their tuple's text and are unchanged.
+  Live: two batteries of 75 queries against Neo4j holding the same graph
+  (one node per id, relationships whose ends are whole ids) agree on every
+  identity shape; Bolt returns `L:x|\N-` and reads it back.
+  Left (I6d): a relationship whose `edge_id` has a NULL part is kept (#1354
+  comment) but its identity is not NULL-safe (`count(r)`, uniqueness).
 - [ ] **I4b — Bolt ids**: stable hash (not `DefaultHasher`); label codes
   per schema (process-global, clamped at 63, first-seen ordered).
 - [ ] **I5 — ids as values** (#1387, #1383): `id()` of a composite node and
   across a mixed-label UNION, from the output spelling.
-- [x] **I6 — NULL id parts** (#1354): not a node (§2). Every scan of a
+- [x] **I6 — NULL id parts** (#1354): not a node (§2; revised by I6c). Every scan of a
   label (a node of one label, each arm of a node of several, a walk's
   nodes and its node relation, OPTIONAL MATCH) reads a row as a node only
   where its id's parts its columns' types say may be NULL are not
