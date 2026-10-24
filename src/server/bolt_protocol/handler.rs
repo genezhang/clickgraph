@@ -423,29 +423,6 @@ fn browser_show_stub_fields(query_upper: &str) -> Option<&'static [&'static str]
     None
 }
 
-/// [`substitute_cypher_parameters_for`] without a graph (tests).
-#[cfg(test)]
-fn substitute_cypher_parameters(query: &str, parameters: &HashMap<String, Value>) -> String {
-    substitute_cypher_parameters_for(query, parameters, None)
-}
-
-/// Whether element id `id` is a relationship's (`TYPE:…->…-`), else a
-/// node's: by its label or type in `schema` where only one of them is it (a
-/// node's id text may hold `->`), else by its `->`.
-fn is_relationship_element_id(
-    id: &str,
-    schema: Option<&crate::graph_catalog::graph_schema::GraphSchema>,
-) -> bool {
-    if let (Some(schema), Some((prefix, _))) = (schema, id.split_once(':')) {
-        let node = schema.node_schema_opt(prefix).is_some();
-        let rel = !schema.rel_schemas_for_type(prefix).is_empty();
-        if node != rel {
-            return rel;
-        }
-    }
-    id.contains("->")
-}
-
 /// Pattern detection: `id(alias) IN $paramName` or `id(alias) = $paramName`
 /// Substitute Cypher parameters into query string, keeping encoded IDs intact
 /// This replaces $paramName with actual values so parser sees literals
@@ -460,14 +437,7 @@ fn is_relationship_element_id(
 ///
 /// LIMITATION: This is a lexical approach that may have edge cases with complex
 /// nested strings or comments. For production, consider AST-level parameter binding.
-///
-/// Element ids of nodes and relationships are told apart by the session's
-/// graph `schema` ([`is_relationship_element_id`]).
-fn substitute_cypher_parameters_for(
-    query: &str,
-    parameters: &HashMap<String, Value>,
-    schema: Option<&crate::graph_catalog::graph_schema::GraphSchema>,
-) -> String {
+fn substitute_cypher_parameters(query: &str, parameters: &HashMap<String, Value>) -> String {
     use regex::Regex;
 
     // Is `pos` inside a string literal or a backtick-quoted name? Cypher's
@@ -674,14 +644,11 @@ fn substitute_cypher_parameters_for(
     // switches to elementId-mode (and emits these predicates) whenever the
     // first node in its canvas has an elementId containing `-` — which is
     // always true given our Browser-compat sentinel. Browser passes our
-    // element_id strings (e.g., `"User:1-"`) through; we decode them with
-    // parse_node_element_id and re-encode through compute_deterministic_id so
-    // the existing id-rewriter pipeline (further downstream in the planner)
-    // handles the rest.
-    // `\b(?:AND|WHERE)\s+(?:NOT\s+)?` optionally captures a leading boolean
-    // connector so that, for relationship-id predicates we want to drop, we
-    // can rip the whole conjunct out of the WHERE clause instead of leaving a
-    // dangling "AND". The connector is optional — used when `_lead` matches.
+    // element_id strings (e.g., `"User:1-"`, `"FOLLOWS:1->4-"`) through; we
+    // encode them through compute_deterministic_id so the lowering's `id()`
+    // lookup (a node's or a relationship's, by the variable) handles the rest.
+    // `\b(?:AND|WHERE)\s+(?:NOT\s+)?` captures a leading boolean connector,
+    // kept in front of the rewritten predicate.
     let re_elem_id = Regex::new(
         r"(?i)(?:(?P<lead>\b(?:AND|WHERE)\s+(?:NOT\s+)?))?\belementId\s*\(\s*(?P<alias>[A-Za-z_][A-Za-z0-9_]*)\s*\)\s*(?P<op>IN|=)\s*\$(?P<param>[A-Za-z_][A-Za-z0-9_]*)",
     )
@@ -707,38 +674,13 @@ fn substitute_cypher_parameters_for(
             _ => continue,
         };
 
-        // Relationship element_ids contain `->` (e.g., `"FOLLOWS:1->4-"`).
-        // The downstream AST id-rewriter only knows how to translate `id(x)`
-        // for node aliases — it has no path to map an encoded relationship id
-        // back to a real DB column. Generating `id(r) IN [encoded_ints]` ends
-        // up rendering as `r.id = 'value' OR ...` against a non-existent
-        // column, the planner short-circuits to `WHERE false`, and the whole
-        // expand returns zero rows.
-        //
-        // Browser uses this predicate purely for client-side dedup, so it's
-        // safe to drop. If we have a leading `AND/AND NOT/WHERE/WHERE NOT`
-        // captured, drop the entire conjunct; otherwise the user wrote a
-        // standalone `elementId(r) IN ...` and we leave the predicate as a
-        // tautology so the surrounding boolean shape stays valid.
-        let is_rel_param = elem_strings
-            .iter()
-            .any(|s| is_relationship_element_id(s, schema));
-        if is_rel_param {
-            let adjusted_start = (match_start as isize + offset3) as usize;
-            let adjusted_end = adjusted_start + full_match.as_str().len();
-            let replacement = if lead.is_some() {
-                String::new()
-            } else {
-                "true".to_string()
-            };
-            result.replace_range(adjusted_start..adjusted_end, &replacement);
-            offset3 += replacement.len() as isize - full_match.as_str().len() as isize;
-            continue;
-        }
-
         // Decode each element_id string into the integer the id-rewriter
         // expects. compute_deterministic_id is the same function used to
-        // assign Node.id values, so the round-trip is exact for nodes.
+        // assign Node.id and Relationship.id values, so the round-trip is
+        // exact. A node's and a relationship's alike: the lowering reads
+        // `id(x)` by `x`'s kind (a relationship's through the session's
+        // ids, ELEMENT_IDENTITY.md I3b), so no element id is told apart by
+        // its text (a node's may hold `->`) and no predicate is dropped.
         use crate::server::bolt_protocol::id_mapper::IdMapper;
         let encoded_ints: Vec<String> = elem_strings
             .iter()
@@ -1472,6 +1414,11 @@ impl BoltHandler {
 
         let parameters = message.extract_parameters().unwrap_or_default();
 
+        // Substitute Cypher parameters into query string (keeping encoded IDs)
+        // This allows parser to see actual values as literals while preserving encoding
+        // The AST transformer will then extract labels from encoded IDs for UNION pruning
+        let query = substitute_cypher_parameters(query, &parameters);
+
         // NOTE: Do NOT rewrite the browser's directed relationship-fetch to undirected.
         // The browser's Path objects from the expand query already carry all relationship data.
         // Making it undirected causes Relationship objects with schema-direction start/end IDs
@@ -1527,16 +1474,6 @@ impl BoltHandler {
         // Neo4j default names (`neo4j`/`system`) that generic clients and MCP
         // servers always send.
         let session_graph = resolve_requested_schema(requested_db, session_default).await;
-
-        // Substitute Cypher parameters into query string (keeping encoded IDs)
-        // This allows parser to see actual values as literals while preserving encoding
-        // The AST transformer will then extract labels from encoded IDs for UNION pruning.
-        // Element ids are told apart by the session's graph (a node's may hold `->`).
-        let id_schema =
-            graph_catalog::get_graph_schema_by_name(session_graph.as_deref().unwrap_or("default"))
-                .await
-                .ok();
-        let query = substitute_cypher_parameters_for(query, &parameters, id_schema.as_ref());
         // The statement's graph, by the rule HTTP applies: the first arm's
         // USE, else the session's database, else the default schema (a later
         // arm's USE naming another graph is refused, #1370). Read from the
@@ -3467,21 +3404,21 @@ mod tests {
         let out = substitute_cypher_parameters(q, &params);
         assert_eq!(out, q);
 
-        // Relationship element_ids (contain `->`) inside a connected `AND NOT`
-        // conjunct — drop the entire conjunct (including the leading `AND NOT`).
+        // Relationship element_ids are rewritten alike, kept in place: the
+        // lowering reads `id(r)` of a relationship (I3b). A node's element id
+        // holding `->` is a node's id still.
         let q = "MATCH (a)-[r]-(o) WHERE elementId(a) IN $nodeIds AND NOT elementId(r) IN $existingRelationshipIds RETURN r";
         let out = substitute_cypher_parameters(q, &params);
         assert!(!out.contains("elementId"), "got: {}", out);
-        assert!(!out.contains("AND NOT"), "got: {}", out);
-        // First predicate (node-shaped) still rewritten to id()
+        assert!(out.contains("AND NOT id(r) IN ["), "got: {}", out);
         assert!(out.contains("id(a) IN ["), "got: {}", out);
-
-        // Relationship element_ids in a leading `WHERE NOT` — drop the conjunct.
         let q = "MATCH ()-[r]-() WHERE NOT elementId(r) IN $existingRelationshipIds RETURN r";
         let out = substitute_cypher_parameters(q, &params);
-        assert!(!out.contains("elementId"), "got: {}", out);
-        // The `WHERE NOT ...` should be entirely gone.
-        assert!(!out.contains("WHERE NOT"), "got: {}", out);
+        assert!(out.contains("WHERE NOT id(r) IN ["), "got: {}", out);
+        params.insert("arrow".to_string(), serde_json::json!("Acct:g-|->h-"));
+        let q = "MATCH (n) WHERE elementId(n) = $arrow RETURN n";
+        let out = substitute_cypher_parameters(q, &params);
+        assert!(out.contains("WHERE id(n) = "), "got: {}", out);
     }
 
     #[test]
@@ -3507,36 +3444,6 @@ mod tests {
         let q = "RETURN CASE WHEN elementId(o) IN $foo THEN null ELSE o END";
         let out = substitute_cypher_parameters(q, &params);
         assert_eq!(out, "RETURN o");
-    }
-
-    #[test]
-    fn a_nodes_element_id_holding_an_arrow_is_a_nodes() {
-        use crate::graph_catalog::config::GraphSchemaConfig;
-        let schema = GraphSchemaConfig::from_yaml_str(
-            r#"
-graph_schema:
-  name: t
-  nodes:
-    - {label: Acct, database: d, table: a, node_id: [x, y], property_mappings: {}}
-  relationships:
-    - {type: SENT, database: d, table: s, from_node: Acct, to_node: Acct, from_id: [fx, fy], to_id: [tx, ty], property_mappings: {}}
-"#,
-        )
-        .unwrap()
-        .to_graph_schema()
-        .unwrap();
-        assert!(!is_relationship_element_id("Acct:g-|->h-", Some(&schema)));
-        assert!(is_relationship_element_id("SENT:a|1->b|2-", Some(&schema)));
-        // Without a graph, by its `->`.
-        assert!(is_relationship_element_id("Acct:g-|->h-", None));
-        let mut params = HashMap::new();
-        params.insert("id".to_string(), Value::String("Acct:g-|->h-".to_string()));
-        let out = substitute_cypher_parameters_for(
-            "MATCH (n) WHERE elementId(n) = $id RETURN n",
-            &params,
-            Some(&schema),
-        );
-        assert!(out.contains("id(n) = "), "{out}");
     }
 
     #[test]
