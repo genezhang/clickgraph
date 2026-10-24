@@ -423,6 +423,29 @@ fn browser_show_stub_fields(query_upper: &str) -> Option<&'static [&'static str]
     None
 }
 
+/// [`substitute_cypher_parameters_for`] without a graph (tests).
+#[cfg(test)]
+fn substitute_cypher_parameters(query: &str, parameters: &HashMap<String, Value>) -> String {
+    substitute_cypher_parameters_for(query, parameters, None)
+}
+
+/// Whether element id `id` is a relationship's (`TYPE:…->…-`), else a
+/// node's: by its label or type in `schema` where only one of them is it (a
+/// node's id text may hold `->`), else by its `->`.
+fn is_relationship_element_id(
+    id: &str,
+    schema: Option<&crate::graph_catalog::graph_schema::GraphSchema>,
+) -> bool {
+    if let (Some(schema), Some((prefix, _))) = (schema, id.split_once(':')) {
+        let node = schema.node_schema_opt(prefix).is_some();
+        let rel = !schema.rel_schemas_for_type(prefix).is_empty();
+        if node != rel {
+            return rel;
+        }
+    }
+    id.contains("->")
+}
+
 /// Pattern detection: `id(alias) IN $paramName` or `id(alias) = $paramName`
 /// Substitute Cypher parameters into query string, keeping encoded IDs intact
 /// This replaces $paramName with actual values so parser sees literals
@@ -437,7 +460,14 @@ fn browser_show_stub_fields(query_upper: &str) -> Option<&'static [&'static str]
 ///
 /// LIMITATION: This is a lexical approach that may have edge cases with complex
 /// nested strings or comments. For production, consider AST-level parameter binding.
-fn substitute_cypher_parameters(query: &str, parameters: &HashMap<String, Value>) -> String {
+///
+/// Element ids of nodes and relationships are told apart by the session's
+/// graph `schema` ([`is_relationship_element_id`]).
+fn substitute_cypher_parameters_for(
+    query: &str,
+    parameters: &HashMap<String, Value>,
+    schema: Option<&crate::graph_catalog::graph_schema::GraphSchema>,
+) -> String {
     use regex::Regex;
 
     // Is `pos` inside a string literal or a backtick-quoted name? Cypher's
@@ -690,7 +720,9 @@ fn substitute_cypher_parameters(query: &str, parameters: &HashMap<String, Value>
         // captured, drop the entire conjunct; otherwise the user wrote a
         // standalone `elementId(r) IN ...` and we leave the predicate as a
         // tautology so the surrounding boolean shape stays valid.
-        let is_rel_param = elem_strings.iter().any(|s| s.contains("->"));
+        let is_rel_param = elem_strings
+            .iter()
+            .any(|s| is_relationship_element_id(s, schema));
         if is_rel_param {
             let adjusted_start = (match_start as isize + offset3) as usize;
             let adjusted_end = adjusted_start + full_match.as_str().len();
@@ -1440,11 +1472,6 @@ impl BoltHandler {
 
         let parameters = message.extract_parameters().unwrap_or_default();
 
-        // Substitute Cypher parameters into query string (keeping encoded IDs)
-        // This allows parser to see actual values as literals while preserving encoding
-        // The AST transformer will then extract labels from encoded IDs for UNION pruning
-        let query = substitute_cypher_parameters(query, &parameters);
-
         // NOTE: Do NOT rewrite the browser's directed relationship-fetch to undirected.
         // The browser's Path objects from the expand query already carry all relationship data.
         // Making it undirected causes Relationship objects with schema-direction start/end IDs
@@ -1500,6 +1527,16 @@ impl BoltHandler {
         // Neo4j default names (`neo4j`/`system`) that generic clients and MCP
         // servers always send.
         let session_graph = resolve_requested_schema(requested_db, session_default).await;
+
+        // Substitute Cypher parameters into query string (keeping encoded IDs)
+        // This allows parser to see actual values as literals while preserving encoding
+        // The AST transformer will then extract labels from encoded IDs for UNION pruning.
+        // Element ids are told apart by the session's graph (a node's may hold `->`).
+        let id_schema =
+            graph_catalog::get_graph_schema_by_name(session_graph.as_deref().unwrap_or("default"))
+                .await
+                .ok();
+        let query = substitute_cypher_parameters_for(query, &parameters, id_schema.as_ref());
         // The statement's graph, by the rule HTTP applies: the first arm's
         // USE, else the session's database, else the default schema (a later
         // arm's USE naming another graph is refused, #1370). Read from the
@@ -3470,6 +3507,36 @@ mod tests {
         let q = "RETURN CASE WHEN elementId(o) IN $foo THEN null ELSE o END";
         let out = substitute_cypher_parameters(q, &params);
         assert_eq!(out, "RETURN o");
+    }
+
+    #[test]
+    fn a_nodes_element_id_holding_an_arrow_is_a_nodes() {
+        use crate::graph_catalog::config::GraphSchemaConfig;
+        let schema = GraphSchemaConfig::from_yaml_str(
+            r#"
+graph_schema:
+  name: t
+  nodes:
+    - {label: Acct, database: d, table: a, node_id: [x, y], property_mappings: {}}
+  relationships:
+    - {type: SENT, database: d, table: s, from_node: Acct, to_node: Acct, from_id: [fx, fy], to_id: [tx, ty], property_mappings: {}}
+"#,
+        )
+        .unwrap()
+        .to_graph_schema()
+        .unwrap();
+        assert!(!is_relationship_element_id("Acct:g-|->h-", Some(&schema)));
+        assert!(is_relationship_element_id("SENT:a|1->b|2-", Some(&schema)));
+        // Without a graph, by its `->`.
+        assert!(is_relationship_element_id("Acct:g-|->h-", None));
+        let mut params = HashMap::new();
+        params.insert("id".to_string(), Value::String("Acct:g-|->h-".to_string()));
+        let out = substitute_cypher_parameters_for(
+            "MATCH (n) WHERE elementId(n) = $id RETURN n",
+            &params,
+            Some(&schema),
+        );
+        assert!(out.contains("id(n) = "), "{out}");
     }
 
     #[test]

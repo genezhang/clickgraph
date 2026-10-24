@@ -6595,6 +6595,8 @@ fn an_id_of_a_composite_node_reads_its_escaped_parts() {
                 1 => Some(("Acct".to_string(), "b\\|1|7".to_string())),
                 2 => Some(("Acct".to_string(), "b|\\N".to_string())),
                 3 => Some(("Acct".to_string(), "a|b|c".to_string())),
+                // A part holding a backslash: a value, no escape.
+                4 => Some(("Acct".to_string(), "e\\\\f|9".to_string())),
                 _ => None,
             }),
             element: std::sync::Arc::new(|_| None),
@@ -6619,6 +6621,12 @@ fn an_id_of_a_composite_node_reads_its_escaped_parts() {
         &server,
     );
     assert!(got.contains("WHERE false"), "{got}");
+    let got = lowered(
+        "MATCH (a:Acct) WHERE id(a) = 4 RETURN a.owner",
+        &composite_walk_schema(),
+        &server,
+    );
+    assert!(got.contains("v0.bank = 'e\\\\f' AND v0.num = '9'"), "{got}");
 }
 
 /// S8d: a walk between composite ids joins each step and ties its ends by

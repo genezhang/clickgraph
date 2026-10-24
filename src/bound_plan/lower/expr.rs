@@ -1152,7 +1152,11 @@ impl Lowerer<'_> {
         // labels' as text, its labels' keys being of different types (a
         // `Variant`, which cannot read one text as all of them).
         let key_is = |k: &RenderExpr, text: &str| {
-            let text = RenderExpr::Literal(Literal::String(text.to_string()));
+            // The id's text is a value: as a literal's raw body (a `\\` in it
+            // is no escape).
+            let text = RenderExpr::Literal(Literal::String(
+                crate::utils::sql_literal::value_as_cypher_text(text),
+            ));
             if labels.len() > 1 {
                 let k = RenderExpr::Raw(format!(
                     "{}({})",

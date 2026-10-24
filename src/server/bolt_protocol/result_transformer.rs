@@ -423,7 +423,7 @@ pub fn transform_row(
                         Value::String(s) => s.clone(),
                         _ => format!("{:?}", id_val),
                     };
-                    format!("{}:{}", label, id_str)
+                    node_element_id_of_text(&label, &id_str)
                 } else {
                     // Fallback: try alias.id_col format (when node is also returned)
                     let id_col = schema
@@ -444,7 +444,7 @@ pub fn transform_row(
                             Value::String(s) => s.clone(),
                             _ => format!("{:?}", id_val),
                         };
-                        format!("{}:{}", label, id_str)
+                        node_element_id_of_text(&label, &id_str)
                     } else {
                         // Last fallback: try to construct from any property that looks like an ID
                         let prefix = format!("{}.", alias);
@@ -457,7 +457,7 @@ pub fn transform_row(
                                         Value::String(s) => s.clone(),
                                         _ => continue,
                                     };
-                                    element_id = Some(format!("{}:{}", label, id_str));
+                                    element_id = Some(node_element_id_of_text(&label, &id_str));
                                     break;
                                 }
                             }
