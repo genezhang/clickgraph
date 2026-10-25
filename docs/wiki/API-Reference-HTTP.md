@@ -566,7 +566,12 @@ Notes:
   entry nor a stored row keeps the pre-feature `404`.
 - Ordering versus a concurrent re-register of the same name is last-writer-wins (the in-memory
   removals are guarded; the store delete is a separate statement): if the re-register wins, the
-  name is live again with its row persisted to the next boot — the state the caller asked for.
+  name is live again with its row persisted to the next boot — the state the caller asked for;
+  if the DELETE's store statement wins, the name stays live in memory but its row is gone, so it
+  does not survive the next boot.
+- If the store delete fails, the schema is still removed from memory and the response is `200`
+  with `"persisted": false`; the stored row remains and comes back at the next boot. Repeating
+  the `DELETE` removes it as a store-only row.
 
 ### Persistence
 
@@ -589,6 +594,10 @@ Semantics (Kafka Connect's `config.storage.topic` pattern, applied on ClickHouse
 - **The config file wins**: a name defined via `GRAPH_CONFIG_PATH` shadows any persisted
   registration of the same name at boot (the store is a runtime ledger, never a shadow of
   declared intent).
+- **Privileges**: the ClickHouse user the server runs as needs `SELECT` and `INSERT` on
+  `clickgraph_schema_registry`, `ALTER DELETE` for `DELETE /schemas/{name}`, and `CREATE TABLE`
+  on the configured database (the table is created on first use, and ClickHouse checks that
+  grant even when the table exists). A server that must stay read-only keeps persistence `off`.
 - **Registration first, durability best-effort**: a store failure never fails a registration —
   the response reports `persisted: false` instead. A promotion/deploy that kills the existing
   server loses nothing; a degraded store only breaks restart-survival, announced in the logs.

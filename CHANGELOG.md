@@ -2,6 +2,12 @@
 
 ### 🚀 Features
 
+- **Schemas registered at runtime can survive a restart (SCHEMA_PERSISTENCE.md, #1519).** With `CLICKGRAPH_SCHEMA_PERSISTENCE=clickhouse` (off by default), `POST /schemas/load` also stores the YAML in a `clickgraph_schema_registry` table in the configured database. At boot, before the server listens, the stored schemas are registered again; a schema defined in the config file wins over a stored one of the same name. With the setting off nothing is read or written.
+  - **Responses:** `POST /schemas/load` and `DELETE /schemas/{name}` gain a `persisted` field, only when persistence is on. A failed store never fails a registration; it reports `persisted: false`.
+  - **`DELETE /schemas/{name}`** is new. It removes the schema from memory and from the store, and invalidates its query-cache entries.
+  - **Boot replay is bounded** by `CLICKGRAPH_SCHEMA_REPLAY_MAX_ROWS` (500) and `CLICKGRAPH_SCHEMA_REPLAY_MAX_BYTES` (64 MiB); the summary line accounts for every stored row.
+  - **Privileges:** the ClickHouse user needs `SELECT`, `INSERT`, `ALTER DELETE` and `CREATE TABLE` on the configured database. A server that must stay read-only keeps the setting off.
+
 - **Checking that a node's rows agree (#531).** A node embedded in edge tables (`from_node_properties` / `to_node_properties`) is read from the rows that hold its id. When those rows hold several values of a property, a query reads any one of them, as before. Two new checks find this:
   - `cg schema validate --data` checks, in ClickHouse, that the rows of each such node hold one value of each property per node id. It reports the property, how many ids disagree and one of them. It checks a sample by default (one node id in 100, all rows of each, at most 1,000,000 rows of each table; `--sample`, `--max-rows`); `--full` reads everything.
   - With `CLICKGRAPH_CHECK_NODE_PROPERTIES=true` (server) or `cg --check-node-properties`, a query reading such a property, or the whole node, fails instead, on ClickHouse and Databricks.

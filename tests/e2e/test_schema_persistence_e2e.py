@@ -33,8 +33,10 @@ already serves something (an orphaned instance from an aborted run would
 silently answer every probe instead of the server under test).
 
 Runners:
-  - pytest (collectable: `pytest tests/e2e/test_schema_persistence_e2e.py`,
-    skips when the env of a live run is absent) — is how CI drives it;
+  - pytest (collectable: `pytest --noconftest
+    tests/e2e/test_schema_persistence_e2e.py`, skips when the env of a live
+    run is absent) — is how CI drives it. `--noconftest` because
+    tests/e2e/conftest.py imports `neo4j`, which this test does not need;
   - plain `python tests/e2e/test_schema_persistence_e2e.py` keeps exit 77
     as the skip indicator and exit 1 as failure, printed as FAIL.
 """
@@ -44,6 +46,7 @@ import ctypes
 import json
 import os
 import signal
+import socket
 import subprocess
 import sys
 import time
@@ -141,11 +144,10 @@ def port_must_be_free():
     """Fail fast on an orphaned listener: connecting to /health now would hit
     a DIFFERENT server than the one this test spawns, silently desyncing the
     whole restart-cycle."""
-    pids = listener_pids()
-    if pids:
+    if port_in_use():
         raise SystemExit(
-            f"port {HTTP_PORT} is already LISTENed by pid(s) {sorted(pids)} — "
-            "stop them first (Get-Process clickgraph | Stop-Process -Id <pid> -Force)"
+            f"port {HTTP_PORT} is already in use — stop the process "
+            "listening there first"
         )
 
 
@@ -247,37 +249,30 @@ def kill_now(proc):
         pass
 
 
-def listener_pids():
-    """PIDs with a socket still LISTENing on the test port (netstat, not a
-    connection probe: connect_ex can be fooled by loopback TIME_WAIT and
-    accept-cache residue after a terminate, while `LISTENING` states are the
-    exact thing a respawn must not collide with)."""
-    out = subprocess.run(
-        ["netstat", "-ano", "-p", "TCP"], capture_output=True, text=True
-    ).stdout
-    pids = set()
-    for line in out.splitlines():
-        parts = line.split()
-        if len(parts) >= 5 and parts[3] == "LISTENING":
-            if parts[1].endswith(f":{HTTP_PORT}"):
-                pids.add(parts[4])
-    return pids
+def port_in_use():
+    """True when something accepts connections on the test port. A connect
+    probe, not `netstat`: it works on every OS the suite runs on (netstat's
+    output differs between Windows and Linux, and is absent from minimal
+    images), and a bare connect does not disturb the listener."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.settimeout(0.5)
+        try:
+            return s.connect_ex(("127.0.0.1", HTTP_PORT)) == 0
+        except OSError:
+            return False
 
 
 def wait_port_free(timeout=15):
-    """Between kill and respawn: no LISTENing socket may remain. Task-locality
+    """Between kill and respawn: nothing may still listen. Task-locality
     of the replies depends on it — if an old listener survives its kill, the
     new spawn dies on bind and /health is answered by the old server (silent
     cross-act desync)."""
     deadline = time.time() + timeout
     while time.time() < deadline:
-        if not listener_pids():
+        if not port_in_use():
             return
         time.sleep(0.5)
-    raise SystemExit(
-        f"port {HTTP_PORT} is still LISTENed by pid(s) {sorted(listener_pids())} "
-        "after the kill"
-    )
+    raise SystemExit(f"port {HTTP_PORT} is still in use after the kill")
 
 
 def assert_eq(actual, expected, what):

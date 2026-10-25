@@ -2393,10 +2393,11 @@ fn request_id_mapper(
 /// that guard. If the re-register's insert wins, the name is live in memory
 /// and its row persists to the next boot — exactly the state the caller
 /// asked for by re-registering; if the DELETE's store statement wins, the
-/// schema is retired everywhere. Serializing the two per name would mean
-/// holding the schema write guard across a network round-trip per DELETE;
-/// documenting the loser's state instead (`SCHEMA_PERSISTENCE.md` §4) is
-/// the cheaper and honest contract. The `exists` probe in the store-only
+/// name stays live in memory but its row is gone, so it does not survive
+/// the next boot (both calls report `persisted: true`). Serializing the
+/// two per name would mean holding a lock across a network round-trip per
+/// DELETE; documenting the outcomes instead (`SCHEMA_PERSISTENCE.md` §4)
+/// is the cheaper and honest contract. The `exists` probe in the store-only
 /// path happens before the store delete for the same reason: between probe
 /// and delete a racing registration may re-add the row, and then the
 /// loser's state is the re-registered schema, not a deleted one.

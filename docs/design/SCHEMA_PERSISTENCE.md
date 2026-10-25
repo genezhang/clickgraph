@@ -36,7 +36,7 @@ build slices inside are listed under Project Structure.
 
 Unchanged stack, no new dependencies:
 
-- Rust (toolchain pinned `1.92.0-x86_64-pc-windows-gnu` locally; CI default)
+- Rust (the toolchain CI uses)
 - `clickhouse` client (already non-optional; `try_get_client()`
   `src/server/clickhouse_client.rs:9`)
 - `serde_yaml`/`serde_json` (already present)
@@ -47,27 +47,25 @@ Unchanged stack, no new dependencies:
 ```bash
 # format + lint (must pass before any push)
 cargo fmt --check
-cargo +1.92.0-x86_64-pc-windows-gnu clippy --all-targets --no-default-features -- -D warnings
+cargo clippy --all-targets --no-default-features -- -D warnings
 
 # unit + integration (no live ClickHouse needed)
-cargo +1.92.0-x86_64-pc-windows-gnu test --no-default-features
+cargo test --no-default-features
 
 # live-ClickHouse integration (registry tests need the test instance)
-# (one shell block — env does not persist across shells)
-$env:CLICKHOUSE_URL='http://127.0.0.1:8123'; $env:CLICKHOUSE_USER='test_user'; $env:CLICKHOUSE_PASSWORD='test_pass'
-cargo +1.92.0-x86_64-pc-windows-gnu test --no-default-features --test integration schema_registry
+export CLICKHOUSE_URL=http://127.0.0.1:8123 CLICKHOUSE_USER=test_user CLICKHOUSE_PASSWORD=test_pass
+cargo test --no-default-features --test integration schema_registry
 
 # regression ratchet + corpus census (unchanged: 1477 queries, both dialects)
-$env:CLICKHOUSE_URL='http://127.0.0.1:8123'; $env:CLICKHOUSE_USER='test_user'; $env:CLICKHOUSE_PASSWORD='test_pass'
-cargo +1.92.0-x86_64-pc-windows-gnu test --no-default-features --test ratchet
-cargo +1.92.0-x86_64-pc-windows-gnu test --no-default-features --test integration the_corpus_lowers
+cargo test --no-default-features --test ratchet
+cargo test --no-default-features --test integration the_corpus_lowers
 
 # E2E: register → SIGKILL → re-register nothing → restored + query succeeds →
 # DELETE stays deleted → off mode writes nothing (the spec's acceptance acts)
 python tests/e2e/test_schema_persistence_e2e.py
 # same run under pytest (collectable; skips when CLICKHOUSE_URL/CLICKGRAPH_BIN
 # are unset) — this is how CI drives it:
-pytest tests/e2e/test_schema_persistence_e2e.py -v
+pytest --noconftest tests/e2e/test_schema_persistence_e2e.py -v
 ```
 
 ## Project Structure
@@ -163,6 +161,16 @@ One row per registered schema name, in the **configured ClickHouse database**
   durable, API-writable store must not convert a one-time write burst into an
   unbounded per-restart cost. Rows left un-restored are counted exactly in a
   WARN naming the knob.
+- **Privileges.** The store runs as the ClickHouse user the server is
+  configured with, on the configured database: `SELECT` and `INSERT` on
+  `clickgraph_schema_registry`; `ALTER DELETE` for `DELETE /schemas/{name}`
+  (the lightweight `DELETE FROM` and its `ALTER TABLE ... DELETE` fallback
+  both need it); and `CREATE TABLE`, because the store issues `CREATE TABLE
+  IF NOT EXISTS` before each operation and ClickHouse checks that grant even
+  when the table exists (verified on 26.7), so a table created beforehand
+  does not remove the requirement. With a grant missing a registration still
+  succeeds in memory and reports `persisted: false`. A server that must not
+  hold write grants keeps persistence `off`.
 
 ### Semantics
 
@@ -246,10 +254,17 @@ One row per registered schema name, in the **configured ClickHouse database**
    delete runs after the guard, outside it. If the re-register's insert wins,
    the name is live in memory and its row persists to the next boot — exactly
    the state the caller asked for by re-registering; if the DELETE's store
-   statement wins, the schema is retired everywhere. Serializing the two per
-   name would hold the schema write guard across a network round-trip per
-   DELETE; documenting the loser's state instead is the cheaper and honest
-   contract. New endpoint ⇒ additive, backward compatible.
+   statement wins, the name stays live in memory but its row is gone, so it
+   does not survive the next boot (both calls still report `persisted:
+   true`). The same holds for two concurrent registrations of one name:
+   memory and store each keep whichever write landed last there, they can
+   differ, and a restart serves the store's. Serializing the calls per name
+   would hold a lock across a network round-trip; documenting the outcomes
+   instead is the cheaper and honest contract. If the store delete fails,
+   the schema is still removed from memory, the response is 200 with
+   `persisted: false` and the stored row remains (a retry of the DELETE
+   removes it as a store-only row). New endpoint ⇒ additive, backward
+   compatible.
 5. **Concurrency**: two instances replaying simultaneously is out of scope v1
    (documented; single-instance per the deployment profile). Writes are safe
    (row-level last-wins); replay is read-only over the store + in-memory writes
@@ -363,9 +378,11 @@ Backward-compat proof is a test class of its own: with the flag unset, a full
    (failed replay) is retirable through the same endpoint: 200
    `{"persisted": true, "store_only": true}` and the row really leaves the
    store; a second DELETE 404s.
-6. ClickHouse unreachable at boot with persistence on ⇒ server still boots
-   healthy (WARN, `0 restored / 0 config-shadowed / 0 failed (store unreachable
-   at boot)`) — matches resilient-startup convention.
+6. A registry read that fails at boot with persistence on (the table is
+   unreadable, the grant is missing, the query errors) ⇒ the server still
+   boots (WARN, `0 restored / 0 config-shadowed / 0 failed (store unreachable
+   at boot)`). A ClickHouse that cannot be reached at all stops the server in
+   `initialize_global_schema`, with persistence on or off, as before.
 7. Ratchet + census unchanged (1477 both dialects); no golden churn; no new deps.
 8. Unit+integration counts added and green on Windows `--no-default-features`
    toolchain and in CI (default features).

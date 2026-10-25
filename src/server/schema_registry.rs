@@ -604,8 +604,8 @@ pub async fn replay(app_state: &super::AppState, config: &ServerConfig) {
         log::warn!(
             "registry holds {total} rows but the replay budget allows only \
              {fetched} (CLICKGRAPH_SCHEMA_REPLAY_MAX_ROWS={max}, \
-             CLICKGRAPH_SCHEMA_REPLAY_MAX_BYTES={bytes}) — {over} oldest-\
-             first rows were not fetched and will not be restored; raise \
+             CLICKGRAPH_SCHEMA_REPLAY_MAX_BYTES={bytes}) — the {over} \
+             newest rows were not fetched and will not be restored; raise \
              the budget or clean {REGISTRY_TABLE}",
             total = fetch.total_rows,
             fetched = fetch.fetched,
@@ -679,8 +679,11 @@ pub async fn replay(app_state: &super::AppState, config: &ServerConfig) {
             Ok(()) => restored += 1,
             Err(e) => {
                 failed_names.push(row.name.clone());
+                // `e` can embed the stored name ("Failed to load schema
+                // '<name>': …"), so it is scrubbed like the name itself.
+                let reason = log_safe(&e);
                 log::warn!(
-                    "persisted schema '{}' could not be restored ({e}) — \
+                    "persisted schema '{}' could not be restored ({reason}) — \
                      register it again, or drop it with DELETE /schemas/{}",
                     log_safe(&row.name),
                     log_safe(&row.name)
