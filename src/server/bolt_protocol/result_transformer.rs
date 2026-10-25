@@ -466,8 +466,15 @@ pub fn transform_row(
                     }
                 };
 
-                // Use IdMapper's deterministic ID computation
-                let encoded_id = super::id_mapper::IdMapper::compute_deterministic_id(&element_id);
+                // IdMapper's deterministic ID computation. A hash of the key
+                // is assigned in the session, so `WHERE id(n) = N` reads the
+                // number back (ELEMENT_IDENTITY.md I5a); a key's bits need not
+                // be.
+                let encoded_id = if super::id_mapper::IdMapper::is_hashed(&element_id) {
+                    id_mapper.get_or_assign(&element_id)
+                } else {
+                    super::id_mapper::IdMapper::compute_deterministic_id(&element_id)
+                };
                 log::debug!("id() encoded: {} -> {}", element_id, encoded_id);
                 result.push(BoltValue::Json(Value::Number(encoded_id.into())));
             }
@@ -3191,6 +3198,45 @@ graph_schema:
                 .all(|v| matches!(v, BoltValue::Json(Value::Null))),
             "{out:?}"
         );
+    }
+
+    /// ELEMENT_IDENTITY.md I5a: the number of an `id()` item whose key is
+    /// hashed (a composite or string key) is assigned in the session, so
+    /// `WHERE id(n) = N` reads it back; a key's bits (a small integer) need
+    /// not be.
+    #[test]
+    fn an_id_item_of_a_hashed_key_is_assigned_in_the_session() {
+        let schema = GraphSchema::build(1, "test".to_string(), HashMap::new(), HashMap::new());
+        let item = ReturnItemMetadata {
+            field_name: "i".to_string(),
+            item_type: ReturnItemType::IdFunction {
+                alias: "a".to_string(),
+                labels: vec!["Account".to_string()],
+            },
+            columns: Some(vec![("i".to_string(), "i".to_string())]),
+        };
+        let number = |ids: &mut super::super::id_mapper::IdMapper, key: Value| -> i64 {
+            let row: HashMap<String, Value> = [("i".to_string(), key)].into();
+            match transform_row(row, std::slice::from_ref(&item), &schema, ids)
+                .unwrap()
+                .as_slice()
+            {
+                [BoltValue::Json(Value::Number(n))] => n.as_i64().unwrap(),
+                other => panic!("{other:?}"),
+            }
+        };
+        let mut ids = super::super::id_mapper::IdMapper::new();
+        // A composite key (its escaped text), and a string one.
+        let composite = number(&mut ids, Value::from("CHASE|CHK-001"));
+        assert_eq!(
+            ids.get_element_id(composite).as_deref(),
+            Some("Account:CHASE|CHK-001-")
+        );
+        let string = number(&mut ids, Value::from("LAX"));
+        assert_eq!(ids.get_element_id(string).as_deref(), Some("Account:LAX-"));
+        // A small integer key is its number's bits: nothing to assign.
+        let small = number(&mut ids, Value::from(7));
+        assert_eq!(ids.get_element_id(small), None);
     }
 
     /// #486: `transform_vlp_path` must decode the standard (single-type) VLP
