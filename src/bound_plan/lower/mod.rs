@@ -207,12 +207,13 @@ pub enum ResultKind {
     /// `id(n)` of a node with this label: column `name` holds the node's key,
     /// which Bolt returns encoded (`IdMapper`), as on the legacy pipeline.
     NodeId { label: String },
-    /// `id(r)` of a relationship (S11l): column `name` holds its element id
-    /// (`TYPE:from->to`, `TYPE:edge_id:from->to` with an `edge_id`, as Bolt
-    /// makes it); the server and the library
-    /// return Bolt's number for it (`IdMapper::compute_deterministic_id`),
-    /// SQL handed out as text keeps the element id.
-    RelId,
+    /// `id(r)` of a relationship (S11l), or `id(n)` of a node of several
+    /// labels (I5b): column `name` holds the element's element id
+    /// (`TYPE:from->to`, `TYPE:edge_id:from->to` with an `edge_id`, `Label:id-`,
+    /// as Bolt makes it); the server and the library return Bolt's number for
+    /// it (`IdMapper::compute_deterministic_id`), SQL handed out as text keeps
+    /// the element id.
+    ElementIdNumber,
     /// A path, or a list of nodes or relationships, in Neo4j's JSON form
     /// (`value.rs`): column `name`.
     Graph(GraphType),
@@ -402,7 +403,8 @@ impl Query<'_> {
             numbers: HashSet::new(),
             id_values: HashMap::new(),
             composite_id_vars: HashSet::new(),
-            rel_id_vars: HashSet::new(),
+            id_number_vars: HashSet::new(),
+            labeled_id_nodes: HashMap::new(),
             unordered_numbers: HashSet::new(),
             unstable: BTreeSet::new(),
             stable: self.stable,
@@ -1559,9 +1561,13 @@ struct Lowerer<'s> {
     /// node's `id()`, or pass one on (I5a): compared with a number or
     /// another label's text they are refused, as the id is.
     composite_id_vars: HashSet<VarId>,
-    /// RETURN items that are `id(r)` of a relationship (S11l): Bolt's number
-    /// is computed after the query, so nothing in the SQL orders by it.
-    rel_id_vars: HashSet<VarId>,
+    /// RETURN items that are an element id Bolt's number is computed from
+    /// (`ResultKind::ElementIdNumber`: `id(r)` of a relationship, S11l): the
+    /// number is computed after the query, so nothing in the SQL orders by it.
+    id_number_vars: HashSet<VarId>,
+    /// RETURN items that are `id(n)` of a node of several labels (I5b), with
+    /// the node: an ORDER BY of one sorts by the node's identity.
+    labeled_id_nodes: HashMap<VarId, VarId>,
     /// Those of [`Lowerer::numbers`] that number rows in no order
     /// (`Unwind::any_row_number`), or derive from such a number: ClickHouse
     /// numbers the rows anew each time it evaluates the CTE.
@@ -6987,12 +6993,15 @@ impl<'s> Lowerer<'s> {
         for k in keys {
             let item = match &k.expr {
                 LogicalExpr::TableAlias(crate::query_planner::logical_expr::TableAlias(n)) => {
-                    parse_var(n).is_some_and(|v| self.rel_id_vars.contains(&v))
+                    parse_var(n).is_some_and(|v| self.id_number_vars.contains(&v))
                 }
                 _ => false,
             };
             if item || self.rel_id_item(&k.expr)?.is_some() {
-                return unsupported("ORDER BY a relationship's id()");
+                return unsupported(
+                    "ORDER BY an id() the server numbers (a relationship's, or a node of \
+                     several labels grouped by it)",
+                );
             }
         }
         let mut sorted = Vec::new();
@@ -7009,6 +7018,10 @@ impl<'s> Lowerer<'s> {
                 LogicalExpr::ScalarFnCall(f) if f.name.eq_ignore_ascii_case("id") => self
                     .entity_arg(&f.args)
                     .filter(|v| matches!(self.scans.get(v), Some(Scan::Labels { .. }))),
+                // An item `id(n)` returned (I5b).
+                LogicalExpr::TableAlias(crate::query_planner::logical_expr::TableAlias(n)) => {
+                    parse_var(n).and_then(|v| self.labeled_id_nodes.get(&v).copied())
+                }
                 _ => None,
             };
             if let Some(v) = labeled {
@@ -7216,6 +7229,11 @@ impl<'s> Lowerer<'s> {
                 if let (Some(label), None) =
                     (self.node_id_of(&it.expr), self.node_id_item(&it.expr))
                 {
+                    if self.as_values.contains(&it.name) {
+                        return unsupported(
+                            "a UNION column of `id()`s of different labels, one carried by a WITH",
+                        );
+                    }
                     let e = self.expr(&it.expr, &HashMap::new())?;
                     if aggregating && !it.aggregate {
                         body.group_by.push(e.clone());
@@ -7229,17 +7247,35 @@ impl<'s> Lowerer<'s> {
                     });
                     continue;
                 }
-                // `id(r)` of a relationship of one definition (S11l).
-                if let Some(e) = self.rel_id_item(&it.expr)? {
+                // `id(r)` of a relationship (S11l), `id(n)` of a node of
+                // several labels (I5b): the element id, which the server
+                // and the library return as Bolt's number for it.
+                let numbered = match self.rel_id_item(&it.expr)? {
+                    Some(e) => Some((None, e)),
+                    None => self
+                        .labeled_node_id_item(&it.expr, self.as_values.contains(&it.name))?
+                        .map(|(n, e)| (Some(n), e)),
+                };
+                if let Some((node, e)) = numbered {
                     if aggregating && !it.aggregate {
                         body.group_by.push(e.clone());
                     }
                     items_env.insert(it.var, e.clone());
                     let column = body.column(e, &it.name);
-                    self.rel_id_vars.insert(it.var);
+                    match node {
+                        // Sorted by the node's identity, as `ORDER BY id(n)`
+                        // is, unless rows are grouped by the element id (the
+                        // identity is then no column of the result).
+                        Some(n) if !aggregating && !body.distinct => {
+                            self.labeled_id_nodes.insert(it.var, n);
+                        }
+                        _ => {
+                            self.id_number_vars.insert(it.var);
+                        }
+                    }
                     shape.push(ResultColumn {
                         name: it.name.clone(),
-                        kind: ResultKind::RelId,
+                        kind: ResultKind::ElementIdNumber,
                         columns: vec![(it.name.clone(), column)],
                     });
                     continue;
@@ -7811,6 +7847,36 @@ impl<'s> Lowerer<'s> {
             return Ok(None);
         };
         Ok(Some(self.unless_null(&[r], RenderExpr::Raw(text))?))
+    }
+
+    /// `e` as an `id(n)` RETURN item of a node of several labels (I5b): the
+    /// node and its element id (`Lowerer::node_element_id_sql`), NULL where
+    /// it is. `one`: also of a node of one label (a UNION column of `id()`s
+    /// of different labels, `Query::as_values`). `None`: not one.
+    fn labeled_node_id_item(
+        &self,
+        e: &LogicalExpr,
+        one: bool,
+    ) -> Result<Option<(VarId, RenderExpr)>, LowerError> {
+        let LogicalExpr::ScalarFnCall(f) = e else {
+            return Ok(None);
+        };
+        if !f.name.eq_ignore_ascii_case("id") {
+            return Ok(None);
+        }
+        let Some(n) = self.entity_arg(&f.args) else {
+            return Ok(None);
+        };
+        match self.scans.get(&n) {
+            Some(Scan::Labels { .. }) => {}
+            Some(Scan::Node { .. }) if one => {}
+            _ => return Ok(None),
+        }
+        let g = value::spelling()?;
+        let Some(text) = self.node_element_id_sql(n, &g)? else {
+            return Ok(None);
+        };
+        Ok(Some((n, self.unless_null(&[n], RenderExpr::Raw(text))?)))
     }
 
     /// The label of the node whose `id()` `e` is: `id(n)` of a node of one

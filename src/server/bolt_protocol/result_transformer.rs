@@ -480,10 +480,17 @@ pub fn transform_row(
             }
             ReturnItemType::ElementIdNumber => {
                 // Assigned in the session, so that `id(r) = N` of the number
-                // reads it back (#1410).
+                // reads it back (#1410). A node's number that holds its key's
+                // bits (`id(n)` of a node of several labels, I5b) reads back
+                // from the number alone: nothing is kept for it.
                 let value = match meta.value(&row).cloned().unwrap_or(Value::Null) {
                     Value::String(element_id) => {
-                        Value::Number(id_mapper.get_or_assign(&element_id).into())
+                        let number = if super::id_mapper::IdMapper::is_hashed(&element_id) {
+                            id_mapper.get_or_assign(&element_id)
+                        } else {
+                            super::id_mapper::IdMapper::compute_deterministic_id(&element_id)
+                        };
+                        Value::Number(number.into())
                     }
                     other => other,
                 };
@@ -3237,6 +3244,51 @@ graph_schema:
         // A small integer key is its number's bits: nothing to assign.
         let small = number(&mut ids, Value::from(7));
         assert_eq!(ids.get_element_id(small), None);
+    }
+
+    /// ELEMENT_IDENTITY.md I5b: the number of an element id item (`id(r)`, or
+    /// `id(n)` of a node of several labels) is the number of the same element
+    /// id returned whole; a node's that holds its key's bits is not kept in
+    /// the session, a hash is (as a relationship's always is).
+    #[test]
+    fn an_element_id_item_is_numbered_like_the_element_returned_whole() {
+        let schema = GraphSchema::build(1, "test".to_string(), HashMap::new(), HashMap::new());
+        let item = ReturnItemMetadata {
+            field_name: "i".to_string(),
+            item_type: ReturnItemType::ElementIdNumber,
+            columns: Some(vec![("i".to_string(), "i".to_string())]),
+        };
+        let number = |ids: &mut super::super::id_mapper::IdMapper, text: Value| -> Value {
+            let row: HashMap<String, Value> = [("i".to_string(), text)].into();
+            match transform_row(row, std::slice::from_ref(&item), &schema, ids)
+                .unwrap()
+                .as_slice()
+            {
+                [BoltValue::Json(v)] => v.clone(),
+                other => panic!("{other:?}"),
+            }
+        };
+        let mut ids = super::super::id_mapper::IdMapper::new();
+        let small = number(&mut ids, Value::from("User:7-"));
+        assert_eq!(
+            small.as_i64(),
+            Some(super::super::id_mapper::IdMapper::compute_deterministic_id(
+                "User:7-"
+            ))
+        );
+        assert_eq!(ids.get_element_id(small.as_i64().unwrap()), None);
+        let hashed = number(&mut ids, Value::from("Account:CHASE|CHK-001-"));
+        assert_eq!(
+            ids.get_element_id(hashed.as_i64().unwrap()).as_deref(),
+            Some("Account:CHASE|CHK-001-")
+        );
+        let rel = number(&mut ids, Value::from("FOLLOWS:1->2-"));
+        assert_eq!(
+            ids.get_element_id(rel.as_i64().unwrap()).as_deref(),
+            Some("FOLLOWS:1->2-")
+        );
+        // NULL stays NULL.
+        assert_eq!(number(&mut ids, Value::Null), Value::Null);
     }
 
     /// #486: `transform_vlp_path` must decode the standard (single-type) VLP

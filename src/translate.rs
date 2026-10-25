@@ -105,7 +105,7 @@ fn return_item_metadata(c: &ResultColumn) -> ReturnItemMetadata {
             labels: vec![label.clone()],
         },
         ResultKind::Graph(ty) => ReturnItemType::Graph(ty.clone()),
-        ResultKind::RelId => ReturnItemType::ElementIdNumber,
+        ResultKind::ElementIdNumber => ReturnItemType::ElementIdNumber,
     };
     ReturnItemMetadata {
         field_name: c.name.clone(),

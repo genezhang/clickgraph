@@ -4311,7 +4311,7 @@ slice that will handle it.
     so Bolt encodes it. `id(r)` of a relationship is Bolt's number for it
     (`IdMapper::compute_deterministic_id` of its element id, which only
     Rust computes: a per-process label code and `DefaultHasher`): a RETURN
-    item (`ResultKind::RelId`) holds the element id text (`value::
+    item (`ResultKind::ElementIdNumber`) holds the element id text (`value::
     rel_element_id`) that Bolt, HTTP JSON (`execute_cte_queries`, such a
     query is not cached) and the embedded library
     (`cypher_to_sql_with_id_columns`) turn into the number; HTTP text
