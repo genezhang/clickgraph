@@ -579,6 +579,11 @@ fn encode_json_value_into(value: &Value, result: &mut Vec<u8>, depth: usize) {
             if let Some(i) = n.as_i64() {
                 let bytes = encode_integer(i);
                 result.extend_from_slice(&bytes);
+            } else if n.is_u64() {
+                // Above `i64::MAX`: no Bolt Integer holds it, and a Float
+                // loses its low digits. The string of its digits is exact
+                // (`integers_exact_in_bolt`, #1516).
+                result.extend_from_slice(&encode_string(&n.to_string()));
             } else if let Some(f) = n.as_f64() {
                 // FLOAT_64: 0xC1 + 8 bytes (big-endian)
                 result.push(0xC1);
@@ -640,6 +645,30 @@ fn encode_json_value_into(value: &Value, result: &mut Vec<u8>, depth: usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #1516: a node returned whole carries such a property as its digits.
+    #[test]
+    fn a_node_property_above_i64_is_its_digits_in_the_node() {
+        let mut properties = HashMap::new();
+        properties.insert("v".to_string(), Value::Number(u64::MAX.into()));
+        let node = Node::new(1, vec!["U".to_string()], properties, "U:1-".to_string());
+        let bytes = node.to_packstream();
+        let digits = b"18446744073709551615";
+        assert!(
+            bytes.windows(digits.len()).any(|w| w == digits),
+            "{bytes:02X?}"
+        );
+    }
+
+    /// #1516: a node property above `i64::MAX` is its digits, not a Float.
+    #[test]
+    fn a_property_above_i64_is_its_digits() {
+        let bytes = encode_json_value(&Value::Number(u64::MAX.into()));
+        let mut expected = vec![0xD0, 20];
+        expected.extend_from_slice(b"18446744073709551615");
+        assert_eq!(bytes, expected);
+        assert_eq!(encode_json_value(&Value::Number(i64::MAX.into()))[0], 0xCB);
+    }
 
     #[test]
     fn test_encode_packstream_list() {
