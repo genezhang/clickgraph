@@ -94,11 +94,12 @@ fn test_state(config: ServerConfig) -> AppState {
     }
 }
 
-/// The database live tests create their probe tables (and their registry
-/// rows) in: `CLICKHOUSE_DATABASE`, so CI can point the whole tier at its
-/// own dedicated database instead of a fixed name.
+/// The database the live tests create their probe tables (and registry
+/// rows) in: `CLICKHOUSE_DATABASE` — so CI (or any runner) can point the
+/// whole tier at a dedicated database instead of a fixed name; the
+/// fallback is the session default, as this tier always behaved.
 fn live_database() -> String {
-    std::env::var("CLICKHOUSE_DATABASE").unwrap_or_else(|_| "it_registry".to_string())
+    std::env::var("CLICKHOUSE_DATABASE").unwrap_or_else(|_| "default".to_string())
 }
 
 async fn body_string(resp: axum::response::Response) -> String {
@@ -456,25 +457,38 @@ async fn optional_role_is_accepted_on_both_endpoints() {
 
 // ------------------------------------------------------- live ClickHouse tier
 
-fn live_client() -> Option<clickhouse::Client> {
+/// The live tier's client: `CLICKHOUSE_URL` selects the runner (a missing
+/// URL is the offline tier's skip switch), `CLICKHOUSE_DATABASE` names the
+/// target database (CI's shared job database, else the session default).
+/// The database is provisioned best-effort **before** the returned client
+/// gets it as its session database — ClickHouse validates the session
+/// database before executing any statement, so a client bound to a
+/// not-yet-existing database cannot even create that database (CI found
+/// out the loud way). `CREATE DATABASE` needs that grant on the server
+/// user: a pre-provisioned shared database is the common case (CI), and a
+/// missing one still fails loudly in each test's seed step. A missing URL
+/// is the only skip.
+async fn live_client() -> Option<clickhouse::Client> {
     let url = std::env::var("CLICKHOUSE_URL").ok()?;
     let user = std::env::var("CLICKHOUSE_USER").unwrap_or_else(|_| "default".into());
     let password = std::env::var("CLICKHOUSE_PASSWORD").unwrap_or_default();
-    let database = std::env::var("CLICKHOUSE_DATABASE").unwrap_or_else(|_| "default".into());
-    Some(
-        clickhouse::Client::default()
-            .with_url(url)
-            .with_user(user)
-            .with_password(password)
-            .with_database(database),
-    )
+    let database = live_database();
+    let unbound = clickhouse::Client::default()
+        .with_url(url)
+        .with_user(user)
+        .with_password(password);
+    let _ = unbound
+        .query(&format!("CREATE DATABASE IF NOT EXISTS {database}"))
+        .execute()
+        .await;
+    Some(unbound.with_database(database))
 }
 
 /// The one-round-trip proof: create table → save → read back → delete →
 /// read back empty. This is the store contract every other layer assumes.
 #[tokio::test]
 async fn store_round_trips_against_live_clickhouse() {
-    let Some(client) = live_client() else {
+    let Some(client) = live_client().await else {
         println!("skipping: CLICKHOUSE_URL not set (offline suite)");
         return;
     };
@@ -518,7 +532,7 @@ async fn store_round_trips_against_live_clickhouse() {
 /// row count returns the cap and states the overage exactly.
 #[tokio::test]
 async fn replay_fetch_is_bounded_by_the_row_budget() {
-    let Some(client) = live_client() else {
+    let Some(client) = live_client().await else {
         println!("skipping: CLICKHOUSE_URL not set (offline suite)");
         return;
     };
@@ -561,7 +575,7 @@ async fn replay_fetch_is_bounded_by_the_row_budget() {
 /// last).
 #[tokio::test]
 async fn replay_fetch_is_bounded_by_the_byte_budget() {
-    let Some(client) = live_client() else {
+    let Some(client) = live_client().await else {
         println!("skipping: CLICKHOUSE_URL not set (offline suite)");
         return;
     };
@@ -644,7 +658,7 @@ async fn replay_fetch_is_bounded_by_the_byte_budget() {
 /// this is the endpoint promise boot replay's WARN makes.
 #[tokio::test]
 async fn delete_retires_a_store_only_row() {
-    let Some(client) = live_client() else {
+    let Some(client) = live_client().await else {
         println!("skipping: CLICKHOUSE_URL not set (offline suite)");
         return;
     };
@@ -731,7 +745,7 @@ async fn delete_retires_a_store_only_row() {
 /// `validate_schema=false` restore, or shadowing fails the Rust tier too.
 #[tokio::test]
 async fn boot_replay_restores_persisted_rows_and_shadows_registered_ones() {
-    let Some(client) = live_client() else {
+    let Some(client) = live_client().await else {
         println!("skipping: CLICKHOUSE_URL not set (offline suite)");
         return;
     };
@@ -741,17 +755,9 @@ async fn boot_replay_restores_persisted_rows_and_shadows_registered_ones() {
     // ClickHouse client), so both YAMLs' tables must actually exist: the
     // pre-registration's `it_dummy_table` and the seeded rows' probe table.
     // Everything is created in `CLICKHOUSE_DATABASE` (CI's dedicated
-    // database) or the historic `it_registry` — one parameter everywhere.
+    // database) or the session default — one parameter everywhere; the
+    // database itself is provisioned by `live_client`.
     let db = live_database();
-    if let Err(e) = client
-        .query(&format!("CREATE DATABASE IF NOT EXISTS {db}"))
-        .execute()
-        .await
-    {
-        // A pre-provisioned or shared test database may already exist (CI
-        // points CLICKHOUSE_DATABASE at one): creation is best-effort.
-        eprintln!("note: could not ensure test database {db}: {e}");
-    }
     client
         .query(&format!(
             "CREATE TABLE IF NOT EXISTS {db}.it_replay_dummy (id UInt32) ENGINE = Memory"
@@ -897,7 +903,7 @@ fn replay_probe_yaml(name: &str) -> String {
 /// parameters, and this writes no operator input.
 #[tokio::test]
 async fn foreign_and_future_rows_land_in_their_skip_buckets() {
-    let Some(client) = live_client() else {
+    let Some(client) = live_client().await else {
         println!("skipping: CLICKHOUSE_URL not set (offline suite)");
         return;
     };
@@ -911,7 +917,7 @@ async fn foreign_and_future_rows_land_in_their_skip_buckets() {
         .await
         .expect("seed own row");
 
-    let Some(client) = live_client() else {
+    let Some(client) = live_client().await else {
         return;
     };
     let foreign = unique_name();
