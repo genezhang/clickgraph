@@ -52,6 +52,42 @@ pub enum BoltValue {
     PackstreamBytes(Vec<u8>),
 }
 
+/// Bolt's Integer is 64-bit signed, as Neo4j's. A `UInt64` above `i64::MAX`
+/// has no Integer: it is sent as the string of its digits, which is exact
+/// (the encoder would wrap it to a negative Integer, or send a Float that
+/// has lost its low digits). HTTP JSON keeps the number.
+///
+/// A Float64 of 2^63 or more is written by ClickHouse as the digits of an
+/// integer (`9300000000000000000`), which JSON reads as a `u64`: it is sent
+/// as the string of the digits of its value too.
+pub(crate) fn integers_exact_in_bolt(value: &mut Value) {
+    exact_at(value, 0);
+}
+
+/// As deep as the packstream encoder goes (`graph_objects`): a deeper value
+/// is not a result a query makes.
+const EXACT_DEPTH: usize = 64;
+
+fn exact_at(value: &mut Value, depth: usize) {
+    match value {
+        Value::Number(n) if n.is_u64() && n.as_i64().is_none() => {
+            let digits = n.to_string();
+            *value = Value::String(digits);
+        }
+        Value::Array(items) if depth < EXACT_DEPTH => {
+            for item in items {
+                exact_at(item, depth + 1);
+            }
+        }
+        Value::Object(map) if depth < EXACT_DEPTH => {
+            for item in map.values_mut() {
+                exact_at(item, depth + 1);
+            }
+        }
+        _ => {}
+    }
+}
+
 impl BoltValue {
     /// Create a BoltValue from a JSON value
     pub fn from_json(value: Value) -> Self {
@@ -527,6 +563,45 @@ impl BoltChunk {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #1516: only a `UInt64` above `i64::MAX` changes; the rest of a value
+    /// is as it was.
+    #[test]
+    fn integers_above_i64_are_their_digits() {
+        // A scalar field (the common case) takes no walk.
+        for (digits, text) in [
+            (u64::MAX, "18446744073709551615"),
+            (9223372036854775808u64, "9223372036854775808"),
+        ] {
+            let mut scalar = serde_json::json!(digits);
+            integers_exact_in_bolt(&mut scalar);
+            assert_eq!(scalar, serde_json::json!(text));
+        }
+        let mut scalar = serde_json::json!(i64::MAX);
+        integers_exact_in_bolt(&mut scalar);
+        assert_eq!(scalar, serde_json::json!(i64::MAX));
+        // A Float64 of 9.3e18 arrives as integer digits (ClickHouse prints
+        // it so): the digits of its value, not a Float (known limitation).
+        let mut float: Value = serde_json::from_str("9300000000000000000").unwrap();
+        integers_exact_in_bolt(&mut float);
+        assert_eq!(float, serde_json::json!("9300000000000000000"));
+        let mut value = serde_json::json!({
+            "big": u64::MAX,
+            "edge": 9223372036854775808u64,
+            "ok": [i64::MAX, i64::MIN, 0, 1.5, "x", null, true],
+            "deep": [[{ "v": 18446744073709551614u64 }]],
+        });
+        integers_exact_in_bolt(&mut value);
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "big": "18446744073709551615",
+                "edge": "9223372036854775808",
+                "ok": [i64::MAX, i64::MIN, 0, 1.5, "x", null, true],
+                "deep": [[{ "v": "18446744073709551614" }]],
+            })
+        );
+    }
 
     #[test]
     fn test_hello_message_creation() {

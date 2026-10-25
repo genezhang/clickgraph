@@ -477,14 +477,17 @@ where
             // Serialize each list element
             for field in message.fields {
                 let field_bytes = match field {
-                    BoltValue::Json(value) => packstream::to_bytes(&value)
-                        .map_err(|e| {
-                            BoltError::invalid_message(format!(
-                                "Failed to serialize field: {:?}",
-                                e
-                            ))
-                        })?
-                        .to_vec(),
+                    BoltValue::Json(mut value) => {
+                        super::messages::integers_exact_in_bolt(&mut value);
+                        packstream::to_bytes(&value)
+                            .map_err(|e| {
+                                BoltError::invalid_message(format!(
+                                    "Failed to serialize field: {:?}",
+                                    e
+                                ))
+                            })?
+                            .to_vec()
+                    }
                     BoltValue::PackstreamBytes(bytes) => bytes,
                 };
                 bytes.extend_from_slice(&field_bytes);
@@ -651,6 +654,66 @@ mod tests {
 
         let _connection = BoltConnection::new(stream, context, config, executor);
         // Verify the connection is created without panics
+    }
+
+    /// #1516: a `UInt64` above `i64::MAX` is sent as the string of its
+    /// digits (the encoder wrapped it to a negative Integer).
+    #[tokio::test]
+    async fn a_record_field_above_i64_is_its_digits() {
+        use crate::executor::{ExecutorError, QueryExecutor};
+        use async_trait::async_trait;
+        use serde_json::{json, Value};
+
+        struct NoExecutor;
+        #[async_trait]
+        impl QueryExecutor for NoExecutor {
+            async fn execute_json(
+                &self,
+                _sql: &str,
+                _role: Option<&str>,
+            ) -> Result<Vec<Value>, ExecutorError> {
+                Ok(vec![])
+            }
+            async fn execute_text(
+                &self,
+                _sql: &str,
+                _fmt: &str,
+                _role: Option<&str>,
+            ) -> Result<String, ExecutorError> {
+                Ok(String::new())
+            }
+        }
+        let connection = BoltConnection::new(
+            MockStream::new(vec![]),
+            Arc::new(Mutex::new(BoltContext::new())),
+            Arc::new(BoltConfig::default()),
+            Arc::new(NoExecutor) as Arc<dyn QueryExecutor>,
+        );
+        let encoded = |value: Value| {
+            connection
+                .serialize_message(BoltMessage::new(
+                    signatures::RECORD,
+                    vec![BoltValue::Json(value)],
+                ))
+                .expect("serialize")
+        };
+        let digits = "18446744073709551615";
+        // The field is a string: STRING_8 (0xD0), its length, its digits.
+        let mut expected = vec![0xD0, digits.len() as u8];
+        expected.extend_from_slice(digits.as_bytes());
+        let bytes = encoded(json!(u64::MAX));
+        assert!(
+            bytes.windows(expected.len()).any(|w| w == expected),
+            "{bytes:02X?}"
+        );
+        // ... also inside a list and a map; and i64::MAX stays an Integer.
+        let nested = encoded(json!({ "a": [u64::MAX, 9223372036854775808u64] }));
+        assert!(
+            nested.windows(expected.len()).any(|w| w == expected),
+            "{nested:02X?}"
+        );
+        let max = encoded(json!(i64::MAX));
+        assert!(max.contains(&0xCB), "{max:02X?}");
     }
 
     #[test]

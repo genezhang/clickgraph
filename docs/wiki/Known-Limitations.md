@@ -283,6 +283,14 @@ Where a schema declares an `edge_id` whose column can be NULL, a relationship is
 
 `count(r)`, `RETURN r.w` and every other per-row read still see both rows. The tables have nothing else to tell such rows apart; give them distinct `edge_id`s to have them be two relationships. Relationships whose `edge_id` is not NULL, and schemas whose `edge_id` cannot be NULL, are not affected. The same holds for any two rows with one id: two node rows with the same id (a composite one with a NULL part included) are one node.
 
+### Bolt: a `UInt64` above 9223372036854775807
+
+**Severity**: LOW
+
+Bolt's Integer is 64-bit signed, as Neo4j's. A `UInt64` value above `9223372036854775807` has none, so over Bolt it is sent as a string of its digits (`'18446744073709551615'`), in a column, a node's or relationship's property, a list or a map; it was sent as `-1` in a column, and as a Float with its low digits lost in a node. HTTP returns the number; the library returns a `Float64` for it. A `Decimal` or `Int128` / `UInt128` value in that range gets the same string over Bolt. A `Float64` of 2^63 or more (`9.3e18`) is written by ClickHouse as the digits of an integer, which no reader tells from a `UInt64`, so over Bolt it is the string of the digits of its value too, not a Float. So the type of a Bolt column can depend on the value: a `UInt64` column is an Integer up to 9223372036854775807 and a string above it (give the client `toString()` or a cast of its own if it needs one type).
+
+Not covered: `Int128` / `UInt128` / `Int256` values, and `Decimal`s, above 18446744073709551615 (or with more fractional digits than a double holds) are read from ClickHouse's JSON as doubles, so over HTTP and over Bolt alike they are Floats that hold the digits a Float holds (`340282366920938463463374607431768211455` is `3.402823669209385e38`).
+
 ### Integration Test Status
 
 **100% Pass Rate (1,378/1,378)**
