@@ -6673,12 +6673,57 @@ fn an_id_of_a_composite_node_as_a_value_is_its_element_id_text() {
             "{q}: the first part alone:\n{got}"
         );
     }
+    // ORDER BY reads the whole text, not the first part.
+    let got = lower("MATCH (a:Acct) RETURN a.owner ORDER BY id(a)");
+    let order = got.split("ORDER BY").nth(1).unwrap_or_default();
+    assert!(
+        order.contains(&text("v0")) && order.contains("v0.num"),
+        "{got}"
+    );
     // NULL where an OPTIONAL MATCH found no node (every part NULL).
     let got = lower("OPTIONAL MATCH (a:Acct) RETURN id(a) AS i");
     assert!(
         got.contains("(o1.v0__bank IS NULL AND o1.v0__num IS NULL) THEN NULL ELSE concat("),
         "{got}"
     );
+}
+
+/// I5a review: a composite `id()` is a text, so a comparison with anything
+/// but another `id()` is refused, not answered: a number (Bolt's) matches no
+/// text, and a text of one label equals another label's. Only `id(a) = id(b)`
+/// and a literal the server decodes (`id(a) = 5`) compare it.
+#[test]
+fn a_composite_id_compares_only_with_another_id() {
+    let refused = |q: &str| {
+        let err = translate_bound_plan(q, &composite_walk_schema(), &ReadOptions::default())
+            .expect_err(q);
+        assert!(
+            err.contains("composite id compared with a value other than another id()"),
+            "{q}: {err}"
+        );
+    };
+    for q in [
+        "MATCH (a:Acct) WHERE id(a) IN $ns RETURN a.owner",
+        "MATCH (a:Acct) WHERE id(a) = $n RETURN a.owner",
+        "MATCH (a:Acct) WHERE $n = id(a) RETURN a.owner",
+        "MATCH (a:Acct) WHERE id(a) <> $n RETURN a.owner",
+        "MATCH (a:Acct) WHERE id(a) >= $n RETURN a.owner",
+        "MATCH (a:Acct) WHERE NOT id(a) IN $ns RETURN a.owner",
+        "MATCH (a:Acct) RETURN id(a) = $n AS e",
+        "MATCH (a:Acct), (b:Acct) WHERE id(a) IN [id(b)] RETURN a.owner",
+        "MATCH (a:Acct) WHERE id(a) = 'x|1' RETURN a.owner",
+    ] {
+        refused(q);
+    }
+    // Another `id()`, and the value in a RETURN item, are lowered.
+    for q in [
+        "MATCH (a:Acct), (b:Acct) WHERE id(a) = id(b) RETURN a.owner",
+        "MATCH (a:Acct), (b:Acct) WHERE id(a) <> id(b) RETURN a.owner",
+        "MATCH (a:Acct) RETURN id(a) AS i, a.owner ORDER BY i",
+    ] {
+        translate_bound_plan(q, &composite_walk_schema(), &ReadOptions::default())
+            .unwrap_or_else(|e| panic!("{q}: {e}"));
+    }
 }
 
 /// S8d: a walk between composite ids joins each step and ties its ends by

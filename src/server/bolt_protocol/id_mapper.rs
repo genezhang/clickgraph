@@ -250,23 +250,35 @@ impl IdMapper {
     /// For simple numeric IDs, use the number directly (if it fits in 47 bits).
     /// For strings/composite keys, use a hash.
     fn compute_id_value_hash(id_part: &str, id_mask: i64) -> i64 {
-        // Check for composite key format "part1|part2"
+        match Self::numeric_key(id_part, id_mask) {
+            Some(numeric_id) => numeric_id.max(1),
+            // A composite key, a string (like "LAX") or a large number.
+            None => Self::hash_string(id_part) & id_mask,
+        }
+    }
+
+    /// The key of an id's text where it is a plain non-negative integer that
+    /// fits `id_mask`: its number holds the key's bits.
+    fn numeric_key(id_part: &str, id_mask: i64) -> Option<i64> {
         if id_part.contains('|') {
-            return Self::hash_string(id_part) & id_mask;
+            return None;
         }
+        id_part
+            .parse::<i64>()
+            .ok()
+            .filter(|n| *n >= 0 && *n <= id_mask)
+    }
 
-        // Try to parse as integer
-        if let Ok(numeric_id) = id_part.parse::<i64>() {
-            // Use the numeric ID directly if it fits in 47 bits
-            if numeric_id >= 0 && numeric_id <= id_mask {
-                return numeric_id.max(1);
-            }
-            // Large number, use hash
-            return Self::hash_string(id_part) & id_mask;
-        }
-
-        // For non-numeric IDs (like "LAX"), use a hash
-        Self::hash_string(id_part) & id_mask
+    /// Whether the number of `element_id` is a hash of its key (a string,
+    /// composite or large one) rather than the key's bits: a hash is read
+    /// back only from the session that gave it (`get_or_assign`,
+    /// [`resolve_node_id`]), the bits from the number alone.
+    pub fn is_hashed(element_id: &str) -> bool {
+        let element_id = element_id.strip_suffix('-').unwrap_or(element_id);
+        let id_part = element_id
+            .find(':')
+            .map_or(element_id, |at| &element_id[at + 1..]);
+        Self::numeric_key(id_part, crate::utils::id_encoding::ID_MASK).is_none()
     }
 
     /// Hash a string to a positive 56-bit value
@@ -539,6 +551,18 @@ pub fn resolve_node_id(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_number_is_a_hash_unless_it_holds_its_keys_bits() {
+        assert!(!IdMapper::is_hashed("User:7-"));
+        assert!(!IdMapper::is_hashed("User:0"));
+        // Strings, composite keys and keys too large for 47 bits.
+        assert!(IdMapper::is_hashed("Airport:LAX-"));
+        assert!(IdMapper::is_hashed("Acct:b|7-"));
+        assert!(IdMapper::is_hashed("User:-3-"));
+        assert!(IdMapper::is_hashed("User:140737488355328-"));
+        assert!(!IdMapper::is_hashed("User:140737488355327-"));
+    }
 
     #[test]
     fn ids_that_differ_in_a_trailing_dash_are_two() {

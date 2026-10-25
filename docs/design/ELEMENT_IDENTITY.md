@@ -31,7 +31,7 @@ several labels and NULL parts. The open issues are where two sites disagree:
 | A several-labels node's id is the arms' common type: a `Variant` (`'01'` reads as `1`; joins of two such Variants fail) | #1390, #1393 |
 | F6 / F7 ignore `edge_id`: parallel relationships share one element id and number; HTTP Graph and embedded dedupe one away | #1334 (#1409) |
 | `id(r) = N` has no decode for relationships | #1410 |
-| `id()` of a composite node as a value is refused | #1387 |
+| `id()` of a composite node as a value is refused (I5a) | #1387 |
 | `id()` across a mixed-label UNION is refused | #1383 |
 | Bolt's static id lookup ignores the session's scope | #1388 |
 | A NULL id part: present for `null_test`, `'null'` in F6, an error in Rust, never equal in F1, dropped by the embedded relation, the union walk and the search | #1354 |
@@ -316,7 +316,16 @@ one of the three.
   node; it was refused. HTTP and the library return the text (a node's `id()`
   is its key, S11l). Bolt numbers it from the element id, as it does a
   single-column node's (`ReturnItemType::IdFunction`), so `id(n)` is the id
-  of the node returned whole and `WHERE id(n) = N` finds it (I6b).
+  of the node returned whole and `WHERE id(n) = N` finds it (I6b). Review:
+  the text compares only with another `id()` (`id(a) = id(b)`) or an integer
+  literal the server decodes; `IN [$n]`, `<> $n`, `> 3` or a string are
+  refused (`Lowerer::composite_id_item`), as a number matches no text and a
+  text of one label equals another's. A hashed key's number (a composite or
+  string key) is assigned in the Bolt session when `RETURN id(n)` gives it
+  (`IdMapper::is_hashed`, `get_or_assign`), as a returned node's is, so
+  `WHERE id(n) = N` reads it back though the node was never returned whole
+  (also for a string key, on main alike). Left: a Decimal part of 16 or more
+  digits, a Float or a FixedString has another text in Rust and SQL (#1528).
 - [ ] **I5b — `id()` across labels** (#1383): `id()` of a node of several
   labels (`MATCH (n) RETURN id(n)`) and of a UNION column whose arms are
   nodes of different labels. Refused today: the key alone is ambiguous

@@ -235,6 +235,21 @@ impl Lowerer<'_> {
         }))
     }
 
+    /// Whether `e` is `id(n)` of a node of a composite id.
+    fn composite_id_item(&self, e: &LogicalExpr) -> bool {
+        let LogicalExpr::ScalarFnCall(f) = e else {
+            return false;
+        };
+        if !f.name.eq_ignore_ascii_case("id") {
+            return false;
+        }
+        let Some(v) = self.entity_arg(&f.args) else {
+            return false;
+        };
+        matches!(self.scans.get(&v), Some(Scan::Node { .. }))
+            && matches!(self.identity(v), Ok(Some(cols)) if cols.len() > 1)
+    }
+
     pub(super) fn identity_value(&self, v: VarId) -> Result<RenderExpr, LowerError> {
         match self.identity(v)? {
             None => Ok(RenderExpr::Literal(Literal::Null)),
@@ -766,6 +781,34 @@ impl Lowerer<'_> {
             };
             if let (Some(a), Some(b)) = (id_of(a), id_of(b)) {
                 return self.identity_comparison(a, b, op.operator == O::Equal);
+            }
+        }
+        // A composite node's `id()` is a text (I5a): compared with a number
+        // (Bolt's, which `id_comparison` above decodes when it is a literal),
+        // with another label's text, or with anything else, it would match
+        // nothing or the wrong node. Only `id(a) = id(b)` compares it.
+        if matches!(
+            op.operator,
+            O::Equal
+                | O::NotEqual
+                | O::LessThan
+                | O::LessThanEqual
+                | O::GreaterThan
+                | O::GreaterThanEqual
+                | O::In
+                | O::NotIn
+        ) {
+            let listed = op.operands.iter().flat_map(|e| match e {
+                LogicalExpr::List(xs) => xs.iter().collect::<Vec<_>>(),
+                e => vec![e],
+            });
+            for e in listed {
+                if self.composite_id_item(e) {
+                    return unsupported(
+                        "id() of a node with a composite id compared with a value other than \
+                         another id()",
+                    );
+                }
             }
         }
         // `p IS [NOT] NULL` of a path of the relation: NULL where an
