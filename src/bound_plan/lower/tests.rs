@@ -10056,4 +10056,19 @@ graph_schema:
     let got = sql("MATCH (a)-[r1:K]->(b)-[r2:K]->(c) RETURN count(*) AS c");
     assert!(got.contains("v1.eid <> v3.eid"), "{got}");
     assert!(!got.contains("isNotDistinctFrom"), "{got}");
+    // A union of types: its identity past its definition NULL-safely,
+    // two-valued (review).
+    let got = sql("MATCH (x)-[r1:E|K]->(y), (x)-[r2:E|K]->(y) RETURN count(*) AS c");
+    assert!(got.contains("NOT (isNotDistinctFrom("), "{got}");
+    let got = sql("MATCH (x)-[r1:E|K]->(y) MATCH (x)-[r2:E|K]->(y) RETURN r1 = r2 AS s");
+    assert!(got.contains("(isNotDistinctFrom("), "{got}");
+    assert!(!got.contains(" IS NULL AND "), "{got}");
+    // An OPTIONAL MATCH after it joins on its properties too (two with a
+    // NULL `edge_id` and the same ends are one).
+    let got =
+        sql("MATCH (a)-[r:E]->(b) OPTIONAL MATCH (b)-[s:K]->(c) WHERE s.w > r.w RETURN r.w, s.w");
+    assert!(
+        got.contains("(w1.p2_v1_w = o3.p2_v1_w OR (w1.p2_v1_w IS NULL AND o3.p2_v1_w IS NULL))"),
+        "{got}"
+    );
 }

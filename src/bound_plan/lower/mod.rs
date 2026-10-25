@@ -2723,10 +2723,14 @@ impl<'s> Lowerer<'s> {
             // Joined on the identity. A node's or an `edge_id`
             // relationship's other columns depend on it; a relationship
             // identified by its endpoints can have parallel edges with other
-            // properties, so it also joins on those `D` holds (NULL-safely).
+            // properties, so it also joins on those `D` holds (NULL-safely);
+            // so does one whose `edge_id` may be NULL (I6d: two with a NULL
+            // one and the same ends are one, of other properties).
+            let ends_identify =
+                |rs: &RelationshipSchema| rs.edge_id.is_none() || rs.edge_id_nullable();
             let by_ends = match &scan {
-                Scan::Rel { schema, .. } => schema.edge_id.is_none(),
-                Scan::Rels { arms, .. } => arms.iter().any(|a| a.schema.edge_id.is_none()),
+                Scan::Rel { schema, .. } => ends_identify(schema),
+                Scan::Rels { arms, .. } => arms.iter().any(|a| ends_identify(a.schema)),
                 _ => false,
             };
             if by_ends {
@@ -6485,9 +6489,32 @@ impl<'s> Lowerer<'s> {
             self.definition_identity(a, &texts)?,
             self.definition_identity(b, &texts)?,
         );
+        // Where an `edge_id` part may be NULL in a relationship, its parts
+        // NULL-safely (I6d): the SQL as before otherwise.
+        let nullable = self.nullable_edge_id(a, b);
         Ok(Some(or_all(
-            ia.into_iter().zip(ib).map(|(x, y)| differ(x, y)).collect(),
+            ia.into_iter()
+                .zip(ib)
+                .enumerate()
+                .map(|(i, (x, y))| match nullable && i >= 3 {
+                    true => RenderExpr::OperatorApplicationExp(OperatorApplication {
+                        operator: Operator::Not,
+                        operands: vec![same_part(x, y, true)],
+                    }),
+                    false => differ(x, y),
+                })
+                .collect(),
         )))
+    }
+
+    /// Whether a definition relationship `a` or `b` can be of has an
+    /// `edge_id` that may be NULL (I6d): their identities then compare
+    /// NULL-safely past their definitions.
+    pub(super) fn nullable_edge_id(&self, a: VarId, b: VarId) -> bool {
+        self.definitions(a)
+            .into_iter()
+            .chain(self.definitions(b))
+            .any(|d| d.edge_id_nullable())
     }
 
     /// Identity part `i` of union of relationships `r` as a walk over one of
@@ -8204,8 +8231,10 @@ impl<'s> Lowerer<'s> {
         for (_, scan) in &exports.scans {
             let raw = match scan {
                 Scan::Node { .. } => true,
+                // Identified by its ends (or with them, where its `edge_id`
+                // may be NULL, I6d): its other columns do not follow.
                 Scan::Rel { schema, .. } => {
-                    if schema.edge_id.is_none() {
+                    if schema.edge_id.is_none() || schema.edge_id_nullable() {
                         continue;
                     }
                     true

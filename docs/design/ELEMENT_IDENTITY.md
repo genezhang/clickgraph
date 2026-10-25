@@ -288,7 +288,11 @@ one of the three.
   parts after the ends), list tuples (`Layout::identity_slots`; the element
   id's text from `edge_slots`), and the `edge_id` parts are compared
   NULL-safely (`identity_nullable` / `elem_nullable` of a relationship,
-  uniqueness of one MATCH's relationships). Its element id spells the
+  uniqueness of one MATCH's relationships, and a union's identity past its
+  definition: `union_differs`, `defined_identity_comparison`, two-valued);
+  joined on its properties too where read again (`drive_correlation`'s
+  `by_ends`), and its properties in a re-read's sort keys (`tie_breaks`), as
+  a relationship of ends is. Its element id spells the
   `edge_id` alone. Live: 41 queries against Neo4j holding the same
   relationships agree but for two that are not identity (a union walk's
   `relationships(p)` comprehension, refused on main too; a pattern
