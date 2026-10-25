@@ -22,7 +22,7 @@ use tower::ServiceExt; // for `oneshot`
 use clickgraph::config::ServerConfig;
 use clickgraph::executor::{ExecutorError, QueryExecutor};
 use clickgraph::server::graph_catalog;
-use clickgraph::server::schema_registry::{ClickhouseSchemaStore, SchemaStore};
+use clickgraph::server::schema_registry::{ClickhouseSchemaStore, SchemaStore, REGISTRY_TABLE};
 use clickgraph::server::{build_router, AppState};
 
 // ------------------------------------------------------------- test plumbing
@@ -90,7 +90,15 @@ fn test_state(config: ServerConfig) -> AppState {
         // No client in this mode, so the shared store is `Off` however the
         // config flag is set (same rule `run_server` applies).
         schema_store: Arc::new(SchemaStore::Off),
+        schema_registry_gate: Arc::new(tokio::sync::Mutex::new(())),
     }
+}
+
+/// The database live tests create their probe tables (and their registry
+/// rows) in: `CLICKHOUSE_DATABASE`, so CI can point the whole tier at its
+/// own dedicated database instead of a fixed name.
+fn live_database() -> String {
+    std::env::var("CLICKHOUSE_DATABASE").unwrap_or_else(|_| "it_registry".to_string())
 }
 
 async fn body_string(resp: axum::response::Response) -> String {
@@ -109,12 +117,13 @@ fn tiny_yaml(name: &str) -> String {
          graph_schema:\n\
          \x20 nodes:\n\
          \x20   - label: Doc\n\
-         \x20     database: it_registry\n\
+         \x20     database: {}\n\
          \x20     table: it_dummy_table\n\
          \x20     node_id: id\n\
          \x20     property_mappings:\n\
          \x20       id: id\n\
-         \x20 edges: []"
+         \x20 edges: []",
+        live_database()
     )
 }
 
@@ -332,6 +341,119 @@ async fn delete_unknown_name_stays_404_in_clickhouse_mode_without_client() {
     assert_eq!(keys, vec!["error"], "404 body: {body}");
 }
 
+// ------------------------------------------ reserved names / optional role
+
+/// Reserved names answer 400 at the door — before the gate, before the
+/// registries, before anything else: the routes (`load`) and the CLI's
+/// introspection workflow (`draft`, `introspect`, `discover-prompt`) own
+/// these spellings.
+#[tokio::test]
+async fn reserved_schema_names_answer_400_before_anything_else() {
+    ensure_global_schemas().await;
+    let config = config_with(clickgraph::config::SchemaPersistenceMode::Off);
+    let router = build_router(test_state(config), &ServerConfig::default());
+
+    for name in ["load", "draft", "introspect", "discover-prompt"] {
+        let resp = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/schemas/load")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({
+                            "schema_name": name,
+                            "config_content": tiny_yaml(&name),
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .expect("router answers");
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "name: {name}");
+        let body: Value = serde_json::from_str(&body_string(resp).await).expect("json");
+        let keys: Vec<&String> = body.as_object().expect("object").keys().collect();
+        assert_eq!(keys, vec!["error"], "400 body for {name}: {body}");
+        assert!(
+            body["error"].as_str().expect("string").contains("reserved"),
+            "body must say why: {body}"
+        );
+        // Nothing registered behind the refusal.
+        assert!(
+            graph_catalog::get_graph_schema_by_name(name).await.is_err(),
+            "a reserved name must not become reachable"
+        );
+    }
+}
+
+/// `role` rides on both durability endpoints — body field on the POST,
+/// query parameter on the DELETE. Offline the shape is all that can be
+/// pinned: the fields parse, the response contract is unchanged (no
+/// client → `persisted: false`; off mode → no trailing field at all even
+/// with a role), and the DELETE's body stays the pre-feature shape.
+#[tokio::test]
+async fn optional_role_is_accepted_on_both_endpoints() {
+    ensure_global_schemas().await;
+    let name = unique_name();
+
+    let config = config_with(clickgraph::config::SchemaPersistenceMode::Clickhouse);
+    let router = build_router(test_state(config.clone()), &config);
+    let resp = router
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/schemas/load")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "schema_name": name,
+                        "config_content": tiny_yaml(&name),
+                        "role": "schema_writer",
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .expect("router answers");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body: Value = serde_json::from_str(&body_string(resp).await).expect("json body");
+    assert_eq!(
+        body["persisted"], false,
+        "no client in this mode: role cannot fix it: {body}"
+    );
+    graph_catalog::remove_schema(&name).await.expect("cleanup");
+
+    let config = config_with(clickgraph::config::SchemaPersistenceMode::Off);
+    let router = build_router(test_state(config), &ServerConfig::default());
+    graph_catalog::load_schema_from_content(&name, &tiny_yaml(&name), None, false)
+        .await
+        .expect("registers without a client");
+    let resp = router
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/schemas/{name}?role=schema_writer"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("router answers");
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "DELETE body: {}",
+        body_string(resp).await
+    );
+    let body: Value = serde_json::from_str(&body_string(resp).await).expect("json body");
+    assert!(
+        body.get("persisted").is_none(),
+        "off mode must not add the field even with a role: {body}"
+    );
+}
+
 // ------------------------------------------------------- live ClickHouse tier
 
 fn live_client() -> Option<clickhouse::Client> {
@@ -361,7 +483,7 @@ async fn store_round_trips_against_live_clickhouse() {
     let name = unique_name();
 
     store
-        .save_yaml(&name, "name: roundtrip\nnodes: {}")
+        .save_yaml(&name, "name: roundtrip\nnodes: {}", None)
         .await
         .expect("save");
 
@@ -381,7 +503,7 @@ async fn store_round_trips_against_live_clickhouse() {
     assert!(mine.registered_at_ms > 0);
     assert!(fetch.total_rows >= 1, "count must cover the saved row");
 
-    store.delete(&name).await.expect("delete");
+    store.delete(&name, None).await.expect("delete");
     let fetch = store
         .load_replay_rows(usize::MAX, u64::MAX)
         .await
@@ -406,11 +528,11 @@ async fn replay_fetch_is_bounded_by_the_row_budget() {
     let name_b = unique_name();
 
     store
-        .save_yaml(&name_a, "name: bounds-a\nnodes: {}")
+        .save_yaml(&name_a, "name: bounds-a\nnodes: {}", None)
         .await
         .expect("seed a");
     store
-        .save_yaml(&name_b, "name: bounds-b\nnodes: {}")
+        .save_yaml(&name_b, "name: bounds-b\nnodes: {}", None)
         .await
         .expect("seed b");
 
@@ -426,8 +548,8 @@ async fn replay_fetch_is_bounded_by_the_row_budget() {
         fetch.total_rows
     );
 
-    store.delete(&name_a).await.expect("cleanup a");
-    store.delete(&name_b).await.expect("cleanup b");
+    store.delete(&name_a, None).await.expect("cleanup a");
+    store.delete(&name_b, None).await.expect("cleanup b");
 }
 
 /// The byte budget bounds the fetch itself: whatever rows come back, their
@@ -450,8 +572,14 @@ async fn replay_fetch_is_bounded_by_the_byte_budget() {
     let payload_a = "name: bytes-a\nnodes: {}";
     let payload_b = format!("name: bytes-b\nnodes: {{}}\n# {}", "x".repeat(64_000));
 
-    store.save_yaml(&name_a, payload_a).await.expect("seed a");
-    store.save_yaml(&name_b, &payload_b).await.expect("seed b");
+    store
+        .save_yaml(&name_a, payload_a, None)
+        .await
+        .expect("seed a");
+    store
+        .save_yaml(&name_b, &payload_b, None)
+        .await
+        .expect("seed b");
 
     let full = store
         .load_replay_rows(usize::MAX, u64::MAX)
@@ -505,8 +633,8 @@ async fn replay_fetch_is_bounded_by_the_byte_budget() {
     //    ordinary replay path reads them).
     assert!(full.restorable.iter().any(|r| r.name == name_b));
 
-    store.delete(&name_a).await.expect("cleanup a");
-    store.delete(&name_b).await.expect("cleanup b");
+    store.delete(&name_a, None).await.expect("cleanup a");
+    store.delete(&name_b, None).await.expect("cleanup b");
 }
 
 /// The advertised remedy for a row that failed boot replay: `DELETE
@@ -527,7 +655,7 @@ async fn delete_retires_a_store_only_row() {
     // Seeded directly through the store: exactly the state a row that
     // failed replay leaves behind — in the store, not in memory.
     store
-        .save_yaml(&name, "name: store-only\nnodes: {}")
+        .save_yaml(&name, "name: store-only\nnodes: {}", None)
         .await
         .expect("seed");
     assert!(
@@ -550,6 +678,7 @@ async fn delete_retires_a_store_only_row() {
         schema_store: Arc::new(SchemaStore::Clickhouse(Box::new(
             ClickhouseSchemaStore::new(client.clone()),
         ))),
+        schema_registry_gate: Arc::new(tokio::sync::Mutex::new(())),
     };
     let router = build_router(app_state, &config);
 
@@ -611,18 +740,29 @@ async fn boot_replay_restores_persisted_rows_and_shadows_registered_ones() {
     // The restore path runs the full live load (auto-discovery through the
     // ClickHouse client), so both YAMLs' tables must actually exist: the
     // pre-registration's `it_dummy_table` and the seeded rows' probe table.
-    client
-        .query("CREATE DATABASE IF NOT EXISTS it_registry")
+    // Everything is created in `CLICKHOUSE_DATABASE` (CI's dedicated
+    // database) or the historic `it_registry` — one parameter everywhere.
+    let db = live_database();
+    if let Err(e) = client
+        .query(&format!("CREATE DATABASE IF NOT EXISTS {db}"))
         .execute()
         .await
-        .expect("test database");
+    {
+        // A pre-provisioned or shared test database may already exist (CI
+        // points CLICKHOUSE_DATABASE at one): creation is best-effort.
+        eprintln!("note: could not ensure test database {db}: {e}");
+    }
     client
-        .query("CREATE TABLE IF NOT EXISTS it_registry.it_replay_dummy (id UInt32) ENGINE = Memory")
+        .query(&format!(
+            "CREATE TABLE IF NOT EXISTS {db}.it_replay_dummy (id UInt32) ENGINE = Memory"
+        ))
         .execute()
         .await
         .expect("probe table");
     client
-        .query("CREATE TABLE IF NOT EXISTS it_registry.it_dummy_table (id UInt32) ENGINE = Memory")
+        .query(&format!(
+            "CREATE TABLE IF NOT EXISTS {db}.it_dummy_table (id UInt32) ENGINE = Memory"
+        ))
         .execute()
         .await
         .expect("probe table (tiny_yaml's)");
@@ -650,12 +790,16 @@ async fn boot_replay_restores_persisted_rows_and_shadows_registered_ones() {
 
     // Both rows seeded as a previous process would have left them.
     store
-        .save_yaml(&shadowed_name, &replay_probe_yaml(shadowed_name.as_str()))
+        .save_yaml(
+            &shadowed_name,
+            &replay_probe_yaml(shadowed_name.as_str()),
+            None,
+        )
         .await
         .expect("seed shadowed row");
     let restored_name = unique_name();
     store
-        .save_yaml(&restored_name, &replay_probe_yaml(&restored_name))
+        .save_yaml(&restored_name, &replay_probe_yaml(&restored_name), None)
         .await
         .expect("seed restore row");
 
@@ -667,6 +811,7 @@ async fn boot_replay_restores_persisted_rows_and_shadows_registered_ones() {
         query_semaphore: None,
         pool: None,
         schema_store: store.clone(),
+        schema_registry_gate: Arc::new(tokio::sync::Mutex::new(())),
     };
     clickgraph::server::schema_registry::replay(&app_state, &config).await;
 
@@ -700,19 +845,19 @@ async fn boot_replay_restores_persisted_rows_and_shadows_registered_ones() {
 
     // Cleanup: store rows must not leak into later live runs' replay, and
     // memory gets back to roughly what it had.
-    store.delete(&shadowed_name).await.expect("delete a");
-    store.delete(&restored_name).await.expect("delete b");
+    store.delete(&shadowed_name, None).await.expect("delete a");
+    store.delete(&restored_name, None).await.expect("delete b");
     let _ = graph_catalog::remove_schema(&shadowed_name).await;
     let _ = graph_catalog::remove_schema(&restored_name).await;
     // The probe tables themselves: repeated live runs used to accumulate
     // them in the shared test database. Drop after use — the next run's
     // CREATE TABLE IF NOT EXISTS re-creates what it needs.
     let _ = client
-        .query("DROP TABLE IF EXISTS it_registry.it_replay_dummy")
+        .query(&format!("DROP TABLE IF EXISTS {db}.it_replay_dummy"))
         .execute()
         .await;
     let _ = client
-        .query("DROP TABLE IF EXISTS it_registry.it_dummy_table")
+        .query(&format!("DROP TABLE IF EXISTS {db}.it_dummy_table"))
         .execute()
         .await;
 }
@@ -727,11 +872,112 @@ fn replay_probe_yaml(name: &str) -> String {
          graph_schema:\n\
          \x20 nodes:\n\
          \x20   - label: Doc\n\
-         \x20     database: it_registry\n\
+         \x20     database: {}\n\
          \x20     table: it_replay_dummy\n\
          \x20     node_id: id\n\
          \x20     property_mappings:\n\
          \x20       id: id\n\
-         \x20 edges: []"
+         \x20 edges: []",
+        live_database()
     )
+}
+
+/// The replay gate is load-bearing, not decorative (spec Testing §2): rows
+/// written by another tool (`source != api-load`) and rows written by a
+/// newer server (`registry_version > this one`) must land in their skip
+/// buckets — never restored, never guessed at. The foreign rows are seeded
+/// with raw INSERTs, exactly how an operator's hand-edit or another
+/// build's write leaves the table a restart then reads; `gate_for_replay`
+/// reduced to a pass-through turns THIS test red in the live tier (CI runs
+/// it with ClickHouse up).
+///
+/// The seeded literals are test-owned tokens (a `unique_name()` is digits,
+/// underscores and a fixed prefix — no quotes, no slashes), so inlining
+/// them in the INSERT is safe; operator input goes through bound
+/// parameters, and this writes no operator input.
+#[tokio::test]
+async fn foreign_and_future_rows_land_in_their_skip_buckets() {
+    let Some(client) = live_client() else {
+        println!("skipping: CLICKHOUSE_URL not set (offline suite)");
+        return;
+    };
+
+    let store = SchemaStore::Clickhouse(Box::new(ClickhouseSchemaStore::new(client)));
+    // Our own row, written the way the feature writes it (this also
+    // ensures the table exists for the raw INSERTs below).
+    let mine = unique_name();
+    store
+        .save_yaml(&mine, "name: bucket-mine\nnodes: {}", None)
+        .await
+        .expect("seed own row");
+
+    let Some(client) = live_client() else {
+        return;
+    };
+    let foreign = unique_name();
+    let future = unique_name();
+    let seed_ms = 1u64; // old: last in every same-budget replay order, first under any truncation
+    client
+        .query(&format!(
+            "INSERT INTO {REGISTRY_TABLE} \
+             (name, source, format, payload, registry_version, registered_at_ms) \
+             VALUES ('{foreign}', 'operator-handwrite', 'yaml', \
+             'hand-written rows are never guessed at', 1, {seed_ms})"
+        ))
+        .execute()
+        .await
+        .expect("seed foreign row");
+    client
+        .query(&format!(
+            "INSERT INTO {REGISTRY_TABLE} \
+             (name, source, format, payload, registry_version, registered_at_ms) \
+             VALUES ('{future}', 'api-load', 'yaml', \
+             'rows from a newer server are never guessed at', 2, {seed_ms})"
+        ))
+        .execute()
+        .await
+        .expect("seed future row");
+
+    let fetch = store
+        .load_replay_rows(usize::MAX, u64::MAX)
+        .await
+        .expect("read");
+    assert!(
+        fetch.restorable.iter().any(|r| r.name == mine),
+        "the feature's own row restores"
+    );
+    assert!(
+        !fetch
+            .restorable
+            .iter()
+            .any(|r| r.name == foreign || r.name == future),
+        "neither a foreign nor a future row may ever restore"
+    );
+    assert!(
+        fetch
+            .unknown_source
+            .iter()
+            .any(|r| r.name == foreign && r.source == "operator-handwrite"),
+        "the foreign row lands in the unknown-source bucket"
+    );
+    assert!(
+        fetch
+            .future_versioned
+            .iter()
+            .any(|r| r.name == future && r.registry_version == 2),
+        "the future row lands in its bucket with its version visible"
+    );
+
+    // Cleanup: all three rows gone — DELETE purges foreign/future rows too
+    // (the store-level delete matches the name, not the bucket).
+    store.delete(&mine, None).await.expect("cleanup mine");
+    store.delete(&foreign, None).await.expect("cleanup foreign");
+    store.delete(&future, None).await.expect("cleanup future");
+    let fetch = store
+        .load_replay_rows(usize::MAX, u64::MAX)
+        .await
+        .expect("read back");
+    assert!(fetch.restorable.iter().all(|r| r.name != mine));
+    assert!(fetch.unknown_source.iter().all(|r| r.name != foreign));
+    assert!(fetch.future_versioned.iter().all(|r| r.name != future));
 }

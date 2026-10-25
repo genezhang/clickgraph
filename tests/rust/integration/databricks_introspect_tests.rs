@@ -95,6 +95,10 @@ fn databricks_state(server: &MockServer, catalog: Option<&str>) -> (AppState, Se
         config: config.clone(),
         query_semaphore: None,
         pool: None,
+        // No client in this mode, so the registry store is `Off` however the
+        // config flag is set (same rule `run_server` applies).
+        schema_store: std::sync::Arc::new(clickgraph::server::schema_registry::SchemaStore::Off),
+        schema_registry_gate: std::sync::Arc::new(tokio::sync::Mutex::new(())),
     };
     (state, config)
 }

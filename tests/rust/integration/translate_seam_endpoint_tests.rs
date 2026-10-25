@@ -57,6 +57,7 @@ fn test_state() -> AppState {
         // would build it); this suite never touches the endpoints that
         // reach into it.
         schema_store: std::sync::Arc::new(clickgraph::server::schema_registry::SchemaStore::Off),
+        schema_registry_gate: Arc::new(tokio::sync::Mutex::new(())),
     }
 }
 
