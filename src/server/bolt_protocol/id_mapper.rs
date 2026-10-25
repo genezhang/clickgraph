@@ -200,7 +200,7 @@ impl IdMapper {
     ///
     /// Format: "Label:id_value" or "Label:part1|part2" for composite keys
     ///
-    /// Encodes the label in the high 8 bits and the id hash in the lower 56 bits.
+    /// Encodes the label's code in the high 6 bits (of 53) and the key's bits or a hash in the lower 47.
     /// This ensures "User:1" and "Post:1" have different IDs.
     ///
     /// This is a public static method so result_transformer can use it as the single
@@ -209,11 +209,6 @@ impl IdMapper {
         // JavaScript's MAX_SAFE_INTEGER is 2^53 - 1 = 9007199254740991
         // We use 6 bits for label (64 labels) + 47 bits for id (140 trillion)
         // Total: 53 bits, safely within JavaScript's precision
-        const LABEL_BITS: u32 = 6;
-        const ID_BITS: u32 = 47;
-        const ID_MASK: i64 = (1i64 << ID_BITS) - 1; // 0x7FFFFFFFFFFF (47 bits)
-        const MAX_LABEL_CODE: u8 = (1 << LABEL_BITS) - 1; // 63
-
         // Strip the trailing `-` Neo4j-Browser-compat sentinel so the id_value
         // portion stays the unadorned id (e.g., `"User:1-"` → label `User`,
         // id_value `1`, not `"1-"`). Without this strip, a numeric id like `1`
@@ -230,20 +225,48 @@ impl IdMapper {
             ("", element_id)
         };
 
-        // Get or assign a label code (0-63)
-        let label_code = if let Ok(mut registry) = LABEL_CODE_REGISTRY.write() {
-            registry.get_or_assign(label).min(MAX_LABEL_CODE)
-        } else {
-            0 // Fallback if lock fails
-        };
+        // Get or assign a label code (1-255; the number has room for 63)
+        Self::number_of(Self::label_code(label).unwrap_or(0), label, id_part)
+    }
 
+    /// The code of `label` (1-255), assigned when it is new. A known label
+    /// takes the registry's read lock only: every number of every row asks.
+    fn label_code(label: &str) -> Option<u8> {
+        if let Some(code) = LABEL_CODE_REGISTRY
+            .read()
+            .ok()
+            .and_then(|registry| registry.get_code(label))
+        {
+            return Some(code);
+        }
+        LABEL_CODE_REGISTRY
+            .write()
+            .ok()
+            .map(|mut registry| registry.get_or_assign(label))
+    }
+
+    /// The number of the node of `label` (whose code is `raw_code`) whose
+    /// key's text is `id_part`. A label past the 63rd shares code 63 with
+    /// the rest, so its number is a hash of the label and the key, which
+    /// keeps two such labels' equal keys apart (it is kept in the session
+    /// when it is given: [`IdMapper::holds_key_bits`]).
+    fn number_of(raw_code: u8, label: &str, id_part: &str) -> i64 {
+        const ID_BITS: u32 = 47;
+        const ID_MASK: i64 = (1i64 << ID_BITS) - 1;
+        let label_code = raw_code.min(Self::MAX_LABEL_CODE);
         // Compute the id_value (47 bits)
-        let id_value = Self::compute_id_value_hash(id_part, ID_MASK);
-
+        let id_value = if raw_code > Self::MAX_LABEL_CODE {
+            Self::hash_string(&format!("{label}:{id_part}")) & ID_MASK
+        } else {
+            Self::compute_id_value_hash(id_part, ID_MASK)
+        };
         // Combine: label_code in high 6 bits, id_value in low 47 bits
         let combined = ((label_code as i64) << ID_BITS) | (id_value & ID_MASK);
         combined.max(1)
     }
+
+    /// The largest label code a number holds (6 bits).
+    const MAX_LABEL_CODE: u8 = (1 << 6) - 1; // 63
 
     /// Compute a 47-bit value for the id_value portion
     ///
@@ -251,14 +274,16 @@ impl IdMapper {
     /// For strings/composite keys, use a hash.
     fn compute_id_value_hash(id_part: &str, id_mask: i64) -> i64 {
         match Self::numeric_key(id_part, id_mask) {
-            Some(numeric_id) => numeric_id.max(1),
+            Some(numeric_id) => numeric_id,
             // A composite key, a string (like "LAX") or a large number.
             None => Self::hash_string(id_part) & id_mask,
         }
     }
 
-    /// The key of an id's text where it is a plain non-negative integer that
-    /// fits `id_mask`: its number holds the key's bits.
+    /// The key of an id's text where it is a non-negative integer in its
+    /// plain decimal spelling that fits `id_mask`: its number holds the
+    /// key's bits (key `0` is the label's code alone: the number is never
+    /// less than 1). `007` and `+7` are not `7`, so each of them is a hash.
     fn numeric_key(id_part: &str, id_mask: i64) -> Option<i64> {
         if id_part.contains('|') {
             return None;
@@ -266,7 +291,7 @@ impl IdMapper {
         id_part
             .parse::<i64>()
             .ok()
-            .filter(|n| *n >= 0 && *n <= id_mask)
+            .filter(|n| *n >= 0 && *n <= id_mask && n.to_string() == id_part)
     }
 
     /// Whether the number of `element_id` is a hash of its key (a string,
@@ -295,6 +320,11 @@ impl IdMapper {
         let Some((label, _)) = element_id.split_once(':') else {
             return false;
         };
+        // A label past the 63rd has no code of its own to read the number by.
+        let raw_code = Self::label_code(label).unwrap_or(u8::MAX);
+        if raw_code > Self::MAX_LABEL_CODE {
+            return false;
+        }
         schema.node_schema(label).is_ok_and(|node| {
             matches!(
                 node.node_id.dtype,
@@ -589,10 +619,38 @@ mod tests {
         );
     }
 
+    /// I4b-a: keys the number cannot tell apart are hashed, not squeezed
+    /// into one number: `0` and `1`, and `7`, `007` and `+7`.
+    #[test]
+    fn keys_with_one_number_each() {
+        let number = |key: &str| IdMapper::number_of(1, "L", key);
+        let keys = ["0", "1", "7", "007", "+7", "-7", "10", "010"];
+        // Key 0 is the label's code alone, apart from key 1.
+        assert_eq!(IdMapper::number_of(1, "L", "0"), 1 << 47);
+        let numbers: std::collections::BTreeSet<i64> = keys.iter().map(|k| number(k)).collect();
+        assert_eq!(numbers.len(), keys.len());
+        for key in ["007", "+7", "-7", "010"] {
+            assert!(IdMapper::is_hashed(&format!("L:{key}-")), "{key}");
+        }
+        for key in ["0", "1", "7", "10"] {
+            assert!(!IdMapper::is_hashed(&format!("L:{key}-")), "{key}");
+        }
+        // A label of a code past 63 is hashed with its name, whatever the key.
+        let (a, b) = (
+            IdMapper::number_of(64, "Past1", "1"),
+            IdMapper::number_of(65, "Past2", "1"),
+        );
+        assert_ne!(a, b);
+        assert_eq!(a >> 47, 63);
+        assert_ne!(a, IdMapper::number_of(63, "Last", "1"));
+    }
+
     #[test]
     fn a_number_is_a_hash_unless_it_holds_its_keys_bits() {
         assert!(!IdMapper::is_hashed("User:7-"));
+        // `0` is the label's code alone (its number was 1's); `007` is no `7`.
         assert!(!IdMapper::is_hashed("User:0"));
+        assert!(IdMapper::is_hashed("User:007-"));
         // Strings, composite keys and keys too large for 47 bits.
         assert!(IdMapper::is_hashed("Airport:LAX-"));
         assert!(IdMapper::is_hashed("Acct:b|7-"));
