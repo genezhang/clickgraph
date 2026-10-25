@@ -1388,16 +1388,13 @@ pub(super) fn edge_arity(edge: &RelationshipSchema) -> usize {
 }
 
 fn edge_identity(edge: &RelationshipSchema) -> Identifier {
-    edge.edge_id.clone().unwrap_or_else(|| {
-        Identifier::Composite(
-            edge.from_id
-                .columns()
-                .into_iter()
-                .chain(edge.to_id.columns())
-                .map(|c| c.to_string())
-                .collect(),
-        )
-    })
+    // With its ends where its `edge_id` may be NULL (I6d).
+    let cols = edge.identity_columns();
+    match (&edge.edge_id, cols.as_slice()) {
+        (Some(id), _) if !edge.edge_id_nullable() => id.clone(),
+        (_, [one]) => Identifier::Single(one.to_string()),
+        _ => Identifier::Composite(cols.into_iter().map(str::to_string).collect()),
+    }
 }
 
 /// `NOT has(path.path_edges, edge)`: the path does not use the relationship.

@@ -84,7 +84,9 @@ use std::sync::Arc;
 
 use crate::graph_catalog::config::Identifier;
 use crate::graph_catalog::expression_parser::PropertyValue;
-use crate::graph_catalog::graph_schema::{GraphSchema, NodeSchema, RelationshipSchema};
+use crate::graph_catalog::graph_schema::{
+    GraphSchema, IdentityPart, NodeSchema, RelationshipSchema,
+};
 use crate::graph_catalog::schema_types::{KeyPartType, TextSpelling};
 use crate::render_plan::render_expr::{
     visit_render_expr_mut, ColumnAlias, Literal, MutVisit, Operator, OperatorApplication,
@@ -1094,11 +1096,15 @@ impl Lowerer<'_> {
             if !seen.insert(std::ptr::from_ref(arm.schema)) {
                 continue;
             }
+            // Its parts' identity columns: first, or after its ends where
+            // its `edge_id` may be NULL (I6d).
+            let at = arm.schema.identity_columns().len() - id.columns().len();
             let parts = id
                 .columns()
                 .iter()
                 .enumerate()
-                .map(|(i, c)| {
+                .map(|(k, c)| {
+                    let i = at + k;
                     let e = self.physical(v, &indexed_column(REL_ID, i))?;
                     Ok(render_expr_to_sql_plain(&self.own_identity_part(
                         arms,
@@ -1246,17 +1252,11 @@ impl Lowerer<'_> {
             return texts;
         }
         for rs in arms.iter().map(|a| a.schema) {
-            if rs.edge_id.is_some() {
-                continue;
-            }
-            let from = rs.from_id.columns().len();
-            for (i, text) in texts
-                .iter_mut()
-                .enumerate()
-                .take(from + rs.to_id.columns().len())
-            {
-                let part = if i < from { i } else { i - from };
-                *text |= self.held_as_text(part);
+            for (i, text) in texts.iter_mut().enumerate() {
+                if let Some(IdentityPart::From(part) | IdentityPart::To(part)) = rs.identity_part(i)
+                {
+                    *text |= self.held_as_text(part);
+                }
             }
         }
         texts
@@ -1285,15 +1285,10 @@ fn identity_part_types<'a>(arms: &[RelArm<'a>], i: usize) -> Vec<&'a KeyPartType
     arms.iter()
         .filter_map(|a| {
             let rs = a.schema;
-            match &rs.edge_id {
-                Some(id) => id.columns().get(i).and_then(|c| rs.column_types.get(*c)),
-                None => {
-                    let from = rs.from_id.columns().len();
-                    match i < from {
-                        true => rs.from_node_id_part_types.get(i),
-                        false => rs.to_node_id_part_types.get(i - from),
-                    }
-                }
+            match rs.identity_part(i)? {
+                IdentityPart::Edge(c) => rs.column_types.get(c),
+                IdentityPart::From(j) => rs.from_node_id_part_types.get(j),
+                IdentityPart::To(j) => rs.to_node_id_part_types.get(j),
             }
         })
         .filter(|t| !t.raw.is_empty())
@@ -1750,11 +1745,8 @@ fn rel_union_shape(arms: &[RelArm]) -> Result<RelUnionShape, LowerError> {
             a.schema.from_id.columns().len(),
             a.schema.to_id.columns().len(),
         );
-        let identity = a
-            .schema
-            .edge_id
-            .as_ref()
-            .map_or(f + t, |id| id.columns().len());
+        // Its ends and `edge_id` where that may be NULL (I6d).
+        let identity = a.schema.identity_columns().len();
         let (start, end) = if a.reversed { (t, f) } else { (f, t) };
         (identity, (f, t, start, end))
     };
@@ -3783,10 +3775,7 @@ impl<'s> Lowerer<'s> {
         for (i, arm) in arms.iter().enumerate() {
             let rs = arm.schema;
             let (from, to) = (rs.from_id.columns(), rs.to_id.columns());
-            let identity: Vec<&str> = match &rs.edge_id {
-                Some(id) => id.columns(),
-                None => from.iter().chain(&to).copied().collect(),
-            };
+            let identity: Vec<&str> = rs.identity_columns();
             let (left, right) = arm.ends();
             let mut items = vec![
                 select(string(&arm.rel_type), REL_TYPE),
@@ -3795,10 +3784,10 @@ impl<'s> Lowerer<'s> {
             ];
             // Ids as they are compared (I1): an identity of stored ends as
             // its ends are (an `edge_id`'s is compared with itself only).
-            let id_label = |i: usize| match (&rs.edge_id, i < from.len()) {
-                (Some(_), _) => None,
-                (None, true) => Some((rs.from_node.as_str(), i)),
-                (None, false) => Some((rs.to_node.as_str(), i - from.len())),
+            let id_label = |i: usize| match rs.identity_part(i) {
+                Some(IdentityPart::From(j)) => Some((rs.from_node.as_str(), j)),
+                Some(IdentityPart::To(j)) => Some((rs.to_node.as_str(), j)),
+                _ => None,
             };
             for i in 0..shape.identity {
                 // A text where some arm's is one (I2).
@@ -6308,6 +6297,9 @@ impl<'s> Lowerer<'s> {
                     .chain((0..arity).map(|i| parts.iter().any(|p| p.get(i) == Some(&true))))
                     .collect()
             }
+            // An `edge_id`'s parts that may be NULL (I6d; its ends after it
+            // cannot be).
+            Some(Scan::Rel { schema, .. }) => rel_nullable_identity(schema),
             _ => Vec::new(),
         }
     }
@@ -6321,7 +6313,11 @@ impl<'s> Lowerer<'s> {
                 .node_schema_opt(label)
                 .map(nullable_id_parts)
                 .unwrap_or_default(),
-            _ => Vec::new(),
+            elements::Elem::Rel { rel_type, from, to } => self
+                .schema
+                .get_rel_schema_with_nodes(rel_type, Some(from), Some(to))
+                .map(rel_nullable_identity)
+                .unwrap_or_default(),
         }
     }
 
@@ -6407,17 +6403,9 @@ impl<'s> Lowerer<'s> {
                     (Scan::Rel { .. }, Scan::Rel { .. }) => {
                         let ia = self.identity(*a)?.expect("a relationship scan");
                         let ib = self.identity(*b)?.expect("a relationship scan");
-                        or_all(
-                            ia.into_iter()
-                                .zip(ib)
-                                .map(|(x, y)| {
-                                    RenderExpr::OperatorApplicationExp(OperatorApplication {
-                                        operator: Operator::NotEqual,
-                                        operands: vec![x, y],
-                                    })
-                                })
-                                .collect(),
-                        )
+                        // An `edge_id` part that may be NULL NULL-safely (I6d).
+                        same_identity(ia, ib, &self.identity_nullable(*a), false)
+                            .expect("an identity has columns")
                     }
                     (Scan::Rel { schema, at, .. }, Scan::Path { at: p, .. })
                     | (Scan::Path { at: p, .. }, Scan::Rel { schema, at, .. }) => {
@@ -6467,10 +6455,7 @@ impl<'s> Lowerer<'s> {
         if let Some((r, (ps, rel_type, p))) = path(b).map(|p| (a, p)).or(path(a).map(|p| (b, p))) {
             // Rows of the path's definition: their identity, spelled as the
             // path's `path_edges` spell it, is not on the path.
-            let arity = match &ps.edge_id {
-                Some(id) => id.columns().len(),
-                None => ps.from_id.columns().len() + ps.to_id.columns().len(),
-            };
+            let arity = ps.identity_columns().len();
             let ids = (0..arity)
                 .map(|i| {
                     self.walked_identity_part(r, ps, &rel_type, i)
@@ -6533,14 +6518,9 @@ impl<'s> Lowerer<'s> {
         }) else {
             return Ok(id);
         };
-        let from = ps.from_id.columns().len();
-        let typed = match &ps.edge_id {
-            Some(edge) => {
-                let own = edge
-                    .columns()
-                    .get(i)
-                    .and_then(|c| ps.column_types.get(*c))
-                    .filter(|t| !t.raw.is_empty());
+        let typed = match ps.identity_part(i) {
+            Some(IdentityPart::Edge(c)) => {
+                let own = ps.column_types.get(c).filter(|t| !t.raw.is_empty());
                 match own {
                     Some(t) => RenderExpr::Cast {
                         expr: Box::new(id),
@@ -6549,8 +6529,9 @@ impl<'s> Lowerer<'s> {
                     None => return Ok(id),
                 }
             }
-            None if i < from => self.physical(r, &indexed_column(REL_FROM, i))?,
-            None => self.physical(r, &indexed_column(REL_TO, i - from))?,
+            Some(IdentityPart::From(j)) => self.physical(r, &indexed_column(REL_FROM, j))?,
+            Some(IdentityPart::To(j)) => self.physical(r, &indexed_column(REL_TO, j))?,
+            None => return Ok(id),
         };
         Ok(RenderExpr::Case(RenderCase {
             expr: None,
@@ -6658,13 +6639,14 @@ impl<'s> Lowerer<'s> {
                 ];
                 // As a union's arm of its definition spells it where that
                 // union's are texts (`rel_union_of`).
-                let from = schema.from_id.columns().len();
                 all.extend(ids.into_iter().enumerate().map(|(i, id)| {
-                    match (text(i), &schema.edge_id, i < from) {
-                        (false, ..) => id,
-                        (true, Some(_), _) => self.any_text(id),
-                        (true, None, true) => self.part_text(&schema.from_node, i, id),
-                        (true, None, false) => self.part_text(&schema.to_node, i - from, id),
+                    match (text(i), schema.identity_part(i)) {
+                        (false, _) | (true, None) => id,
+                        (true, Some(IdentityPart::Edge(_))) => self.any_text(id),
+                        (true, Some(IdentityPart::From(j))) => {
+                            self.part_text(&schema.from_node, j, id)
+                        }
+                        (true, Some(IdentityPart::To(j))) => self.part_text(&schema.to_node, j, id),
                     }
                 }));
                 Ok(all)
@@ -6709,20 +6691,14 @@ impl<'s> Lowerer<'s> {
             if !seen.insert(std::ptr::from_ref(rs)) {
                 continue;
             }
-            let from = rs.from_id.columns().len();
-            let spelled = match &rs.edge_id {
-                Some(edge) => {
-                    let Some(c) = edge.columns().get(j).copied() else {
-                        continue;
-                    };
+            let spelled = match rs.identity_part(j) {
+                Some(IdentityPart::Edge(c)) => {
                     let back =
                         self.own_identity_part(arms, own, j, rs.column_types.get(c), id.clone());
                     self.any_text(back)
                 }
-                None if j < from => self.part_text(&rs.from_node, j, id.clone()),
-                None if j < from + rs.to_id.columns().len() => {
-                    self.part_text(&rs.to_node, j - from, id.clone())
-                }
+                Some(IdentityPart::From(k)) => self.part_text(&rs.from_node, k, id.clone()),
+                Some(IdentityPart::To(k)) => self.part_text(&rs.to_node, k, id.clone()),
                 None => continue,
             };
             when_then.push((self.definition_is(v, arm)?, spelled));
@@ -8944,6 +8920,21 @@ fn tie_condition(x: RenderExpr, y: RenderExpr, null_safe: bool) -> OperatorAppli
     }
 }
 
+/// Which of a relationship's identity columns
+/// (`RelationshipSchema::identity_columns`) may be NULL: its `edge_id`'s
+/// parts whose column types say so (I6d); its ends, none.
+fn rel_nullable_identity(schema: &RelationshipSchema) -> Vec<bool> {
+    (0..schema.identity_columns().len())
+        .map(|i| match schema.identity_part(i) {
+            Some(IdentityPart::Edge(c)) => schema
+                .column_types
+                .get(c)
+                .is_some_and(|t| t.nullable && !t.raw.is_empty()),
+            _ => false,
+        })
+        .collect()
+}
+
 /// `x` and `y`, one identity part of two elements, the same: `=`, or where
 /// a real element's part may be NULL (`nullable`, [`Lowerer::
 /// identity_nullable`]) NULL-safely, as one condition a join can key on
@@ -9653,16 +9644,14 @@ fn scan_identity(scan: &Scan<'_>) -> Option<Vec<String>> {
                     .collect(),
             )
         }
-        Scan::Rel { schema, .. } => Some(match &schema.edge_id {
-            Some(id) => id.columns().iter().map(|c| c.to_string()).collect(),
-            None => schema
-                .from_id
-                .columns()
-                .iter()
-                .chain(schema.to_id.columns().iter())
-                .map(|c| c.to_string())
+        // Its `edge_id`, with its ends where a part may be NULL (I6d).
+        Scan::Rel { schema, .. } => Some(
+            schema
+                .identity_columns()
+                .into_iter()
+                .map(str::to_string)
                 .collect(),
-        }),
+        ),
         // Its definition first (its type, NULL exactly when an OPTIONAL
         // MATCH left it NULL), then its identity.
         Scan::Rels { arms, .. } => {

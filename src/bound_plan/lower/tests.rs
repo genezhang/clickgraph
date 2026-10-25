@@ -9988,3 +9988,72 @@ graph_schema:
         "{got}"
     );
 }
+
+/// ELEMENT_IDENTITY.md I6d (#1354 comment): a relationship whose `edge_id`
+/// may be NULL is identified by its stored ends and its `edge_id` (as its
+/// element id `TYPE:\N:from->to-` tells it apart), the `edge_id` compared
+/// NULL-safely; it is present where its ends are (`count(r)`); its element
+/// id spells the `edge_id` alone. An `edge_id` that cannot be NULL, or of
+/// unknown types, keeps its SQL.
+#[test]
+fn a_relationship_whose_edge_id_has_a_null_part_is_one() {
+    const YAML: &str = r#"
+name: lower_null_edge_id
+graph_schema:
+  nodes:
+    - {label: N, database: db, table: n, node_id: id, column_types: {id: Int64}, property_mappings: {name: name}}
+  edges:
+    - type: E
+      database: db
+      table: e
+      from_node: N
+      to_node: N
+      from_id: fa
+      to_id: ta
+      edge_id: eid
+      column_types: {eid: "Nullable(Int64)", fa: Int64, ta: Int64}
+      property_mappings: {w: w}
+    - type: K
+      database: db
+      table: k
+      from_node: N
+      to_node: N
+      from_id: fa
+      to_id: ta
+      edge_id: eid
+      column_types: {eid: Int64, fa: Int64, ta: Int64}
+      property_mappings: {w: w}
+"#;
+    let schema = crate::graph_catalog::config::GraphSchemaConfig::from_yaml_str(YAML)
+        .unwrap()
+        .to_graph_schema()
+        .unwrap();
+    let rs = schema.get_rel_schema("E").unwrap();
+    assert!(rs.edge_id_nullable());
+    assert_eq!(rs.identity_columns(), vec!["fa", "ta", "eid"]);
+    let options = LowerOptions::default();
+    let sql = |q: &str| lowered(q, &schema, &options);
+    // Present where its ends are; its identity's tuple counted.
+    let got = sql("MATCH ()-[r:E]->() RETURN count(r) AS c, count(DISTINCT r) AS d");
+    assert!(got.contains("tuple(v1.fa, v1.ta, v1.eid)"), "{got}");
+    assert!(got.contains("WHEN v1.fa IS NULL THEN NULL"), "{got}");
+    // Relationships of one MATCH differ NULL-safely.
+    let got = sql("MATCH (a)-[r1:E]->(b)-[r2:E]->(c) RETURN count(*) AS c");
+    assert!(
+        got.contains("(v1.fa <> v3.fa OR v1.ta <> v3.ta OR NOT (isNotDistinctFrom(v1.eid, v3.eid) AND true))"),
+        "{got}"
+    );
+    // A walk's relationships by its ends and `edge_id`.
+    let got = sql("MATCH (a:N)-[:E*1..2]->(b:N) RETURN count(*) AS c");
+    assert!(got.contains("tuple(rel.fa, rel.ta, rel.eid)"), "{got}");
+    // Its element id: the `edge_id` alone before its ends.
+    let got = sql("MATCH ()-[r:E]->() RETURN r");
+    assert!(
+        got.contains("'E:', concat(CASE WHEN v1.eid IS NULL"),
+        "{got}"
+    );
+    // An `edge_id` that cannot be NULL: by it alone, as before.
+    let got = sql("MATCH (a)-[r1:K]->(b)-[r2:K]->(c) RETURN count(*) AS c");
+    assert!(got.contains("v1.eid <> v3.eid"), "{got}");
+    assert!(!got.contains("isNotDistinctFrom"), "{got}");
+}
