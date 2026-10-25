@@ -553,6 +553,16 @@ pub(crate) fn transform_to_node(
         }
     }
 
+    // The node's element id as SQL spells it, where an id part is one SQL
+    // alone spells (`NODE_ELEMENT_ID_KEY`, #1528): taken as is, whatever the
+    // properties are.
+    let sql_element_id = properties
+        .remove(crate::bound_plan::lower::NODE_ELEMENT_ID_KEY)
+        .and_then(|v| match v {
+            Value::String(s) => Some(s),
+            _ => None,
+        });
+
     // VLP CTE results: o.properties is a JSON blob, o.id is the ID string
     // Parse JSON properties and merge into the properties map
     let _vlp_id_col = format!("{}.id", var_name);
@@ -670,27 +680,34 @@ pub(crate) fn transform_to_node(
     //
     // A composite id's part may be NULL (`None`, its element id's `\\N`); an
     // id of no part that is not is no node's.
-    let id_values: Vec<Option<String>> = id_columns
-        .iter()
-        .map(|col_name| {
-            let missing = || format!("Missing ID column '{}' for node '{}'", col_name, var_name);
-            match properties
-                .get(*col_name)
-                .or_else(|| row.get(&format!("{}.{}", var_name, col_name)))
-            {
-                Some(Value::Null) if id_columns.len() > 1 => Ok(None),
-                Some(v) => value_to_string(v).map(Some).ok_or_else(missing),
-                None => Err(missing()),
+    let element_id = match sql_element_id {
+        // Spelled in SQL (#1528).
+        Some(element_id) => element_id,
+        None => {
+            let id_values: Vec<Option<String>> = id_columns
+                .iter()
+                .map(|col_name| {
+                    let missing =
+                        || format!("Missing ID column '{}' for node '{}'", col_name, var_name);
+                    match properties
+                        .get(*col_name)
+                        .or_else(|| row.get(&format!("{}.{}", var_name, col_name)))
+                    {
+                        Some(Value::Null) if id_columns.len() > 1 => Ok(None),
+                        Some(v) => value_to_string(v).map(Some).ok_or_else(missing),
+                        None => Err(missing()),
+                    }
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            if id_values.iter().all(Option::is_none) {
+                return Err(format!("Missing ID columns for node '{}'", var_name));
             }
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    if id_values.iter().all(Option::is_none) {
-        return Err(format!("Missing ID columns for node '{}'", var_name));
-    }
 
-    // Generate elementId using Phase 3 function
-    let id_value_refs: Vec<Option<&str>> = id_values.iter().map(|s| s.as_deref()).collect();
-    let element_id = node_element_id(&label, &id_value_refs);
+            // Generate elementId using Phase 3 function
+            let id_value_refs: Vec<Option<&str>> = id_values.iter().map(|s| s.as_deref()).collect();
+            node_element_id(&label, &id_value_refs)
+        }
+    };
 
     // Derive integer ID from element_id (ensures uniqueness across labels)
     let id: i64 = generate_id_from_element_id(&element_id);
@@ -3288,6 +3305,33 @@ graph_schema:
         account.node_id.dtype = crate::graph_catalog::schema_types::SchemaType::String;
         schema.insert_node_schema("Account".to_string(), account);
         schema
+    }
+
+    /// #1528: a node's element id spelled in SQL (`NODE_ELEMENT_ID_KEY`) is
+    /// taken as it is, and is no property; a relationship's ends are texts.
+    #[test]
+    fn a_node_takes_its_element_id_from_sql() {
+        let schema = keyed_labels_schema();
+        let key = crate::bound_plan::lower::NODE_ELEMENT_ID_KEY;
+        let row: HashMap<String, Value> = [
+            ("n.id".to_string(), Value::from(1.5e20)),
+            (
+                format!("n.{key}"),
+                Value::from("Num:150000000000000000000-"),
+            ),
+        ]
+        .into();
+        let node = transform_to_node(&row, "n", &["Num".to_string()], &schema).unwrap();
+        assert_eq!(node.element_id, "Num:150000000000000000000-");
+        assert!(!node.properties.contains_key(key), "{:?}", node.properties);
+        assert_eq!(
+            node.id,
+            super::super::id_mapper::IdMapper::compute_deterministic_id(&node.element_id)
+        );
+        // Without it, spelled from the value as before.
+        let row: HashMap<String, Value> = [("n.id".to_string(), Value::from(7))].into();
+        let node = transform_to_node(&row, "n", &["Num".to_string()], &schema).unwrap();
+        assert_eq!(node.element_id, "Num:7-");
     }
 
     /// ELEMENT_IDENTITY.md I5b: the number of an element id item (`id(r)`, or

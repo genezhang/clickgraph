@@ -8734,6 +8734,212 @@ graph_schema:
     );
 }
 
+/// #1528: where an id part is one SQL alone spells (a Float, a FixedString, a
+/// 128-bit integer, a Decimal of 16 digits or more), a node returned whole
+/// carries its element id from SQL and its relationship's ends are texts;
+/// any other id's SQL is as it was.
+#[test]
+fn an_id_part_sql_alone_spells_is_spelled_in_sql() {
+    let schema = |node_type: &str| {
+        crate::graph_catalog::config::GraphSchemaConfig::from_yaml_str(&format!(
+            r#"
+name: lower_exotic_ids
+graph_schema:
+  nodes:
+    - label: P
+      database: db
+      table: ps
+      node_id: k
+      column_types: {{k: "{node_type}"}}
+      property_mappings: {{k: k, name: name}}
+  edges:
+    - type: E
+      database: db
+      table: es
+      from_id: fk
+      to_id: tk
+      from_node: P
+      to_node: P
+      column_types: {{fk: "{node_type}", tk: "{node_type}"}}
+      property_mappings: {{}}
+"#
+        ))
+        .unwrap()
+        .to_graph_schema()
+        .unwrap()
+    };
+    for exotic in [
+        "Float64",
+        "Float32",
+        "FixedString(4)",
+        "Int128",
+        "UInt256",
+        "Decimal(18, 2)",
+        "Decimal128(4)",
+    ] {
+        let schema = schema(exotic);
+        let (sql, shape) = shaped("MATCH (a:P) RETURN a", &schema);
+        assert!(
+            sql.contains(r#"AS "a.elementId""#) && sql.contains("concat('P:', toString("),
+            "{exotic}: {sql}"
+        );
+        assert!(
+            shape[0]
+                .columns
+                .iter()
+                .any(|(k, c)| k == crate::bound_plan::lower::NODE_ELEMENT_ID_KEY
+                    && c == "a.elementId"),
+            "{exotic}: {:?}",
+            shape[0].columns
+        );
+        // The ends of its relationship are texts.
+        let (sql, _) = shaped("MATCH (a:P)-[r:E]->(b:P) RETURN r", &schema);
+        assert!(
+            sql.contains(r#"toString(v1.fk) AS "r.from_id""#)
+                && sql.contains(r#"toString(v1.tk) AS "r.to_id""#),
+            "{exotic}: {sql}"
+        );
+        // id(n) is the key, as it was.
+        let (_, shape) = shaped("MATCH (a:P) RETURN id(a) AS i", &schema);
+        assert!(
+            matches!(shape[0].kind, ResultKind::NodeId { .. }),
+            "{exotic}: {shape:?}"
+        );
+    }
+    // Other ids: no element id column, the ends as they are, id(n) the key.
+    for plain in [
+        "Int64",
+        "UInt64",
+        "String",
+        "Decimal(10, 2)",
+        "Date",
+        "UUID",
+    ] {
+        let schema = schema(plain);
+        let (sql, _) = shaped("MATCH (a:P) RETURN a", &schema);
+        assert!(!sql.contains("a.elementId"), "{plain}: {sql}");
+        let (sql, _) = shaped("MATCH (a:P)-[r:E]->(b:P) RETURN r", &schema);
+        assert!(sql.contains(r#"v1.fk AS "r.from_id""#), "{plain}: {sql}");
+        let (_, shape) = shaped("MATCH (a:P) RETURN id(a) AS i", &schema);
+        assert!(
+            matches!(shape[0].kind, ResultKind::NodeId { .. }),
+            "{plain}: {shape:?}"
+        );
+    }
+}
+
+/// #1528: composite ids with one such part, an OPTIONAL MATCH that finds no
+/// node, the node's and the end's types known on one side only, and Databricks.
+#[test]
+fn sql_spelled_ids_by_layout() {
+    let schema = |node_types: &str, edge_types: &str| {
+        crate::graph_catalog::config::GraphSchemaConfig::from_yaml_str(&format!(
+            r#"
+name: lower_exotic_layouts
+graph_schema:
+  nodes:
+    - label: C
+      database: db
+      table: cs
+      node_id: [b, k]
+      {node_types}
+      property_mappings: {{b: b, k: k}}
+  edges:
+    - type: E
+      database: db
+      table: es
+      from_id: [fb, fk]
+      to_id: [tb, tk]
+      from_node: C
+      to_node: C
+      {edge_types}
+      property_mappings: {{}}
+"#
+        ))
+        .unwrap()
+        .to_graph_schema()
+        .unwrap()
+    };
+    // One part of two is a Float64: the node and its ends are spelled in SQL;
+    // the other end part (a String) is as it was.
+    let both = schema(
+        "column_types: {b: String, k: Float64}",
+        "column_types: {fb: String, fk: Float64, tb: String, tk: Float64}",
+    );
+    let (sql, _) = shaped("MATCH (a:C) RETURN a", &both);
+    assert!(sql.contains(r#"AS "a.elementId""#), "{sql}");
+    let (sql, _) = shaped("MATCH (a:C)-[r:E]->(b:C) RETURN r", &both);
+    assert!(
+        sql.contains(r#"v1.fb AS "r.from_id_1""#)
+            && sql.contains(r#"toString(v1.fk) AS "r.from_id_2""#)
+            && sql.contains(r#"toString(v1.tk) AS "r.to_id_2""#),
+        "{sql}"
+    );
+    // ... NULL where an OPTIONAL MATCH found no node (a NULL part of a
+    // composite id is `\\N` in its text, never a NULL).
+    let (sql, _) = shaped("MATCH (m:C) OPTIONAL MATCH (m)-[:E]->(n:C) RETURN n", &both);
+    assert!(
+        sql.contains(") THEN NULL ELSE concat('C:', ") && sql.contains(r#"END AS "n.elementId""#),
+        "{sql}"
+    );
+    // The node's type decides with the end's: a plain node (known) with an
+    // exotic stored end: the end is text (the node spells its id plain, the
+    // JSON of a FixedString is padded); an exotic node with a plain end: text.
+    let plain_node = schema(
+        "column_types: {b: String, k: Int64}",
+        "column_types: {fb: String, fk: Float64, tb: String, tk: Int64}",
+    );
+    let (sql, _) = shaped("MATCH (a:C)-[r:E]->(b:C) RETURN r", &plain_node);
+    assert!(
+        !sql.contains("a.elementId")
+            && sql.contains(r#"toString(v1.fk) AS "r.from_id_2""#)
+            && sql.contains(r#"v1.tk AS "r.to_id_2""#),
+        "{sql}"
+    );
+    let exotic_node = schema(
+        "column_types: {b: String, k: Float64}",
+        "column_types: {fb: String, fk: Int64, tb: String, tk: Int64}",
+    );
+    let (sql, _) = shaped("MATCH (a:C)-[r:E]->(b:C) RETURN r", &exotic_node);
+    assert!(
+        sql.contains(r#"toString(v1.fk) AS "r.from_id_2""#)
+            && sql.contains(r#"toString(v1.tk) AS "r.to_id_2""#),
+        "{sql}"
+    );
+    // The node's types unknown (a node embedded in an edge table's are), or
+    // only the other part's known: the ends are as they were, spelled in
+    // Rust with the node.
+    let part_known = schema(
+        "column_types: {b: String}",
+        "column_types: {fb: String, fk: Float64, tb: String, tk: Float64}",
+    );
+    let (sql, _) = shaped("MATCH (a:C)-[r:E]->(b:C) RETURN r", &part_known);
+    assert!(
+        !sql.contains("toString(v1.fk)") && sql.contains(r#"v1.fk AS "r.from_id_2""#),
+        "{sql}"
+    );
+    let unknown_node = schema(
+        "",
+        "column_types: {fb: String, fk: Float64, tb: String, tk: Float64}",
+    );
+    let (sql, _) = shaped("MATCH (a:C)-[r:E]->(b:C) RETURN r", &unknown_node);
+    assert!(
+        !sql.contains("toString(v1.fk)") && sql.contains(r#"v1.fk AS "r.from_id_2""#),
+        "{sql}"
+    );
+    // Databricks spells the text in its own function.
+    let got = squash(&databricks_sql("MATCH (a:C) RETURN a", &both).unwrap());
+    assert!(
+        got.contains("AS STRING") && got.contains(r#"AS `a.elementId`"#),
+        "{got}"
+    );
+    let got = squash(&databricks_sql("MATCH (a:C)-[r:E]->(b:C) RETURN r", &both).unwrap());
+    assert!(
+        got.contains("AS `r.from_id_2`") && !got.contains("toString("),
+        "{got}"
+    );
+}
+
 /// An escaped (backtick-quoted) name is the name: at every place a query
 /// names something it lowers as the plain spelling does (#1489, #1421,
 /// #1381).

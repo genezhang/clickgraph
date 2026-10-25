@@ -192,7 +192,10 @@ pub struct ResultColumn {
 pub enum ResultKind {
     /// One column, `name`.
     Value,
-    /// A node with this label: a column `name.<prop>` per property.
+    /// A node with this label: a column `name.<prop>` per property, then,
+    /// where an id part is one SQL alone spells (a Float, a FixedString, a
+    /// 128-bit integer, a wide Decimal: #1528), `name.elementId`: its element
+    /// id (key [`NODE_ELEMENT_ID_KEY`]).
     Node { label: String },
     /// A relationship: `name.from_id` and `name.to_id` (its stored endpoint
     /// columns, as their nodes spell their ids; `from_id_1`, `from_id_2`, …
@@ -223,6 +226,10 @@ pub enum ResultKind {
 /// ([`ResultKind::Rel`]; its column is `name.elementId`): no property's name
 /// (`#` starts none, as the demand pass's markers rely on).
 pub const REL_ELEMENT_ID_KEY: &str = "#elementId";
+
+/// The key of a returned node's element id among its columns
+/// ([`ResultKind::Node`]), the relationship's alike.
+pub const NODE_ELEMENT_ID_KEY: &str = REL_ELEMENT_ID_KEY;
 
 /// Lower a bound statement to a render plan.
 pub fn lower_statement(
@@ -7737,6 +7744,34 @@ impl<'s> Lowerer<'s> {
                             }
                             _ => e,
                         };
+                        // An end part that SQL alone spells (#1528: the
+                        // node's id part or the stored end is a Float, a
+                        // FixedString, a 128-bit integer, a wide Decimal):
+                        // its text, from which Rust spells the ends' element
+                        // ids as the nodes' are.
+                        // (Where the node's own part type is unknown, as a
+                        // node embedded in an edge table's is, its element id
+                        // is spelled in Rust, and so are the ends.)
+                        let in_sql = |label: &str, types: &[KeyPartType]| {
+                            self.schema
+                                .node_schema_opt(label)
+                                .and_then(|ns| ns.node_id.part_type(i))
+                                .filter(|n| !n.raw.is_empty())
+                                .is_some_and(|n| {
+                                    n.is_spelled_in_sql()
+                                        || types.get(i).is_some_and(|t| t.is_spelled_in_sql())
+                                })
+                        };
+                        let in_sql = match role {
+                            "from_id" => in_sql(&schema.from_node, &schema.from_node_id_part_types),
+                            _ => in_sql(&schema.to_node, &schema.to_node_id_part_types),
+                        };
+                        let e = if in_sql {
+                            let sql = render_expr_to_sql_plain(&e);
+                            RenderExpr::Raw(value::spell_end(&sql, &value::EndSpell::Text))
+                        } else {
+                            e
+                        };
                         columns.push((suffix, e));
                     }
                 }
@@ -7779,6 +7814,22 @@ impl<'s> Lowerer<'s> {
                 columns.push((REL_ELEMENT_ID_KEY.to_string(), RenderExpr::Raw(text)));
                 for c in id.columns() {
                     spelled.push(self.physical(v, c)?);
+                }
+            }
+        }
+        // A node with an id part that SQL alone spells (#1528): its element
+        // id as SQL spells it, which Bolt and the graph output return as is
+        // (Rust would spell a Float, a NUL-padded FixedString or a 128-bit
+        // integer from the JSON of its value another way). Under a key no
+        // property has, after the properties.
+        if let Some(Scan::Node { schema, .. }) = self.scans.get(&v) {
+            if schema.node_id.is_spelled_in_sql() {
+                let g = value::spelling()?;
+                if let Some(text) = self.node_element_id_sql(v, &g)? {
+                    // NULL where an OPTIONAL MATCH found no node: a composite
+                    // id's NULL part is a `\\N` in the text, never a NULL.
+                    let text = self.unless_null(&[v], RenderExpr::Raw(text))?;
+                    columns.push((NODE_ELEMENT_ID_KEY.to_string(), text));
                 }
             }
         }

@@ -311,6 +311,66 @@ impl Default for KeyPartType {
 }
 
 impl KeyPartType {
+    /// Whether a value of this type is not spelled alike by SQL's `toString`
+    /// and by a reader of ClickHouse's JSON (#1528): a Float (`1e20` is
+    /// `100000000000000000000` in SQL, and a Float32 is widened), a
+    /// FixedString (padded with NULs in JSON, which `toString` drops), a
+    /// 128 / 256-bit integer (a double in JSON), and a Decimal of 16 digits
+    /// or more or of a scale of 5 or more (the same; a small value is an
+    /// exponent in Rust, `1e-6`, and `0.000001` in SQL). An element id built
+    /// from such a part is spelled in SQL, which sees the value as it is.
+    /// The spellings ClickHouse accepts (any case; `Double`, `Real`, `Dec`,
+    /// `Numeric`, `Binary`) count. An undiscovered column (no `raw`) is not
+    /// one: its SQL stays as it was.
+    pub fn is_spelled_in_sql(&self) -> bool {
+        let raw = self.raw.trim().to_ascii_lowercase();
+        let raw = raw.as_str();
+        if ["float", "double", "real", "bfloat", "fixedstring", "binary"]
+            .iter()
+            .any(|p| raw.starts_with(p))
+        {
+            return true;
+        }
+        if matches!(raw, "int128" | "uint128" | "int256" | "uint256") {
+            return true;
+        }
+        // Decimal(P, S), Decimal32(S) .. Decimal256(S), and the aliases.
+        for name in ["decimal", "numeric", "dec", "fixed"] {
+            let Some(rest) = raw.strip_prefix(name) else {
+                continue;
+            };
+            let numbers = |inner: &str| -> Vec<u32> {
+                inner
+                    .trim_end_matches(')')
+                    .split(',')
+                    .filter_map(|n| n.trim().parse().ok())
+                    .collect()
+            };
+            let (precision, scale) = if let Some(inner) = rest.trim_start().strip_prefix('(') {
+                let n = numbers(inner);
+                (n.first().copied(), n.get(1).copied().unwrap_or(0))
+            } else {
+                // Decimal32(S) .. Decimal256(S)
+                let Some((bits, inner)) = rest.split_once('(') else {
+                    continue;
+                };
+                let precision = match bits.trim() {
+                    "32" => 9,
+                    "64" => 18,
+                    "128" => 38,
+                    "256" => 76,
+                    _ => continue,
+                };
+                (
+                    Some(precision),
+                    numbers(inner).first().copied().unwrap_or(0),
+                )
+            };
+            return precision.is_some_and(|p| p >= 16) || scale >= 5;
+        }
+        false
+    }
+
     /// Parse a discovered ClickHouse column type. An empty or unrecognised
     /// spelling maps to [`SchemaType::Integer`], which is the no-cast path.
     pub fn parse(ch_type: &str) -> Self {
@@ -819,6 +879,76 @@ mod tests {
             KeyPartType::parse("Enum8('a (b' = 1)").raw,
             "Enum8('a (b' = 1)"
         );
+    }
+
+    /// #1528: the types an element id is spelled in SQL for.
+    #[test]
+    fn the_types_sql_alone_spells() {
+        for spelled in [
+            "Float32",
+            "Float64",
+            "FixedString(1)",
+            "FixedString(16)",
+            "Int128",
+            "UInt128",
+            "Int256",
+            "UInt256",
+            "Decimal(16, 2)",
+            "Decimal(18,0)",
+            "Decimal(38, 10)",
+            "Decimal64(4)",
+            "Decimal128(4)",
+            "Decimal256(4)",
+            // The spellings ClickHouse accepts; a scale of 5 or more prints
+            // a small value as an exponent in Rust.
+            "FLOAT",
+            "Double",
+            "REAL",
+            "float64",
+            "fixedstring(4)",
+            "BINARY(4)",
+            "INT128",
+            "uint256",
+            "DECIMAL(18,2)",
+            "decimal(18, 2)",
+            "Dec(38, 2)",
+            "Numeric(20,4)",
+            "DECIMAL64(2)",
+            "Decimal(10, 6)",
+            "Decimal(9, 5)",
+        ] {
+            assert!(KeyPartType::parse(spelled).is_spelled_in_sql(), "{spelled}");
+        }
+        for plain in [
+            "Int8",
+            "Int64",
+            "UInt64",
+            "String",
+            "Date",
+            "DateTime",
+            "DateTime64(3)",
+            "UUID",
+            "Bool",
+            "IPv4",
+            "Enum8('a' = 1)",
+            "LowCardinality(String)",
+            "Decimal(15, 2)",
+            "Decimal(9, 2)",
+            "Decimal32(2)",
+            "Decimal(10)",
+            "Decimal(10, 4)",
+            "DECIMAL(10,2)",
+            "decimal(15,2)",
+            "bigint",
+            "string",
+        ] {
+            assert!(!KeyPartType::parse(plain).is_spelled_in_sql(), "{plain}");
+        }
+        // Nullable / LowCardinality wrappers do not hide it; undiscovered
+        // columns are not one.
+        assert!(KeyPartType::parse("Nullable(Float64)").is_spelled_in_sql());
+        assert!(KeyPartType::parse("LowCardinality(FixedString(4))").is_spelled_in_sql());
+        assert!(!KeyPartType::default().is_spelled_in_sql());
     }
 
     #[test]

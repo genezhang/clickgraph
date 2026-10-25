@@ -1535,6 +1535,13 @@ impl NodeIdSchema {
         self.part_types.get(index)
     }
 
+    /// Whether a part of the id is spelled by SQL only
+    /// ([`KeyPartType::is_spelled_in_sql`]): a node returned whole then
+    /// carries its element id from SQL (#1528).
+    pub fn is_spelled_in_sql(&self) -> bool {
+        self.part_types.iter().any(|t| t.is_spelled_in_sql())
+    }
+
     /// Get the column name for single-column identifiers.
     ///
     /// **Panics** if called on composite identifier.

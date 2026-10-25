@@ -261,6 +261,14 @@ fn extract_node_from_row(
         }
     }
 
+    // The element id as SQL spells it, where an id part is one SQL alone
+    // spells (`NODE_ELEMENT_ID_KEY`, #1528): taken as is.
+    let sql_element_id = match properties.remove(clickgraph::bound_plan::lower::NODE_ELEMENT_ID_KEY)
+    {
+        Some(JsonValue::String(text)) => Some(text),
+        _ => None,
+    };
+
     // Handle VLP CTE JSON properties blob
     let vlp_props_col = format!("{}.properties", var_name);
     if let Some(JsonValue::String(json_str)) = row.get(&vlp_props_col) {
@@ -282,21 +290,26 @@ fn extract_node_from_row(
     let node_schema = schema.node_schema_opt(&label)?;
     let id_columns = node_schema.node_id.id.columns();
 
-    // A composite id's part may be NULL (its element id's `\\N`); an id of
-    // no part that is not is no node's.
-    let id_values: Vec<Option<String>> = id_columns
-        .iter()
-        .map(|col_name| match properties.get(*col_name)? {
-            JsonValue::Null if id_columns.len() > 1 => Some(None),
-            v => json_value_to_string(v).map(Some),
-        })
-        .collect::<Option<Vec<_>>>()?;
-    if id_values.iter().all(Option::is_none) {
-        return None;
-    }
+    let element_id = match sql_element_id {
+        Some(element_id) => element_id,
+        None => {
+            // A composite id's part may be NULL (its element id's `\\N`); an
+            // id of no part that is not is no node's.
+            let id_values: Vec<Option<String>> = id_columns
+                .iter()
+                .map(|col_name| match properties.get(*col_name)? {
+                    JsonValue::Null if id_columns.len() > 1 => Some(None),
+                    v => json_value_to_string(v).map(Some),
+                })
+                .collect::<Option<Vec<_>>>()?;
+            if id_values.iter().all(Option::is_none) {
+                return None;
+            }
 
-    let id_value_refs: Vec<Option<&str>> = id_values.iter().map(|s| s.as_deref()).collect();
-    let element_id = node_element_id(&label, &id_value_refs);
+            let id_value_refs: Vec<Option<&str>> = id_values.iter().map(|s| s.as_deref()).collect();
+            node_element_id(&label, &id_value_refs)
+        }
+    };
 
     // Convert JSON properties to embedded Value properties
     let embedded_properties: HashMap<String, Value> = properties
@@ -509,6 +522,26 @@ graph_schema:
             ("U:t|6-", "U:t|7-")
         );
         assert_eq!(edge.properties.keys().collect::<Vec<_>>(), vec!["w"]);
+    }
+
+    /// #1528: the node's element id spelled in SQL is taken as it is.
+    #[test]
+    fn a_node_takes_its_element_id_from_sql() {
+        let schema = clickgraph::graph_catalog::config::GraphSchemaConfig::from_yaml_str(
+            "graph_schema:\n  name: t\n  nodes:\n    - {label: Fs, database: d, table: t, node_id: code, property_mappings: {code: code}}\n",
+        )
+        .unwrap()
+        .to_graph_schema()
+        .unwrap();
+        let key = clickgraph::bound_plan::lower::NODE_ELEMENT_ID_KEY;
+        let row: HashMap<String, JsonValue> = [
+            ("n.code".to_string(), serde_json::json!("ab\u{0}\u{0}")),
+            (format!("n.{key}"), serde_json::json!("Fs:ab-")),
+        ]
+        .into();
+        let node = extract_node_from_row(&row, "n", &["Fs".to_string()], &schema).unwrap();
+        assert_eq!(node.id, "Fs:ab-");
+        assert!(!node.properties.contains_key(key));
     }
 
     #[test]
