@@ -58,11 +58,20 @@ pub struct AppState {
     /// The process's ONE persistent-schema-registry store (`schema_registry:
     /// SchemaStore`). `Off` by default and in server modes without a
     /// ClickHouse client. Hoisted here instead of built per request so the
-    /// store's table-creation mutex serializes first registrations across
-    /// the whole process — two concurrent `POST /schemas/load` calls must
-    /// not race their `CREATE TABLE` — and so every write path (load,
-    /// delete, boot replay) observes the same single instance.
+    /// store's one-time table preparation serializes first registrations
+    /// across the whole process — two concurrent `POST /schemas/load` calls
+    /// must not race their DDL — and so every write path (load, delete,
+    /// boot replay) observes the same single instance.
     pub schema_store: Arc<schema_registry::SchemaStore>,
+    /// Serializes the whole registry lifecycle across the server: the two
+    /// admin handlers hold it across BOTH the in-memory registration change
+    /// and the store write, so a POST and a DELETE racing the same (or any)
+    /// name cannot interleave into `memory = A, store = B` — the 1-in-60
+    /// divergence a restart then surfaced. One global async mutex: admin
+    /// rates are tiny, and per-name keyed locking buys nothing here. Boot
+    /// replay takes no turn (it runs before the listener binds). `Arc`-ed
+    /// only because `AppState` derives `Clone` (tokio's mutex does not).
+    pub schema_registry_gate: Arc<tokio::sync::Mutex<()>>,
 }
 
 // ==================================================================================
@@ -195,6 +204,7 @@ pub async fn run_with_config(config: ServerConfig) {
             // No ClickHouse client exists in this mode, so there is nothing
             // to store into: the store is `Off` however the flag is set.
             schema_store: Arc::new(schema_registry::SchemaStore::Off),
+            schema_registry_gate: Arc::new(tokio::sync::Mutex::new(())),
         };
 
         // Initialize query cache
@@ -289,6 +299,7 @@ pub async fn run_with_config(config: ServerConfig) {
             // No ClickHouse client exists in this mode; the store is `Off`
             // however the flag is set (same as the embedded branch).
             schema_store: Arc::new(schema_registry::SchemaStore::Off),
+            schema_registry_gate: Arc::new(tokio::sync::Mutex::new(())),
         };
 
         let cache_config = query_cache::QueryCacheConfig::from_env();
@@ -333,10 +344,11 @@ pub async fn run_with_config(config: ServerConfig) {
     // it is the real store; anything else (mode off, or a server with no
     // ClickHouse client) is `Off`. `from_parts` keeps that choice in one
     // place, so boot replay and the per-request write paths all observe the
-    // same instance.
+    // same instance. The role pool rides along for role-scoped writes.
     let schema_store = Arc::new(schema_registry::SchemaStore::from_parts(
         config.schema_persistence,
         client_opt.clone(),
+        Some(connection_pool.clone()),
     ));
     let app_state = if client_opt.is_some() {
         let executor: Arc<dyn QueryExecutor> = Arc::new(RemoteClickHouseExecutor::with_ch_summary(
@@ -350,6 +362,7 @@ pub async fn run_with_config(config: ServerConfig) {
             config: config.clone(),
             pool: Some(connection_pool.clone()),
             schema_store: schema_store.clone(),
+            schema_registry_gate: Arc::new(tokio::sync::Mutex::new(())),
         }
     } else {
         // For YAML-only mode, we need a placeholder client
@@ -370,6 +383,7 @@ pub async fn run_with_config(config: ServerConfig) {
             config: config.clone(),
             pool: Some(connection_pool.clone()),
             schema_store,
+            schema_registry_gate: Arc::new(tokio::sync::Mutex::new(())),
         }
     };
 

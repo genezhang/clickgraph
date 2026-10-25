@@ -2218,6 +2218,21 @@ pub struct LoadSchemaRequest {
     pub schema_name: String,
     pub config_content: String, // YAML content as string
     pub validate_schema: Option<bool>,
+    /// Optional ClickHouse RBAC role for the durability write — the same
+    /// resolution `/query`'s `role` uses, pointed at the registry's
+    /// CREATE/INSERT/ALTER-DELETE work. Omitted (or empty) keeps the
+    /// default client, which a read-only user boots and replays with; a
+    /// hardened deploy passes `schema_writer` (see
+    /// `docs/design/SCHEMA_PERSISTENCE.md` §Privileges).
+    pub role: Option<String>,
+}
+
+/// Query parameter of `DELETE /schemas/{name}`: the same optional RBAC role
+/// the body-based POST accepts (a DELETE has no body to carry it).
+#[derive(Deserialize)]
+pub struct DeleteSchemaParams {
+    /// Omitted (or empty) keeps the default client, exactly like the POST.
+    pub role: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -2256,6 +2271,33 @@ pub async fn load_schema_handler(
     Json(payload): Json<LoadSchemaRequest>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
     let validate_schema = payload.validate_schema.unwrap_or(false);
+    // An empty role string is no role at all (ClickHouse would reject it at
+    // write time; normalizing here keeps a bad input a plain default-client
+    // write instead of a mystery `persisted: false`).
+    let role = payload.role.as_deref().filter(|r| !r.is_empty());
+
+    // Reserved names never touch the registries: the routes and the CLI's
+    // introspection workflow own these spellings.
+    if schema_registry::is_reserved_schema_name(&payload.schema_name) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": format!(
+                    "Schema name '{}' is reserved ({}); pick another name",
+                    schema_registry::log_safe(&payload.schema_name),
+                    schema_registry::RESERVED_SCHEMA_NAMES.join(", ")
+                )
+            })),
+        ));
+    }
+
+    // One gate across the memory change AND the store change: two racing
+    // POSTs (or a POST and a DELETE of the same name) cannot interleave
+    // their halves into `memory = A, store = B` — the divergence a restart
+    // then surfaced as whichever boot-reload made it. Admin-endpoint rates
+    // make one global gate cost-free; boot replay needs no turn (it runs
+    // before the listener binds).
+    let _registry_gate = app_state.schema_registry_gate.lock().await;
 
     match graph_catalog::load_schema_from_content(
         &payload.schema_name,
@@ -2277,13 +2319,14 @@ pub async fn load_schema_handler(
             // key at all). With it on, a failed store never fails the
             // registration — the field reports what actually happened.
             // The store is the app state's one shared instance, not a
-            // per-request build: its table-creation mutex must serialize
+            // per-request build: its one-time table preparation serializes
             // concurrent first registrations across the server.
-            let persisted = schema_registry::persist_yaml_after_load(
+            let outcome = schema_registry::persist_yaml_after_load(
                 &app_state.config,
                 &app_state.schema_store,
                 &payload.schema_name,
                 &payload.config_content,
+                role,
             )
             .await;
 
@@ -2291,8 +2334,15 @@ pub async fn load_schema_handler(
                 "message": format!("Schema '{}' loaded successfully", payload.schema_name),
                 "schema_name": payload.schema_name
             });
-            if let Some(persisted) = persisted {
-                body["persisted"] = serde_json::json!(persisted);
+            if let Some(outcome) = outcome {
+                body["persisted"] = serde_json::json!(outcome.persisted);
+                if let Some(reason) = outcome.unrestorable_reason {
+                    // Additive, and only on the never-restorable row (over
+                    // the replay byte budget): a normal registration's body
+                    // carries `persisted` alone, byte-identical to round-1.
+                    body["restorable"] = serde_json::json!(false);
+                    body["restorable_reason"] = serde_json::json!(reason);
+                }
             }
             Ok(Json(body))
         }
@@ -2387,24 +2437,24 @@ fn request_id_mapper(
 ///   pre-feature 404, with the same body shape as GET's.
 ///
 /// Ordering vs a concurrent re-register (`POST /schemas/load` of the same
-/// name) is last-writer-wins — deliberately NOT claimed atomic: the memory
-/// removals guard against interleaved map edits (one generation is removed
-/// whole), but the store write is a separate ClickHouse statement outside
-/// that guard. If the re-register's insert wins, the name is live in memory
-/// and its row persists to the next boot — exactly the state the caller
-/// asked for by re-registering; if the DELETE's store statement wins, the
-/// name stays live in memory but its row is gone, so it does not survive
-/// the next boot (both calls report `persisted: true`). Serializing the
-/// two per name would mean holding a lock across a network round-trip per
-/// DELETE; documenting the outcomes instead (`SCHEMA_PERSISTENCE.md` §4)
-/// is the cheaper and honest contract. The `exists` probe in the store-only
-/// path happens before the store delete for the same reason: between probe
-/// and delete a racing registration may re-add the row, and then the
-/// loser's state is the re-registered schema, not a deleted one.
+/// name) is serialized, not just last-writer-wins: both admin handlers hold
+/// `AppState.schema_registry_gate` across the in-memory change AND the store
+/// change, so the two halves can no longer interleave into `memory = A,
+/// store = B` — one call completes its whole lifecycle before the other
+/// starts, at the cost of queuing behind it (admin-endpoint rates, so the
+/// queue is empty in practice). Boot replay needs no turn: it runs before
+/// the listener binds. Within the store-only path the `exists` probe still
+/// answers before the delete: a probe that says "no row" ends the request
+/// (the pre-feature 404) without a DELETE statement.
 pub async fn delete_schema_handler(
     State(app_state): State<Arc<AppState>>,
     axum::extract::Path(schema_name): axum::extract::Path<String>,
+    axum::extract::Query(params): axum::extract::Query<DeleteSchemaParams>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    // Same normalization the POST does: an empty role string is no role.
+    let role = params.role.as_deref().filter(|r| !r.is_empty());
+    let _registry_gate = app_state.schema_registry_gate.lock().await;
+
     let memory_removal = graph_catalog::remove_schema(&schema_name).await;
 
     if let Err(e) = memory_removal {
@@ -2424,23 +2474,14 @@ pub async fn delete_schema_handler(
                 false
             };
         if has_stored_row {
-            return match app_state.schema_store.delete(&schema_name).await {
-                Ok(deleted) => {
-                    // `Ok(true)` is the delete side's unconditional success
-                    // (idempotent end state); nothing was deleted only if
-                    // the store refused — handled below. The row that made
-                    // it into the probe demonstrably existed.
-                    if !deleted {
-                        log::warn!(
-                            "store-only delete of schema '{}' reported no \
-                             effect; treating it as the pre-feature 404",
-                            schema_registry::log_safe(&schema_name)
-                        );
-                        return Err((
-                            StatusCode::NOT_FOUND,
-                            Json(serde_json::json!({ "error": e })),
-                        ));
-                    }
+            // Binding named `always_true`: the probe above short-circuits
+            // every path where the store cannot delete (the `Off` store
+            // answers probe `false`; a real store's delete is an idempotent
+            // success that reports `true`) — the old `!deleted → 404`
+            // branch here was unreachable dead code. The bool return stays
+            // because the memory-backed path below does read it.
+            return match app_state.schema_store.delete(&schema_name, role).await {
+                Ok(_always_true) => {
                     log::info!(
                         "store-only delete: stored row for schema '{}' \
                          deleted (the schema was not booted into this \
@@ -2497,10 +2538,10 @@ pub async fn delete_schema_handler(
     let store_deleted = if app_state.config.schema_persistence == SchemaPersistenceMode::Clickhouse
     {
         // The process's one shared store (hoisted into AppState): the same
-        // instance the load path persists through, so its table-creation
-        // mutex serializes first registrations across the whole server
-        // instead of within one request's throwaway store.
-        match app_state.schema_store.delete(&schema_name).await {
+        // instance the load path persists through, so its one-time table
+        // preparation serializes first registrations across the whole
+        // server instead of within one request's throwaway store.
+        match app_state.schema_store.delete(&schema_name, role).await {
             Ok(deleted) => Some(deleted),
             Err(e) => {
                 // The schema is gone from memory; a failing store must not

@@ -44,11 +44,15 @@
 //!   read-only against the store. Multi-instance replay is out of scope;
 //!   single-instance deployments are the target (see the spec).
 
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::collections::HashMap;
+use std::future::Future;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use clickhouse::{Client, Row};
 use serde::{Deserialize, Serialize};
 
+use super::connection_pool::RoleConnectionPool;
 use super::graph_catalog;
 use crate::config::{SchemaPersistenceMode, ServerConfig};
 
@@ -71,12 +75,72 @@ pub const SOURCE_API_LOAD: &str = "api-load";
 /// Serialization format of `payload`.
 pub const FORMAT_YAML: &str = "yaml";
 
+/// Upper bound on one round-trip against the store (every public op — DDL,
+/// insert, delete, probe, replay read — runs under it), mapped to the same
+/// outcomes a genuinely unreachable store takes: a registration answers
+/// `persisted: false`, a boot replay degrades to the no-restore WARN. This
+/// replaces the one way a slow or wedged ClickHouse used to hang the API:
+/// the table-preparation mutex used to serialize behind a DDL that never
+/// answered, which could hold the first registrations past `/health`'s
+/// readiness window. A constant, deliberately not an env knob: the value
+/// bounds a resource health check, not workload capacity.
+///
+/// Dropping a timeout's future also drops its in-flight response, so the
+/// store call does not keep consuming a connection after the caller gave
+/// up. A CREATE that a timeout abandons is `IF NOT EXISTS` — the next
+/// attempt either re-runs it or probes past it.
+pub const STORE_CALL_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Names the HTTP surface and the Operational CLI reserve. Accepting them
+/// would collide with the registry's own routes (`load`) or the CLI's
+/// introspection workflow (`draft`, `introspect`, `discover-prompt`), so
+/// `POST /schemas/load` answers 400 for them up front — before any memory
+/// or store work — and every other endpoint keeps its pre-feature behavior.
+pub const RESERVED_SCHEMA_NAMES: [&str; 4] = ["load", "draft", "introspect", "discover-prompt"];
+
+/// Pure (unit-tested) reserved-name check; exact match, like every other
+/// schema-name comparison in this module.
+pub fn is_reserved_schema_name(name: &str) -> bool {
+    RESERVED_SCHEMA_NAMES.contains(&name)
+}
+
+/// Bounds one store round-trip ([`STORE_CALL_TIMEOUT`]) and maps the
+/// elapsed-outcome to the error path every caller already handles. The op
+/// name lands in the message for the log/API trail only — values never do.
+async fn with_timeout<T>(
+    op: &'static str,
+    fut: impl Future<Output = Result<T, String>>,
+) -> Result<T, String> {
+    with_timeout_within(STORE_CALL_TIMEOUT, op, fut).await
+}
+
+/// The boundable core of [`with_timeout`]: every store op routes through the
+/// public-shaped wrapper's duration, and unit tests pin the mapping with
+/// option values (`Duration` is an argument, never a caller-visible knob).
+async fn with_timeout_within<T>(
+    bound: Duration,
+    op: &'static str,
+    fut: impl Future<Output = Result<T, String>>,
+) -> Result<T, String> {
+    match tokio::time::timeout(bound, fut).await {
+        Ok(result) => result,
+        Err(_elapsed) => Err(format!(
+            "registry store unreachable: '{op}' got no answer \
+             within {bound:?}"
+        )),
+    }
+}
+
 /// One persisted registration (`registry-v1`).
 ///
 /// `registered_at_ms` is written by the server (never read back as truth):
 /// restore order is "oldest first", so a name re-registered twice ends on its
 /// latest registration, the way Kafka's compacted config topic ends on the
-/// last write.
+/// last write. The write path stamps it from
+/// [`ClickhouseSchemaStore::next_registered_at_ms`], which is strictly
+/// increasing and never steps back with the host clock — the version column
+/// of `ReplacingMergeTree` stays trustworthy through an NTP correction or a
+/// VM migration, not just through same-millisecond writes.
 #[derive(Debug, Clone, Row, Serialize, Deserialize)]
 pub struct Registration {
     pub name: String,
@@ -94,6 +158,28 @@ impl Registration {
             .map(|d| d.as_millis() as u64)
             .unwrap_or(0)
     }
+}
+
+/// Phase-1 shape of the two-phase replay fetch on Current tables: the
+/// bounded metadata read (`payload_len` MATERIALIZED included, payload
+/// excluded) that spends the byte budget server-side. The payload itself is
+/// fetched only in phase 2 ([`ClickhouseSchemaStore::payloads_for`]), for
+/// the rows the gate admits.
+#[derive(Debug, Clone, Row, Serialize, Deserialize)]
+pub struct ReplayMetaRow {
+    pub name: String,
+    pub source: String,
+    pub format: String,
+    pub registry_version: u16,
+    pub registered_at_ms: u64,
+    pub payload_len: u64,
+}
+
+/// Phase-2 pairing (name → payload) of the two-phase fetch.
+#[derive(Debug, Clone, Row, Serialize, Deserialize)]
+struct NamePayload {
+    name: String,
+    payload: String,
 }
 
 /// A replay gate. Three buckets, each conservative:
@@ -172,16 +258,23 @@ pub enum SchemaStore {
 }
 
 impl SchemaStore {
-    /// The one construction point: mode from the server config, client from
-    /// whatever built `AppState` this boot. Stays log-quiet: the boot-time
-    /// "no client in this server mode" notice belongs to `replay` (once per
-    /// boot), and per-request constructions must not spam it.
-    pub fn from_parts(mode: SchemaPersistenceMode, clickhouse_client: Option<Client>) -> Self {
+    /// The one construction point: mode from the server config, client and
+    /// role pool from whatever built `AppState` this boot. Stays log-quiet:
+    /// the boot-time "no client in this server mode" notice belongs to
+    /// `replay` (once per boot), and per-request constructions must not
+    /// spam it. The role pool rides along (`None` when this server mode has
+    /// none) so the endpoint-level `role` can resolve through the same
+    /// pools `/query` uses; boot replay itself never touches it.
+    pub fn from_parts(
+        mode: SchemaPersistenceMode,
+        clickhouse_client: Option<Client>,
+        role_pool: Option<std::sync::Arc<RoleConnectionPool>>,
+    ) -> Self {
         if mode == SchemaPersistenceMode::Clickhouse {
             return match clickhouse_client {
-                Some(client) => {
-                    SchemaStore::Clickhouse(Box::new(ClickhouseSchemaStore::new(client)))
-                }
+                Some(client) => SchemaStore::Clickhouse(Box::new(
+                    ClickhouseSchemaStore::with_role_pool(client, role_pool),
+                )),
                 None => SchemaStore::Off,
             };
         }
@@ -191,13 +284,20 @@ impl SchemaStore {
     /// Persist a YAML registration. `Err` = the store refused — the
     /// registration itself already succeeded in memory (the caller reports
     /// `persisted: false`). `Ok(())` = the row is stored (or the store is
-    /// `Off`, which no-ops by construction).
-    pub async fn save_yaml(&self, name: &str, yaml: &str) -> Result<(), String> {
+    /// `Off`, which no-ops by construction). `role` names a ClickHouse RBAC
+    /// role for the write (resolved through the server's role pool); `None`
+    /// or an unwired pool keeps the store's default client.
+    pub async fn save_yaml(
+        &self,
+        name: &str,
+        yaml: &str,
+        role: Option<&str>,
+    ) -> Result<(), String> {
         match self {
             SchemaStore::Off => Ok(()),
             SchemaStore::Clickhouse(store) => {
                 store
-                    .upsert(name, SOURCE_API_LOAD, FORMAT_YAML, yaml.to_string())
+                    .upsert(name, SOURCE_API_LOAD, FORMAT_YAML, yaml.to_string(), role)
                     .await
             }
         }
@@ -207,10 +307,13 @@ impl SchemaStore {
     /// the ClickHouse store reports success even when the name never had a
     /// row (`DELETE FROM` matches nothing there) — the end state is the same,
     /// so callers treat both as "not persisted anymore", not as an error.
-    pub async fn delete(&self, name: &str) -> Result<bool, String> {
+    /// `role` resolves the same way [`SchemaStore::save_yaml`]'s does; the
+    /// `Off` store answers `Ok(false)` (nothing was ever persisted there)
+    /// so a memory-path DELETE can still report `persisted: false` honestly.
+    pub async fn delete(&self, name: &str, role: Option<&str>) -> Result<bool, String> {
         match self {
             SchemaStore::Off => Ok(false),
-            SchemaStore::Clickhouse(store) => store.delete(name).await,
+            SchemaStore::Clickhouse(store) => store.delete(name, role).await,
         }
     }
 
@@ -255,12 +358,16 @@ pub struct ReplayFetch {
     /// Current-version, api-load rows, oldest first, within both budgets.
     pub restorable: Vec<Registration>,
     /// Rows whose `registry_version` is newer than this server (never
-    /// restored; the store warns with each name at fetch time).
+    /// restored; the store warns with each name at fetch time). Their
+    /// payload is not fetched on Current tables (nobody reads it; on Legacy
+    /// tables the single-phase select materializes it, as before — see
+    /// `load_replay_rows`).
     pub future_versioned: Vec<Registration>,
     /// Current-version rows whose `source` this server does not claim
     /// (`!= api-load`) — never restored either: the writer is unknown, and
     /// unknown writers' payloads are never guessed at. The store warns with
-    /// each name and source at fetch time.
+    /// each name and source at fetch time. Same payload note as
+    /// `future_versioned`.
     pub unknown_source: Vec<Registration>,
     /// Deduped rows in the table (`FINAL` count) — rows beyond either
     /// budget were never fetched, so this may exceed the vectors' lengths.
@@ -270,30 +377,87 @@ pub struct ReplayFetch {
     pub fetched: usize,
 }
 
+/// What the registry's table is capable of (probed once per process):
+/// `Current` carries the `payload_len` column (a MATERIALIZED byte length)
+/// and gets the two-phase replay fetch; `Legacy` is any table provisioned
+/// without it — by an older server or a hand-written DDL — kept fully
+/// working through the single-phase fetch (`load_replay_rows_inner`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TableLayout {
+    Legacy,
+    Current,
+}
+
 /// ClickHouse-backed store. Statement text is fixed; every operator-supplied
 /// value rides in as a bound parameter — schema names are operator input and
 /// are never interpolated into SQL text.
 pub struct ClickhouseSchemaStore {
+    /// The default client: boot replay and every role-less op. Built with
+    /// `wait_end_of_query` so its DDL answers before the next step runs.
     client: Client,
-    /// Serializes table creation. A CREATE TABLE IF NOT EXISTS per store op is
-    /// racy when two first-boot registrations run concurrently (one can lose
-    /// the metadata race and fail the op, degrading `persisted: false`); one
-    /// write path at a time removes the race without error-string sniffing.
-    table_creation: tokio::sync::Mutex<()>,
+    /// Role pools for role-scoped writes (`role` on the two registry
+    /// endpoints), resolved exactly like `/query` resolves its role. `None`
+    /// keeps every write on the default client.
+    role_pool: Option<std::sync::Arc<RoleConnectionPool>>,
+    /// One-time table preparation. `None` = not yet ensured; a *failed*
+    /// ensure stays `None` and the next op retries it, so a least-privilege
+    /// boot (no CREATE grant, table absent) degrades its first ops but
+    /// recovers on the first op after the table appears — including a
+    /// role-privileged one. The mutex serializes the DDL/probe pair so it
+    /// runs once per process on success: issuing a CREATE before every op
+    /// (the previous design) both blocked the hot path on its mutex and
+    /// raced concurrent first-boot registrations against the metadata.
+    table_prepared: tokio::sync::Mutex<Option<TableLayout>>,
+    /// Floor for `registered_at_ms`: the table's high-water mark at ensure
+    /// time, raised by every write this process makes (see
+    /// [`ClickhouseSchemaStore::next_registered_at_ms`]).
+    registered_at_floor: AtomicU64,
 }
 
 impl ClickhouseSchemaStore {
     pub fn new(client: Client) -> Self {
-        // DDL must not be fire-and-forget here: a store that answers before
-        // its table exists makes the first registration racy.
+        Self::with_role_pool(client, None)
+    }
+
+    /// DDL must not be fire-and-forget here: a store that answers before
+    /// its table exists makes the first registration racy.
+    pub fn with_role_pool(
+        client: Client,
+        role_pool: Option<std::sync::Arc<RoleConnectionPool>>,
+    ) -> Self {
         Self {
             client: client.clone().with_option("wait_end_of_query", "1"),
-            table_creation: tokio::sync::Mutex::new(()),
+            role_pool,
+            table_prepared: tokio::sync::Mutex::new(None),
+            registered_at_floor: AtomicU64::new(0),
         }
     }
 
-    async fn ensure_table(&self) -> Result<(), String> {
-        let _guard = self.table_creation.lock().await;
+    /// The client a store write runs under. `None` keeps the default client
+    /// (round-1 behavior, `wait_end_of_query` included); a role resolves
+    /// through the role pool exactly as `/query` does, with the same
+    /// `wait_end_of_query` discipline layered on the per-role client so
+    /// first-use DDL stays synchronous. Boot replay deliberately never
+    /// resolves a role: a read-only default user must be able to restore.
+    async fn client_for_write(&self, role: Option<&str>) -> Client {
+        match (role, &self.role_pool) {
+            (None, _) | (Some(_), None) => self.client.clone(),
+            (Some(role), Some(pool)) => pool
+                .get_client(Some(role))
+                .await
+                .with_option("wait_end_of_query", "1"),
+        }
+    }
+
+    /// Create the registry table once per process (idempotent by virtue of
+    /// `IF NOT EXISTS`). `Err` is not fatal by itself — a least-privilege
+    /// user may lack the CREATE grant while the table exists.
+    async fn try_create_table(&self, client: &Client) -> Result<(), String> {
+        // `payload_len` rides on fresh tables: a MATERIALIZED byte length the
+        // replay fetch uses to bound its payload transfer without touching
+        // the payloads at all (the two-phase fetch below). Appended last so a
+        // full-width insert's column order is unchanged; MATERIALIZED
+        // columns are never part of an insert.
         let create = format!(
             "CREATE TABLE IF NOT EXISTS {REGISTRY_TABLE} (\
              name String, \
@@ -301,15 +465,113 @@ impl ClickhouseSchemaStore {
              format LowCardinality(String), \
              payload String, \
              registry_version UInt16, \
-             registered_at_ms UInt64\
+             registered_at_ms UInt64, \
+             payload_len UInt64 MATERIALIZED length(payload)\
              ) ENGINE = ReplacingMergeTree(registered_at_ms) ORDER BY name"
         );
-        self.client
+        client
             .query(&create)
             .execute()
             .await
-            .map_err(|e| format!("registry table create failed: {e}"))?;
-        Ok(())
+            .map(|_| ())
+            .map_err(|e| format!("registry table create failed: {e}"))
+    }
+
+    /// One cheap probe pair answers both "does the table exist (and can we
+    /// read it)" and "which layout" without depending on `system.columns`
+    /// (some hardened setups restrict system tables). The LIMIT 0 on the
+    /// column probe keeps it metadata-only.
+    async fn detect_layout(&self, client: &Client) -> Result<TableLayout, String> {
+        match client
+            .query(&format!("SELECT payload_len FROM {REGISTRY_TABLE} LIMIT 0"))
+            .execute()
+            .await
+        {
+            Ok(_) => Ok(TableLayout::Current),
+            Err(_) => client
+                .query(&format!("SELECT name FROM {REGISTRY_TABLE} LIMIT 0"))
+                .execute()
+                .await
+                .map(|_| TableLayout::Legacy)
+                .map_err(|e| format!("registry table probe failed: {e}")),
+        }
+    }
+
+    /// Prepare the registry table exactly once per process. The CREATE is
+    /// attempted first; when it fails (no CREATE grant, in-flight DDL, DDL
+    /// contention) the read probe decides whether the table already exists —
+    /// the least-privilege path a DBA-provisioned table takes, and the
+    /// reason a server whose user cannot CREATE still boots, replays, and
+    /// persists. A successful ensure caches the layout for the process's
+    /// lifetime; a failed one stays uncached and is retried by the next op.
+    async fn ensure_table(&self, client: &Client) -> Result<TableLayout, String> {
+        let mut prepared = self.table_prepared.lock().await;
+        if let Some(layout) = *prepared {
+            return Ok(layout);
+        }
+
+        let create = self.try_create_table(client).await;
+        match self.detect_layout(client).await {
+            Ok(layout) => {
+                self.seed_registered_at_floor(client).await;
+                *prepared = Some(layout);
+                Ok(layout)
+            }
+            Err(probe_err) => match create {
+                Ok(()) => Err(probe_err),
+                Err(create_err) => Err(format!("{create_err} (table probe: {probe_err})")),
+            },
+        }
+    }
+
+    /// Raise the monotonic floor to the table's high-water mark, so values
+    /// this process writes are never below what any earlier process wrote —
+    /// the fix for a host clock that stepped back between boots. `max` with
+    /// the floor is read over all parts (no `FINAL`): any part's value can
+    /// only raise it, and a higher floor is always safe.
+    async fn seed_registered_at_floor(&self, client: &Client) {
+        match client
+            .query(&format!(
+                "SELECT max(registered_at_ms) FROM {REGISTRY_TABLE}"
+            ))
+            .fetch_one::<u64>()
+            .await
+        {
+            Ok(high_water) => {
+                self.registered_at_floor
+                    .fetch_max(high_water, Ordering::Relaxed);
+            }
+            Err(e) => {
+                log::warn!(
+                    "could not read the registry's registered-at high-water \
+                     mark ({e}); timestamps stay monotonic within this boot \
+                     only"
+                );
+            }
+        }
+    }
+
+    /// Strictly increasing, even when the host clock steps back: each call
+    /// returns `max(now, floor + 1)` under a CAS loop, so a boot whose clock
+    /// regressed writes values above the table's high-water mark instead of
+    /// randomly losing `ReplacingMergeTree`'s collapse to an old row. Within
+    /// one boot the values can only rise (`floor` is carried by every
+    /// successful CAS).
+    fn next_registered_at_ms(&self) -> u64 {
+        let now = Registration::now_ms();
+        let mut current = self.registered_at_floor.load(Ordering::Relaxed);
+        loop {
+            let next = if now > current { now } else { current + 1 };
+            match self.registered_at_floor.compare_exchange(
+                current,
+                next,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => return next,
+                Err(actual) => current = actual,
+            }
+        }
     }
 
     async fn upsert(
@@ -318,18 +580,34 @@ impl ClickhouseSchemaStore {
         source: &str,
         format: &str,
         payload: String,
+        role: Option<&str>,
     ) -> Result<(), String> {
-        self.ensure_table().await?;
+        with_timeout(
+            "registry upsert",
+            self.upsert_inner(name, source, format, payload, role),
+        )
+        .await
+    }
+
+    async fn upsert_inner(
+        &self,
+        name: &str,
+        source: &str,
+        format: &str,
+        payload: String,
+        role: Option<&str>,
+    ) -> Result<(), String> {
+        let client = self.client_for_write(role).await;
+        self.ensure_table(&client).await?;
         let row = Registration {
             name: name.to_string(),
             source: source.to_string(),
             format: format.to_string(),
             payload,
             registry_version: REGISTRY_VERSION,
-            registered_at_ms: Registration::now_ms(),
+            registered_at_ms: self.next_registered_at_ms(),
         };
-        let mut insert = self
-            .client
+        let mut insert = client
             .insert(REGISTRY_TABLE)
             .map_err(|e| format!("registry insert failed: {e}"))?;
         insert
@@ -350,6 +628,10 @@ impl ClickhouseSchemaStore {
     /// probe into a DDL side effect. A missing table errors; the caller
     /// treats that as `false` (nothing was ever persisted there).
     pub async fn exists(&self, name: &str) -> Result<bool, String> {
+        with_timeout("registry exists probe", self.exists_inner(name)).await
+    }
+
+    async fn exists_inner(&self, name: &str) -> Result<bool, String> {
         let count: u64 = self
             .client
             .query(&format!(
@@ -366,26 +648,53 @@ impl ClickhouseSchemaStore {
     /// (ReplacingMergeTree's compaction, read live — the same idiom the
     /// legacy `graph_catalog` read uses). The version column
     /// (`registered_at_ms`) makes the collapse deterministic: two same-name
-    /// writes can land in the same millisecond, and with the version column
-    /// the merge keeps the one registered later in the same part cycle.
+    /// writes can land in the same millisecond, and — with the monotonic
+    /// stamping of [`ClickhouseSchemaStore::next_registered_at_ms`] — a
+    /// clock that stepped back cannot hand the collapse to an older row.
     ///
-    /// Both budgets bound the fetch itself: the inner select runs a
-    /// cumulative `sum(length(payload))` window over the replay order
-    /// (`registered_at_ms, name`), and only rows whose cumulative payload
-    /// still fits `max_bytes` are materialized, then at most `max_rows`.
-    /// A boot with a 64 MiB budget pulls at most 64 MiB of payload over the
-    /// wire, whatever the table holds — the cap cannot be outflanked by a
-    /// fat table. Budget spend is deliberately shared by every fetched row
-    /// kind (a foreign or future-versioned payload is materialized too, so
-    /// it spends the same budget): the bound is on boot work, not only on
-    /// restoration. Rows beyond either cap are counted in `total_rows` vs
-    /// `fetched`, never silently dropped.
+    /// Both budgets bound the fetch itself, whatever the table's layout:
+    /// the byte cap cuts inside the statement, before any payload
+    /// transfer, and a boot with a 64 MiB budget pulls at most 64 MiB of
+    /// payload over the wire, whatever the table holds — the cap cannot be
+    /// outflanked by a fat table. Rows beyond either cap are counted in
+    /// `total_rows` vs `fetched`, never silently dropped.
+    ///
+    /// Two fetch shapes (layout detected once per process at
+    /// [`ensure_table`]):
+    /// - Current tables (`payload_len` column): a **two-phase** fetch. Phase
+    ///   1 reads only metadata plus `payload_len` — no payload crosses the
+    ///   wire — and spends the byte budget server-side with a cumulative
+    ///   `sum(payload_len)` window over the replay order. Phase 2 fetches
+    ///   payloads (by bound name) for the rows that can actually restore.
+    ///   Future-versioned and foreign-sourced rows spend budget but never
+    ///   pay the payload transfer, and the server materializes payloads for
+    ///   no row whose bytes exceed the budget (a 300-row × 900 KiB table
+    ///   used to materialize ~1.13 GiB server-side before answering).
+    /// - Legacy tables: the single-phase select that reads payload with the
+    ///   metadata (`sum(length(payload))` window), exactly as earlier
+    ///   versions of this module did — a provisioned table keeps working,
+    ///   with the older memory profile.
+    ///
+    /// Budget spend stays shared by every fetched row kind in both shapes:
+    /// the bound is on boot work, not only on restoration.
     pub async fn load_replay_rows(
         &self,
         max_rows: usize,
         max_bytes: u64,
     ) -> Result<ReplayFetch, String> {
-        self.ensure_table().await?;
+        with_timeout(
+            "registry replay read",
+            self.load_replay_rows_inner(max_rows, max_bytes),
+        )
+        .await
+    }
+
+    async fn load_replay_rows_inner(
+        &self,
+        max_rows: usize,
+        max_bytes: u64,
+    ) -> Result<ReplayFetch, String> {
+        let layout = self.ensure_table(&self.client).await?;
 
         // Count first so "N rows skipped over the budget" is an exact
         // statement, not a guess. Two small reads instead of one unbounded
@@ -399,25 +708,64 @@ impl ClickhouseSchemaStore {
             .await
             .map_err(|e| format!("registry read failed: {e}"))?;
 
-        let select = format!(
-            "SELECT name, source, format, payload, registry_version, \
-             registered_at_ms FROM (\
-             SELECT name, source, format, payload, registry_version, \
-                    registered_at_ms, \
-                    sum(length(payload)) OVER (ORDER BY registered_at_ms, \
-                     name) AS cum_bytes \
-             FROM {REGISTRY_TABLE} FINAL\
-             ) WHERE cum_bytes <= {max_bytes} \
-             ORDER BY registered_at_ms, name LIMIT {max_rows}"
-        );
-        let rows: Vec<Registration> = self
-            .client
-            .query(&select)
-            .fetch_all::<Registration>()
-            .await
-            .map_err(|e| format!("registry read failed: {e}"))?;
+        // Phase 1 (both layouts): the budgeted, ordered row set. A Current
+        // table reads metadata + payload_len only and hands the payloads to
+        // phase 2; a Legacy table reads payload along with the metadata —
+        // the one shape change between them.
+        let mut rows: Vec<Registration> = match layout {
+            TableLayout::Current => {
+                let select = format!(
+                    "SELECT name, source, format, registry_version, \
+                     registered_at_ms, payload_len FROM (\
+                     SELECT name, source, format, registry_version, \
+                            registered_at_ms, payload_len, \
+                            sum(payload_len) OVER (ORDER BY registered_at_ms, \
+                             name) AS cum_bytes \
+                     FROM {REGISTRY_TABLE} FINAL\
+                     ) WHERE cum_bytes <= {max_bytes} \
+                     ORDER BY registered_at_ms, name LIMIT {max_rows}"
+                );
+                let meta: Vec<ReplayMetaRow> = self
+                    .client
+                    .query(&select)
+                    .fetch_all::<ReplayMetaRow>()
+                    .await
+                    .map_err(|e| format!("registry read failed: {e}"))?;
+                // Payloads are not known yet (phase 2 fills them, restorable
+                // rows only); the gate runs on the metadata columns, which
+                // is all it consults.
+                meta.into_iter()
+                    .map(|meta| Registration {
+                        name: meta.name,
+                        source: meta.source,
+                        format: meta.format,
+                        payload: String::new(),
+                        registry_version: meta.registry_version,
+                        registered_at_ms: meta.registered_at_ms,
+                    })
+                    .collect()
+            }
+            TableLayout::Legacy => {
+                let select = format!(
+                    "SELECT name, source, format, payload, registry_version, \
+                     registered_at_ms FROM (\
+                     SELECT name, source, format, payload, registry_version, \
+                            registered_at_ms, \
+                            sum(length(payload)) OVER (ORDER BY registered_at_ms, \
+                             name) AS cum_bytes \
+                     FROM {REGISTRY_TABLE} FINAL\
+                     ) WHERE cum_bytes <= {max_bytes} \
+                     ORDER BY registered_at_ms, name LIMIT {max_rows}"
+                );
+                self.client
+                    .query(&select)
+                    .fetch_all::<Registration>()
+                    .await
+                    .map_err(|e| format!("registry read failed: {e}"))?
+            }
+        };
 
-        let gate = gate_for_replay(rows);
+        let mut gate = gate_for_replay(std::mem::take(&mut rows));
         for row in &gate.future_versioned {
             log::warn!(
                 "registry row '{}' was written by registry_version {} \
@@ -434,6 +782,43 @@ impl ClickhouseSchemaStore {
                 log_safe(&row.source)
             );
         }
+
+        // Phase 2 (Current tables only): payload transfer for the rows the
+        // gate admits — the only rows whose payload anyone reads. A name
+        // that vanished between the two reads (a concurrent delete or
+        // rewrite) is dropped with an exact WARN rather than restored
+        // empty; rows beyond the budget were never in phase 1 at all.
+        if matches!(layout, TableLayout::Current) {
+            let payloads = self.payloads_for(&gate.restorable).await?;
+            let mut with_payload = Vec::with_capacity(gate.restorable.len());
+            let mut vanished = 0usize;
+            for row in std::mem::take(&mut gate.restorable) {
+                match payloads.get(&row.name) {
+                    Some(payload) => {
+                        let mut row = row;
+                        row.payload = payload.clone();
+                        with_payload.push(row);
+                    }
+                    None => {
+                        vanished += 1;
+                        log::warn!(
+                            "registry row '{}' vanished between the replay's \
+                             metadata and payload reads; not restored this \
+                             boot",
+                            log_safe(&row.name)
+                        );
+                    }
+                }
+            }
+            gate.restorable = with_payload;
+            if vanished > 0 {
+                log::warn!(
+                    "replay's payload pass lost {vanished} row(s) to \
+                     concurrent changes"
+                );
+            }
+        }
+
         Ok(ReplayFetch {
             fetched: gate.restorable.len()
                 + gate.future_versioned.len()
@@ -445,16 +830,47 @@ impl ClickhouseSchemaStore {
         })
     }
 
+    /// Phase 2 of the two-phase fetch: payloads for exactly these rows,
+    /// by bound parameters (names are operator input — never interpolated
+    /// into SQL text). The bound name list is capped by phase 1's
+    /// `max_rows`, so the statement stays small however fat the table is.
+    async fn payloads_for(&self, rows: &[Registration]) -> Result<HashMap<String, String>, String> {
+        if rows.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let placeholders = vec!["?"; rows.len()].join(", ");
+        let mut query = self.client.query(&format!(
+            "SELECT name, payload FROM {REGISTRY_TABLE} FINAL \
+             WHERE name IN ({placeholders})"
+        ));
+        for row in rows {
+            query = query.bind(row.name.clone());
+        }
+        let pairs: Vec<NamePayload> = query
+            .fetch_all::<NamePayload>()
+            .await
+            .map_err(|e| format!("registry read failed: {e}"))?;
+        Ok(pairs
+            .into_iter()
+            .map(|pair| (pair.name, pair.payload))
+            .collect())
+    }
+
     /// `DELETE FROM` (lightweight delete) first; the mutation-based
     /// `ALTER TABLE ... DELETE` is the fallback for servers that disable
     /// lightweight deletes. Both are synchronous before returning. Success is
     /// reported even when the name has no row (an idempotent end state), and
     /// note the write-on-read surprise: on a database where nothing was ever
-    /// registered, this creates the (empty) registry table.
-    pub async fn delete(&self, name: &str) -> Result<bool, String> {
-        self.ensure_table().await?;
-        let lightweight = self
-            .client
+    /// registered, this creates the (empty) registry table. `role` resolves
+    /// the write client (see [`ClickhouseSchemaStore::client_for_write`]).
+    pub async fn delete(&self, name: &str, role: Option<&str>) -> Result<bool, String> {
+        with_timeout("registry delete", self.delete_inner(name, role)).await
+    }
+
+    async fn delete_inner(&self, name: &str, role: Option<&str>) -> Result<bool, String> {
+        let client = self.client_for_write(role).await;
+        self.ensure_table(&client).await?;
+        let lightweight = client
             .query(&format!("DELETE FROM {REGISTRY_TABLE} WHERE name = ?"))
             .bind(name.to_string())
             .with_option("wait_end_of_query", "1")
@@ -463,7 +879,7 @@ impl ClickhouseSchemaStore {
         if lightweight.is_ok() {
             return Ok(true);
         }
-        self.client
+        client
             .query(&format!(
                 "ALTER TABLE {REGISTRY_TABLE} DELETE WHERE name = ?"
             ))
@@ -478,30 +894,64 @@ impl ClickhouseSchemaStore {
 
 // -------------------------------------------------------------- write paths
 
+/// What `POST /schemas/load` reports about durability. `persisted` is the
+/// round-1 field, unchanged; `unrestorable_reason` is additive (upgrades
+/// only ever add fields — old clients ignore it, the off-mode body stays
+/// byte-identical): when set, the caller emits `restorable: false` next to
+/// `persisted: true`, for a row that stored fine but can never boot-restore
+/// under the current configuration.
+pub struct PersistOutcome {
+    pub persisted: bool,
+    /// `None` = ordinary restorable row (no extra response fields).
+    pub unrestorable_reason: Option<String>,
+}
+
+/// The deterministic part of "can this row ever restore": a single payload
+/// whose own bytes already exceed the byte budget spends more than the
+/// whole budget by itself (the cumulative window sums over its own row),
+/// so no boot's fetch can admit it. Config-shadowing of a configured name
+/// is deliberately NOT predicted here — the config file can change between
+/// now and the next boot, and boot replay's `config-shadowed` bucket (spec
+/// §Replay) is the authoritative, documented resolution for it. The
+/// response states what this server guarantees, not a guess about future
+/// operator edits.
+fn unrestorable_reason_if_any(yaml_len: usize, max_bytes: u64) -> Option<String> {
+    (yaml_len as u64 > max_bytes).then(|| {
+        format!(
+            "payload of {yaml_len} bytes exceeds CLICKGRAPH_SCHEMA_REPLAY_MAX_BYTES \
+             ({max_bytes}); the stored row can never be fetched at boot under \
+             the current configuration"
+        )
+    })
+}
+
 /// Persist after a successful `POST /schemas/load`.
 ///
 /// Takes the server's one shared store (`AppState.schema_store`) — hoisting
-/// the instance is what makes the table-creation mutex per process instead
-/// of per request (and keeps one serialization point for concurrent first
-/// registrations). The config rides along only to keep the observable
+/// the instance is what makes the table-preparation ensure per process
+/// instead of per request. The config rides along to keep the observable
 /// contract exact: with `clickhouse` mode on a server that carries no
 /// ClickHouse client (the embedded and other no-client modes — see
-/// `run_server`'s `AppState` construction), the answer is `Some(false)`
-/// with a debug trail — the attempt was real, the mode just has nothing to
-/// persist into — while a genuinely disabled mode answers `None` so the
-/// response body stays byte-identical to a server without the feature.
+/// `run_server`'s `AppState` construction), the answer is
+/// `Some(persisted: false)` with a debug trail — the attempt was real, the
+/// mode just has nothing to persist into — while a genuinely disabled mode
+/// answers `None` so the response body stays byte-identical to a server
+/// without the feature.
 ///
 /// `None` = persistence is off (the caller must leave the response body
-/// byte-identical to a server without the feature). `Some(true/false)` = the
-/// attempt happened and the field says whether it stuck. Store failures
-/// degrade to `Some(false)` plus a WARN: the schema itself is live either
-/// way, and a flaky store must not make the registration API flaky.
+/// byte-identical to a server without the feature). `Some` = the attempt
+/// happened; `persisted` says whether the store took the row. Store
+/// failures degrade to `persisted: false` plus a WARN: the schema itself
+/// is live either way, and a flaky store must not make the registration
+/// API flaky. `role` is the optional ClickHouse RBAC role for the store
+/// write (`role` on the request body); boot replay never uses it.
 pub async fn persist_yaml_after_load(
     config: &ServerConfig,
     store: &SchemaStore,
     schema_name: &str,
     yaml_content: &str,
-) -> Option<bool> {
+    role: Option<&str>,
+) -> Option<PersistOutcome> {
     match (config.schema_persistence, store) {
         (SchemaPersistenceMode::Off, _) => None,
         // `clickhouse` mode but no client in this server mode: the shared
@@ -515,7 +965,10 @@ pub async fn persist_yaml_after_load(
                  mode — '{}' stays memory-only",
                 log_safe(schema_name)
             );
-            Some(false)
+            Some(PersistOutcome {
+                persisted: false,
+                unrestorable_reason: None,
+            })
         }
         (SchemaPersistenceMode::Clickhouse, SchemaStore::Clickhouse(clickhouse_store)) => {
             let outcome = clickhouse_store
@@ -524,6 +977,7 @@ pub async fn persist_yaml_after_load(
                     SOURCE_API_LOAD,
                     FORMAT_YAML,
                     yaml_content.to_string(),
+                    role,
                 )
                 .await;
             if let Err(e) = &outcome {
@@ -533,7 +987,20 @@ pub async fn persist_yaml_after_load(
                     log_safe(schema_name)
                 );
             }
-            Some(outcome.is_ok())
+            // The never-restorable note rides only on an actually stored
+            // row (a persisted:false answer already says what happened).
+            Some(PersistOutcome {
+                persisted: outcome.is_ok(),
+                unrestorable_reason: outcome
+                    .is_ok()
+                    .then(|| {
+                        unrestorable_reason_if_any(
+                            yaml_content.len(),
+                            config.schema_replay_max_bytes,
+                        )
+                    })
+                    .flatten(),
+            })
         }
     }
 }
@@ -853,5 +1320,127 @@ mod tests {
         assert!(fetch.restorable.is_empty());
         assert!(fetch.future_versioned.is_empty());
         assert!(fetch.unknown_source.is_empty());
+    }
+
+    // ------------------------------------------------ registration clock
+
+    #[test]
+    fn timestamps_rise_even_in_the_same_millisecond() {
+        // Many rapid calls land in one millisecond: wall time alone would
+        // tie. The server-side floor makes every stamp strictly higher than
+        // the last (the CAS loop carries it).
+        let store = ClickhouseSchemaStore::new(clickhouse::Client::default());
+        let mut last = 0u64;
+        for _ in 0..1_000 {
+            let stamp = store.next_registered_at_ms();
+            assert!(stamp > last, "timestamps must strictly increase");
+            last = stamp;
+        }
+    }
+
+    #[test]
+    fn a_seeded_floor_never_steps_back_below_the_table() {
+        // Simulates a boot whose host clock stepped back since the last
+        // process: the floor carries the table's high-water mark (seeded at
+        // ensure time), so the next stamp is above anything earlier boots
+        // wrote — an older row cannot win ReplacingMergeTree's collapse.
+        let store = ClickhouseSchemaStore::new(clickhouse::Client::default());
+        let high_water = 9_000_000_000_000u64; // far past wall-clock ms today
+        store
+            .registered_at_floor
+            .fetch_max(high_water, Ordering::Relaxed);
+        assert!(
+            store.next_registered_at_ms() > high_water,
+            "the floor must push every stamp past {high_water}"
+        );
+    }
+
+    #[test]
+    fn contended_timestamps_never_repeat() {
+        // Eight threads stamping concurrently: the CAS loop must hand out a
+        // single strictly-increasing chain across all of them (two writers
+        // in the same millisecond is exactly the old tie case).
+        use std::sync::Arc;
+        let store = Arc::new(ClickhouseSchemaStore::new(clickhouse::Client::default()));
+        let handles: Vec<_> = (0..8)
+            .map(|_| {
+                let store = store.clone();
+                std::thread::spawn(move || {
+                    (0..250)
+                        .map(|_| store.next_registered_at_ms())
+                        .collect::<Vec<u64>>()
+                })
+            })
+            .collect();
+        let mut all: Vec<u64> = handles
+            .into_iter()
+            .flat_map(|handle| handle.join().expect("stamp thread"))
+            .collect();
+        all.sort_unstable();
+        assert!(
+            all.windows(2).all(|pair| pair[0] < pair[1]),
+            "2000 contended stamps must form one strictly-increasing chain"
+        );
+    }
+
+    // ------------------------------------------------------- response truth
+
+    #[test]
+    fn reserved_names_are_rejected_up_front() {
+        for name in RESERVED_SCHEMA_NAMES {
+            assert!(is_reserved_schema_name(name));
+        }
+        assert!(!is_reserved_schema_name("loads"), "exact match only");
+        assert!(!is_reserved_schema_name("Load "), "exact match only");
+        assert!(!is_reserved_schema_name("my-load"), "exact match only");
+    }
+
+    #[test]
+    fn unrestorable_reason_only_appears_past_the_byte_budget() {
+        assert!(unrestorable_reason_if_any(10, 100).is_none());
+        assert!(unrestorable_reason_if_any(100, 100).is_none(), "equal fits");
+        let reason = unrestorable_reason_if_any(101, 100).expect("over budget");
+        assert!(
+            reason.contains("CLICKGRAPH_SCHEMA_REPLAY_MAX_BYTES"),
+            "the reason must name the knob: {reason}"
+        );
+    }
+
+    // -------------------------------------------------- store-call timeout
+
+    #[tokio::test]
+    async fn a_store_call_that_never_answers_lands_in_the_unreachable_error() {
+        let err = with_timeout_within(
+            Duration::from_millis(20),
+            "upsert",
+            std::future::pending::<Result<(), String>>(),
+        )
+        .await
+        .expect_err("a pending store call must hit the bound");
+        assert!(
+            err.contains("store unreachable"),
+            "the mapped error feeds the shipped persisted:false path: {err}"
+        );
+        assert!(
+            err.contains("'upsert'"),
+            "the op name trails for logs: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_store_call_within_the_bound_passes_through_unchanged() {
+        let ok: Result<u32, String> =
+            with_timeout_within(Duration::from_secs(10), "exists-probe", async { Ok(7) }).await;
+        assert_eq!(ok, Ok(7), "success values are untouched");
+        let inner: Result<u32, String> =
+            with_timeout_within(Duration::from_secs(10), "replay-read", async {
+                Err("inner detail".to_string())
+            })
+            .await;
+        assert_eq!(
+            inner.unwrap_err(),
+            "inner detail",
+            "an inner error must not be rewritten as a timeout"
+        );
     }
 }
