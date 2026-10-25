@@ -278,6 +278,10 @@ pub fn extract_yaml(response: &str) -> String {
 mod tests {
     use super::*;
 
+    /// The two tests that read the process's environment run one at a time:
+    /// one's `OPENAI_API_KEY` made the other's `from_env()` find a config.
+    static ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn test_extract_yaml_plain() {
         let input = "name: test\nversion: \"1.0\"";
@@ -304,13 +308,16 @@ mod tests {
 
     #[test]
     fn test_config_anthropic_default() {
+        let _env = ENV.lock().unwrap_or_else(|e| e.into_inner());
         std::env::remove_var("ANTHROPIC_API_KEY");
+        std::env::remove_var("OPENAI_API_KEY");
         std::env::remove_var("CLICKGRAPH_LLM_PROVIDER");
         assert!(LlmConfig::from_env().is_none());
     }
 
     #[test]
     fn test_config_openai_provider() {
+        let _env = ENV.lock().unwrap_or_else(|e| e.into_inner());
         // Save and clear existing env
         let saved_anthropic = std::env::var("ANTHROPIC_API_KEY").ok();
         let saved_openai = std::env::var("OPENAI_API_KEY").ok();
