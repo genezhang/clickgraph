@@ -3331,6 +3331,25 @@ graph_schema:
             ids.get_element_id(rel.as_i64().unwrap()).as_deref(),
             Some("FOLLOWS:1->2-")
         );
+        // An integer key's number holds its bits, up to 2^31 and beyond: not
+        // kept, and read back from the number. A string key of digits, and a
+        // key of a label not in the schema, are kept.
+        for (text, bits) in [
+            ("Num:7-", true),
+            ("Num:2336468743926-", true),
+            ("Account:12345678901-", false),
+            ("Nowhere:5-", false),
+        ] {
+            let n = number(&mut ids, Value::from(text)).as_i64().unwrap();
+            assert_eq!(ids.get_element_id(n).is_none(), bits, "{text}");
+        }
+        let n = number(&mut ids, Value::from("Num:2336468743926-"))
+            .as_i64()
+            .unwrap();
+        assert_eq!(
+            super::super::id_mapper::resolve_node_id(&ids, Some(&schema), n),
+            Some(("Num".to_string(), "2336468743926".to_string()))
+        );
         // NULL stays NULL.
         assert_eq!(number(&mut ids, Value::Null), Value::Null);
     }

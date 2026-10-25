@@ -550,11 +550,11 @@ pub fn resolve_node_id(
     if let Some(schema) = schema {
         use crate::graph_catalog::schema_types::SchemaType;
         let Ok(node_schema) = schema.node_schema(&label) else {
-            log::warn!("id() decode: label '{}' not found in schema", label);
+            log::debug!("id() decode: label '{}' not found in schema", label);
             return None;
         };
         if !matches!(node_schema.node_id.dtype, SchemaType::Integer) {
-            log::warn!(
+            log::debug!(
                 "id() decode: skipping {}:{} - ID type '{:?}' is not Integer",
                 label,
                 id_str,

@@ -204,6 +204,7 @@ impl Database {
         schema: Arc<GraphSchema>,
         config: SystemConfig,
     ) -> Result<Self, EmbeddedError> {
+        preregister_labels(&schema);
         let (runtime, executor) = open_chdb_session(&config)?;
         let remote_executor = Self::build_remote_executor(&runtime, config.remote.as_ref())?;
         Self::finish_chdb(schema, runtime, executor, remote_executor, Vec::new())
@@ -359,6 +360,7 @@ impl Database {
         schema: Arc<GraphSchema>,
         executor: Arc<dyn QueryExecutor>,
     ) -> Result<Self, EmbeddedError> {
+        preregister_labels(&schema);
         Ok(Database {
             executor,
             remote_executor: None,
@@ -768,6 +770,45 @@ graph_schema:
         };
         let (alpha, mid, zeta) = (code("I5bAlpha"), code("I5bMid"), code("I5bZeta"));
         assert!(alpha < mid && mid < zeta, "{alpha:?} {mid:?} {zeta:?}");
+    }
+
+    /// ... through every constructor that builds or takes a schema: a
+    /// library that opens its schema by `new_remote` / `new` (`build_graph_schema`)
+    /// or `from_executor` numbers as the server does.
+    #[test]
+    fn every_way_to_open_a_schema_registers_its_labels_in_order() {
+        let yaml = |a: &str, z: &str| {
+            format!(
+                "name: db_codes2\ngraph_schema:\n  nodes:\n    \
+                 - {{label: {z}, database: d, table: z, node_id: id, property_mappings: {{id: id}}}}\n    \
+                 - {{label: {a}, database: d, table: a, node_id: id, property_mappings: {{id: id}}}}\n  edges: []\n"
+            )
+        };
+        let code = |label: &str| {
+            clickgraph::utils::id_encoding::LABEL_CODE_REGISTRY
+                .read()
+                .expect("registry")
+                .get_code(label)
+        };
+        // build_graph_schema (new_remote, new)
+        let config: GraphSchemaConfig =
+            GraphSchemaConfig::from_yaml_str(&yaml("I5bBuildA", "I5bBuildZ")).expect("config");
+        let runtime = build_runtime().expect("runtime");
+        let readers = ColumnReaders {
+            sources: None,
+            tables: None,
+        };
+        build_graph_schema(&config, readers, &runtime).expect("schema");
+        let (a, z) = (code("I5bBuildA"), code("I5bBuildZ"));
+        assert!(a.is_some() && a < z, "{a:?} {z:?}");
+        // from_executor (a schema built by the caller)
+        let schema = GraphSchemaConfig::from_yaml_str(&yaml("I5bExecA", "I5bExecZ"))
+            .expect("config")
+            .to_graph_schema()
+            .expect("schema");
+        Database::from_executor(Arc::new(schema), Arc::new(NullExecutor)).expect("open");
+        let (a, z) = (code("I5bExecA"), code("I5bExecZ"));
+        assert!(a.is_some() && a < z, "{a:?} {z:?}");
     }
 
     #[test]
