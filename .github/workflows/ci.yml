@@ -64,6 +64,21 @@ jobs:
         echo "ClickHouse failed to start"
         exit 1
 
+    # Schema persistence live tier (#1519 review): the schema_registry_tests
+    # module skips itself without CLICKHOUSE_URL, so with ClickHouse up this
+    # step runs the real store tests — including the foreign/future-row
+    # bucket test that goes red if the replay gate stops checking, and the
+    # two-phase payload fetch. Same env contract as the server step below;
+    # the test target is already compiled by the unit-test step above, so
+    # this only runs it.
+    - name: Schema registry live tier (rust)
+      run: cargo test --test integration schema_registry --verbose
+      env:
+        CLICKHOUSE_URL: "http://localhost:8123"
+        CLICKHOUSE_USER: "test_user"
+        CLICKHOUSE_PASSWORD: "test_pass"
+        CLICKHOUSE_DATABASE: "test_integration"
+
     - name: Setup test data
       run: |
         chmod +x scripts/test/setup_social_integration_data.sh
