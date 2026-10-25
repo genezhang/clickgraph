@@ -319,13 +319,18 @@ one of the three.
   of the node returned whole and `WHERE id(n) = N` finds it (I6b). Review:
   the text compares only with another `id()` (`id(a) = id(b)`) or an integer
   literal the server decodes; `IN [$n]`, `<> $n`, `> 3` or a string are
-  refused (`Lowerer::composite_id_item`), as a number matches no text and a
-  text of one label equals another's. A hashed key's number (a composite or
-  string key) is assigned in the Bolt session when `RETURN id(n)` gives it
-  (`IdMapper::is_hashed`, `get_or_assign`), as a returned node's is, so
-  `WHERE id(n) = N` reads it back though the node was never returned whole
-  (also for a string key, on main alike). Left: a Decimal part of 16 or more
-  digits, a Float or a FixedString has another text in Rust and SQL (#1528).
+  refused (`Lowerer::composite_id_item`; also a variable a WITH bound to
+  the id, `Lowerer::id_values`), as a number matches no text and a text of
+  one label equals another's. A number the bit pattern cannot decode (a
+  composite or string key, an integer key of 2^31 and over:
+  `IdMapper::is_hashed`) is assigned in the Bolt session when `RETURN id(n)`
+  gives it (`get_or_assign`), as a returned node's is, so `WHERE id(n) = N`
+  reads it back though the node was never returned whole (also for such a
+  single-column key, on main alike). Left: an id wrapped in a map, a list or
+  a function (`{k: id(a)}`, `collect(id(a))`, `toString(id(a))`) is the
+  key's text, which two labels can share (as a single-column key, S11l); a
+  Decimal part of 16 or more digits, a Float or a FixedString has another
+  text in Rust and SQL (#1528).
 - [ ] **I5b — `id()` across labels** (#1383): `id()` of a node of several
   labels (`MATCH (n) RETURN id(n)`) and of a UNION column whose arms are
   nodes of different labels. Refused today: the key alone is ambiguous

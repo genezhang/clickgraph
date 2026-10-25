@@ -6712,6 +6712,15 @@ fn a_composite_id_compares_only_with_another_id() {
         "MATCH (a:Acct) RETURN id(a) = $n AS e",
         "MATCH (a:Acct), (b:Acct) WHERE id(a) IN [id(b)] RETURN a.owner",
         "MATCH (a:Acct) WHERE id(a) = 'x|1' RETURN a.owner",
+        "MATCH (a:Acct) WHERE id(a) < $n RETURN a.owner",
+        "MATCH (a:Acct) WHERE id(a) <= $n RETURN a.owner",
+        "MATCH (a:Acct) WHERE id(a) > $n RETURN a.owner",
+        "MATCH (a:Acct) WHERE 5 IN [id(a)] RETURN a.owner",
+        // A variable a WITH bound to the id is the same text.
+        "MATCH (a:Acct) WITH id(a) AS k WHERE k IN $ns RETURN count(*)",
+        "MATCH (a:Acct) WITH id(a) AS k WHERE NOT k IN [$n] RETURN count(*)",
+        "MATCH (a:Acct) WITH id(a) AS k RETURN k IN [$n] AS e",
+        "MATCH (a:Acct), (b:Acct) WITH id(a) AS ka, id(b) AS kb WHERE ka = kb RETURN ka",
     ] {
         refused(q);
     }
