@@ -62,6 +62,8 @@ cargo test --no-default-features --test integration the_corpus_lowers
 
 # E2E: register → SIGKILL → re-register nothing → restored + query succeeds →
 # DELETE stays deleted → off mode writes nothing (the spec's acceptance acts)
+# (the script spawns its own server on 7475; CLICKGRAPH_E2E_PORT=<port> moves
+# it, and CI sets 17475 because the compose stack publishes 7475)
 python tests/e2e/test_schema_persistence_e2e.py
 # same run under pytest (collectable; skips when CLICKHOUSE_URL/CLICKGRAPH_BIN
 # are unset) — this is how CI drives it:

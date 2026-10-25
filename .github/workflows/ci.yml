@@ -131,15 +131,14 @@ jobs:
           -m smoke -v
 
     - name: Schema-persistence restart-cycle e2e
-      # The e2e owns its own server lifecycle (spawn / SIGKILL / re-spawn on
-      # port 7475), so the integration job's server must go first; the
-      # ClickHouse container stays up until the job ends. This is the
+      # The e2e owns its own server lifecycle (spawn / SIGKILL / re-spawn),
+      # on its own port: 7475 is published by the compose stack's
+      # `clickgraph-test` container, which this step cannot stop, and the
+      # e2e refuses a port that is already in use. This is the
       # acceptance run `docs/design/SCHEMA_PERSISTENCE.md` pins: register ->
       # SIGKILL -> restored -> query returns through the restored schema ->
       # DELETE stays deleted -> off mode writes nothing.
       run: |
-        pkill -f clickgraph || true
-        sleep 2
         # --noconftest: tests/e2e/conftest.py imports `neo4j` (for the Bolt
         # suites), which this job does not install; this test needs only
         # the standard library and a live ClickHouse.
@@ -150,6 +149,7 @@ jobs:
         CLICKHOUSE_PASSWORD: test_pass
         CLICKHOUSE_DATABASE: test_integration
         CLICKGRAPH_BIN: ./target/debug/clickgraph
+        CLICKGRAPH_E2E_PORT: "17475"
 
     - name: Cleanup
       if: always()

@@ -28,8 +28,8 @@ Everything else is self-contained (both the registry table and the dummy
 node table live in CLICKHOUSE_DATABASE — the database the client runs in).
 
 The script owns the server lifecycle: on any failure it still reaps the
-last spawned process, and it refuses to run against a port 7475 that
-already serves something (an orphaned instance from an aborted run would
+last spawned process, and it refuses to run against a port (7475, or
+CLICKGRAPH_E2E_PORT) that already serves something (an orphaned instance from an aborted run would
 silently answer every probe instead of the server under test).
 
 Runners:
@@ -57,7 +57,13 @@ sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 HTTP_BASE = "http://127.0.0.1"
-HTTP_PORT = 7475
+# CLICKGRAPH_E2E_PORT moves the spawned server off 7475. CI needs it: the
+# compose stack publishes 7475 from the `clickgraph-test` container, which
+# this script can neither stop nor share the port with.
+try:
+    HTTP_PORT = int(os.environ.get("CLICKGRAPH_E2E_PORT", "7475"))
+except ValueError:
+    sys.exit("CLICKGRAPH_E2E_PORT must be an integer port number")
 
 
 def env_args():
