@@ -1191,10 +1191,25 @@ impl Lowerer<'_> {
             else {
                 continue;
             };
+            // A part a node's may hold NULL in (I6c): false, not NULL, where
+            // it is NULL and the id's is not.
+            let nullable = match self.scans.get(&v) {
+                Some(Scan::Labels { .. }) => {
+                    self.identity_nullable(v).into_iter().skip(1).collect()
+                }
+                _ => self.identity_nullable(v),
+            };
             let mut conds: Vec<RenderExpr> = key
                 .iter()
                 .zip(&parts)
-                .map(|(k, p)| match p {
+                .enumerate()
+                .map(|(i, (k, p))| match p {
+                    Some(p) if nullable.get(i) == Some(&true) => {
+                        RenderExpr::ScalarFnCall(ScalarFnCall {
+                            name: "coalesce".to_string(),
+                            args: vec![key_is(k, p), RenderExpr::Literal(Literal::Boolean(false))],
+                        })
+                    }
                     Some(p) => key_is(k, p),
                     // The node's own NULL part (ELEMENT_IDENTITY.md I6b).
                     None => RenderExpr::Raw(format!("{} IS NULL", render_expr_to_sql_plain(k))),
@@ -1374,7 +1389,6 @@ impl Lowerer<'_> {
         negated: bool,
         items: &Items,
     ) -> Result<RenderExpr, LowerError> {
-        use lx::Operator as O;
         let (Kind::Element(x_elem), Kind::List(inner)) = (self.kind(x), self.kind(list)) else {
             return unsupported(
                 "IN of a list of nodes or relationships, of a node of several labels",
@@ -1398,18 +1412,10 @@ impl Lowerer<'_> {
         } else {
             const T: &str = "__cg_in";
             let t_id = self.elem_identity(&RenderExpr::Raw(T.to_string()), &elem)?;
-            let same = super::and_all(
-                t_id.into_iter()
-                    .zip(&x_id)
-                    .map(|(a, b)| {
-                        RenderExpr::OperatorApplicationExp(OperatorApplication {
-                            operator: O::Equal,
-                            operands: vec![a, b.clone()],
-                        })
-                    })
-                    .collect(),
-            )
-            .unwrap_or(RenderExpr::Literal(Literal::Boolean(false)));
+            // A composite id's part that may be NULL compared NULL-safely
+            // (I6c).
+            let same = super::same_identity(t_id, x_id.clone(), &self.elem_nullable(&elem), true)
+                .unwrap_or(RenderExpr::Literal(Literal::Boolean(false)));
             let matching = (spelling.filter)(T, &render_expr_to_sql_plain(&same), &list_sql);
             format!("{} > 0", current_function_mapper().list_size(&matching))
         };
@@ -1417,7 +1423,9 @@ impl Lowerer<'_> {
             true => format!("NOT ({found})"),
             false => found,
         };
-        // Of an empty list, false (`null IN []` too); else NULL where `x` is.
+        // Of an empty list, false (`null IN []` too); else NULL where `x` is:
+        // where every column of its presence is where a composite id's part
+        // can be NULL in a node (I6c; else any, the SQL as before).
         let x_absent: Vec<String> = elem_presence(&x_id, &x_elem)
             .iter()
             .map(|c| format!("{} IS NULL", render_expr_to_sql_plain(c)))
@@ -1428,7 +1436,10 @@ impl Lowerer<'_> {
              ELSE {found} END",
             m.list_size(&list_sql),
             if negated { "true" } else { "false" },
-            x_absent.join(" OR ")
+            x_absent.join(match self.elem_nullable(&x_elem).contains(&true) {
+                true => " AND ",
+                false => " OR ",
+            })
         ))))
     }
 
@@ -1614,31 +1625,40 @@ impl Lowerer<'_> {
             (O::Equal | O::NotEqual, [(a, ea), (b, eb)]) => {
                 let equal = op.operator == O::Equal;
                 if ea != eb {
-                    // NULL when either is NULL.
+                    // NULL when either is NULL: where a composite id's part
+                    // can be NULL in a node, every column of its presence
+                    // (I6c), else its first (the SQL as before).
+                    let absent =
+                        |id: &[RenderExpr], e: &Elem| match self.elem_nullable(e).contains(&true) {
+                            true => super::null_test(&elem_presence(id, e), true),
+                            false => is_null(&id[0]),
+                        };
                     return Ok(RenderExpr::Case(RenderCase {
                         expr: None,
                         when_then: vec![(
-                            super::or_all(vec![is_null(&a[0]), is_null(&b[0])]),
+                            super::or_all(vec![absent(a, ea), absent(b, eb)]),
                             RenderExpr::Literal(Literal::Null),
                         )],
                         else_expr: Some(Box::new(RenderExpr::Literal(Literal::Boolean(!equal)))),
                     }));
                 }
-                let per_column: Vec<RenderExpr> = a
-                    .iter()
-                    .zip(b)
-                    .map(|(x, y)| {
-                        RenderExpr::OperatorApplicationExp(OperatorApplication {
-                            operator: op.operator,
-                            operands: vec![x.clone(), y.clone()],
-                        })
-                    })
-                    .collect();
-                Ok(if equal {
-                    super::and_all(per_column).expect("an identity has columns")
-                } else {
-                    super::or_all(per_column)
-                })
+                // A composite id's part that may be NULL compared NULL-safely
+                // (I6c): then NULL only where an element is.
+                let nullable = self.elem_nullable(ea);
+                let same = super::same_identity(a.clone(), b.clone(), &nullable, equal)
+                    .expect("an identity has columns");
+                if !nullable.contains(&true) {
+                    return Ok(same);
+                }
+                let absent = super::or_all(vec![
+                    super::null_test(&elem_presence(a, ea), true),
+                    super::null_test(&elem_presence(b, eb), true),
+                ]);
+                Ok(RenderExpr::Case(RenderCase {
+                    expr: None,
+                    when_then: vec![(absent, RenderExpr::Literal(Literal::Null))],
+                    else_expr: Some(Box::new(same)),
+                }))
             }
             _ => unsupported("an operator over nodes or relationships of a list"),
         }
@@ -1802,25 +1822,14 @@ impl Lowerer<'_> {
         let (Some(ca), Some(cb)) = (self.identity(a)?, self.identity(b)?) else {
             return Ok(RenderExpr::Literal(Literal::Null));
         };
-        let per_column: Vec<RenderExpr> = ca
-            .into_iter()
-            .zip(cb)
-            .map(|(x, y)| {
-                RenderExpr::OperatorApplicationExp(OperatorApplication {
-                    operator: if equal {
-                        lx::Operator::Equal
-                    } else {
-                        lx::Operator::NotEqual
-                    },
-                    operands: vec![x, y],
-                })
-            })
-            .collect();
-        Ok(if equal {
-            super::and_all(per_column).expect("an identity has columns")
-        } else {
-            super::or_all(per_column)
-        })
+        // A composite id's part that may be NULL compared NULL-safely (I6c):
+        // then NULL only where an element is.
+        let nullable = self.identity_nullable(a);
+        let same = super::same_identity(ca, cb, &nullable, equal).expect("an identity has columns");
+        match nullable.contains(&true) {
+            true => self.unless_null(&[a, b], same),
+            false => Ok(same),
+        }
     }
 
     /// `a = b` / `a <> b` between relationships, one of several possible
@@ -1901,24 +1910,29 @@ impl Lowerer<'_> {
             _ => ids,
         };
         let (ia, ib) = (held(la, ia, b), held(lb, ib, a));
-        let op = if equal {
-            lx::Operator::Equal
-        } else {
-            lx::Operator::NotEqual
+        // The id parts that may be NULL on either side compared NULL-safely
+        // (I6c), its label not.
+        let parts = |v: VarId| -> Vec<bool> {
+            let n = self.identity_nullable(v);
+            match self.scans.get(&v) {
+                Some(Scan::Labels { .. }) => n.into_iter().skip(1).collect(),
+                _ => n,
+            }
         };
-        let cmp = |x: RenderExpr, y: RenderExpr| {
-            RenderExpr::OperatorApplicationExp(OperatorApplication {
-                operator: op,
-                operands: vec![x, y],
-            })
-        };
-        let mut per_column = vec![cmp(label(a, la)?, label(b, lb)?)];
-        per_column.extend(ia.into_iter().zip(ib).map(|(x, y)| cmp(x, y)));
-        Ok(if equal {
-            super::and_all(per_column).expect("an identity has columns")
-        } else {
-            super::or_all(per_column)
-        })
+        let (na, nb) = (parts(a), parts(b));
+        let nullable: Vec<bool> = std::iter::once(false)
+            .chain((0..ia.len()).map(|i| na.get(i) == Some(&true) || nb.get(i) == Some(&true)))
+            .collect();
+        let mut left = vec![label(a, la)?];
+        left.extend(ia);
+        let mut right = vec![label(b, lb)?];
+        right.extend(ib);
+        let same =
+            super::same_identity(left, right, &nullable, equal).expect("an identity has columns");
+        match nullable.contains(&true) {
+            true => self.unless_null(&[a, b], same),
+            false => Ok(same),
+        }
     }
 
     /// The condition of each `WHEN` of `c` (`None`: it never matches). Of a
