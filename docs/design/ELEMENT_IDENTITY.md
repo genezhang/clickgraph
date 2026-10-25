@@ -32,7 +32,6 @@ several labels and NULL parts. The open issues are where two sites disagree:
 | F6 / F7 ignore `edge_id`: parallel relationships share one element id and number; HTTP Graph and embedded dedupe one away | #1334 (#1409) |
 | `id(r) = N` has no decode for relationships | #1410 |
 | `id()` of a composite node as a value is refused (I5a) | #1387 |
-| `id()` across a mixed-label UNION is refused | #1383 |
 | Bolt's static id lookup ignores the session's scope | #1388 |
 | A NULL id part: present for `null_test`, `'null'` in F6, an error in Rust, never equal in F1, dropped by the embedded relation, the union walk and the search | #1354 |
 
@@ -331,16 +330,39 @@ one of the three.
   share (as a single-column key, S11l): wrapped in a map, a list, a CASE or
   a function (`{k: id(a)}`, `collect(id(a))`, `toString(id(a))`, `max(id(a))`)
   and as a pattern's property value (`(b {bank: id(a)})`) it is not
-  guarded. An integer key of 2^31 to 2^47 is found by `id()` only after its
-  node was returned whole (`decode_for_query` reads smaller bits only; on
-  main alike); a Decimal part of 16 or more digits, a Float or a
-  FixedString has another text in Rust and SQL (#1528).
-- [ ] **I5b — `id()` across labels** (#1383): `id()` of a node of several
+  guarded. (An integer key of 2^31 to 2^47 was found by `id()` only after
+  its node was returned whole: `decode_for_query` reads the 47 bits since
+  I5b.) A Decimal part of 16 or more digits, a Float or a FixedString has
+  another text in Rust and SQL (#1528).
+- [x] **I5b — `id()` across labels** (#1383): `id()` of a node of several
   labels (`MATCH (n) RETURN id(n)`) and of a UNION column whose arms are
-  nodes of different labels. Refused today: the key alone is ambiguous
-  (a Post and a User share `1`), and Bolt needs each row's label. Wants a
-  decision on what HTTP returns (a relationship's `id()` is the server's
-  number, `ResultKind::RelId`; a node's is its key).
+  nodes of different labels was refused: the key alone is ambiguous (a Post
+  and a User share `1`), and Bolt needs each row's label. Now (user
+  2026-10-24, "follow your recommendations") it is a relationship's `id()`:
+  the node's element id (`Lowerer::node_element_id_sql`: the label column,
+  `:`, the id as `element_id_sql` spells it, `-`), returned as the server's
+  number for it (`ResultKind::ElementIdNumber`, formerly `RelId`), on HTTP
+  and in the library as over Bolt, where it is the `id` of the node
+  returned whole; a number that holds its key's bits (an integer key) is not
+  kept in the session, a hash is (`IdMapper::holds_key_bits`: an integer key
+  of up to 47 bits of a label whose key is an integer; `decode_for_query` now
+  reads the 47 bits, not 31), so `WHERE id(n) = N` reads either back. The
+  library registers a schema's label codes in sorted order when it opens
+  it (`preregister_schema_labels`), as the server does at load: the arms of
+  a node of several labels come back in any order, and the codes were
+  assigned as they were met. A UNION column of `id()`s of
+  different labels (or of a relationship) returns the element id in every
+  arm, under UNION and UNION ALL (`mixed_ids`, `Query::as_values`). Other
+  uses of the value are refused, as a relationship's: `WITH id(n)`,
+  `collect(id(n))`, `count(DISTINCT id(n))`, comparisons with a number but
+  `id(n) = N`; `ORDER BY` the item sorts by the node's identity (label, key)
+  as `ORDER BY id(n)` does, and is refused where the rows are grouped or
+  distinct by it, and an expression of it is refused. The id of a node of
+  one label stays its key on HTTP. Left (the numbers, shared with whole
+  nodes; I4b): keys `0` and `1` of a label have one number, and so have
+  string keys that parse as one integer (`'7'`, `'007'`, `'+7'`); more than
+  62 labels and relationship types share code 63. CSV / `export` / `cg sql`
+  return the element id text.
 - [x] **I6 — NULL id parts** (#1354): not a node (§2; revised by I6c). Every scan of a
   label (a node of one label, each arm of a node of several, a walk's
   nodes and its node relation, OPTIONAL MATCH) reads a row as a node only

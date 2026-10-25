@@ -53,7 +53,12 @@ pub fn cypher_to_sql_with_id_columns(
     let id_columns = t
         .shape
         .iter()
-        .filter(|c| matches!(c.kind, crate::bound_plan::lower::ResultKind::RelId))
+        .filter(|c| {
+            matches!(
+                c.kind,
+                crate::bound_plan::lower::ResultKind::ElementIdNumber
+            )
+        })
         .map(|c| c.name.clone())
         .collect();
     Ok((t.sql, id_columns))

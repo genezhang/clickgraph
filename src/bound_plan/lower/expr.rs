@@ -2382,8 +2382,8 @@ impl Lowerer<'_> {
                 ("id", Some(Scan::Node { .. })) => self.identity_value(v),
                 // A relationship's id is Bolt's number for it (user
                 // 2026-10-11), which only the server computes: an `id(r)`
-                // RETURN item (`ResultKind::RelId`), or compared with another
-                // `id()`.
+                // RETURN item (`ResultKind::ElementIdNumber`), or compared
+                // with another `id()`.
                 ("id", Some(Scan::Rels { .. })) => {
                     unsupported("id() of a relationship of several types or definitions")
                 }
@@ -2391,7 +2391,12 @@ impl Lowerer<'_> {
                     "id() of a relationship other than as a RETURN item or compared with another \
                      id()",
                 ),
-                ("id", _) => unsupported("id() of a node of several labels as a value"),
+                // Bolt's number for it too (I5b): the element id, which only
+                // the server computes the number of.
+                ("id", _) => unsupported(
+                    "id() of a node of several labels other than as a RETURN item, in ORDER BY \
+                     or in a comparison",
+                ),
                 ("elementid", _) => unsupported("elementId()"),
                 ("type", Some(Scan::Rel { rel_type, .. })) => {
                     self.unless_null(&[v], RenderExpr::Literal(Literal::String(rel_type.clone())))

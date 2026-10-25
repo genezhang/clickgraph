@@ -1689,7 +1689,12 @@ async fn query_handler_inner(
             id_number_columns = translation
                 .shape
                 .iter()
-                .filter(|c| matches!(c.kind, crate::bound_plan::lower::ResultKind::RelId))
+                .filter(|c| {
+                    matches!(
+                        c.kind,
+                        crate::bound_plan::lower::ResultKind::ElementIdNumber
+                    )
+                })
                 .map(|c| c.name.clone())
                 .collect();
 
