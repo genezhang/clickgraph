@@ -742,6 +742,34 @@ graph_schema:
         f
     }
 
+    /// I5b review: the id codes of a schema's labels are given in sorted
+    /// order when the library opens it, so the number of a node does not
+    /// depend on which of its label's rows ClickHouse answers first.
+    #[test]
+    fn labels_get_their_id_codes_in_sorted_order() {
+        let mut f = tempfile::NamedTempFile::new().expect("tempfile");
+        let yaml = r#"
+name: db_codes
+graph_schema:
+  nodes:
+    - {label: I5bZeta, database: d, table: z, node_id: id, property_mappings: {id: id}}
+    - {label: I5bAlpha, database: d, table: a, node_id: id, property_mappings: {id: id}}
+    - {label: I5bMid, database: d, table: m, node_id: id, property_mappings: {id: id}}
+  edges: []
+"#;
+        f.write_all(yaml.as_bytes()).expect("write");
+        f.flush().expect("flush");
+        Database::sql_only(f.path()).expect("open");
+        let code = |label: &str| {
+            clickgraph::utils::id_encoding::LABEL_CODE_REGISTRY
+                .read()
+                .expect("registry")
+                .get_code(label)
+        };
+        let (alpha, mid, zeta) = (code("I5bAlpha"), code("I5bMid"), code("I5bZeta"));
+        assert!(alpha < mid && mid < zeta, "{alpha:?} {mid:?} {zeta:?}");
+    }
+
     #[test]
     fn sql_only_with_dialect_accepts_supported_dialects() {
         let schema = write_schema();

@@ -570,6 +570,25 @@ pub fn resolve_node_id(
 mod tests {
     use super::*;
 
+    /// I5b review: an integer key of up to 47 bits is read from its number
+    /// (most LDBC ids are above 2^31).
+    #[test]
+    fn an_integer_key_of_47_bits_decodes_from_its_number() {
+        let label = "I5bDecode";
+        let key = 2_336_468_743_926_i64;
+        let n = IdMapper::compute_deterministic_id(&format!("{label}:{key}-"));
+        assert_eq!(
+            IdMapper::decode_for_query(n),
+            Some((label.to_string(), key.to_string()))
+        );
+        let top = (1_i64 << 47) - 1;
+        let n = IdMapper::compute_deterministic_id(&format!("{label}:{top}-"));
+        assert_eq!(
+            IdMapper::decode_for_query(n),
+            Some((label.to_string(), top.to_string()))
+        );
+    }
+
     #[test]
     fn a_number_is_a_hash_unless_it_holds_its_keys_bits() {
         assert!(!IdMapper::is_hashed("User:7-"));

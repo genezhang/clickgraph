@@ -7534,6 +7534,15 @@ fn id_of_a_node_of_several_labels_is_its_element_id() {
         ),
         "{sql}"
     );
+    // An expression of the item would read the element id's text.
+    for q in [
+        "MATCH (n) RETURN id(n) AS i ORDER BY i + 1",
+        "MATCH (n) RETURN id(n) AS i ORDER BY toString(i)",
+        "MATCH (n) RETURN id(n) AS i ORDER BY [i]",
+        "MATCH (a:User)-[r:FOLLOWS]->(b:User) RETURN id(r) AS i ORDER BY toString(i)",
+    ] {
+        not_lowered(q, "ORDER BY an expression of an id() the server numbers");
+    }
     // No identity column is a column of a grouped or distinct result.
     for q in [
         "MATCH (n) RETURN id(n) AS i, count(*) AS c ORDER BY i",

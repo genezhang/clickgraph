@@ -2394,8 +2394,8 @@ impl Lowerer<'_> {
                 // Bolt's number for it too (I5b): the element id, which only
                 // the server computes the number of.
                 ("id", _) => unsupported(
-                    "id() of a node of several labels other than as a RETURN item or compared \
-                     with another id()",
+                    "id() of a node of several labels other than as a RETURN item, in ORDER BY \
+                     or in a comparison",
                 ),
                 ("elementid", _) => unsupported("elementId()"),
                 ("type", Some(Scan::Rel { rel_type, .. })) => {
