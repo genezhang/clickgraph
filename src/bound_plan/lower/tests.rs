@@ -6712,6 +6712,7 @@ fn a_composite_id_compares_only_with_another_id() {
         "MATCH (a:Acct) RETURN id(a) = $n AS e",
         "MATCH (a:Acct), (b:Acct) WHERE id(a) IN [id(b)] RETURN a.owner",
         "MATCH (a:Acct) WHERE id(a) = 'x|1' RETURN a.owner",
+        "MATCH (a:Acct) WHERE id(a) NOT IN $ns RETURN a.owner",
         "MATCH (a:Acct) WHERE id(a) < $n RETURN a.owner",
         "MATCH (a:Acct) WHERE id(a) <= $n RETURN a.owner",
         "MATCH (a:Acct) WHERE id(a) > $n RETURN a.owner",

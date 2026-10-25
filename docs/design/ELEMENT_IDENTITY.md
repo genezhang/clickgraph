@@ -308,7 +308,7 @@ one of the three.
   Neo4j (user, 2026-10-24; `docs/wiki/Known-Limitations.md` §4).
 - [ ] **I4b — Bolt ids**: stable hash (not `DefaultHasher`); label codes
   per schema (process-global, clamped at 63, first-seen ordered).
-- [x] **I5a — `id()` of a composite node** (#1387). `id(n)` of a node whose
+- [x] **I5a — `id()` of a composite node** (#1387, #1531). `id(n)` of a node whose
   id has several columns, as a RETURN item or a value (WITH, ORDER BY,
   DISTINCT, `collect`), is the id's text as its element id spells it
   (`Lowerer::composite_id_value`: `value::element_id_sql` of the parts,
@@ -328,8 +328,8 @@ one of the three.
   `WHERE id(n) = N` reads it back though the node was never returned whole
   (also for a string key, on main alike). Left: the id as a value is the
   key's text, which compares as text with text and which two labels can
-  share (as a single-column key, S11l): wrapped in a map, a list or a
-  function (`{k: id(a)}`, `collect(id(a))`, `toString(id(a))`, `max(id(a))`)
+  share (as a single-column key, S11l): wrapped in a map, a list, a CASE or
+  a function (`{k: id(a)}`, `collect(id(a))`, `toString(id(a))`, `max(id(a))`)
   and as a pattern's property value (`(b {bank: id(a)})`) it is not
   guarded. An integer key of 2^31 to 2^47 is found by `id()` only after its
   node was returned whole (`decode_for_query` reads smaller bits only; on
