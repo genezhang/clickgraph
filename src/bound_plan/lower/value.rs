@@ -538,6 +538,9 @@ pub(super) enum EndSpell {
     In(String),
     DayOrTime,
     Exact(String),
+    /// Its text in SQL (#1528: a part Rust would spell another way from the
+    /// JSON of its value).
+    Text,
 }
 
 /// How a relationship's `from` and `to` ends' id parts are spelled as their
@@ -550,6 +553,7 @@ pub(super) fn spell_end(part: &str, spell: &EndSpell) -> String {
         EndSpell::Own => part.to_string(),
         EndSpell::In(t) => format!("CAST({part} AS {t})"),
         EndSpell::DayOrTime => day_or_time(part),
+        EndSpell::Text => format!("{}({part})", current_function_mapper().cast_string()),
         EndSpell::Exact(t) => {
             let text = current_function_mapper().cast_string();
             format!(

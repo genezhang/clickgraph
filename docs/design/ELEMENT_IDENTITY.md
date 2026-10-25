@@ -166,7 +166,7 @@ one of the three.
   `composite_key`, I1's `cast_key_part`). What is left is folding
   `composite_key` and the walk generator's `emit_id_expr` into
   `identity_text`: a tidy with no failing query behind it, so parked behind
-  I5b, #1528 and I4b.
+  I4b.
 - [x] **I3a — relationship element ids** (#1334). A relationship whose
   schema declares an `edge_id` carries it: `TYPE:edge_id:from->to-`
   (`element_id::relationship_element_id`), its parts' texts escaped (`\`,
@@ -305,6 +305,34 @@ one of the three.
   patterns 2 for 12). Two relationships with one NULL `edge_id` and the
   same ends are one (as their element ids are): a known discrepancy with
   Neo4j (user, 2026-10-24; `docs/wiki/Known-Limitations.md` §4).
+- [x] **I7 — element ids spelled in SQL for ids Rust spells otherwise** (#1528).
+  A node returned whole had its element id spelled in Rust from the JSON of
+  its id, a node in a value from SQL (`element_id_sql`), and four kinds of id
+  part spell differently: a Float (`1e20` vs `100000000000000000000`, `-0.0`
+  vs `-0`, a Float32 widened to a double), a FixedString (NUL-padded in JSON,
+  not in `toString`), a 128 / 256-bit integer (a double in JSON), a Decimal
+  of 16 digits or more or of a scale of 5 or more (the same: `1e-6` against
+  `0.000001`). Where the node's id has such a part (by the column's type,
+  `KeyPartType::is_spelled_in_sql`, any spelling ClickHouse accepts:
+  discovered or declared; an unknown type is as it was), the SQL adds
+  `name.elementId` (`NODE_ELEMENT_ID_KEY`, a relationship's key) with the
+  element id as SQL spells it (NULL where an OPTIONAL MATCH found no node),
+  and `transform_to_node` (Bolt, HTTP graph output) and the library's
+  `query_graph` take it as it is; a relationship's returned `from_id` /
+  `to_id` are the texts (`EndSpell::Text`) where the node's own part type is
+  known and that part or the stored end is such a type, and Rust spells the
+  ends' element ids from them. Other ids' SQL is unchanged. Live (Bolt,
+  FixedString / Float64 / Int128 / Decimal ids): a node's element id, the
+  element id of the same node in a list and a relationship's
+  `startNodeElementId` agree, and `WHERE id(n) = N` / `elementId(n) = $e`
+  find each node. Left: a node embedded in an edge table keeps its types
+  unknown (they are read by the id's name in a table that does not have it),
+  so it and its relationship's ends stay Rust-spelled, as before; `id(n)` of
+  such a node is still the key (a Bolt number made from the key's JSON
+  value, which for these types can differ from the `id` of the node returned
+  whole); an all-NUL FixedString key is the empty id (`L:-`), which a lookup
+  by element id does not read back, and a NaN Float key is found by no
+  lookup.
 - [x] **I4b-a — distinct numbers** (from #1532's review): `IdMapper::numeric_key`
   takes only a non-negative integer in its plain decimal spelling (`+7` and
   `007` were `7`'s number, and key `0` was key `1`'s: `.max(1)` of the key
@@ -345,8 +373,9 @@ one of the three.
   and as a pattern's property value (`(b {bank: id(a)})`) it is not
   guarded. (An integer key of 2^31 to 2^47 was found by `id()` only after
   its node was returned whole: `decode_for_query` reads the 47 bits since
-  I5b.) A Decimal part of 16 or more digits, a Float or a FixedString has
-  another text in Rust and SQL (#1528).
+  I5b.) A Decimal part of 16 or more digits, a Float, a FixedString or a
+  128 / 256-bit integer had another text in Rust and SQL: spelled in SQL
+  since #1528 (below).
 - [x] **I5b — `id()` across labels** (#1383): `id()` of a node of several
   labels (`MATCH (n) RETURN id(n)`) and of a UNION column whose arms are
   nodes of different labels was refused: the key alone is ambiguous (a Post
