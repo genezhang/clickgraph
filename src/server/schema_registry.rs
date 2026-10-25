@@ -336,8 +336,9 @@ impl SchemaStore {
     /// a per-restart cost that can push boot past any readiness window — and
     /// the bound must hold at the fetch itself, not only after the bytes are
     /// already in memory: the select below stops at the cumulative payload
-    /// budget inside ClickHouse (a window sum over the replay order), so a
-    /// boot with a 64 MiB budget never materializes more than 64 MiB. Total
+    /// budget inside ClickHouse (a window sum over the replay order), so the
+    /// byte budget bounds what a boot restores (the server's peak memory while
+    /// fetching is a small multiple of it: phase 2 reads whole parts). Total
     /// rows beyond either cap are counted in [`ReplayFetch`] so the caller
     /// can warn with exact numbers.
     pub async fn load_replay_rows(
@@ -667,9 +668,10 @@ impl ClickhouseSchemaStore {
     ///   `sum(payload_len)` window over the replay order. Phase 2 fetches
     ///   payloads (by bound name) for the rows that can actually restore.
     ///   Future-versioned and foreign-sourced rows spend budget but never
-    ///   pay the payload transfer, and the server materializes payloads for
-    ///   no row whose bytes exceed the budget (a 300-row × 900 KiB table
-    ///   used to materialize ~1.13 GiB server-side before answering).
+    ///   pay the payload transfer, and the server reads payloads only for the
+    ///   rows that can restore (a 300-row × 900 KiB table peaked at ~1.13 GiB
+    ///   server-side with the single-phase read, ~180 MiB at a 64 MiB budget
+    ///   with this one).
     /// - Legacy tables: the single-phase select that reads payload with the
     ///   metadata (`sum(length(payload))` window), exactly as earlier
     ///   versions of this module did — a provisioned table keeps working,

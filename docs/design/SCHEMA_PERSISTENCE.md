@@ -171,10 +171,11 @@ One row per registered schema name, in the **configured ClickHouse database**
   BY registered_at_ms, name)` window; rows past the never-pulled), then the
   gate runs on the metadata, and phase 2 fetches payloads **only for the
   rows that can actually restore**, by bound name (`WHERE name IN (?, …)`).
-  Boot materializes payload bytes only where anyone reads them: on a
-  300-row × 900 KiB table the server used to materialize ~1.13 GiB of
-  payload server-side before answering; the phased shape stays within the
-  budget itself. Budget spend stays uniform: every fetched row kind's bytes
+  Boot reads payload bytes only where anyone reads them: on a 300-row ×
+  900 KiB table the single-phase read peaked at ~1.13 GiB server-side;
+  the phased shape peaked at ~180 MiB at a 64 MiB budget (phase 2 reads
+  whole parts for the selected names, `FINAL`: a small multiple of the
+  budget, not the budget itself). Budget spend stays uniform: every fetched row kind's bytes
   count in phase 1, and payloads still transfer nothing for rows the gate
   refuses. Tables provisioned without `payload_len` (older server,
   hand-written DDL) keep the single-phase select of round-one semantics,
@@ -396,7 +397,10 @@ One row per registered schema name, in the **configured ClickHouse database**
    it; nothing can re-add a row between probe and delete).
    If the store delete fails, the schema is still removed from memory,
    the response is 200 with `persisted: false` and the stored row remains
-   (a retry of the DELETE removes it as a store-only row). The DELETE
+   (a retry of the DELETE removes it as a store-only row). A store call
+   that exceeds its bound is abandoned by the client, not cancelled: the
+   statement may still run in ClickHouse afterwards, so a timed-out DELETE
+   can later remove a row that was re-registered in between. The DELETE
    accepts `?role=` for its store write, the same resolution as the POST
    body's `role` (Configuration §Privileges). New endpoint ⇒ additive,
    backward compatible.
@@ -413,9 +417,11 @@ One row per registered schema name, in the **configured ClickHouse database**
    `introspect`, `discover-prompt` with a 400 naming the reservation —
    before any gate acquisition, registry, or store work: these spellings
    belong to the routes (`load`) and the CLI discovery workflow (`draft`,
-   `introspect`, `discover-prompt`). DELETE is deliberately untouched: a
-   name that can never register has no row to delete, and a manually
-   seeded row of such a name stays deletable like every other store row.
+   `introspect`, `discover-prompt`). DELETE is untouched, but the four
+   spellings are routes of their own: `DELETE /schemas/load` is answered by
+   another route (405), so a manually seeded row of such a name restores at
+   boot and is removed from the store directly
+   (`DELETE FROM clickgraph_schema_registry WHERE name = '…'`).
 
 ## Code Style
 
