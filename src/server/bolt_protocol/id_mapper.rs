@@ -272,16 +272,35 @@ impl IdMapper {
     /// Whether the number of `element_id` is a hash of its key (a string,
     /// composite or large one) rather than the key's bits: a hash is read
     /// back only from the session that gave it (`get_or_assign`,
-    /// [`resolve_node_id`]), the bits from the number alone. (Left: an
-    /// integer key of 2^31 to 2^47 holds its bits, but `decode_for_query`
-    /// reads only the smaller ones, so such a key is found by `id()` only
-    /// after its node was returned whole.)
+    /// [`resolve_node_id`]), the bits from the number alone (of a label
+    /// whose key is an integer: [`IdMapper::holds_key_bits`]).
     pub fn is_hashed(element_id: &str) -> bool {
         let element_id = element_id.strip_suffix('-').unwrap_or(element_id);
         let id_part = element_id
             .find(':')
             .map_or(element_id, |at| &element_id[at + 1..]);
         Self::numeric_key(id_part, crate::utils::id_encoding::ID_MASK).is_none()
+    }
+
+    /// Whether the number of `element_id` can be read back from its bits
+    /// alone ([`resolve_node_id`]): its key is an integer that fits them
+    /// ([`IdMapper::is_hashed`]) and its label's key is an integer, as a
+    /// string key of digits (`'12345678901'`) is not read from the bits. A
+    /// number that cannot is kept in the session when it is given.
+    pub fn holds_key_bits(schema: &crate::graph_catalog::GraphSchema, element_id: &str) -> bool {
+        if Self::is_hashed(element_id) {
+            return false;
+        }
+        let element_id = element_id.strip_suffix('-').unwrap_or(element_id);
+        let Some((label, _)) = element_id.split_once(':') else {
+            return false;
+        };
+        schema.node_schema(label).is_ok_and(|node| {
+            matches!(
+                node.node_id.dtype,
+                crate::graph_catalog::schema_types::SchemaType::Integer
+            )
+        })
     }
 
     /// Hash a string to a positive 56-bit value
@@ -409,12 +428,12 @@ impl IdMapper {
     /// it attempts to return the raw ID value that should be used in SQL comparisons.
     ///
     /// **IMPORTANT LIMITATIONS**:
-    /// - Only works for **simple numeric primary keys** with values < 2^31 (2.1 billion)
+    /// - Only works for **simple numeric primary keys** with values < 2^47
     /// - Does NOT work for:
     ///   - String IDs (e.g., "LAX", "USER_123")  
     ///   - UUIDs
     ///   - Composite keys (e.g., "bank_id|account_num")
-    ///   - Large numbers that get hashed (>= 2^31)
+    ///   - Integer keys that get hashed (negative, >= 2^47)
     ///
     /// **Callers should validate** that the decoded label's ID column is actually
     /// a numeric type before using the result, to avoid false positives.
@@ -436,17 +455,13 @@ impl IdMapper {
         // Get the label name from the code
         let label = Self::get_label_from_code(label_code)?;
 
-        // For simple numeric IDs (common case), id_hash IS the raw value
-        // We can't distinguish hashed vs raw values, but for small non-negative numbers
-        // (0 to 2^31-1), it's almost certainly the raw value
-        // NOTE: 0 is a valid ID value (e.g., user_id=0), so we accept the range [0, 2^31)
-        if (0..(1i64 << 31)).contains(&id_hash) {
-            return Some((label, id_hash.to_string()));
-        }
-
-        // Large values might be hashed - we can't decode without cache
-        // Return None and let the caller handle it
-        None
+        // The key's bits (47 of them), for a label whose key is an integer
+        // (the caller checks that: `resolve_node_id`). A number that is the
+        // hash of another key (a negative or huge integer, a string) is read
+        // back from the session that gave it, before this is reached; one no
+        // session gave may read as a key that exists, which a 47-bit hash
+        // rarely is.
+        Some((label, id_hash.to_string()))
     }
 
     /// Try to construct an element_id from an integer ID without prior mapping
@@ -514,8 +529,8 @@ impl Default for IdMapper {
 /// label and key's text (`element_id::node_id_text`: a composite key's
 /// parts escaped and joined by `|`). The id `id_mapper`
 /// gave it (this session's, or another of the same scope), else its bit
-/// pattern decoded (`IdMapper::decode_for_query`: a label code and a small
-/// numeric key), for a label whose key is an integer. `None`: it names no
+/// pattern decoded (`IdMapper::decode_for_query`: a label code and an
+/// integer key of up to 47 bits), for a label whose key is an integer. `None`: it names no
 /// node. The bound plan's `id()` lookup (P-4c S11e).
 pub fn resolve_node_id(
     id_mapper: &IdMapper,
@@ -529,7 +544,7 @@ pub fn resolve_node_id(
             return Some((label, id_text));
         }
     }
-    // LIMITATION: only simple numeric keys (< 2^31) decode from the bit
+    // LIMITATION: only simple numeric keys (< 2^47) decode from the bit
     // pattern; not string ids, UUIDs, composite keys or hashed values.
     let (label, id_str) = IdMapper::decode_for_query(id_value)?;
     if let Some(schema) = schema {
@@ -803,9 +818,12 @@ mod tests {
         ] {
             let mut other = IdMapper::new();
             other.set_scope(Some(schema.to_string()), tenant.map(str::to_string));
-            assert_eq!(
+            // Not the cached node: its number is a hash, which the other
+            // scope never gave (it may read as some other integer key).
+            assert_eq!(other.get_element_id(id), None, "{schema} {tenant:?}");
+            assert_ne!(
                 resolve_node_id(&other, None, id),
-                None,
+                Some(("S1388Sentinel".to_string(), "x".to_string())),
                 "{schema} {tenant:?}"
             );
             assert_eq!(other.get_element_id(composite), None, "{schema} {tenant:?}");

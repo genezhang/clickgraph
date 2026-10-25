@@ -458,9 +458,20 @@ fn read_schema_config(schema_path: &Path) -> Result<GraphSchemaConfig, EmbeddedE
 /// Load a YAML schema file into a `GraphSchema` without a database: a schema
 /// that asks to discover columns (`auto_discover_columns`) is refused.
 fn load_graph_schema(schema_path: &Path) -> Result<GraphSchema, EmbeddedError> {
-    read_schema_config(schema_path)?
+    let schema = read_schema_config(schema_path)?
         .to_graph_schema()
-        .map_err(schema_build_error)
+        .map_err(schema_build_error)?;
+    preregister_labels(&schema);
+    Ok(schema)
+}
+
+/// Give the schema's labels and types their id codes in a fixed (sorted)
+/// order, as the server does at load: a library process otherwise numbers
+/// them in the order its queries first meet them, which for the arms of a
+/// node of several labels is the order ClickHouse returns them in, so the
+/// same node had a different `id()` from one run to the next.
+fn preregister_labels(schema: &GraphSchema) {
+    clickgraph::server::graph_catalog::preregister_schema_labels(schema);
 }
 
 /// Same as [`load_graph_schema`] but also returns the optional top-level
@@ -484,6 +495,7 @@ fn load_graph_schema_with_catalog(
     let schema = schema_config
         .to_graph_schema()
         .map_err(schema_build_error)?;
+    preregister_labels(&schema);
     Ok((schema, catalog))
 }
 
@@ -554,6 +566,7 @@ fn build_graph_schema(
     let schema = schema_config
         .to_graph_schema_with_columns(&columns)
         .map_err(schema_build_error)?;
+    preregister_labels(&schema);
     Ok((schema, warnings))
 }
 

@@ -6987,6 +6987,26 @@ impl<'s> Lowerer<'s> {
             // A map's values are of any type: they have no order.
             return unsupported("ORDER BY a map");
         }
+        // An expression of such an id (`i + 1`, `toString(i)`, `[i]`) would
+        // read the element id's text.
+        for k in keys {
+            if matches!(&k.expr, LogicalExpr::TableAlias(_)) {
+                continue;
+            }
+            let mut reads = false;
+            crate::bound_plan::expr::visit(&k.expr, &mut |x| {
+                if let LogicalExpr::TableAlias(crate::query_planner::logical_expr::TableAlias(n)) =
+                    x
+                {
+                    reads |= parse_var(n).is_some_and(|v| {
+                        self.id_number_vars.contains(&v) || self.labeled_id_nodes.contains_key(&v)
+                    });
+                }
+            });
+            if reads {
+                return unsupported("ORDER BY an expression of an id() the server numbers");
+            }
+        }
         // A relationship's id is Bolt's number for it, computed after the
         // query (S11l review): the SQL holds its element id, whose order is
         // not the number's.

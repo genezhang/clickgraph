@@ -1038,6 +1038,57 @@ mod tests {
             )
         );
     }
+    /// I5b: an `id()` item whose SQL holds an element id (a node of several
+    /// labels, a relationship) is the item type Bolt numbers; the library's
+    /// id columns name it. A node of one label is the `IdFunction` item.
+    #[test]
+    fn an_element_id_item_is_the_numbered_item_type() {
+        use crate::server::bolt_protocol::result_transformer::ReturnItemType as T;
+        let schema = crate::graph_catalog::config::GraphSchemaConfig::from_yaml_str(include_str!(
+            "../schemas/test/social_integration.yaml"
+        ))
+        .unwrap()
+        .to_graph_schema()
+        .unwrap();
+        let item_of = |cypher: &str| {
+            let (_, stmt) = crate::open_cypher_parser::parse_cypher_statement(cypher).unwrap();
+            let bound = super::translate_read(
+                stmt,
+                &schema,
+                super::ReadOptions {
+                    cypher: cypher.to_string(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            bound.return_metadata().remove(0).item_type
+        };
+        assert!(matches!(
+            item_of("MATCH (n) RETURN id(n) AS i"),
+            T::ElementIdNumber
+        ));
+        assert!(matches!(
+            item_of("MATCH (:User)-[r:FOLLOWS]->(:User) RETURN id(r) AS i"),
+            T::ElementIdNumber
+        ));
+        assert!(matches!(
+            item_of("MATCH (n:User) RETURN id(n) AS i"),
+            T::IdFunction { .. }
+        ));
+        let (_, columns) = crate::clickhouse_query_generator::cypher_to_sql_with_id_columns(
+            "MATCH (n) RETURN id(n) AS i, n.name AS nm",
+            &schema,
+        )
+        .unwrap();
+        assert_eq!(columns, ["i"]);
+        let (_, columns) = crate::clickhouse_query_generator::cypher_to_sql_with_id_columns(
+            "MATCH (n:User) RETURN id(n) AS i",
+            &schema,
+        )
+        .unwrap();
+        assert!(columns.is_empty(), "{columns:?}");
+    }
+
     /// Bolt, the HTTP graph output and embedded `query_graph` read the
     /// result shape through `return_metadata` (§4.13).
     #[test]
