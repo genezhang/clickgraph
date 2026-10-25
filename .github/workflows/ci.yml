@@ -140,7 +140,10 @@ jobs:
       run: |
         pkill -f clickgraph || true
         sleep 2
-        pytest tests/e2e/test_schema_persistence_e2e.py -v
+        # --noconftest: tests/e2e/conftest.py imports `neo4j` (for the Bolt
+        # suites), which this job does not install; this test needs only
+        # the standard library and a live ClickHouse.
+        pytest --noconftest tests/e2e/test_schema_persistence_e2e.py -v
       env:
         CLICKHOUSE_URL: http://localhost:8123
         CLICKHOUSE_USER: test_user
