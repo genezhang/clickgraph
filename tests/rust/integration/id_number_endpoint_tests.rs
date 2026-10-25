@@ -17,7 +17,10 @@ use clickgraph::config::ServerConfig;
 use clickgraph::executor::{ExecutorError, QueryExecutor};
 use clickgraph::graph_catalog::config::GraphSchemaConfig;
 use clickgraph::server::bolt_protocol::id_mapper::IdMapper;
-use clickgraph::server::{build_router, AppState, GLOBAL_SCHEMAS};
+use clickgraph::server::{
+    build_router, AppState, GLOBAL_SCHEMAS, GLOBAL_SCHEMA_CONFIGS, GLOBAL_SCHEMA_CONTENT_HASHES,
+};
+use clickgraph::utils::id_encoding::IdEncoding;
 
 /// Answers one row whose column `i` holds `User:7-`, whatever the SQL.
 struct ElementIdExecutor;
@@ -114,4 +117,43 @@ async fn an_id_item_holding_an_element_id_is_returned_as_its_number() {
     let (status, body) = query("MATCH (n:User) RETURN id(n) AS k").await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["results"][0]["k"], json!("User:7-"), "{body}");
+}
+
+/// A schema registered at runtime gets its labels' id codes then, in the
+/// order of their names (the schemas loaded at startup do), not as queries
+/// first return them.
+#[tokio::test]
+async fn a_schema_loaded_at_runtime_registers_its_labels_in_order() {
+    ensure_default_schema_registered().await;
+    GLOBAL_SCHEMA_CONFIGS
+        .get_or_init(|| async { tokio::sync::RwLock::new(std::collections::HashMap::new()) })
+        .await;
+    GLOBAL_SCHEMA_CONTENT_HASHES
+        .get_or_init(|| async { tokio::sync::RwLock::new(std::collections::HashMap::new()) })
+        .await;
+    let yaml = "name: runtime_codes\ngraph_schema:\n  nodes:\n    \
+        - {label: RtZeta, database: d, table: z, node_id: id, property_mappings: {id: id}}\n    \
+        - {label: RtAlpha, database: d, table: a, node_id: id, property_mappings: {id: id}}\n    \
+        - {label: RtMid, database: d, table: m, node_id: id, property_mappings: {id: id}}\n  edges: []\n";
+    let app = build_router(test_state(), &ServerConfig::default());
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/schemas/load")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({ "schema_name": "runtime_codes", "config_content": yaml }).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let code = |l: &str| IdEncoding::get_label_code(l);
+    let (alpha, mid, zeta) = (code("RtAlpha"), code("RtMid"), code("RtZeta"));
+    assert!(
+        alpha.is_some() && alpha < mid && mid < zeta,
+        "{alpha:?} {mid:?} {zeta:?}"
+    );
 }
