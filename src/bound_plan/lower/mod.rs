@@ -84,7 +84,9 @@ use std::sync::Arc;
 
 use crate::graph_catalog::config::Identifier;
 use crate::graph_catalog::expression_parser::PropertyValue;
-use crate::graph_catalog::graph_schema::{GraphSchema, NodeSchema, RelationshipSchema};
+use crate::graph_catalog::graph_schema::{
+    GraphSchema, IdentityPart, NodeSchema, RelationshipSchema,
+};
 use crate::graph_catalog::schema_types::{KeyPartType, TextSpelling};
 use crate::render_plan::render_expr::{
     visit_render_expr_mut, ColumnAlias, Literal, MutVisit, Operator, OperatorApplication,
@@ -399,6 +401,7 @@ impl Query<'_> {
             ordered_unwinds: ordered_unwinds(&self.stmt.plan),
             numbers: HashSet::new(),
             id_values: HashMap::new(),
+            composite_id_vars: HashSet::new(),
             rel_id_vars: HashSet::new(),
             unordered_numbers: HashSet::new(),
             unstable: BTreeSet::new(),
@@ -1094,11 +1097,15 @@ impl Lowerer<'_> {
             if !seen.insert(std::ptr::from_ref(arm.schema)) {
                 continue;
             }
+            // Its parts' identity columns: first, or after its ends where
+            // its `edge_id` may be NULL (I6d).
+            let at = arm.schema.identity_columns().len() - id.columns().len();
             let parts = id
                 .columns()
                 .iter()
                 .enumerate()
-                .map(|(i, c)| {
+                .map(|(k, c)| {
+                    let i = at + k;
                     let e = self.physical(v, &indexed_column(REL_ID, i))?;
                     Ok(render_expr_to_sql_plain(&self.own_identity_part(
                         arms,
@@ -1246,17 +1253,11 @@ impl Lowerer<'_> {
             return texts;
         }
         for rs in arms.iter().map(|a| a.schema) {
-            if rs.edge_id.is_some() {
-                continue;
-            }
-            let from = rs.from_id.columns().len();
-            for (i, text) in texts
-                .iter_mut()
-                .enumerate()
-                .take(from + rs.to_id.columns().len())
-            {
-                let part = if i < from { i } else { i - from };
-                *text |= self.held_as_text(part);
+            for (i, text) in texts.iter_mut().enumerate() {
+                if let Some(IdentityPart::From(part) | IdentityPart::To(part)) = rs.identity_part(i)
+                {
+                    *text |= self.held_as_text(part);
+                }
             }
         }
         texts
@@ -1285,15 +1286,10 @@ fn identity_part_types<'a>(arms: &[RelArm<'a>], i: usize) -> Vec<&'a KeyPartType
     arms.iter()
         .filter_map(|a| {
             let rs = a.schema;
-            match &rs.edge_id {
-                Some(id) => id.columns().get(i).and_then(|c| rs.column_types.get(*c)),
-                None => {
-                    let from = rs.from_id.columns().len();
-                    match i < from {
-                        true => rs.from_node_id_part_types.get(i),
-                        false => rs.to_node_id_part_types.get(i - from),
-                    }
-                }
+            match rs.identity_part(i)? {
+                IdentityPart::Edge(c) => rs.column_types.get(c),
+                IdentityPart::From(j) => rs.from_node_id_part_types.get(j),
+                IdentityPart::To(j) => rs.to_node_id_part_types.get(j),
             }
         })
         .filter(|t| !t.raw.is_empty())
@@ -1434,7 +1430,9 @@ struct Correlated {
 struct Tie {
     a: VarId,
     b: VarId,
-    eqs: Vec<(RenderExpr, RenderExpr)>,
+    /// The two columns, and whether they are compared NULL-safely (a node's
+    /// identity read back as itself, I6c: [`Lowerer::tie_identity`]).
+    eqs: Vec<(RenderExpr, RenderExpr, bool)>,
 }
 
 struct Lowerer<'s> {
@@ -1557,6 +1555,10 @@ struct Lowerer<'s> {
     /// Values that are `id(n)` of a node of this label (S11l): a WITH item
     /// `id(n)`, or one passing such a value on.
     id_values: HashMap<VarId, String>,
+    /// Items (a WITH's or the RETURN's) that are the text of a composite
+    /// node's `id()`, or pass one on (I5a): compared with a number or
+    /// another label's text they are refused, as the id is.
+    composite_id_vars: HashSet<VarId>,
     /// RETURN items that are `id(r)` of a relationship (S11l): Bolt's number
     /// is computed after the query, so nothing in the SQL orders by it.
     rel_id_vars: HashSet<VarId>,
@@ -1748,11 +1750,8 @@ fn rel_union_shape(arms: &[RelArm]) -> Result<RelUnionShape, LowerError> {
             a.schema.from_id.columns().len(),
             a.schema.to_id.columns().len(),
         );
-        let identity = a
-            .schema
-            .edge_id
-            .as_ref()
-            .map_or(f + t, |id| id.columns().len());
+        // Its ends and `edge_id` where that may be NULL (I6d).
+        let identity = a.schema.identity_columns().len();
         let (start, end) = if a.reversed { (t, f) } else { (f, t) };
         (identity, (f, t, start, end))
     };
@@ -2462,8 +2461,12 @@ impl<'s> Lowerer<'s> {
                 } else {
                     self.endpoint_of(pattern, *v)
                 };
+            // Its own table's ids, or a relationship's ends (a tie: `=`, so
+            // no relationship attaches to a node with a NULL part, I6c).
+            let mut tied = false;
             let (at, inner): (At, Vec<RenderExpr>) = match endpoint {
                 Some((r, cols)) if cols.len() == columns.len() => {
+                    tied = true;
                     q.elided.insert(*v, r);
                     let alias = r.name();
                     let inner = cols.iter().map(|c| col_at(&alias, c)).collect();
@@ -2483,12 +2486,20 @@ impl<'s> Lowerer<'s> {
                     (At::Table(v.name()), inner)
                 }
             };
-            for (c, (outer, inner)) in columns.iter().zip(outer.into_iter().zip(inner)) {
+            // A composite id's part a node's may hold NULL in: NULL-safely,
+            // the node being itself (I6c).
+            let nullable = match tied {
+                true => Vec::new(),
+                false => self.identity_nullable(*v),
+            };
+            for (i, (c, (outer, inner))) in
+                columns.iter().zip(outer.into_iter().zip(inner)).enumerate()
+            {
                 correlation.push(Correlated {
                     column: format!("{v}__{c}"),
                     outer,
                     inner,
-                    null_safe: false,
+                    null_safe: nullable.get(i) == Some(&true),
                 });
             }
             q.scans.insert(*v, scan.with_at(at));
@@ -2717,10 +2728,14 @@ impl<'s> Lowerer<'s> {
             // Joined on the identity. A node's or an `edge_id`
             // relationship's other columns depend on it; a relationship
             // identified by its endpoints can have parallel edges with other
-            // properties, so it also joins on those `D` holds (NULL-safely).
+            // properties, so it also joins on those `D` holds (NULL-safely);
+            // so does one whose `edge_id` may be NULL (I6d: two with a NULL
+            // one and the same ends are one, of other properties).
+            let ends_identify =
+                |rs: &RelationshipSchema| rs.edge_id.is_none() || rs.edge_id_nullable();
             let by_ends = match &scan {
-                Scan::Rel { schema, .. } => schema.edge_id.is_none(),
-                Scan::Rels { arms, .. } => arms.iter().any(|a| a.schema.edge_id.is_none()),
+                Scan::Rel { schema, .. } => ends_identify(schema),
+                Scan::Rels { arms, .. } => arms.iter().any(|a| ends_identify(a.schema)),
                 _ => false,
             };
             if by_ends {
@@ -2737,6 +2752,7 @@ impl<'s> Lowerer<'s> {
                     });
                 }
             }
+            let nullable = self.identity_nullable(*v);
             for (i, c) in self
                 .identity_physical(*v)
                 .unwrap_or_default()
@@ -2749,8 +2765,11 @@ impl<'s> Lowerer<'s> {
                     outer: col_at(&w, &column),
                     inner: col_at(&d, &column),
                     // A union's identity past its definition's own arity is
-                    // NULL; its first column is NULL exactly when it is.
-                    null_safe: null_safe || (i > 0 && matches!(scan, Scan::Rels { .. })),
+                    // NULL; its first column is NULL exactly when it is. A
+                    // composite node id's part may be NULL in a node (I6c).
+                    null_safe: null_safe
+                        || (i > 0 && matches!(scan, Scan::Rels { .. }))
+                        || nullable.get(i) == Some(&true),
                 });
             }
             let at = At::Exported {
@@ -3765,10 +3784,7 @@ impl<'s> Lowerer<'s> {
         for (i, arm) in arms.iter().enumerate() {
             let rs = arm.schema;
             let (from, to) = (rs.from_id.columns(), rs.to_id.columns());
-            let identity: Vec<&str> = match &rs.edge_id {
-                Some(id) => id.columns(),
-                None => from.iter().chain(&to).copied().collect(),
-            };
+            let identity: Vec<&str> = rs.identity_columns();
             let (left, right) = arm.ends();
             let mut items = vec![
                 select(string(&arm.rel_type), REL_TYPE),
@@ -3777,10 +3793,10 @@ impl<'s> Lowerer<'s> {
             ];
             // Ids as they are compared (I1): an identity of stored ends as
             // its ends are (an `edge_id`'s is compared with itself only).
-            let id_label = |i: usize| match (&rs.edge_id, i < from.len()) {
-                (Some(_), _) => None,
-                (None, true) => Some((rs.from_node.as_str(), i)),
-                (None, false) => Some((rs.to_node.as_str(), i - from.len())),
+            let id_label = |i: usize| match rs.identity_part(i) {
+                Some(IdentityPart::From(j)) => Some((rs.from_node.as_str(), j)),
+                Some(IdentityPart::To(j)) => Some((rs.to_node.as_str(), j)),
+                _ => None,
             };
             for i in 0..shape.identity {
                 // A text where some arm's is one (I2).
@@ -4687,11 +4703,25 @@ impl<'s> Lowerer<'s> {
                     };
                     vec![(col_at(&r.var.name(), column), RenderExpr::Raw(key))]
                 }
-                (ids, cols) if ids.len() == cols.len() => cols
-                    .iter()
-                    .zip(ids)
-                    .map(|(c, id)| (col_at(&r.var.name(), &format!("{side}_{c}")), id.clone()))
-                    .collect(),
+                (ids, cols) if ids.len() == cols.len() => {
+                    // The walk's end columns are read from the end node's row:
+                    // its identity, NULL-safely where a part may be NULL (I6c).
+                    let nullable = self.identity_nullable(end);
+                    let eqs = cols
+                        .iter()
+                        .zip(ids)
+                        .enumerate()
+                        .map(|(i, (c, id))| {
+                            (
+                                col_at(&r.var.name(), &format!("{side}_{c}")),
+                                id.clone(),
+                                nullable.get(i) == Some(&true),
+                            )
+                        })
+                        .collect();
+                    self.tie_identity(r.var, end, eqs);
+                    continue;
+                }
                 _ => return unsupported("internal: a path's end of another arity than its id"),
             };
             self.tie(r.var, end, eqs);
@@ -5438,25 +5468,50 @@ impl<'s> Lowerer<'s> {
             if id.len() != id_column.len() {
                 return unsupported("internal: a node's identity of another arity than its id");
             }
-            rows.select = SelectItems {
-                items: id
-                    .iter()
-                    .enumerate()
-                    .map(|(k, c)| match id.len() {
-                        1 => select(c.clone(), "id"),
-                        _ => select(c.clone(), &format!("id_{k}")),
-                    })
-                    .collect(),
-                distinct: true,
-            };
-            // A composite id (S8d): its columns as a tuple.
             let columns: Vec<String> = id_column
                 .iter()
                 .map(|c| render_expr_to_sql_plain(&col_at(alias, c)))
                 .collect();
-            let held = match columns.as_slice() {
-                [one] => one.clone(),
-                _ => format!("({})", columns.join(", ")),
+            // A composite id whose part may be NULL in a node (I6c): by its
+            // tuple's text, which spells a NULL part (a tuple holding NULL
+            // is `IN` no rows).
+            let keyed = match self.identity_nullable(v).contains(&true) {
+                true => {
+                    let rendered: Vec<String> = id.iter().map(render_expr_to_sql_plain).collect();
+                    match (
+                        path::composite_key(&rendered),
+                        path::composite_key(&columns),
+                    ) {
+                        (Some(key), Some(held)) => Some((key, held)),
+                        _ => {
+                            return unsupported(
+                                "a walk from rows of a composite id that may be NULL in this \
+                                 SQL dialect",
+                            )
+                        }
+                    }
+                }
+                false => None,
+            };
+            rows.select = SelectItems {
+                items: match &keyed {
+                    Some((key, _)) => vec![select(RenderExpr::Raw(key.clone()), "id")],
+                    None => id
+                        .iter()
+                        .enumerate()
+                        .map(|(k, c)| match id.len() {
+                            1 => select(c.clone(), "id"),
+                            _ => select(c.clone(), &format!("id_{k}")),
+                        })
+                        .collect(),
+                },
+                distinct: true,
+            };
+            // A composite id (S8d): its columns as a tuple.
+            let held = match (&keyed, columns.as_slice()) {
+                (Some((_, held)), _) => held.clone(),
+                (None, [one]) => one.clone(),
+                (None, _) => format!("({})", columns.join(", ")),
             };
             conds.push(RenderExpr::Raw(format!(
                 "{held} IN ({})",
@@ -5724,26 +5779,34 @@ impl<'s> Lowerer<'s> {
         Ok(Some((ctes, name, read_paths)))
     }
 
-    /// ELEMENT_IDENTITY.md I6 (#1354, user 2026-10-19): a row of `schema`'s
-    /// table read under `alias` is a node only where no part of its id is
-    /// NULL (Neo4j has no NULL ids; a relationship's NULL end ties to no
-    /// node). The parts its columns' types say may be NULL, `IS NOT NULL`;
-    /// `None` where none may be, or the types are unknown (the SQL as
-    /// before).
+    /// ELEMENT_IDENTITY.md I6 / I6c (#1354; user 2026-10-19, revised
+    /// 2026-10-24): a row of `schema`'s table read under `alias` is a node
+    /// only where some part of its id is not NULL. A composite id with a
+    /// NULL part is a node (its element id's part `\\N`, compared as itself:
+    /// `Lowerer::same_part`); one that is all NULL, or a single-column NULL
+    /// id, is none (every such row would be one node). Where every part's
+    /// column type says it may be NULL, `IS NOT NULL` of the one, or of any;
+    /// `None` where some part may not be, or the types are unknown (the SQL
+    /// as before).
     fn id_present(&self, schema: &NodeSchema, alias: &str) -> Option<RenderExpr> {
-        let conds: Vec<RenderExpr> = schema
-            .id_physical_columns()
+        let cols = schema.id_physical_columns();
+        let types = &schema.node_id.part_types;
+        if types.len() != cols.len() || !types.iter().all(|t| t.nullable && !t.raw.is_empty()) {
+            return None;
+        }
+        let conds: Vec<String> = cols
             .iter()
-            .zip(&schema.node_id.part_types)
-            .filter(|(_, t)| t.nullable && !t.raw.is_empty())
-            .map(|(c, _)| {
-                RenderExpr::Raw(format!(
+            .map(|c| {
+                format!(
                     "{} IS NOT NULL",
                     render_expr_to_sql_plain(&col_at(alias, c))
-                ))
+                )
             })
             .collect();
-        and_all(conds)
+        Some(RenderExpr::Raw(match conds.as_slice() {
+            [one] => one.clone(),
+            _ => format!("({})", conds.join(" OR ")),
+        }))
     }
 
     /// The relation of the nodes of `schema`'s label, as SQL to read under
@@ -6226,6 +6289,47 @@ impl<'s> Lowerer<'s> {
         }
     }
 
+    /// Which of `v`'s identity columns ([`Lowerer::identity`]) a real
+    /// element's may hold NULL in (ELEMENT_IDENTITY.md I6c, user
+    /// 2026-10-24): a composite node id's parts whose column types say they
+    /// may be (a label union's part where any arm's may). Those are compared
+    /// NULL-safely ([`same_part`]): such a node is itself. A single-column
+    /// id (NULL: no node), a relationship's, or unknown types: none.
+    pub(super) fn identity_nullable(&self, v: VarId) -> Vec<bool> {
+        match self.scans.get(&v) {
+            Some(Scan::Node { schema, .. }) => nullable_id_parts(schema),
+            Some(Scan::Labels { arms, .. }) => {
+                let arity = arms[0].1.id_physical_columns().len();
+                let parts: Vec<Vec<bool>> =
+                    arms.iter().map(|(_, ns)| nullable_id_parts(ns)).collect();
+                std::iter::once(false)
+                    .chain((0..arity).map(|i| parts.iter().any(|p| p.get(i) == Some(&true))))
+                    .collect()
+            }
+            // An `edge_id`'s parts that may be NULL (I6d; its ends after it
+            // cannot be).
+            Some(Scan::Rel { schema, .. }) => rel_nullable_identity(schema),
+            _ => Vec::new(),
+        }
+    }
+
+    /// [`Lowerer::identity_nullable`] of a list's element (`elements.rs`),
+    /// its identity slots in order.
+    pub(super) fn elem_nullable(&self, elem: &elements::Elem) -> Vec<bool> {
+        match elem {
+            elements::Elem::Node(label) => self
+                .schema
+                .node_schema_opt(label)
+                .map(nullable_id_parts)
+                .unwrap_or_default(),
+            elements::Elem::Rel { rel_type, from, to } => self
+                .schema
+                .get_rel_schema_with_nodes(rel_type, Some(from), Some(to))
+                .map(rel_nullable_identity)
+                .unwrap_or_default(),
+        }
+    }
+
     /// An element's identity, one expression per identity column; `None` for
     /// an element that matches nothing.
     fn identity(&self, v: VarId) -> Result<Option<Vec<RenderExpr>>, LowerError> {
@@ -6308,17 +6412,9 @@ impl<'s> Lowerer<'s> {
                     (Scan::Rel { .. }, Scan::Rel { .. }) => {
                         let ia = self.identity(*a)?.expect("a relationship scan");
                         let ib = self.identity(*b)?.expect("a relationship scan");
-                        or_all(
-                            ia.into_iter()
-                                .zip(ib)
-                                .map(|(x, y)| {
-                                    RenderExpr::OperatorApplicationExp(OperatorApplication {
-                                        operator: Operator::NotEqual,
-                                        operands: vec![x, y],
-                                    })
-                                })
-                                .collect(),
-                        )
+                        // An `edge_id` part that may be NULL NULL-safely (I6d).
+                        same_identity(ia, ib, &self.identity_nullable(*a), false)
+                            .expect("an identity has columns")
                     }
                     (Scan::Rel { schema, at, .. }, Scan::Path { at: p, .. })
                     | (Scan::Path { at: p, .. }, Scan::Rel { schema, at, .. }) => {
@@ -6368,10 +6464,7 @@ impl<'s> Lowerer<'s> {
         if let Some((r, (ps, rel_type, p))) = path(b).map(|p| (a, p)).or(path(a).map(|p| (b, p))) {
             // Rows of the path's definition: their identity, spelled as the
             // path's `path_edges` spell it, is not on the path.
-            let arity = match &ps.edge_id {
-                Some(id) => id.columns().len(),
-                None => ps.from_id.columns().len() + ps.to_id.columns().len(),
-            };
+            let arity = ps.identity_columns().len();
             let ids = (0..arity)
                 .map(|i| {
                     self.walked_identity_part(r, ps, &rel_type, i)
@@ -6401,9 +6494,32 @@ impl<'s> Lowerer<'s> {
             self.definition_identity(a, &texts)?,
             self.definition_identity(b, &texts)?,
         );
+        // Where an `edge_id` part may be NULL in a relationship, its parts
+        // NULL-safely (I6d): the SQL as before otherwise.
+        let nullable = self.nullable_edge_id(a, b);
         Ok(Some(or_all(
-            ia.into_iter().zip(ib).map(|(x, y)| differ(x, y)).collect(),
+            ia.into_iter()
+                .zip(ib)
+                .enumerate()
+                .map(|(i, (x, y))| match nullable && i >= 3 {
+                    true => RenderExpr::OperatorApplicationExp(OperatorApplication {
+                        operator: Operator::Not,
+                        operands: vec![same_part(x, y, true)],
+                    }),
+                    false => differ(x, y),
+                })
+                .collect(),
         )))
+    }
+
+    /// Whether a definition relationship `a` or `b` can be of has an
+    /// `edge_id` that may be NULL (I6d): their identities then compare
+    /// NULL-safely past their definitions.
+    pub(super) fn nullable_edge_id(&self, a: VarId, b: VarId) -> bool {
+        self.definitions(a)
+            .into_iter()
+            .chain(self.definitions(b))
+            .any(|d| d.edge_id_nullable())
     }
 
     /// Identity part `i` of union of relationships `r` as a walk over one of
@@ -6434,14 +6550,9 @@ impl<'s> Lowerer<'s> {
         }) else {
             return Ok(id);
         };
-        let from = ps.from_id.columns().len();
-        let typed = match &ps.edge_id {
-            Some(edge) => {
-                let own = edge
-                    .columns()
-                    .get(i)
-                    .and_then(|c| ps.column_types.get(*c))
-                    .filter(|t| !t.raw.is_empty());
+        let typed = match ps.identity_part(i) {
+            Some(IdentityPart::Edge(c)) => {
+                let own = ps.column_types.get(c).filter(|t| !t.raw.is_empty());
                 match own {
                     Some(t) => RenderExpr::Cast {
                         expr: Box::new(id),
@@ -6450,8 +6561,9 @@ impl<'s> Lowerer<'s> {
                     None => return Ok(id),
                 }
             }
-            None if i < from => self.physical(r, &indexed_column(REL_FROM, i))?,
-            None => self.physical(r, &indexed_column(REL_TO, i - from))?,
+            Some(IdentityPart::From(j)) => self.physical(r, &indexed_column(REL_FROM, j))?,
+            Some(IdentityPart::To(j)) => self.physical(r, &indexed_column(REL_TO, j))?,
+            None => return Ok(id),
         };
         Ok(RenderExpr::Case(RenderCase {
             expr: None,
@@ -6559,13 +6671,14 @@ impl<'s> Lowerer<'s> {
                 ];
                 // As a union's arm of its definition spells it where that
                 // union's are texts (`rel_union_of`).
-                let from = schema.from_id.columns().len();
                 all.extend(ids.into_iter().enumerate().map(|(i, id)| {
-                    match (text(i), &schema.edge_id, i < from) {
-                        (false, ..) => id,
-                        (true, Some(_), _) => self.any_text(id),
-                        (true, None, true) => self.part_text(&schema.from_node, i, id),
-                        (true, None, false) => self.part_text(&schema.to_node, i - from, id),
+                    match (text(i), schema.identity_part(i)) {
+                        (false, _) | (true, None) => id,
+                        (true, Some(IdentityPart::Edge(_))) => self.any_text(id),
+                        (true, Some(IdentityPart::From(j))) => {
+                            self.part_text(&schema.from_node, j, id)
+                        }
+                        (true, Some(IdentityPart::To(j))) => self.part_text(&schema.to_node, j, id),
                     }
                 }));
                 Ok(all)
@@ -6610,20 +6723,14 @@ impl<'s> Lowerer<'s> {
             if !seen.insert(std::ptr::from_ref(rs)) {
                 continue;
             }
-            let from = rs.from_id.columns().len();
-            let spelled = match &rs.edge_id {
-                Some(edge) => {
-                    let Some(c) = edge.columns().get(j).copied() else {
-                        continue;
-                    };
+            let spelled = match rs.identity_part(j) {
+                Some(IdentityPart::Edge(c)) => {
                     let back =
                         self.own_identity_part(arms, own, j, rs.column_types.get(c), id.clone());
                     self.any_text(back)
                 }
-                None if j < from => self.part_text(&rs.from_node, j, id.clone()),
-                None if j < from + rs.to_id.columns().len() => {
-                    self.part_text(&rs.to_node, j - from, id.clone())
-                }
+                Some(IdentityPart::From(k)) => self.part_text(&rs.from_node, k, id.clone()),
+                Some(IdentityPart::To(k)) => self.part_text(&rs.to_node, k, id.clone()),
                 None => continue,
             };
             when_then.push((self.definition_is(v, arm)?, spelled));
@@ -6783,10 +6890,20 @@ impl<'s> Lowerer<'s> {
         self.position(v).is_some()
     }
 
-    fn tie(&mut self, a: VarId, b: VarId, mut eqs: Vec<(RenderExpr, RenderExpr)>) {
+    fn tie(&mut self, a: VarId, b: VarId, eqs: Vec<(RenderExpr, RenderExpr)>) {
+        let eqs = eqs.into_iter().map(|(x, y)| (x, y, false)).collect();
+        self.tie_identity(a, b, eqs);
+    }
+
+    /// [`Self::tie`] of columns of which some (`true`) are an element's
+    /// identity on both sides, compared NULL-safely ([`same_part`]): a walk's
+    /// end columns, read from its node's row, to that node (a composite id's
+    /// part may be NULL in a node, I6c). A relationship's ends are tied
+    /// with `=` (none attaches to a NULL part).
+    fn tie_identity(&mut self, a: VarId, b: VarId, mut eqs: Vec<(RenderExpr, RenderExpr, bool)>) {
         // A node read from its relationship's endpoint column is tied to it
         // already.
-        eqs.retain(|(x, y)| x != y);
+        eqs.retain(|(x, y, _)| x != y);
         if eqs.is_empty() {
             return;
         }
@@ -6808,7 +6925,10 @@ impl<'s> Lowerer<'s> {
             .position(t.a)
             .max(self.position(t.b))
             .expect("both emitted");
-        let eqs = t.eqs.into_iter().map(|(x, y)| eq(x, y));
+        let eqs = t
+            .eqs
+            .into_iter()
+            .map(|(x, y, null_safe)| tie_condition(x, y, null_safe));
         if later == 0 {
             self.filters
                 .extend(eqs.map(RenderExpr::OperatorApplicationExp));
@@ -6972,6 +7092,9 @@ impl<'s> Lowerer<'s> {
             // node's id (Bolt encodes it).
             if let (Some(_), Some(label), false) = (cte, self.node_id_of(&it.expr), it.aggregate) {
                 self.id_values.insert(it.var, label);
+            }
+            if !it.aggregate && self.composite_id_item(&it.expr) {
+                self.composite_id_vars.insert(it.var);
             }
         }
         let mut body = Body {
@@ -8116,8 +8239,10 @@ impl<'s> Lowerer<'s> {
         for (_, scan) in &exports.scans {
             let raw = match scan {
                 Scan::Node { .. } => true,
+                // Identified by its ends (or with them, where its `edge_id`
+                // may be NULL, I6d): its other columns do not follow.
                 Scan::Rel { schema, .. } => {
-                    if schema.edge_id.is_none() {
+                    if schema.edge_id.is_none() || schema.edge_id_nullable() {
                         continue;
                     }
                     true
@@ -8792,6 +8917,104 @@ fn realias(e: &RenderExpr, from: &str, to: &str) -> RenderExpr {
     }
 }
 
+/// Which parts of `schema`'s id a node's may be NULL in
+/// ([`Lowerer::identity_nullable`]): a composite id's parts whose column
+/// types say so; a single-column id's none (a NULL one is no node).
+fn nullable_id_parts(schema: &NodeSchema) -> Vec<bool> {
+    let parts = schema.id_physical_columns().len();
+    if parts < 2 {
+        return vec![false; parts];
+    }
+    (0..parts)
+        .map(|i| {
+            schema
+                .node_id
+                .part_type(i)
+                .is_some_and(|t| t.nullable && !t.raw.is_empty())
+        })
+        .collect()
+}
+
+/// A tie's condition ([`Tie`]): `x = y`, or NULL-safely (as one condition
+/// of a join's ON, conjoined with `true`).
+/// A boolean operator, so its value is read as one where it is a value
+/// (`a = b` returned).
+fn tie_condition(x: RenderExpr, y: RenderExpr, null_safe: bool) -> OperatorApplication {
+    match null_safe {
+        false => eq(x, y),
+        true => {
+            OperatorApplication {
+                operator: Operator::And,
+                operands: vec![
+                    RenderExpr::Raw(current_function_mapper().null_safe_equal(
+                        &render_expr_to_sql_plain(&x),
+                        &render_expr_to_sql_plain(&y),
+                    )),
+                    RenderExpr::Literal(Literal::Boolean(true)),
+                ],
+            }
+        }
+    }
+}
+
+/// Which of a relationship's identity columns
+/// (`RelationshipSchema::identity_columns`) may be NULL: its `edge_id`'s
+/// parts whose column types say so (I6d); its ends, none.
+fn rel_nullable_identity(schema: &RelationshipSchema) -> Vec<bool> {
+    (0..schema.identity_columns().len())
+        .map(|i| match schema.identity_part(i) {
+            Some(IdentityPart::Edge(c)) => schema
+                .column_types
+                .get(c)
+                .is_some_and(|t| t.nullable && !t.raw.is_empty()),
+            _ => false,
+        })
+        .collect()
+}
+
+/// `x` and `y`, one identity part of two elements, the same: `=`, or where
+/// a real element's part may be NULL (`nullable`, [`Lowerer::
+/// identity_nullable`]) NULL-safely, as one condition a join can key on
+/// (`FunctionMapper::null_safe_equal`): a node with a NULL id part is
+/// itself (ELEMENT_IDENTITY.md I6c).
+pub(super) fn same_part(x: RenderExpr, y: RenderExpr, nullable: bool) -> RenderExpr {
+    RenderExpr::OperatorApplicationExp(tie_condition(x, y, nullable))
+}
+
+/// Two identities `a`, `b` (part by part, `nullable` as [`same_part`]) the
+/// same (`equal`), else different: the parts' `=` / `<>` where none may be
+/// NULL (the SQL as before), else NULL-safely.
+pub(super) fn same_identity(
+    a: Vec<RenderExpr>,
+    b: Vec<RenderExpr>,
+    nullable: &[bool],
+    equal: bool,
+) -> Option<RenderExpr> {
+    let parts: Vec<RenderExpr> = a
+        .into_iter()
+        .zip(b)
+        .enumerate()
+        .map(|(i, (x, y))| {
+            let nullable = nullable.get(i) == Some(&true);
+            match (equal, nullable) {
+                (true, _) => same_part(x, y, nullable),
+                (false, false) => RenderExpr::OperatorApplicationExp(OperatorApplication {
+                    operator: Operator::NotEqual,
+                    operands: vec![x, y],
+                }),
+                (false, true) => RenderExpr::OperatorApplicationExp(OperatorApplication {
+                    operator: Operator::Not,
+                    operands: vec![same_part(x, y, true)],
+                }),
+            }
+        })
+        .collect();
+    match equal {
+        true => and_all(parts),
+        false => Some(or_all(parts)),
+    }
+}
+
 /// `a = b`, with NULL equal to NULL, in a form every dialect joins on.
 fn not_distinct(a: RenderExpr, b: RenderExpr) -> OperatorApplication {
     let is_null = |e: RenderExpr| {
@@ -9458,16 +9681,14 @@ fn scan_identity(scan: &Scan<'_>) -> Option<Vec<String>> {
                     .collect(),
             )
         }
-        Scan::Rel { schema, .. } => Some(match &schema.edge_id {
-            Some(id) => id.columns().iter().map(|c| c.to_string()).collect(),
-            None => schema
-                .from_id
-                .columns()
-                .iter()
-                .chain(schema.to_id.columns().iter())
-                .map(|c| c.to_string())
+        // Its `edge_id`, with its ends where a part may be NULL (I6d).
+        Scan::Rel { schema, .. } => Some(
+            schema
+                .identity_columns()
+                .into_iter()
+                .map(str::to_string)
                 .collect(),
-        }),
+        ),
         // Its definition first (its type, NULL exactly when an OPTIONAL
         // MATCH left it NULL), then its identity.
         Scan::Rels { arms, .. } => {

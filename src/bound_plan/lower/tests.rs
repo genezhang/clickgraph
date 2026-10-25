@@ -1499,13 +1499,24 @@ fn id_of_a_returned_node_is_its_key() {
         &[r#"v0.user_id + 1 AS "i""#],
     );
     not_lowered("MATCH (a:User) RETURN size(a.*) AS n", "`v.*`");
-    let err = translate_bound_plan(
+    // A composite id is one text, as its element id spells it (I5a).
+    let t = translate_bound_plan(
         "MATCH (t:T) RETURN id(t)",
         &shapes_schema(),
         &ReadOptions::default(),
     )
-    .unwrap_err();
-    assert!(err.contains("composite identity"), "{err}");
+    .unwrap();
+    assert!(
+        t.sql.contains("concat(CASE WHEN v0.tenant IS NULL THEN"),
+        "{}",
+        t.sql
+    );
+    assert_eq!(
+        t.shape[0].kind,
+        ResultKind::NodeId {
+            label: "T".to_string()
+        }
+    );
 }
 
 /// A returned element that matches nothing: no rows, one NULL column.
@@ -6583,6 +6594,163 @@ graph_schema:
     .unwrap()
 }
 
+/// I6b: the server's `id()` of a composite node names its element id, whose
+/// parts are escaped (a `|` in one is no separator) and a NULL one `\\N`:
+/// the node of those parts, its NULL part `IS NULL`; a text of other parts
+/// names none.
+#[test]
+fn an_id_of_a_composite_node_reads_its_escaped_parts() {
+    let server = LowerOptions {
+        id_lookup: Some(IdLookup {
+            node: std::sync::Arc::new(|id| match id {
+                1 => Some(("Acct".to_string(), "b\\|1|7".to_string())),
+                2 => Some(("Acct".to_string(), "b|\\N".to_string())),
+                3 => Some(("Acct".to_string(), "a|b|c".to_string())),
+                // A part holding a backslash: a value, no escape.
+                4 => Some(("Acct".to_string(), "e\\\\f|9".to_string())),
+                _ => None,
+            }),
+            element: std::sync::Arc::new(|_| None),
+        }),
+        ..LowerOptions::default()
+    };
+    let got = lowered(
+        "MATCH (a:Acct) WHERE id(a) = 1 RETURN a.owner",
+        &composite_walk_schema(),
+        &server,
+    );
+    assert!(got.contains("v0.bank = 'b|1' AND v0.num = '7'"), "{got}");
+    let got = lowered(
+        "MATCH (a:Acct) WHERE id(a) = 2 RETURN a.owner",
+        &composite_walk_schema(),
+        &server,
+    );
+    assert!(got.contains("v0.bank = 'b' AND v0.num IS NULL"), "{got}");
+    let got = lowered(
+        "MATCH (a:Acct) WHERE id(a) = 3 RETURN a.owner",
+        &composite_walk_schema(),
+        &server,
+    );
+    assert!(got.contains("WHERE false"), "{got}");
+    let got = lowered(
+        "MATCH (a:Acct) WHERE id(a) = 4 RETURN a.owner",
+        &composite_walk_schema(),
+        &server,
+    );
+    assert!(got.contains("v0.bank = 'e\\\\f' AND v0.num = '9'"), "{got}");
+}
+
+/// I5a (#1387): `id(n)` of a composite node, an item or a value, is one
+/// text: the id's parts as its element id spells them (escaped, joined by
+/// `|`, a NULL part `\N`), so no two ids share one and Bolt, which numbers it
+/// from the element id, gives a node the number of its value. NULL where an
+/// OPTIONAL MATCH found no node. (Before, a refusal.)
+#[test]
+fn an_id_of_a_composite_node_as_a_value_is_its_element_id_text() {
+    let lower = |q: &str| {
+        translate_bound_plan(q, &composite_walk_schema(), &ReadOptions::default())
+            .map(|t| squash(&t.sql))
+            .unwrap_or_else(|e| panic!("{q}: {e}"))
+    };
+    let text = |a: &str| {
+        format!(
+            "concat(CASE WHEN {a}.bank IS NULL THEN '\\\\N' ELSE \
+             replaceAll(replaceAll(replaceAll(toString({a}.bank), '\\\\', '\\\\\\\\'), \
+             ':', '\\\\:'), '|', '\\\\|') END, '|', CASE WHEN {a}.num IS NULL THEN '\\\\N' ELSE"
+        )
+    };
+    // An item, and one a WITH carries or an ORDER BY reads.
+    for q in [
+        "MATCH (a:Acct) RETURN id(a) AS i",
+        "MATCH (a:Acct) RETURN a.owner, id(a) AS i ORDER BY id(a)",
+        "MATCH (a:Acct) WITH id(a) AS i RETURN i ORDER BY i",
+        "MATCH (a:Acct) RETURN count(DISTINCT id(a)) AS n",
+    ] {
+        let got = lower(q);
+        assert!(got.contains(&text("v0")), "{q}:\n{got}");
+        assert!(
+            !got.contains("v0.bank AS"),
+            "{q}: the first part alone:\n{got}"
+        );
+    }
+    // ORDER BY reads the whole text, not the first part.
+    let got = lower("MATCH (a:Acct) RETURN a.owner ORDER BY id(a)");
+    let order = got.split("ORDER BY").nth(1).unwrap_or_default();
+    assert!(
+        order.contains(&text("v0")) && order.contains("v0.num"),
+        "{got}"
+    );
+    // NULL where an OPTIONAL MATCH found no node (every part NULL).
+    let got = lower("OPTIONAL MATCH (a:Acct) RETURN id(a) AS i");
+    assert!(
+        got.contains("(o1.v0__bank IS NULL AND o1.v0__num IS NULL) THEN NULL ELSE concat("),
+        "{got}"
+    );
+}
+
+/// I5a review: a composite `id()` is a text, so a comparison with anything
+/// but another `id()` is refused, not answered: a number (Bolt's) matches no
+/// text, and a text of one label equals another label's. Only `id(a) = id(b)`
+/// and a literal the server decodes (`id(a) = 5`) compare it.
+#[test]
+fn a_composite_id_compares_only_with_another_id() {
+    let refused = |q: &str| {
+        let err = translate_bound_plan(q, &composite_walk_schema(), &ReadOptions::default())
+            .expect_err(q);
+        assert!(
+            err.contains("composite id compared with a value other than another id()"),
+            "{q}: {err}"
+        );
+    };
+    for q in [
+        "MATCH (a:Acct) WHERE id(a) IN $ns RETURN a.owner",
+        "MATCH (a:Acct) WHERE id(a) = $n RETURN a.owner",
+        "MATCH (a:Acct) WHERE $n = id(a) RETURN a.owner",
+        "MATCH (a:Acct) WHERE id(a) <> $n RETURN a.owner",
+        "MATCH (a:Acct) WHERE id(a) >= $n RETURN a.owner",
+        "MATCH (a:Acct) WHERE NOT id(a) IN $ns RETURN a.owner",
+        "MATCH (a:Acct) RETURN id(a) = $n AS e",
+        "MATCH (a:Acct), (b:Acct) WHERE id(a) IN [id(b)] RETURN a.owner",
+        "MATCH (a:Acct) WHERE id(a) = 'x|1' RETURN a.owner",
+        "MATCH (a:Acct) WHERE id(a) NOT IN $ns RETURN a.owner",
+        "MATCH (a:Acct) WHERE id(a) < $n RETURN a.owner",
+        "MATCH (a:Acct) WHERE id(a) <= $n RETURN a.owner",
+        "MATCH (a:Acct) WHERE id(a) > $n RETURN a.owner",
+        "MATCH (a:Acct) WHERE 5 IN [id(a)] RETURN a.owner",
+        // A variable a WITH bound to the id is the same text.
+        "MATCH (a:Acct) WITH id(a) AS k WHERE k IN $ns RETURN count(*)",
+        "MATCH (a:Acct) WITH id(a) AS k WHERE NOT k IN [$n] RETURN count(*)",
+        "MATCH (a:Acct) WITH id(a) AS k RETURN k IN [$n] AS e",
+        "MATCH (a:Acct), (b:Acct) WITH id(a) AS ka, id(b) AS kb WHERE ka = kb RETURN ka",
+        "MATCH (a:Acct) WITH id(a) AS k WITH k AS j WHERE j IN $ns RETURN count(*)",
+        // An alias of the RETURN, read by its ORDER BY.
+        "MATCH (a:Acct) RETURN a.owner AS o, id(a) AS k ORDER BY k IN [$n] DESC, o",
+        "MATCH (a:Acct) RETURN a.owner AS o, id(a) AS k ORDER BY id(a) IN [$n], o",
+        "MATCH (a:Acct) WITH id(a) AS k RETURN k ORDER BY k IN [$n]",
+    ] {
+        refused(q);
+    }
+    // A single-column node's id, carried or not, and a relationship's, are
+    // compared as before (the guard is for the composite text only).
+    let (sql, _) = shaped(
+        "MATCH (a:User) WITH id(a) AS k WHERE k IN [1, 2] RETURN count(*) AS n",
+        &social(),
+    );
+    assert!(
+        sql.contains("IN (1, 2)") || sql.contains("IN [1, 2]"),
+        "{sql}"
+    );
+    // Another `id()`, and the value in a RETURN item, are lowered.
+    for q in [
+        "MATCH (a:Acct), (b:Acct) WHERE id(a) = id(b) RETURN a.owner",
+        "MATCH (a:Acct), (b:Acct) WHERE id(a) <> id(b) RETURN a.owner",
+        "MATCH (a:Acct) RETURN id(a) AS i, a.owner ORDER BY i",
+    ] {
+        translate_bound_plan(q, &composite_walk_schema(), &ReadOptions::default())
+            .unwrap_or_else(|e| panic!("{q}: {e}"));
+    }
+}
+
 /// S8d: a walk between composite ids joins each step and ties its ends by
 /// the ids' columns (their texts in `start_id` / `end_id` two ids share:
 /// `('B|1', '2')`, `('B', '1|2')`), restricts its first node by the tuple of
@@ -6699,7 +6867,8 @@ fn a_union_walk_between_composite_ids_goes_by_keys() {
 }
 
 /// S8d2c: a composite id in a value or a list: its element id joins its
-/// parts' texts with `|` (the element-id contract), its identity is the text
+/// parts' texts, escaped, with `|` (the element-id contract, I6b: a NULL
+/// part `\\N`, not the text `null`), its identity is the text
 /// of its tuple (which no two ids share), and a list's element tuple holds a
 /// slot per id column.
 #[test]
@@ -6712,8 +6881,9 @@ fn composite_ids_in_values_and_lists() {
     // A walk's nodes as values; its identity by the tuple text.
     let got = lower("MATCH p = (a:Acct)-[:SENT*0..1]->(b:Acct) WITH DISTINCT p RETURN p");
     for p in [
-        "concat(coalesce(toString(start_node.bank), 'null'), '|', \
-         coalesce(toString(start_node.num), 'null'))",
+        "concat(CASE WHEN start_node.bank IS NULL THEN '\\\\N' ELSE \
+         replaceAll(replaceAll(replaceAll(toString(start_node.bank), '\\\\', '\\\\\\\\'), \
+         ':', '\\\\:'), '|', '\\\\|') END, '|', CASE WHEN start_node.num IS NULL",
         "toString(tuple(start_node.bank, start_node.num)) as start_id",
     ] {
         assert!(got.contains(p), "missing `{p}` in\n{got}");
@@ -9776,13 +9946,16 @@ graph_schema:
     );
 }
 
-/// ELEMENT_IDENTITY.md I6 (#1354, user 2026-10-19): a row whose id has a
-/// NULL part is no node, in every scan of its label (a node of one label,
-/// several labels, a walk's nodes), as a walk's ties already took it; where
+/// ELEMENT_IDENTITY.md I6 / I6c (#1354; user 2026-10-19, revised
+/// 2026-10-24): a row whose composite id has a NULL part is a node, whose
+/// part is compared NULL-safely where it is the node's own identity (`a =
+/// b`, a walk's ends, a subquery's correlation, a list's elements) and with
+/// `=` where a relationship's end ties to it; a row whose id is all NULL, or
+/// a single-column NULL id, is no node, in every scan of its label. Where
 /// its id's columns cannot be NULL, or their types are unknown, the SQL is
 /// as before.
 #[test]
-fn a_row_whose_id_has_a_null_part_is_no_node_1354() {
+fn a_composite_id_with_a_null_part_is_a_node_1354() {
     const YAML: &str = r#"
 name: lower_null_id_parts
 graph_schema:
@@ -9804,6 +9977,18 @@ graph_schema:
       table: u
       node_id: [a, b, c]
       property_mappings: {name: name}
+    - label: A
+      database: db
+      table: an
+      node_id: [a, b, c]
+      column_types: {a: "Nullable(String)", b: "Nullable(UInt32)", c: "Nullable(String)"}
+      property_mappings: {name: name}
+    - label: S
+      database: db
+      table: s
+      node_id: id
+      column_types: {id: "Nullable(Int64)"}
+      property_mappings: {name: name}
   edges:
     - type: E
       database: db
@@ -9821,31 +10006,191 @@ graph_schema:
         .unwrap();
     let options = LowerOptions::default();
     let sql = |q: &str| lowered(q, &schema, &options);
+    // A part that may be NULL is no filter: such a row is a node.
     let got = sql("MATCH (n:M) RETURN n.name");
-    assert!(got.contains("WHERE v0.c IS NOT NULL"), "{got}");
-    // Only the part that can be NULL; none of a node whose id cannot be.
-    assert!(!got.contains("v0.a IS NOT NULL"), "{got}");
-    let got = sql("MATCH (n:K) RETURN n.name");
     assert!(!got.contains("IS NOT NULL"), "{got}");
-    // An id whose types are unknown is left as it was.
-    let got = sql("MATCH (n:U) RETURN n.name");
-    assert!(!got.contains("IS NOT NULL"), "{got}");
-    // OPTIONAL MATCH, several labels, a walk's nodes.
-    let got = sql("MATCH (k:K) OPTIONAL MATCH (n:M) RETURN k.name, n.name");
-    assert!(got.contains("c IS NOT NULL"), "{got}");
-    let got = sql("MATCH (n) RETURN count(n) AS c");
+    // An id that is all NULL, or of one NULL column, is none.
+    let got = sql("MATCH (n:A) RETURN n.name");
     assert!(
-        got.contains("FROM db.m AS e WHERE e.c IS NOT NULL"),
+        got.contains("(v0.a IS NOT NULL OR v0.b IS NOT NULL OR v0.c IS NOT NULL)"),
         "{got}"
     );
-    // A walk's first nodes are filtered in the generator's seed, and the
-    // walk still carries its nodes as tuples (`nodes(p)[…]` needs them).
-    let got = sql("MATCH (a:M)-[:E*0..2]->(b:M) RETURN a.name, b.name");
+    let got = sql("MATCH (n:S) RETURN n.name");
+    assert!(got.contains("WHERE v0.id IS NOT NULL"), "{got}");
+    // Each arm of a node of several labels.
+    let got = sql("MATCH (n:M|A) RETURN count(n) AS c");
     assert!(
-        got.contains("FROM db.m AS start_node WHERE (start_node.c IS NOT NULL)"),
+        got.contains(
+            "FROM db.an AS e WHERE (e.a IS NOT NULL OR e.b IS NOT NULL OR e.c IS NOT NULL)"
+        ),
         "{got}"
     );
-    let got = sql("MATCH p=(a:M)-[:E*1..2]->(b:M) RETURN [x IN nodes(p) | x.name] AS n");
-    assert!(got.contains("start_node.c IS NOT NULL"), "{got}");
-    assert!(got.contains("path_node_tuples"), "{got}");
+    assert!(!got.contains("FROM db.m AS e WHERE"), "{got}");
+    // A node is itself: its NULL-able part compared NULL-safely, the others
+    // with `=`; of an id that cannot be NULL, or of unknown types, as before.
+    let got = sql("MATCH (x:M), (y:M) WHERE x = y RETURN x.name");
+    assert!(
+        got.contains("v0.a = v1.a AND v0.b = v1.b AND (isNotDistinctFrom(v0.c, v1.c) AND true)"),
+        "{got}"
+    );
+    let got = sql("MATCH (x:M), (y:M) WHERE x <> y RETURN x.name");
+    assert!(
+        got.contains("NOT (isNotDistinctFrom(v0.c, v1.c) AND true)"),
+        "{got}"
+    );
+    for label in ["K", "U"] {
+        let got = sql(&format!(
+            "MATCH (x:{label}), (y:{label}) WHERE x = y RETURN x.name"
+        ));
+        assert!(!got.contains("isNotDistinctFrom"), "{got}");
+    }
+    // A relationship's end ties with `=` (none attaches to a NULL part); a
+    // walk's ends, read from its nodes' rows, are its nodes.
+    let got = sql("MATCH (x:M)-[:E]->(y:M) RETURN x.name, y.name");
+    assert!(!got.contains("isNotDistinctFrom"), "{got}");
+    let got = sql("MATCH (x:M)-[:E*0..2]->(y:M) RETURN x.name, y.name");
+    assert!(
+        got.contains("(isNotDistinctFrom(v1.start_c, v0.c) AND true)"),
+        "{got}"
+    );
+    assert!(got.contains("vp.end_c = rel.fc"), "{got}");
+    // A subquery's correlation and a list's elements.
+    let got = sql("MATCH (x:M) WHERE EXISTS { MATCH (x) WHERE x.name = 'n' } RETURN x.name");
+    assert!(got.contains("isNotDistinctFrom(v0.c, s1.v0__c)"), "{got}");
+    let got = sql("MATCH (x:M) WITH collect(x) AS l MATCH (y:M) WHERE y IN l RETURN y.name");
+    assert!(
+        got.contains("isNotDistinctFrom(tupleElement(__cg_in, 3), v2.c)"),
+        "{got}"
+    );
+    assert!(
+        got.contains("WHEN v2.a IS NULL AND v2.b IS NULL AND v2.c IS NULL THEN NULL"),
+        "{got}"
+    );
+    // Of an id that cannot be NULL, a list's `x` is NULL where any column
+    // is, as before.
+    let got = sql("MATCH (x:K) WITH collect(x) AS l MATCH (y:K) WHERE y IN l RETURN y.name");
+    assert!(
+        got.contains("WHEN v2.a IS NULL OR v2.b IS NULL OR v2.c IS NULL THEN NULL"),
+        "{got}"
+    );
+    // A walk from earlier rows: its first nodes by their tuple's text (a
+    // tuple holding NULL is `IN` no rows).
+    let got = sql("MATCH (x:M) WITH x MATCH (x)-[:E*0..2]->(y:M) RETURN x.name, y.name");
+    assert!(
+        got.contains(
+            "toString(tuple(start_node.a, start_node.b, start_node.c)) IN (SELECT DISTINCT"
+        ),
+        "{got}"
+    );
+    let got = sql("MATCH (x:K) WITH x MATCH (x)-[:E*0..2]->(y:M) RETURN x.name");
+    assert!(!got.contains("toString(tuple(start_node"), "{got}");
+    // Spark spells it `<=>`.
+    let got =
+        squash(&databricks_sql("MATCH (x:M), (y:M) WHERE x = y RETURN x.name", &schema).unwrap());
+    assert!(got.contains("((v0.c <=> v1.c) AND true)"), "{got}");
+    // On the server, `id(n) = N`'s part the node's may hold NULL in is false,
+    // not NULL, where it is NULL.
+    let server = LowerOptions {
+        id_lookup: Some(IdLookup {
+            node: std::sync::Arc::new(|id| match id {
+                1 => Some(("M".to_string(), "x|1|y".to_string())),
+                _ => None,
+            }),
+            element: std::sync::Arc::new(|_| None),
+        }),
+        ..LowerOptions::default()
+    };
+    let got = lowered(
+        "MATCH (x:M) WHERE id(x) <> 1 RETURN x.name",
+        &schema,
+        &server,
+    );
+    assert!(
+        got.contains("v0.a = 'x' AND v0.b = '1' AND coalesce(v0.c = 'y', false)"),
+        "{got}"
+    );
+}
+
+/// ELEMENT_IDENTITY.md I6d (#1354 comment): a relationship whose `edge_id`
+/// may be NULL is identified by its stored ends and its `edge_id` (as its
+/// element id `TYPE:\N:from->to-` tells it apart), the `edge_id` compared
+/// NULL-safely; it is present where its ends are (`count(r)`); its element
+/// id spells the `edge_id` alone. An `edge_id` that cannot be NULL, or of
+/// unknown types, keeps its SQL.
+#[test]
+fn a_relationship_whose_edge_id_has_a_null_part_is_one() {
+    const YAML: &str = r#"
+name: lower_null_edge_id
+graph_schema:
+  nodes:
+    - {label: N, database: db, table: n, node_id: id, column_types: {id: Int64}, property_mappings: {name: name}}
+  edges:
+    - type: E
+      database: db
+      table: e
+      from_node: N
+      to_node: N
+      from_id: fa
+      to_id: ta
+      edge_id: eid
+      column_types: {eid: "Nullable(Int64)", fa: Int64, ta: Int64}
+      property_mappings: {w: w}
+    - type: K
+      database: db
+      table: k
+      from_node: N
+      to_node: N
+      from_id: fa
+      to_id: ta
+      edge_id: eid
+      column_types: {eid: Int64, fa: Int64, ta: Int64}
+      property_mappings: {w: w}
+"#;
+    let schema = crate::graph_catalog::config::GraphSchemaConfig::from_yaml_str(YAML)
+        .unwrap()
+        .to_graph_schema()
+        .unwrap();
+    let rs = schema.get_rel_schema("E").unwrap();
+    assert!(rs.edge_id_nullable());
+    assert_eq!(rs.identity_columns(), vec!["fa", "ta", "eid"]);
+    let options = LowerOptions::default();
+    let sql = |q: &str| lowered(q, &schema, &options);
+    // Present where its ends are; its identity's tuple counted.
+    let got = sql("MATCH ()-[r:E]->() RETURN count(r) AS c, count(DISTINCT r) AS d");
+    assert!(got.contains("tuple(v1.fa, v1.ta, v1.eid)"), "{got}");
+    assert!(got.contains("WHEN v1.fa IS NULL THEN NULL"), "{got}");
+    // Relationships of one MATCH differ NULL-safely.
+    let got = sql("MATCH (a)-[r1:E]->(b)-[r2:E]->(c) RETURN count(*) AS c");
+    assert!(
+        got.contains("(v1.fa <> v3.fa OR v1.ta <> v3.ta OR NOT (isNotDistinctFrom(v1.eid, v3.eid) AND true))"),
+        "{got}"
+    );
+    // A walk's relationships by its ends and `edge_id`.
+    let got = sql("MATCH (a:N)-[:E*1..2]->(b:N) RETURN count(*) AS c");
+    assert!(got.contains("tuple(rel.fa, rel.ta, rel.eid)"), "{got}");
+    // Its element id: the `edge_id` alone before its ends.
+    let got = sql("MATCH ()-[r:E]->() RETURN r");
+    assert!(
+        got.contains("'E:', concat(CASE WHEN v1.eid IS NULL"),
+        "{got}"
+    );
+    // An `edge_id` that cannot be NULL: by it alone, as before.
+    let got = sql("MATCH (a)-[r1:K]->(b)-[r2:K]->(c) RETURN count(*) AS c");
+    assert!(got.contains("v1.eid <> v3.eid"), "{got}");
+    assert!(!got.contains("isNotDistinctFrom"), "{got}");
+    // A union of types: its identity past its definition NULL-safely,
+    // two-valued (review).
+    let got = sql("MATCH (x)-[r1:E|K]->(y), (x)-[r2:E|K]->(y) RETURN count(*) AS c");
+    assert!(got.contains("NOT (isNotDistinctFrom("), "{got}");
+    let got = sql("MATCH (x)-[r1:E|K]->(y) MATCH (x)-[r2:E|K]->(y) RETURN r1 = r2 AS s");
+    assert!(got.contains("(isNotDistinctFrom("), "{got}");
+    assert!(!got.contains(" IS NULL AND "), "{got}");
+    // An OPTIONAL MATCH after it joins on its properties too (two with a
+    // NULL `edge_id` and the same ends are one).
+    let got =
+        sql("MATCH (a)-[r:E]->(b) OPTIONAL MATCH (b)-[s:K]->(c) WHERE s.w > r.w RETURN r.w, s.w");
+    assert!(
+        got.contains("(w1.p2_v1_w = o3.p2_v1_w OR (w1.p2_v1_w IS NULL AND o3.p2_v1_w IS NULL))"),
+        "{got}"
+    );
 }

@@ -549,6 +549,16 @@ impl<'s> Lowerer<'s> {
             let exact = (shared.contains(v) || !self.binding(*v).nullable)
                 && !keys.contains(v)
                 && matches!(scan, Scan::Node { .. } | Scan::Rel { .. });
+            // A composite id's part a node's may hold NULL in: compared
+            // NULL-safely, the node being itself (I6c).
+            let nullable: BTreeSet<&String> = self
+                .identity_physical(*v)
+                .unwrap_or_default()
+                .iter()
+                .zip(self.identity_nullable(*v))
+                .filter(|(_, n)| *n)
+                .filter_map(|(c, _)| physical.get(c))
+                .collect();
             for item in exported.select {
                 let Some(column) = item.col_alias.as_ref().map(|a| a.0.clone()) else {
                     continue;
@@ -557,8 +567,8 @@ impl<'s> Lowerer<'s> {
                 correlation.push(Correlated {
                     inner: col_at(&d, &column),
                     outer: item.expression.clone(),
+                    null_safe: !(key && exact) || nullable.contains(&column),
                     column,
-                    null_safe: !(key && exact),
                 });
                 body.select.push(item);
             }

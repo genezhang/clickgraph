@@ -241,24 +241,14 @@ pub(super) fn day_or_time(col_sql: &str) -> String {
 }
 
 /// A node's id parts (SQL) as its element id spells them
-/// (`graph_catalog::element_id`): the one id, or the parts' texts joined by
-/// `|` (the element id's contract; a value's identity is its key, which no
-/// two ids share, [`super::walk_key_sql`]).
+/// (`element_id::node_id_text`): the one id, or the parts' texts escaped and
+/// joined by `|` as an `edge_id`'s are ([`edge_id_sql`]), a NULL part `\\N`,
+/// so no two composite ids spell one text and each reads back
+/// (ELEMENT_IDENTITY.md I6b).
 pub(super) fn element_id_sql(g: &GraphValues, ids: &[String]) -> String {
     match ids {
         [one] => one.clone(),
-        _ => {
-            let mut parts = Vec::new();
-            for (i, p) in ids.iter().enumerate() {
-                if i > 0 {
-                    parts.push(string("|"));
-                }
-                // A NULL part is spelled, not NULL: the element id of a node
-                // with one is not NULL (review).
-                parts.push(format!("coalesce({}, {})", (g.to_text)(p), string("null")));
-            }
-            (g.text)(&parts)
-        }
+        _ => edge_id_sql(g, ids),
     }
 }
 
@@ -1177,6 +1167,17 @@ impl<'s> Lowerer<'s> {
             Some(ids) => self.own_texts(v, ids)?.iter().map(sql).collect(),
             None => vec![sql(&RenderExpr::Literal(Literal::Null))],
         })
+    }
+
+    /// `id(n)` of a node of a composite id as one value: the id's text as
+    /// its element id spells it ([`element_id_sql`]: the parts escaped and
+    /// joined, a NULL part `\\N`), so no two ids share one and Bolt, which
+    /// numbers it from the element id, gives the number of the node's value.
+    /// NULL where an OPTIONAL MATCH found no node.
+    pub(super) fn composite_id_value(&self, v: VarId) -> Result<RenderExpr, LowerError> {
+        let g = spelling()?;
+        let text = element_id_sql(&g, &self.node_id_parts(v)?);
+        self.unless_null(&[v], RenderExpr::Raw(text))
     }
 
     /// A variable-length relationship's list: its relationships (two empty

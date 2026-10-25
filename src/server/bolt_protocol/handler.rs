@@ -644,14 +644,11 @@ fn substitute_cypher_parameters(query: &str, parameters: &HashMap<String, Value>
     // switches to elementId-mode (and emits these predicates) whenever the
     // first node in its canvas has an elementId containing `-` — which is
     // always true given our Browser-compat sentinel. Browser passes our
-    // element_id strings (e.g., `"User:1-"`) through; we decode them with
-    // parse_node_element_id and re-encode through compute_deterministic_id so
-    // the existing id-rewriter pipeline (further downstream in the planner)
-    // handles the rest.
-    // `\b(?:AND|WHERE)\s+(?:NOT\s+)?` optionally captures a leading boolean
-    // connector so that, for relationship-id predicates we want to drop, we
-    // can rip the whole conjunct out of the WHERE clause instead of leaving a
-    // dangling "AND". The connector is optional — used when `_lead` matches.
+    // element_id strings (e.g., `"User:1-"`, `"FOLLOWS:1->4-"`) through; we
+    // encode them through compute_deterministic_id so the lowering's `id()`
+    // lookup (a node's or a relationship's, by the variable) handles the rest.
+    // `\b(?:AND|WHERE)\s+(?:NOT\s+)?` captures a leading boolean connector,
+    // kept in front of the rewritten predicate.
     let re_elem_id = Regex::new(
         r"(?i)(?:(?P<lead>\b(?:AND|WHERE)\s+(?:NOT\s+)?))?\belementId\s*\(\s*(?P<alias>[A-Za-z_][A-Za-z0-9_]*)\s*\)\s*(?P<op>IN|=)\s*\$(?P<param>[A-Za-z_][A-Za-z0-9_]*)",
     )
@@ -677,36 +674,13 @@ fn substitute_cypher_parameters(query: &str, parameters: &HashMap<String, Value>
             _ => continue,
         };
 
-        // Relationship element_ids contain `->` (e.g., `"FOLLOWS:1->4-"`).
-        // The downstream AST id-rewriter only knows how to translate `id(x)`
-        // for node aliases — it has no path to map an encoded relationship id
-        // back to a real DB column. Generating `id(r) IN [encoded_ints]` ends
-        // up rendering as `r.id = 'value' OR ...` against a non-existent
-        // column, the planner short-circuits to `WHERE false`, and the whole
-        // expand returns zero rows.
-        //
-        // Browser uses this predicate purely for client-side dedup, so it's
-        // safe to drop. If we have a leading `AND/AND NOT/WHERE/WHERE NOT`
-        // captured, drop the entire conjunct; otherwise the user wrote a
-        // standalone `elementId(r) IN ...` and we leave the predicate as a
-        // tautology so the surrounding boolean shape stays valid.
-        let is_rel_param = elem_strings.iter().any(|s| s.contains("->"));
-        if is_rel_param {
-            let adjusted_start = (match_start as isize + offset3) as usize;
-            let adjusted_end = adjusted_start + full_match.as_str().len();
-            let replacement = if lead.is_some() {
-                String::new()
-            } else {
-                "true".to_string()
-            };
-            result.replace_range(adjusted_start..adjusted_end, &replacement);
-            offset3 += replacement.len() as isize - full_match.as_str().len() as isize;
-            continue;
-        }
-
         // Decode each element_id string into the integer the id-rewriter
         // expects. compute_deterministic_id is the same function used to
-        // assign Node.id values, so the round-trip is exact for nodes.
+        // assign Node.id and Relationship.id values, so the round-trip is
+        // exact. A node's and a relationship's alike: the lowering reads
+        // `id(x)` by `x`'s kind (a relationship's through the session's
+        // ids, ELEMENT_IDENTITY.md I3b), so no element id is told apart by
+        // its text (a node's may hold `->`) and no predicate is dropped.
         use crate::server::bolt_protocol::id_mapper::IdMapper;
         let encoded_ints: Vec<String> = elem_strings
             .iter()
@@ -3430,21 +3404,21 @@ mod tests {
         let out = substitute_cypher_parameters(q, &params);
         assert_eq!(out, q);
 
-        // Relationship element_ids (contain `->`) inside a connected `AND NOT`
-        // conjunct — drop the entire conjunct (including the leading `AND NOT`).
+        // Relationship element_ids are rewritten alike, kept in place: the
+        // lowering reads `id(r)` of a relationship (I3b). A node's element id
+        // holding `->` is a node's id still.
         let q = "MATCH (a)-[r]-(o) WHERE elementId(a) IN $nodeIds AND NOT elementId(r) IN $existingRelationshipIds RETURN r";
         let out = substitute_cypher_parameters(q, &params);
         assert!(!out.contains("elementId"), "got: {}", out);
-        assert!(!out.contains("AND NOT"), "got: {}", out);
-        // First predicate (node-shaped) still rewritten to id()
+        assert!(out.contains("AND NOT id(r) IN ["), "got: {}", out);
         assert!(out.contains("id(a) IN ["), "got: {}", out);
-
-        // Relationship element_ids in a leading `WHERE NOT` — drop the conjunct.
         let q = "MATCH ()-[r]-() WHERE NOT elementId(r) IN $existingRelationshipIds RETURN r";
         let out = substitute_cypher_parameters(q, &params);
-        assert!(!out.contains("elementId"), "got: {}", out);
-        // The `WHERE NOT ...` should be entirely gone.
-        assert!(!out.contains("WHERE NOT"), "got: {}", out);
+        assert!(out.contains("WHERE NOT id(r) IN ["), "got: {}", out);
+        params.insert("arrow".to_string(), serde_json::json!("Acct:g-|->h-"));
+        let q = "MATCH (n) WHERE elementId(n) = $arrow RETURN n";
+        let out = substitute_cypher_parameters(q, &params);
+        assert!(out.contains("WHERE id(n) = "), "got: {}", out);
     }
 
     #[test]

@@ -31,7 +31,7 @@ several labels and NULL parts. The open issues are where two sites disagree:
 | A several-labels node's id is the arms' common type: a `Variant` (`'01'` reads as `1`; joins of two such Variants fail) | #1390, #1393 |
 | F6 / F7 ignore `edge_id`: parallel relationships share one element id and number; HTTP Graph and embedded dedupe one away | #1334 (#1409) |
 | `id(r) = N` has no decode for relationships | #1410 |
-| `id()` of a composite node as a value is refused | #1387 |
+| `id()` of a composite node as a value is refused (I5a) | #1387 |
 | `id()` across a mixed-label UNION is refused | #1383 |
 | Bolt's static id lookup ignores the session's scope | #1388 |
 | A NULL id part: present for `null_test`, `'null'` in F6, an error in Rust, never equal in F1, dropped by the embedded relation, the union walk and the search | #1354 |
@@ -78,6 +78,19 @@ one of the three.
 - **Element-id format: may change.** Composite ids and relationship ids that
   carry an `edge_id` get an unambiguous encoding; single-column node ids keep
   today's text.
+- **Revised 2026-10-24 (user): a composite id with a NULL part is a node.**
+  Asked whether "not a node" loses facts, the user chose to keep them: NULL
+  stays NULL in the data, its element id writes the part `\N` (escaped as
+  an `edge_id`'s parts are, I3a) and reads back as NULL. Identity is
+  compared NULL-safely (an element-id lookup's `\N` is `IS NULL`; `n = m`,
+  DISTINCT and a walk's visited nodes treat a node as itself), while a
+  relationship's end still joins its node with `=`, so no relationship
+  attaches to such a node (as in Neo4j, where `MATCH (m {b: null})` matches
+  nothing). A single-column NULL id, or a composite one that is all NULL,
+  stays no node: every such row would share one id. A relationship whose
+  `edge_id` has a NULL part is kept (in Neo4j only a missing property).
+  Rejected: a random number for NULL (not stable; Browser reads a node
+  again by its id) and the text `null` (a real string `'null'`).
 
 ## 3. Slices
 
@@ -149,6 +162,12 @@ one of the three.
     zone's wall clock matched nothing).
 - [ ] **I2b — one key spelling** (#1390). One `identity_key` for walks,
   searches and path edges (F3 / F4 / F5), from the comparable spelling.
+  Survey 2026-10-24: #1390 was closed by I1, and the key texts are already
+  built by shared helpers (`identity_text`, `rel_key`, `walk_key_sql`,
+  `composite_key`, I1's `cast_key_part`). What is left is folding
+  `composite_key` and the walk generator's `emit_id_expr` into
+  `identity_text`: a tidy with no failing query behind it, so parked behind
+  I5b, #1528 and I4b.
 - [x] **I3a — relationship element ids** (#1334). A relationship whose
   schema declares an `edge_id` carries it: `TYPE:edge_id:from->to-`
   (`element_id::relationship_element_id`), its parts' texts escaped (`\`,
@@ -221,11 +240,108 @@ one of the three.
   every session's cache (bit pattern alone), the unused Bolt parameter
   decoder that did is gone, and exports (COPY TO, apoc export) read through
   the caller's mapper. Two names of one graph are two scopes.
+- [x] **I6b — composite node element ids escaped.** A composite id's text
+  in its element id (`element_id::node_id_text`) escapes each part as an
+  `edge_id`'s (`\`, `:`, `|` as `\\`, `\:`, `\|`; a NULL part `\N`), in
+  Rust and in SQL alike (`value::element_id_sql` is `edge_id_sql` for several
+  parts), so `('a|b', 'c')` and `('a', 'b|c')` are two ids and NULL is not
+  the text `'null'`. Reading one back is by the label's number of parts
+  (`node_id_parts`: one column's id is its whole text): `id(n) = N`'s lookup
+  compares each part, a `\N` one `IS NULL`. `parse_node_element_id` returns
+  the id's text and strips one trailing `-`. Bolt's node, relationship ends
+  (now texts, not split on `|` and joined again) and embedded `query_graph`
+  spell it through it, a composite id's NULL part as `\N`. Single-column
+  ids keep their text.
+- [x] **I6c — a composite id with a NULL part is a node** (§2, revised
+  2026-10-24). `id_present` filters a row only where its id is all NULL
+  (every part's column may be NULL: `IS NOT NULL` of the one, or of any),
+  so a single-column NULL id stays no node. Where a node is compared as
+  itself, a part its column type says may be NULL is compared NULL-safely
+  (`Lowerer::identity_nullable` / `elem_nullable`, `same_part` /
+  `same_identity`: `FunctionMapper::null_safe_equal`, a join key, in a
+  boolean `… AND true`): `a = b` / `a <> b` (one label, several labels, a
+  list's elements, NULL where an element is), `x IN list` (NULL where `x`
+  is: every part of a composite id NULL), the correlation of OPTIONAL
+  MATCH, subqueries and drives to the node's own rows, and a walk's
+  `start_*` / `end_*` columns to its end nodes (read from their rows:
+  `Lowerer::tie_identity`). A relationship's ends still tie with `=`
+  (`tie_end`, the walk's recursion, an elided endpoint's correlation), so
+  no relationship attaches to such a node, as in Neo4j. Text keys (walk
+  keys, search keys) spell NULL in their tuple's text and are unchanged.
+  Live: two batteries of 75 queries against Neo4j holding the same graph
+  (one node per id, relationships whose ends are whole ids) agree on every
+  identity shape; Bolt returns `L:x|\N-` and reads it back.
+  A walk from earlier rows (`restriction`) keys such an id by its tuple's
+  text (a tuple holding NULL is `IN` no rows); `id(n) = N` on the server
+  reads a nullable part `coalesce(k = 'v', false)` (false, not NULL, where
+  the node's is NULL). Consequences of "no relationship attaches": an
+  embedded (denormalized) node exists only as its edges' end, so one whose
+  id has a NULL part is none; on an FK-edge table (node table = edge table)
+  the row is a node but its edge, from its own id, is no relationship.
+  I6d (below) does the same for relationships.
+- [x] **I6d — a relationship whose `edge_id` has a NULL part** (#1354
+  comment; §2: kept, as in Neo4j a missing property). Where an `edge_id`
+  part's column type says it may be NULL, a relationship is identified by
+  its stored ends and then its `edge_id` (`RelationshipSchema::
+  identity_columns` / `identity_part` / `edge_id_nullable`), as its element
+  id `TYPE:\N:from->to-` tells it apart; the ends first, so its first
+  identity column is NULL only where an OPTIONAL MATCH left it so
+  (`count(r)`, `r IS NULL`). Every identity site reads it: `scan_identity`,
+  a walk's `path_edges` (`path::edge_identity`, the generator's), union
+  shapes and their `REL_ID_i` typing and texts (`rel_union_shape`,
+  `identity_part_types`, `rel_id_texts`, `walked_identity_part`,
+  `definition_identity`, `union_part_text`, `union_edge_text` reading the
+  parts after the ends), list tuples (`Layout::identity_slots`; the element
+  id's text from `edge_slots`), and the `edge_id` parts are compared
+  NULL-safely (`identity_nullable` / `elem_nullable` of a relationship,
+  uniqueness of one MATCH's relationships, and a union's identity past its
+  definition: `union_differs`, `defined_identity_comparison`, two-valued);
+  joined on its properties too where read again (`drive_correlation`'s
+  `by_ends`), and its properties in a re-read's sort keys (`tie_breaks`), as
+  a relationship of ends is. Its element id spells the
+  `edge_id` alone. Live: 41 queries against Neo4j holding the same
+  relationships agree but for two that are not identity (a union walk's
+  `relationships(p)` comprehension, refused on main too; a pattern
+  comprehension's list order); was 16 wrong (`count(r)` 3 for 7, two-hop
+  patterns 2 for 12). Two relationships with one NULL `edge_id` and the
+  same ends are one (as their element ids are): a known discrepancy with
+  Neo4j (user, 2026-10-24; `docs/wiki/Known-Limitations.md` §4).
 - [ ] **I4b — Bolt ids**: stable hash (not `DefaultHasher`); label codes
   per schema (process-global, clamped at 63, first-seen ordered).
-- [ ] **I5 — ids as values** (#1387, #1383): `id()` of a composite node and
-  across a mixed-label UNION, from the output spelling.
-- [x] **I6 — NULL id parts** (#1354): not a node (§2). Every scan of a
+- [x] **I5a — `id()` of a composite node** (#1387, #1531). `id(n)` of a node whose
+  id has several columns, as a RETURN item or a value (WITH, ORDER BY,
+  DISTINCT, `collect`), is the id's text as its element id spells it
+  (`Lowerer::composite_id_value`: `value::element_id_sql` of the parts,
+  escaped and joined, a NULL part `\N`), NULL where an OPTIONAL MATCH found no
+  node; it was refused. HTTP and the library return the text (a node's `id()`
+  is its key, S11l). Bolt numbers it from the element id, as it does a
+  single-column node's (`ReturnItemType::IdFunction`), so `id(n)` is the id
+  of the node returned whole and `WHERE id(n) = N` finds it (I6b). Review:
+  the text compares only with another `id()` (`id(a) = id(b)`) or an integer
+  literal the server decodes; `IN [$n]`, `<> $n`, `> 3` or a string are
+  refused (`Lowerer::composite_id_item`; also an item of a WITH or of the
+  RETURN that is the id or passes it on, `Lowerer::composite_id_vars`: its
+  ORDER BY reads the alias), as a number matches no text and a text of one
+  label equals another's. The number of a hashed key (a composite or string
+  key, `IdMapper::is_hashed`) is assigned in the Bolt session when
+  `RETURN id(n)` gives it (`get_or_assign`), as a returned node's is, so
+  `WHERE id(n) = N` reads it back though the node was never returned whole
+  (also for a string key, on main alike). Left: the id as a value is the
+  key's text, which compares as text with text and which two labels can
+  share (as a single-column key, S11l): wrapped in a map, a list, a CASE or
+  a function (`{k: id(a)}`, `collect(id(a))`, `toString(id(a))`, `max(id(a))`)
+  and as a pattern's property value (`(b {bank: id(a)})`) it is not
+  guarded. An integer key of 2^31 to 2^47 is found by `id()` only after its
+  node was returned whole (`decode_for_query` reads smaller bits only; on
+  main alike); a Decimal part of 16 or more digits, a Float or a
+  FixedString has another text in Rust and SQL (#1528).
+- [ ] **I5b — `id()` across labels** (#1383): `id()` of a node of several
+  labels (`MATCH (n) RETURN id(n)`) and of a UNION column whose arms are
+  nodes of different labels. Refused today: the key alone is ambiguous
+  (a Post and a User share `1`), and Bolt needs each row's label. Wants a
+  decision on what HTTP returns (a relationship's `id()` is the server's
+  number, `ResultKind::RelId`; a node's is its key).
+- [x] **I6 — NULL id parts** (#1354): not a node (§2; revised by I6c). Every scan of a
   label (a node of one label, each arm of a node of several, a walk's
   nodes and its node relation, OPTIONAL MATCH) reads a row as a node only
   where its id's parts its columns' types say may be NULL are not

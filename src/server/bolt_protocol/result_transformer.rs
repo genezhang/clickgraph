@@ -35,7 +35,8 @@
 use crate::{
     graph_catalog::{
         element_id::{
-            generate_node_element_id, generate_relationship_element_id, parse_node_element_id,
+            generate_node_element_id, generate_relationship_element_id, node_element_id,
+            node_element_id_of_text, node_id_text, parse_node_element_id,
         },
         graph_schema::GraphSchema,
     },
@@ -422,7 +423,7 @@ pub fn transform_row(
                         Value::String(s) => s.clone(),
                         _ => format!("{:?}", id_val),
                     };
-                    format!("{}:{}", label, id_str)
+                    node_element_id_of_text(&label, &id_str)
                 } else {
                     // Fallback: try alias.id_col format (when node is also returned)
                     let id_col = schema
@@ -443,7 +444,7 @@ pub fn transform_row(
                             Value::String(s) => s.clone(),
                             _ => format!("{:?}", id_val),
                         };
-                        format!("{}:{}", label, id_str)
+                        node_element_id_of_text(&label, &id_str)
                     } else {
                         // Last fallback: try to construct from any property that looks like an ID
                         let prefix = format!("{}.", alias);
@@ -456,7 +457,7 @@ pub fn transform_row(
                                         Value::String(s) => s.clone(),
                                         _ => continue,
                                     };
-                                    element_id = Some(format!("{}:{}", label, id_str));
+                                    element_id = Some(node_element_id_of_text(&label, &id_str));
                                     break;
                                 }
                             }
@@ -465,8 +466,15 @@ pub fn transform_row(
                     }
                 };
 
-                // Use IdMapper's deterministic ID computation
-                let encoded_id = super::id_mapper::IdMapper::compute_deterministic_id(&element_id);
+                // IdMapper's deterministic ID computation. A hash of the key
+                // is assigned in the session, so `WHERE id(n) = N` reads the
+                // number back (ELEMENT_IDENTITY.md I5a); a key's bits need not
+                // be.
+                let encoded_id = if super::id_mapper::IdMapper::is_hashed(&element_id) {
+                    id_mapper.get_or_assign(&element_id)
+                } else {
+                    super::id_mapper::IdMapper::compute_deterministic_id(&element_id)
+                };
                 log::debug!("id() encoded: {} -> {}", element_id, encoded_id);
                 result.push(BoltValue::Json(Value::Number(encoded_id.into())));
             }
@@ -650,20 +658,30 @@ pub(crate) fn transform_to_node(
     // value dropped, so `properties.get("id")` misses and the node fails to
     // render in Neo4j Browser ("Missing ID column 'id'"). Fall back to the raw
     // row column (`{var}.{col}`) so the id value is recovered regardless.
-    let id_values: Vec<String> = id_columns
+    //
+    // A composite id's part may be NULL (`None`, its element id's `\\N`); an
+    // id of no part that is not is no node's.
+    let id_values: Vec<Option<String>> = id_columns
         .iter()
         .map(|col_name| {
-            properties
+            let missing = || format!("Missing ID column '{}' for node '{}'", col_name, var_name);
+            match properties
                 .get(*col_name)
                 .or_else(|| row.get(&format!("{}.{}", var_name, col_name)))
-                .and_then(value_to_string)
-                .ok_or_else(|| format!("Missing ID column '{}' for node '{}'", col_name, var_name))
+            {
+                Some(Value::Null) if id_columns.len() > 1 => Ok(None),
+                Some(v) => value_to_string(v).map(Some).ok_or_else(missing),
+                None => Err(missing()),
+            }
         })
         .collect::<Result<Vec<_>, _>>()?;
+    if id_values.iter().all(Option::is_none) {
+        return Err(format!("Missing ID columns for node '{}'", var_name));
+    }
 
     // Generate elementId using Phase 3 function
-    let id_value_refs: Vec<&str> = id_values.iter().map(|s| s.as_str()).collect();
-    let element_id = generate_node_element_id(&label, &id_value_refs);
+    let id_value_refs: Vec<Option<&str>> = id_values.iter().map(|s| s.as_deref()).collect();
+    let element_id = node_element_id(&label, &id_value_refs);
 
     // Derive integer ID from element_id (ensures uniqueness across labels)
     let id: i64 = generate_id_from_element_id(&element_id);
@@ -997,9 +1015,10 @@ pub fn transform_to_relationship(
 
     // Extract from_id values using relationship's FK columns (e.g., follower_id, followed_id)
     let from_rel_id_columns = rel_schema.from_id.columns();
-    let from_id_values: Vec<String> = if let Some(ref s) = canonical_from {
-        // Schema-natural projection wins; composite ids are pipe-joined.
-        s.split('|').map(|p| p.to_string()).collect()
+    // An end's id as its node's element id spells it (`node_id_text`).
+    let from_id_str: String = if let Some(ref s) = canonical_from {
+        // Schema-natural projection wins: the id's text as it is.
+        s.clone()
     } else {
         from_rel_id_columns
             .iter()
@@ -1021,13 +1040,17 @@ pub fn transform_to_relationship(
                         )
                     })
             })
-            .collect::<Result<Vec<_>, _>>()?
+            .collect::<Result<Vec<_>, _>>()
+            .map(|values| {
+                let parts: Vec<Option<&str>> = values.iter().map(|v| Some(v.as_str())).collect();
+                node_id_text(&parts)
+            })?
     };
 
     // Extract to_id values using relationship's FK columns
     let to_rel_id_columns = rel_schema.to_id.columns();
-    let to_id_values: Vec<String> = if let Some(ref s) = canonical_to {
-        s.split('|').map(|p| p.to_string()).collect()
+    let to_id_str: String = if let Some(ref s) = canonical_to {
+        s.clone()
     } else {
         to_rel_id_columns
             .iter()
@@ -1049,12 +1072,12 @@ pub fn transform_to_relationship(
                         )
                     })
             })
-            .collect::<Result<Vec<_>, _>>()?
+            .collect::<Result<Vec<_>, _>>()
+            .map(|values| {
+                let parts: Vec<Option<&str>> = values.iter().map(|v| Some(v.as_str())).collect();
+                node_id_text(&parts)
+            })?
     };
-
-    // Join composite IDs with pipe separator
-    let from_id_str = from_id_values.join("|");
-    let to_id_str = to_id_values.join("|");
 
     // Remove internal ID keys from properties (they're FK columns, not user properties)
     properties.remove("from_id");
@@ -1082,10 +1105,6 @@ pub fn transform_to_relationship(
     // the SQL's where it spells it (a relationship with an `edge_id`, #1334).
     let element_id = sql_element_id
         .unwrap_or_else(|| generate_relationship_element_id(&rel_type, &from_id_str, &to_id_str));
-
-    // Generate node elementIds for start and end nodes (with composite ID support)
-    let from_id_refs: Vec<&str> = from_id_values.iter().map(|s| s.as_str()).collect();
-    let to_id_refs: Vec<&str> = to_id_values.iter().map(|s| s.as_str()).collect();
 
     // Re-pair endpoint labels with the schema-canonical ids.
     //
@@ -1146,8 +1165,9 @@ pub fn transform_to_relationship(
             (from_node_label.to_string(), to_node_label.to_string())
         };
 
-    let start_node_element_id = generate_node_element_id(&from_node_label, &from_id_refs);
-    let end_node_element_id = generate_node_element_id(&to_node_label, &to_id_refs);
+    // The start and end nodes' element ids, of their ids' texts.
+    let start_node_element_id = node_element_id_of_text(&from_node_label, &from_id_str);
+    let end_node_element_id = node_element_id_of_text(&to_node_label, &to_id_str);
 
     // Derive integer IDs from element_ids (ensures uniqueness across labels)
     let rel_id = generate_id_from_element_id(&element_id);
@@ -2047,7 +2067,8 @@ fn extract_id_string_from_props(
                 })
                 .collect();
             if id_values.len() == id_columns.len() {
-                return id_values.join("|");
+                let parts: Vec<Option<&str>> = id_values.iter().map(|v| Some(v.as_str())).collect();
+                return node_id_text(&parts);
             }
         }
     }
@@ -2323,10 +2344,10 @@ fn find_relationship_in_row_with_type(
     // node element_ids. This matches the canonical format used everywhere else
     // (e.g., `LIKED:2->43-`) so Browser dedupes correctly across expansions.
     let from_bare_id = parse_node_element_id(start_element_id)
-        .map(|(_, ids)| ids.join("|"))
+        .map(|(_, id)| id)
         .unwrap_or_else(|_| start_element_id.to_string());
     let to_bare_id = parse_node_element_id(end_element_id)
-        .map(|(_, ids)| ids.join("|"))
+        .map(|(_, id)| id)
         .unwrap_or_else(|_| end_element_id.to_string());
     let rel_element_id = generate_relationship_element_id(rel_type, &from_bare_id, &to_bare_id);
     let rel_id = generate_id_from_element_id(&rel_element_id);
@@ -2383,10 +2404,10 @@ fn create_relationship_with_type(
     // Generate element_id using bare scalar IDs extracted from the node
     // element_ids — same canonical format used elsewhere (`LIKED:2->43-`).
     let from_bare_id = parse_node_element_id(start_element_id)
-        .map(|(_, ids)| ids.join("|"))
+        .map(|(_, id)| id)
         .unwrap_or_else(|_| start_element_id.to_string());
     let to_bare_id = parse_node_element_id(end_element_id)
-        .map(|(_, ids)| ids.join("|"))
+        .map(|(_, id)| id)
         .unwrap_or_else(|_| end_element_id.to_string());
     let element_id = generate_relationship_element_id(rel_type, &from_bare_id, &to_bare_id);
     let id = generate_id_from_element_id(&element_id);
@@ -2947,6 +2968,75 @@ mod tests {
     // Integration-style test (requires more setup)
     // TODO: Add full transform_to_node test with mock schema
 
+    /// I6b: a composite id's parts are escaped in its node's element id, a
+    /// NULL one `\\N`, and a relationship's ends are spelled as its nodes'
+    /// ids, so Browser ties them.
+    #[test]
+    fn a_composite_ids_element_id_is_escaped_and_its_ends_agree() {
+        use crate::graph_catalog::config::GraphSchemaConfig;
+        let schema = GraphSchemaConfig::from_yaml_str(
+            r#"
+graph_schema:
+  name: t
+  nodes:
+    - label: Acct
+      database: test
+      table: acct
+      node_id: [bank, num]
+      property_mappings: {bank: bank, num: num, owner: owner}
+  relationships:
+    - type: SENT
+      database: test
+      table: sent
+      from_node: Acct
+      to_node: Acct
+      from_id: [fb, fnum]
+      to_id: [tb, tnum]
+      property_mappings: {}
+"#,
+        )
+        .expect("parse schema")
+        .to_graph_schema()
+        .expect("to graph schema");
+
+        let mut row: HashMap<String, Value> = HashMap::new();
+        row.insert("a.bank".to_string(), Value::from("b|1"));
+        row.insert("a.num".to_string(), Value::from(7));
+        row.insert("a.owner".to_string(), Value::from("x"));
+        let a = transform_to_node(&row, "a", &["Acct".to_string()], &schema).unwrap();
+        assert_eq!(a.element_id, "Acct:b\\|1|7-");
+
+        let mut row: HashMap<String, Value> = HashMap::new();
+        row.insert("b.bank".to_string(), Value::from("c"));
+        row.insert("b.num".to_string(), Value::Null);
+        let b = transform_to_node(&row, "b", &["Acct".to_string()], &schema).unwrap();
+        assert_eq!(b.element_id, "Acct:c|\\N-");
+
+        // An id of no part that is not NULL is no node's.
+        let mut row: HashMap<String, Value> = HashMap::new();
+        row.insert("c.bank".to_string(), Value::Null);
+        row.insert("c.num".to_string(), Value::Null);
+        assert!(transform_to_node(&row, "c", &["Acct".to_string()], &schema).is_err());
+
+        let mut row: HashMap<String, Value> = HashMap::new();
+        row.insert("r.from_id_1".to_string(), Value::from("b|1"));
+        row.insert("r.from_id_2".to_string(), Value::from(7));
+        row.insert("r.to_id_1".to_string(), Value::from("c:d"));
+        row.insert("r.to_id_2".to_string(), Value::from(8));
+        let r = transform_to_relationship(
+            &row,
+            "r",
+            &["SENT".to_string()],
+            Some("Acct"),
+            Some("Acct"),
+            &schema,
+        )
+        .unwrap();
+        assert_eq!(r.start_node_element_id, a.element_id);
+        assert_eq!(r.end_node_element_id, "Acct:c\\:d|8-");
+        assert_eq!(r.element_id, "SENT:b\\|1|7->c\\:d|8-");
+    }
+
     /// Regression: a node whose schema id column is literally named `id`
     /// (extremely common — most tables use an `id` primary key) must still
     /// render. The property map intentionally drops the `id`/`properties` keys
@@ -3108,6 +3198,45 @@ graph_schema:
                 .all(|v| matches!(v, BoltValue::Json(Value::Null))),
             "{out:?}"
         );
+    }
+
+    /// ELEMENT_IDENTITY.md I5a: the number of an `id()` item whose key is
+    /// hashed (a composite or string key) is assigned in the session, so
+    /// `WHERE id(n) = N` reads it back; a key's bits (a small integer) need
+    /// not be.
+    #[test]
+    fn an_id_item_of_a_hashed_key_is_assigned_in_the_session() {
+        let schema = GraphSchema::build(1, "test".to_string(), HashMap::new(), HashMap::new());
+        let item = ReturnItemMetadata {
+            field_name: "i".to_string(),
+            item_type: ReturnItemType::IdFunction {
+                alias: "a".to_string(),
+                labels: vec!["Account".to_string()],
+            },
+            columns: Some(vec![("i".to_string(), "i".to_string())]),
+        };
+        let number = |ids: &mut super::super::id_mapper::IdMapper, key: Value| -> i64 {
+            let row: HashMap<String, Value> = [("i".to_string(), key)].into();
+            match transform_row(row, std::slice::from_ref(&item), &schema, ids)
+                .unwrap()
+                .as_slice()
+            {
+                [BoltValue::Json(Value::Number(n))] => n.as_i64().unwrap(),
+                other => panic!("{other:?}"),
+            }
+        };
+        let mut ids = super::super::id_mapper::IdMapper::new();
+        // A composite key (its escaped text), and a string one.
+        let composite = number(&mut ids, Value::from("CHASE|CHK-001"));
+        assert_eq!(
+            ids.get_element_id(composite).as_deref(),
+            Some("Account:CHASE|CHK-001-")
+        );
+        let string = number(&mut ids, Value::from("LAX"));
+        assert_eq!(ids.get_element_id(string).as_deref(), Some("Account:LAX-"));
+        // A small integer key is its number's bits: nothing to assign.
+        let small = number(&mut ids, Value::from(7));
+        assert_eq!(ids.get_element_id(small), None);
     }
 
     /// #486: `transform_vlp_path` must decode the standard (single-type) VLP

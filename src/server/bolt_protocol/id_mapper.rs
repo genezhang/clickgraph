@@ -218,8 +218,9 @@ impl IdMapper {
         // portion stays the unadorned id (e.g., `"User:1-"` → label `User`,
         // id_value `1`, not `"1-"`). Without this strip, a numeric id like `1`
         // would fail integer parse and fall back to a hash, breaking the
-        // round-trip with id-rewriter callers.
-        let element_id = element_id.trim_end_matches('-');
+        // round-trip with id-rewriter callers. One: an id's text may end
+        // with another (`a-` and `a` are two ids).
+        let element_id = element_id.strip_suffix('-').unwrap_or(element_id);
 
         // Parse "Label:id_value" format
         let (label, id_part) = if let Some(colon_pos) = element_id.find(':') {
@@ -249,23 +250,38 @@ impl IdMapper {
     /// For simple numeric IDs, use the number directly (if it fits in 47 bits).
     /// For strings/composite keys, use a hash.
     fn compute_id_value_hash(id_part: &str, id_mask: i64) -> i64 {
-        // Check for composite key format "part1|part2"
+        match Self::numeric_key(id_part, id_mask) {
+            Some(numeric_id) => numeric_id.max(1),
+            // A composite key, a string (like "LAX") or a large number.
+            None => Self::hash_string(id_part) & id_mask,
+        }
+    }
+
+    /// The key of an id's text where it is a plain non-negative integer that
+    /// fits `id_mask`: its number holds the key's bits.
+    fn numeric_key(id_part: &str, id_mask: i64) -> Option<i64> {
         if id_part.contains('|') {
-            return Self::hash_string(id_part) & id_mask;
+            return None;
         }
+        id_part
+            .parse::<i64>()
+            .ok()
+            .filter(|n| *n >= 0 && *n <= id_mask)
+    }
 
-        // Try to parse as integer
-        if let Ok(numeric_id) = id_part.parse::<i64>() {
-            // Use the numeric ID directly if it fits in 47 bits
-            if numeric_id >= 0 && numeric_id <= id_mask {
-                return numeric_id.max(1);
-            }
-            // Large number, use hash
-            return Self::hash_string(id_part) & id_mask;
-        }
-
-        // For non-numeric IDs (like "LAX"), use a hash
-        Self::hash_string(id_part) & id_mask
+    /// Whether the number of `element_id` is a hash of its key (a string,
+    /// composite or large one) rather than the key's bits: a hash is read
+    /// back only from the session that gave it (`get_or_assign`,
+    /// [`resolve_node_id`]), the bits from the number alone. (Left: an
+    /// integer key of 2^31 to 2^47 holds its bits, but `decode_for_query`
+    /// reads only the smaller ones, so such a key is found by `id()` only
+    /// after its node was returned whole.)
+    pub fn is_hashed(element_id: &str) -> bool {
+        let element_id = element_id.strip_suffix('-').unwrap_or(element_id);
+        let id_part = element_id
+            .find(':')
+            .map_or(element_id, |at| &element_id[at + 1..]);
+        Self::numeric_key(id_part, crate::utils::id_encoding::ID_MASK).is_none()
     }
 
     /// Hash a string to a positive 56-bit value
@@ -495,7 +511,8 @@ impl Default for IdMapper {
 }
 
 /// The node an integer `id()` value names, as the server reads it: its
-/// label and key (a composite key's parts joined by `|`). The id `id_mapper`
+/// label and key's text (`element_id::node_id_text`: a composite key's
+/// parts escaped and joined by `|`). The id `id_mapper`
 /// gave it (this session's, or another of the same scope), else its bit
 /// pattern decoded (`IdMapper::decode_for_query`: a label code and a small
 /// numeric key), for a label whose key is an integer. `None`: it names no
@@ -506,10 +523,10 @@ pub fn resolve_node_id(
     id_value: i64,
 ) -> Option<(String, String)> {
     if let Some(element_id) = id_mapper.get_element_id(id_value) {
-        if let Ok((label, id_parts)) =
+        if let Ok((label, id_text)) =
             crate::graph_catalog::element_id::parse_node_element_id(&element_id)
         {
-            return Some((label, id_parts.join("|")));
+            return Some((label, id_text));
         }
     }
     // LIMITATION: only simple numeric keys (< 2^31) decode from the bit
@@ -537,6 +554,32 @@ pub fn resolve_node_id(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_number_is_a_hash_unless_it_holds_its_keys_bits() {
+        assert!(!IdMapper::is_hashed("User:7-"));
+        assert!(!IdMapper::is_hashed("User:0"));
+        // Strings, composite keys and keys too large for 47 bits.
+        assert!(IdMapper::is_hashed("Airport:LAX-"));
+        assert!(IdMapper::is_hashed("Acct:b|7-"));
+        assert!(IdMapper::is_hashed("User:-3-"));
+        assert!(IdMapper::is_hashed("User:140737488355328-"));
+        assert!(!IdMapper::is_hashed("User:140737488355327-"));
+        assert!(!IdMapper::is_hashed("Message:2147483648-"));
+    }
+
+    #[test]
+    fn ids_that_differ_in_a_trailing_dash_are_two() {
+        // One trailing `-` is the sentinel: `a` and `a-` are two ids.
+        assert_ne!(
+            IdMapper::compute_deterministic_id("Item:a-"),
+            IdMapper::compute_deterministic_id("Item:a--")
+        );
+        assert_eq!(
+            IdMapper::compute_deterministic_id("User:7-"),
+            IdMapper::compute_deterministic_id("User:7")
+        );
+    }
     use crate::utils::id_encoding::{ID_BITS, ID_MASK};
 
     /// Helper to extract label code from encoded ID (6 bits at position 47-52)

@@ -50,6 +50,9 @@ pub(super) struct Layout<'s> {
     from: usize,
     to: usize,
     edge_id: usize,
+    /// Its `edge_id` may be NULL: its identity is its ends and its
+    /// `edge_id` (`RelationshipSchema::identity_columns`, I6d).
+    edge_nullable: bool,
 }
 
 impl Layout<'_> {
@@ -63,14 +66,22 @@ impl Layout<'_> {
     }
 
     /// The slots of its identity (0-based): a node's id; a relationship's
-    /// `edge_id`, else its ends (#887).
+    /// `edge_id`, else its ends (#887); its ends and `edge_id` where that
+    /// may be NULL (I6d), in its identity's order.
     pub fn identity_slots(&self) -> Vec<usize> {
         let ends = self.from + self.to;
         match &self.elem {
+            Elem::Rel { .. } if self.edge_nullable => (0..ends + self.edge_id).collect(),
             Elem::Rel { .. } if self.edge_id > 0 => (ends..ends + self.edge_id).collect(),
             Elem::Rel { .. } => (0..ends).collect(),
             Elem::Node(_) => (0..self.id).collect(),
         }
+    }
+
+    /// The slots of a relationship's `edge_id` (none without one).
+    fn edge_slots(&self) -> Vec<usize> {
+        let ends = self.from + self.to;
+        (ends..ends + self.edge_id).collect()
     }
 
     /// The slots of a relationship's from and to ids.
@@ -105,6 +116,7 @@ pub(super) fn node_layout<'s>(
         from: 0,
         to: 0,
         edge_id: 0,
+        edge_nullable: false,
     })
 }
 
@@ -128,6 +140,7 @@ pub(super) fn rel_layout<'s>(
         from: schema.from_id.columns().len(),
         to: schema.to_id.columns().len(),
         edge_id: schema.edge_id.as_ref().map_or(0, |id| id.columns().len()),
+        edge_nullable: schema.edge_id_nullable(),
     })
 }
 
@@ -391,7 +404,7 @@ impl<'s> Lowerer<'s> {
                     super::value::element_id_sql(g, &super::value::spelled_end(parts, targets))
                 };
                 let edge = (layout.edge_id > 0).then(|| {
-                    let parts: Vec<String> = layout.identity_slots().into_iter().map(at).collect();
+                    let parts: Vec<String> = layout.edge_slots().into_iter().map(at).collect();
                     super::value::edge_id_sql(g, &parts)
                 });
                 super::value::rel_object(

@@ -495,7 +495,71 @@ fn property_column_type<'a>(
     }
 }
 
+/// What one column of a relationship's identity is
+/// ([`RelationshipSchema::identity_columns`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IdentityPart<'a> {
+    /// A part of its `edge_id`, this column.
+    Edge(&'a str),
+    /// Part `i` of its stored `from` end.
+    From(usize),
+    /// Part `i` of its stored `to` end.
+    To(usize),
+}
+
 impl RelationshipSchema {
+    /// Whether a part of its `edge_id` may be NULL, as its column's type says
+    /// (ELEMENT_IDENTITY.md I6d; unknown types: not).
+    pub fn edge_id_nullable(&self) -> bool {
+        self.edge_id.as_ref().is_some_and(|id| {
+            id.columns().iter().any(|c| {
+                self.column_types
+                    .get(*c)
+                    .is_some_and(|t| t.nullable && !t.raw.is_empty())
+            })
+        })
+    }
+
+    /// The columns identifying one of its relationships (#887, I6d): its
+    /// `edge_id`; where a part of that may be NULL, its stored `(from, to)`
+    /// ends and then its `edge_id`, which tell such relationships apart as
+    /// their element ids (`TYPE:\N:from->to-`) do (its first column is then
+    /// NULL only where it is: an OPTIONAL MATCH's); without one, its ends.
+    pub fn identity_columns(&self) -> Vec<&str> {
+        let ends = || {
+            self.from_id
+                .columns()
+                .into_iter()
+                .chain(self.to_id.columns())
+        };
+        match &self.edge_id {
+            Some(id) if self.edge_id_nullable() => ends().chain(id.columns()).collect(),
+            Some(id) => id.columns(),
+            None => ends().collect(),
+        }
+    }
+
+    /// What identity column `i` ([`Self::identity_columns`]) is.
+    pub fn identity_part(&self, i: usize) -> Option<IdentityPart<'_>> {
+        let edge: Vec<&str> = match &self.edge_id {
+            Some(id) => id.columns(),
+            None => Vec::new(),
+        };
+        let (from, to) = (self.from_id.columns().len(), self.to_id.columns().len());
+        let ends = match &self.edge_id {
+            None => true,
+            Some(_) => self.edge_id_nullable(),
+        };
+        if !ends {
+            return edge.get(i).map(|c| IdentityPart::Edge(c));
+        }
+        match i {
+            i if i < from => Some(IdentityPart::From(i)),
+            i if i < from + to => Some(IdentityPart::To(i - from)),
+            i => edge.get(i - from - to).map(|c| IdentityPart::Edge(c)),
+        }
+    }
+
     /// The column type of property `p` where known ([`property_column_type`]).
     pub fn property_column_type(
         &self,

@@ -270,6 +270,19 @@ A statement may have at most 1,000 clauses, all UNION arms together (`MATCH`, `W
 
 The library entry points (embedded `Connection`, FFI, Go, Python, `cg`) translate a statement of more than 64 tokens, or nesting brackets more than 8 deep, with the servers' stack (`CLICKGRAPH_THREAD_STACK_MB`, default 128 MB), whatever thread the caller is on: on a pool of translation threads for translation (`query_to_sql`), on a thread of its own for a query that also runs (`query`). Shorter ones run on the caller's thread. A caller thread smaller than 2 MB (musl's default is 128 KB) may still be too small for those.
 
+### 4. Relationships with a NULL `edge_id` and the same ends are one
+
+**Status**: Known discrepancy (user, 2026-10-24)
+**Severity**: LOW
+
+Where a schema declares an `edge_id` whose column can be NULL, a relationship is identified by its stored ends and its `edge_id`, the NULL compared as a value (its element id is `TYPE:\N:from->to-`). Two rows of one relationship type with a NULL `edge_id` and the same two ends therefore have one identity and one element id, where Neo4j, which loads each row as its own relationship, has two:
+
+- `r1 = r2` is true for them, and `r1 <> r2` false: `MATCH ()-[r1]->(), ()-[r2]->() WHERE r1 <> r2` counts fewer pairs than Neo4j (54 for 56 in a test graph), and a pattern of two relationships does not take both;
+- `count(DISTINCT r)`, `collect(DISTINCT r)` and `WITH DISTINCT r` keep one of them, except where the query also reads a property of `r` that differs between them (`WITH DISTINCT r RETURN r.w` keeps both, `WITH DISTINCT r RETURN count(*)` one);
+- Bolt and the HTTP graph format give both rows one element id and one `id()` number, so a driver or Neo4j Browser shows one relationship (with the first row's properties), and `elementId(r) = $id` or `id(r) = N` matches both rows.
+
+`count(r)`, `RETURN r.w` and every other per-row read still see both rows. The tables have nothing else to tell such rows apart; give them distinct `edge_id`s to have them be two relationships. Relationships whose `edge_id` is not NULL, and schemas whose `edge_id` cannot be NULL, are not affected. The same holds for any two rows with one id: two node rows with the same id (a composite one with a NULL part included) are one node.
+
 ### Integration Test Status
 
 **100% Pass Rate (1,378/1,378)**
