@@ -314,9 +314,12 @@ one of the three.
   session (`holds_key_bits`). A hashed number is read back only in a session
   (or one of the same graph and tenant) that gave it.
 - [ ] **I4b — Bolt ids** (left): stable hash (not `DefaultHasher`); label
-  codes per schema (process-global; a server's later-loaded schemas get
-  codes first-seen, and a client's `elementId(n) = $e` registers the label
-  text it names); the session map has no cap.
+  codes per schema (they are process-wide: a server of several schemas
+  passes 63, the later labels are hashed and kept in the session); the
+  session map has no cap. (Done: a schema loaded with `POST /schemas/load`
+  registers its labels in sorted order when it is loaded, as the startup
+  schemas do, and the registry keeps at most 254 labels, however many names
+  a client makes up with `elementId(n) = $e`.)
 - [x] **I5a — `id()` of a composite node** (#1387, #1531). `id(n)` of a node whose
   id has several columns, as a RETURN item or a value (WITH, ORDER BY,
   DISTINCT, `collect`), is the id's text as its element id spells it

@@ -74,17 +74,21 @@ impl LabelCodeRegistry {
         }
     }
 
-    /// Get or assign a code for a label (1-255)
-    /// Returns 255 if we've exhausted all codes (overflow)
+    /// Get or assign a code for a label (1-254).
+    /// Returns 255 once the codes are exhausted, and keeps nothing for the
+    /// label: the registry holds at most 254 labels, however many names a
+    /// client makes up (an `elementId(n) = $e` names any label).
     pub fn get_or_assign(&mut self, label: &str) -> u8 {
         if let Some(&code) = self.label_to_code.get(label) {
             return code;
         }
+        if self.next_code == u8::MAX {
+            return u8::MAX;
+        }
 
         // Assign new code (starts at 1)
         let code = self.next_code;
-        self.next_code = self.next_code.saturating_add(1);
-        // At 255, we stop incrementing (overflow protection)
+        self.next_code += 1;
         self.label_to_code.insert(label.to_string(), code);
         self.code_to_label.insert(code, label.to_string());
         code
@@ -164,7 +168,7 @@ impl IdEncoding {
     /// * `label` - The label name to register
     ///
     /// # Returns
-    /// The assigned code (1-255)
+    /// The assigned code (1-254), or 255 for a label past the 254th
     pub fn register_label(label: &str) -> u8 {
         if let Ok(mut registry) = LABEL_CODE_REGISTRY.write() {
             registry.get_or_assign(label)
@@ -186,6 +190,24 @@ impl IdEncoding {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The registry keeps at most 254 labels, however many names are made up.
+    #[test]
+    fn the_registry_is_bounded() {
+        let mut registry = LabelCodeRegistry::new();
+        for i in 1..=254u32 {
+            assert_eq!(registry.get_or_assign(&format!("L{i}")), i as u8);
+        }
+        // Past the 254th: 255, nothing kept.
+        for i in 255..2000 {
+            assert_eq!(registry.get_or_assign(&format!("L{i}")), 255);
+        }
+        assert_eq!(registry.label_to_code.len(), 254);
+        assert_eq!(registry.code_to_label.len(), 254);
+        assert_eq!(registry.get_code("L300"), None);
+        // A kept label keeps its code.
+        assert_eq!(registry.get_or_assign("L7"), 7);
+    }
 
     #[test]
     fn test_encode_decode_roundtrip() {

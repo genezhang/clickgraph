@@ -664,6 +664,12 @@ pub async fn load_schema_from_content(
             // Warn (not block) if this name was already registered with different content.
             warn_on_schema_content_collision(schema_name, yaml_content).await;
 
+            // Give its labels their id codes now, in sorted order, as the
+            // schemas loaded at startup get theirs; the codes are
+            // process-wide, and a label met later is numbered in the order
+            // a query first returns it.
+            preregister_schema_labels(&schema);
+
             // Add to multi-schema storage
             let schemas_lock = GLOBAL_SCHEMAS
                 .get()
