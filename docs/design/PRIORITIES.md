@@ -538,7 +538,7 @@ by issue (user: "go ahead with your plan").
    their edge_id #1520 (#1334); I3b `id(r) = N` #1522 (#1410); I3c unions of edge ids
    of several kinds #1523; I4a scoped id lookup #1524 (#1388); I6 NULL id parts #1525 (#1354);
    I6b escaped composite node element ids; I6c a composite id with a NULL part is a node
-   (user 2026-10-24); next I6d (NULL edge_id parts), I2b, I4b, I5.
+   (user 2026-10-24); I6d NULL edge_id parts; next I2b, I4b, I5.
 3. **Expression grammar** — names without backticks, hand-built precedence,
    missing productions (#1489 #1421 #1381 #1398 #1420 #1492 #1413). S1 names #1505, S2 precedence #1507; S3 list predicates #1508, S4 COUNT{} / COLLECT{} + arity #1510 (#1381 stays open for reduce() over an empty-list accumulator).
 4. **Statement front door** — prelude, USE, write dispatch, stack, request
@@ -769,6 +769,7 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-10-24: **P-4d cluster 2: ELEMENT_IDENTITY.md I6d, a relationship whose `edge_id` has a NULL part** (#1354 comment). `RelationshipSchema::identity_columns` (ends then `edge_id` where a part may be NULL) read by every identity site (scan, walks, unions, lists), `edge_id` parts NULL-safe. Live: 41-query battery against Neo4j agrees on every identity shape (was 16 wrong).
 - 2026-10-24: **P-4d cluster 2: ELEMENT_IDENTITY.md I6c, a composite id with a NULL part is a node** (#1354; user 2026-10-24 revising 2026-10-19). `id_present` only for all-NULL ids; `identity_nullable` / `same_part` / `same_identity` (`null_safe_equal`) at self-identity sites (`a = b`, lists, IN, OPTIONAL / subquery / drive correlation, walk ends via `tie_identity`); relationship ends keep `=`. Live: 75-query battery against a Neo4j copy of the graph agrees on every identity shape; Bolt `\N` element ids read back.
 - 2026-10-24: **P-4d cluster 2: ELEMENT_IDENTITY.md I6b, composite node element ids escaped.** `element_id::node_id_text` / `node_id_parts` / `node_element_id` (a composite id's parts escaped as an `edge_id`'s, NULL `\N`; one column's id its text), `value::element_id_sql` = `edge_id_sql` for several parts, `parse_node_element_id` returns the id text (one trailing `-` stripped); `id(n) = N` reads the parts back (`\N` → `IS NULL`); Bolt node / relationship ends and embedded `query_graph` through it. Live (Bolt): parts holding `|`, `:`, `\` read back by element id and by number, relationship ends and path nodes equal their nodes' ids, Browser's expand query finds both neighbours.
 - 2026-10-20: **P-4d cluster 2: ELEMENT_IDENTITY.md I6, a NULL id part is no node** (#1525, closes #1354; user 2026-10-19). `Lowerer::id_present` (`IS NOT NULL` of an id's nullable parts, by column types) beside the schema filter in every node scan: node of one label, label-union arms, walk node CTEs and node relation, OPTIONAL MATCH. Live (#1354's repro): `MATCH (n:M)` 4 → 3, as walks (3); `count(DISTINCT n)`, OPTIONAL MATCH, UNION agree. Corpus SQL unchanged (no types).

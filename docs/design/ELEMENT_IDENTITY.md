@@ -272,8 +272,34 @@ one of the three.
   embedded (denormalized) node exists only as its edges' end, so one whose
   id has a NULL part is none; on an FK-edge table (node table = edge table)
   the row is a node but its edge, from its own id, is no relationship.
-  Left (I6d): a relationship whose `edge_id` has a NULL part is kept (#1354
-  comment) but its identity is not NULL-safe (`count(r)`, uniqueness).
+  I6d (below) does the same for relationships.
+- [x] **I6d — a relationship whose `edge_id` has a NULL part** (#1354
+  comment; §2: kept, as in Neo4j a missing property). Where an `edge_id`
+  part's column type says it may be NULL, a relationship is identified by
+  its stored ends and then its `edge_id` (`RelationshipSchema::
+  identity_columns` / `identity_part` / `edge_id_nullable`), as its element
+  id `TYPE:\N:from->to-` tells it apart; the ends first, so its first
+  identity column is NULL only where an OPTIONAL MATCH left it so
+  (`count(r)`, `r IS NULL`). Every identity site reads it: `scan_identity`,
+  a walk's `path_edges` (`path::edge_identity`, the generator's), union
+  shapes and their `REL_ID_i` typing and texts (`rel_union_shape`,
+  `identity_part_types`, `rel_id_texts`, `walked_identity_part`,
+  `definition_identity`, `union_part_text`, `union_edge_text` reading the
+  parts after the ends), list tuples (`Layout::identity_slots`; the element
+  id's text from `edge_slots`), and the `edge_id` parts are compared
+  NULL-safely (`identity_nullable` / `elem_nullable` of a relationship,
+  uniqueness of one MATCH's relationships, and a union's identity past its
+  definition: `union_differs`, `defined_identity_comparison`, two-valued);
+  joined on its properties too where read again (`drive_correlation`'s
+  `by_ends`), and its properties in a re-read's sort keys (`tie_breaks`), as
+  a relationship of ends is. Its element id spells the
+  `edge_id` alone. Live: 41 queries against Neo4j holding the same
+  relationships agree but for two that are not identity (a union walk's
+  `relationships(p)` comprehension, refused on main too; a pattern
+  comprehension's list order); was 16 wrong (`count(r)` 3 for 7, two-hop
+  patterns 2 for 12). Two relationships with one NULL `edge_id` and the
+  same ends are one (as their element ids are): a known discrepancy with
+  Neo4j (user, 2026-10-24; `docs/wiki/Known-Limitations.md` §4).
 - [ ] **I4b — Bolt ids**: stable hash (not `DefaultHasher`); label codes
   per schema (process-global, clamped at 63, first-seen ordered).
 - [ ] **I5 — ids as values** (#1387, #1383): `id()` of a composite node and

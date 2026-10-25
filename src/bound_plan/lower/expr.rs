@@ -1847,16 +1847,17 @@ impl Lowerer<'_> {
             self.definition_identity(a, &texts)?,
             self.definition_identity(b, &texts)?,
         );
+        // Where an `edge_id` part may be NULL in a relationship, two-valued
+        // (I6d: a NULL part against a value is not NULL).
+        let nullable = self.nullable_edge_id(a, b);
         let same: Vec<RenderExpr> = ia
             .into_iter()
             .zip(ib)
             .enumerate()
-            .map(|(i, (x, y))| {
-                RenderExpr::OperatorApplicationExp(if i < 3 {
-                    super::eq(x, y)
-                } else {
-                    super::not_distinct(x, y)
-                })
+            .map(|(i, (x, y))| match (i < 3, nullable) {
+                (true, _) => RenderExpr::OperatorApplicationExp(super::eq(x, y)),
+                (false, true) => super::same_part(x, y, true),
+                (false, false) => RenderExpr::OperatorApplicationExp(super::not_distinct(x, y)),
             })
             .collect();
         let same = super::and_all(same).expect("a definition has columns");
