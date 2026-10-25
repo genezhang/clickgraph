@@ -364,7 +364,7 @@ async fn reserved_schema_names_answer_400_before_anything_else() {
                     .body(Body::from(
                         serde_json::json!({
                             "schema_name": name,
-                            "config_content": tiny_yaml(&name),
+                            "config_content": tiny_yaml(name),
                         })
                         .to_string(),
                     ))
