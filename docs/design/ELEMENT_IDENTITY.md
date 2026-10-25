@@ -298,7 +298,8 @@ one of the three.
   `relationships(p)` comprehension, refused on main too; a pattern
   comprehension's list order); was 16 wrong (`count(r)` 3 for 7, two-hop
   patterns 2 for 12). Two relationships with one NULL `edge_id` and the
-  same ends are one (as their element ids are).
+  same ends are one (as their element ids are): a known discrepancy with
+  Neo4j (user, 2026-10-24; `docs/wiki/Known-Limitations.md` §4).
 - [ ] **I4b — Bolt ids**: stable hash (not `DefaultHasher`); label codes
   per schema (process-global, clamped at 63, first-seen ordered).
 - [ ] **I5 — ids as values** (#1387, #1383): `id()` of a composite node and
