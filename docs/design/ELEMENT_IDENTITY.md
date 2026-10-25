@@ -305,8 +305,18 @@ one of the three.
   patterns 2 for 12). Two relationships with one NULL `edge_id` and the
   same ends are one (as their element ids are): a known discrepancy with
   Neo4j (user, 2026-10-24; `docs/wiki/Known-Limitations.md` §4).
-- [ ] **I4b — Bolt ids**: stable hash (not `DefaultHasher`); label codes
-  per schema (process-global, clamped at 63, first-seen ordered).
+- [x] **I4b-a — distinct numbers** (from #1532's review): `IdMapper::numeric_key`
+  takes only a non-negative integer in its plain decimal spelling (`+7` and
+  `007` were `7`'s number, and key `0` was key `1`'s: `.max(1)` of the key
+  part; `0` is now the label's code alone), a label past the 63rd (the codes
+  are process-wide) hashes its name with the key (`IdMapper::number_of`;
+  all of them shared code 63 and an equal key) and is kept in the Bolt
+  session (`holds_key_bits`). A hashed number is read back only in a session
+  (or one of the same graph and tenant) that gave it.
+- [ ] **I4b — Bolt ids** (left): stable hash (not `DefaultHasher`); label
+  codes per schema (process-global; a server's later-loaded schemas get
+  codes first-seen, and a client's `elementId(n) = $e` registers the label
+  text it names); the session map has no cap.
 - [x] **I5a — `id()` of a composite node** (#1387, #1531). `id(n)` of a node whose
   id has several columns, as a RETURN item or a value (WITH, ORDER BY,
   DISTINCT, `collect`), is the id's text as its element id spells it
@@ -358,11 +368,10 @@ one of the three.
   `id(n) = N`; `ORDER BY` the item sorts by the node's identity (label, key)
   as `ORDER BY id(n)` does, and is refused where the rows are grouped or
   distinct by it, and an expression of it is refused. The id of a node of
-  one label stays its key on HTTP. Left (the numbers, shared with whole
-  nodes; I4b): keys `0` and `1` of a label have one number, and so have
-  string keys that parse as one integer (`'7'`, `'007'`, `'+7'`); more than
-  62 labels and relationship types share code 63. CSV / `export` / `cg sql`
-  return the element id text.
+  one label stays its key on HTTP. CSV / `export` / `cg sql` return the
+  element id text. (The numbers, shared with whole nodes, had collisions
+  that I4b-a removed: keys `0` and `1` of a label, the string keys `'7'` /
+  `'007'` / `'+7'`, and the labels past the 63rd.)
 - [x] **I6 — NULL id parts** (#1354): not a node (§2; revised by I6c). Every scan of a
   label (a node of one label, each arm of a node of several, a walk's
   nodes and its node relation, OPTIONAL MATCH) reads a row as a node only

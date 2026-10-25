@@ -763,7 +763,7 @@ What `id(n)` of a node is depends on the endpoint:
 
 | Endpoint | `RETURN id(n)` | `id(n) = N`, `id(n) <> N`, `id(n) [NOT] IN [N, …]` | `ORDER BY id(n)` |
 |---|---|---|---|
-| Bolt | the encoded id (label code over the key; a hash for string or composite keys) | `N` is an id the server returned: the node of that label and key; an id it cannot decode matches no node | by the key |
+| Bolt | the encoded id (label code over the key; a hash for string, composite, `007`-like and very large keys, and for the labels past the 63rd) | `N` is an id the server returned: the node of that label and key; an id it cannot decode matches no node | by the key |
 | HTTP `/query` | the key (of a node of several labels: the number below) | as Bolt (ids of a Bolt session of the same server decode) | by the key |
 | Embedded / `cg` / library | the key | `N` is compared with the key | by the key |
 

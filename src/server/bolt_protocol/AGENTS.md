@@ -309,12 +309,12 @@ that names no node matches nothing.
 ### Pattern 3: Label Code Collision
 **Symptom**: Two different node types get the same integer ID.
 **Cause**: `LABEL_CODE_REGISTRY` is process-global. If labels are registered in different order across test runs, codes can shift. But within a single process, codes are stable.
-**Risk**: Low (only 64 labels supported). Monitor with > 64 node types.
+**Risk**: Low. A number holds 63 label codes; the labels and relationship types past the 63rd hash their name with the key (`IdMapper::number_of`) and are kept in the session (`holds_key_bits`), so they stay apart. The codes are process-wide, so a server of several schemas passes 63. The server gives a schema's labels codes in sorted order when it loads it at startup (`preregister_schema_labels`), the library when it opens one.
 
 ### Pattern 4: Cross-Session ID Lookup Failure
 **Symptom**: Browser expand query returns empty when it should find nodes.
 **Cause**: The IdMapper session that created the mapping was dropped (connection closed). Cross-session lookup only works while the originating session is alive OR the ID can be reconstructed from bit pattern.
-**Mitigation**: `decode_for_query()` falls back to bit-pattern extraction for numeric IDs < 2^31.
+**Mitigation**: `decode_for_query()` falls back to bit-pattern extraction for integer keys of up to 47 bits (of a label whose key is an integer).
 
 ### Pattern 5: Bolt 5.x Version Byte Swap
 **Symptom**: "No compatible version found" despite client supporting 5.x.
