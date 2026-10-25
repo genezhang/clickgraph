@@ -6721,9 +6721,24 @@ fn a_composite_id_compares_only_with_another_id() {
         "MATCH (a:Acct) WITH id(a) AS k WHERE NOT k IN [$n] RETURN count(*)",
         "MATCH (a:Acct) WITH id(a) AS k RETURN k IN [$n] AS e",
         "MATCH (a:Acct), (b:Acct) WITH id(a) AS ka, id(b) AS kb WHERE ka = kb RETURN ka",
+        "MATCH (a:Acct) WITH id(a) AS k WITH k AS j WHERE j IN $ns RETURN count(*)",
+        // An alias of the RETURN, read by its ORDER BY.
+        "MATCH (a:Acct) RETURN a.owner AS o, id(a) AS k ORDER BY k IN [$n] DESC, o",
+        "MATCH (a:Acct) RETURN a.owner AS o, id(a) AS k ORDER BY id(a) IN [$n], o",
+        "MATCH (a:Acct) WITH id(a) AS k RETURN k ORDER BY k IN [$n]",
     ] {
         refused(q);
     }
+    // A single-column node's id, carried or not, and a relationship's, are
+    // compared as before (the guard is for the composite text only).
+    let (sql, _) = shaped(
+        "MATCH (a:User) WITH id(a) AS k WHERE k IN [1, 2] RETURN count(*) AS n",
+        &social(),
+    );
+    assert!(
+        sql.contains("IN (1, 2)") || sql.contains("IN [1, 2]"),
+        "{sql}"
+    );
     // Another `id()`, and the value in a RETURN item, are lowered.
     for q in [
         "MATCH (a:Acct), (b:Acct) WHERE id(a) = id(b) RETURN a.owner",

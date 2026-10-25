@@ -401,6 +401,7 @@ impl Query<'_> {
             ordered_unwinds: ordered_unwinds(&self.stmt.plan),
             numbers: HashSet::new(),
             id_values: HashMap::new(),
+            composite_id_vars: HashSet::new(),
             rel_id_vars: HashSet::new(),
             unordered_numbers: HashSet::new(),
             unstable: BTreeSet::new(),
@@ -1554,6 +1555,10 @@ struct Lowerer<'s> {
     /// Values that are `id(n)` of a node of this label (S11l): a WITH item
     /// `id(n)`, or one passing such a value on.
     id_values: HashMap<VarId, String>,
+    /// Items (a WITH's or the RETURN's) that are the text of a composite
+    /// node's `id()`, or pass one on (I5a): compared with a number or
+    /// another label's text they are refused, as the id is.
+    composite_id_vars: HashSet<VarId>,
     /// RETURN items that are `id(r)` of a relationship (S11l): Bolt's number
     /// is computed after the query, so nothing in the SQL orders by it.
     rel_id_vars: HashSet<VarId>,
@@ -7087,6 +7092,9 @@ impl<'s> Lowerer<'s> {
             // node's id (Bolt encodes it).
             if let (Some(_), Some(label), false) = (cte, self.node_id_of(&it.expr), it.aggregate) {
                 self.id_values.insert(it.var, label);
+            }
+            if !it.aggregate && self.composite_id_item(&it.expr) {
+                self.composite_id_vars.insert(it.var);
             }
         }
         let mut body = Body {

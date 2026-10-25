@@ -235,14 +235,12 @@ impl Lowerer<'_> {
         }))
     }
 
-    /// Whether `e` is `id(n)` of a node of a composite id, or a variable a
-    /// WITH bound to one (`Lowerer::id_values`): the same text.
-    fn composite_id_item(&self, e: &LogicalExpr) -> bool {
+    /// Whether `e` is `id(n)` of a node of a composite id, or an item of a
+    /// WITH or the RETURN that is one (`Lowerer::composite_id_vars`): the
+    /// same text.
+    pub(super) fn composite_id_item(&self, e: &LogicalExpr) -> bool {
         if let LogicalExpr::TableAlias(lx::TableAlias(n)) = e {
-            return parse_var(n)
-                .and_then(|v| self.id_values.get(&v))
-                .and_then(|label| self.schema.node_schema(label).ok())
-                .is_some_and(|ns| ns.node_id.columns().len() > 1);
+            return parse_var(n).is_some_and(|v| self.composite_id_vars.contains(&v));
         }
         let LogicalExpr::ScalarFnCall(f) = e else {
             return false;

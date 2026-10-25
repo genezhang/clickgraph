@@ -269,22 +269,19 @@ impl IdMapper {
             .filter(|n| *n >= 0 && *n <= id_mask)
     }
 
-    /// Whether the number of `element_id` is read back only from the session
-    /// that gave it (`get_or_assign`, [`resolve_node_id`]): a hash of a
-    /// string, composite or large key, or the bits of an integer key too
-    /// large for [`IdMapper::decode_for_query`] (2^31 and over). A smaller
-    /// integer key's number is decoded from its bits alone. (Key 0 shares the
-    /// number of key 1 and is not assigned: a session's cache would read the
-    /// number as key 0 for both.)
+    /// Whether the number of `element_id` is a hash of its key (a string,
+    /// composite or large one) rather than the key's bits: a hash is read
+    /// back only from the session that gave it (`get_or_assign`,
+    /// [`resolve_node_id`]), the bits from the number alone. (Left: an
+    /// integer key of 2^31 to 2^47 holds its bits, but `decode_for_query`
+    /// reads only the smaller ones, so such a key is found by `id()` only
+    /// after its node was returned whole.)
     pub fn is_hashed(element_id: &str) -> bool {
         let element_id = element_id.strip_suffix('-').unwrap_or(element_id);
         let id_part = element_id
             .find(':')
             .map_or(element_id, |at| &element_id[at + 1..]);
-        match Self::numeric_key(id_part, crate::utils::id_encoding::ID_MASK) {
-            Some(key) => key >= (1i64 << 31),
-            None => true,
-        }
+        Self::numeric_key(id_part, crate::utils::id_encoding::ID_MASK).is_none()
     }
 
     /// Hash a string to a positive 56-bit value
@@ -567,10 +564,8 @@ mod tests {
         assert!(IdMapper::is_hashed("Acct:b|7-"));
         assert!(IdMapper::is_hashed("User:-3-"));
         assert!(IdMapper::is_hashed("User:140737488355328-"));
-        // A key the bit pattern cannot decode (`decode_for_query`: below 2^31).
-        assert!(IdMapper::is_hashed("User:140737488355327-"));
-        assert!(IdMapper::is_hashed("Message:2147483648-"));
-        assert!(!IdMapper::is_hashed("Message:2147483647-"));
+        assert!(!IdMapper::is_hashed("User:140737488355327-"));
+        assert!(!IdMapper::is_hashed("Message:2147483648-"));
     }
 
     #[test]
