@@ -1169,6 +1169,17 @@ impl<'s> Lowerer<'s> {
         })
     }
 
+    /// `id(n)` of a node of a composite id as one value: the id's text as
+    /// its element id spells it ([`element_id_sql`]: the parts escaped and
+    /// joined, a NULL part `\\N`), so no two ids share one and Bolt, which
+    /// numbers it from the element id, gives the number of the node's value.
+    /// NULL where an OPTIONAL MATCH found no node.
+    pub(super) fn composite_id_value(&self, v: VarId) -> Result<RenderExpr, LowerError> {
+        let g = spelling()?;
+        let text = element_id_sql(&g, &self.node_id_parts(v)?);
+        self.unless_null(&[v], RenderExpr::Raw(text))
+    }
+
     /// A variable-length relationship's list: its relationships (two empty
     /// lists are equal, whatever node they are at).
     fn vlp_keys(&self, r: VarId) -> Result<Vec<RenderExpr>, LowerError> {

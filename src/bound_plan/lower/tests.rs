@@ -1499,13 +1499,24 @@ fn id_of_a_returned_node_is_its_key() {
         &[r#"v0.user_id + 1 AS "i""#],
     );
     not_lowered("MATCH (a:User) RETURN size(a.*) AS n", "`v.*`");
-    let err = translate_bound_plan(
+    // A composite id is one text, as its element id spells it (I5a).
+    let t = translate_bound_plan(
         "MATCH (t:T) RETURN id(t)",
         &shapes_schema(),
         &ReadOptions::default(),
     )
-    .unwrap_err();
-    assert!(err.contains("composite identity"), "{err}");
+    .unwrap();
+    assert!(
+        t.sql.contains("concat(CASE WHEN v0.tenant IS NULL THEN"),
+        "{}",
+        t.sql
+    );
+    assert_eq!(
+        t.shape[0].kind,
+        ResultKind::NodeId {
+            label: "T".to_string()
+        }
+    );
 }
 
 /// A returned element that matches nothing: no rows, one NULL column.
@@ -6627,6 +6638,47 @@ fn an_id_of_a_composite_node_reads_its_escaped_parts() {
         &server,
     );
     assert!(got.contains("v0.bank = 'e\\\\f' AND v0.num = '9'"), "{got}");
+}
+
+/// I5a (#1387): `id(n)` of a composite node, an item or a value, is one
+/// text: the id's parts as its element id spells them (escaped, joined by
+/// `|`, a NULL part `\N`), so no two ids share one and Bolt, which numbers it
+/// from the element id, gives a node the number of its value. NULL where an
+/// OPTIONAL MATCH found no node. (Before, a refusal.)
+#[test]
+fn an_id_of_a_composite_node_as_a_value_is_its_element_id_text() {
+    let lower = |q: &str| {
+        translate_bound_plan(q, &composite_walk_schema(), &ReadOptions::default())
+            .map(|t| squash(&t.sql))
+            .unwrap_or_else(|e| panic!("{q}: {e}"))
+    };
+    let text = |a: &str| {
+        format!(
+            "concat(CASE WHEN {a}.bank IS NULL THEN '\\\\N' ELSE \
+             replaceAll(replaceAll(replaceAll(toString({a}.bank), '\\\\', '\\\\\\\\'), \
+             ':', '\\\\:'), '|', '\\\\|') END, '|', CASE WHEN {a}.num IS NULL THEN '\\\\N' ELSE"
+        )
+    };
+    // An item, and one a WITH carries or an ORDER BY reads.
+    for q in [
+        "MATCH (a:Acct) RETURN id(a) AS i",
+        "MATCH (a:Acct) RETURN a.owner, id(a) AS i ORDER BY id(a)",
+        "MATCH (a:Acct) WITH id(a) AS i RETURN i ORDER BY i",
+        "MATCH (a:Acct) RETURN count(DISTINCT id(a)) AS n",
+    ] {
+        let got = lower(q);
+        assert!(got.contains(&text("v0")), "{q}:\n{got}");
+        assert!(
+            !got.contains("v0.bank AS"),
+            "{q}: the first part alone:\n{got}"
+        );
+    }
+    // NULL where an OPTIONAL MATCH found no node (every part NULL).
+    let got = lower("OPTIONAL MATCH (a:Acct) RETURN id(a) AS i");
+    assert!(
+        got.contains("(o1.v0__bank IS NULL AND o1.v0__num IS NULL) THEN NULL ELSE concat("),
+        "{got}"
+    );
 }
 
 /// S8d: a walk between composite ids joins each step and ties its ends by

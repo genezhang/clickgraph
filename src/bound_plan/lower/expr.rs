@@ -239,7 +239,9 @@ impl Lowerer<'_> {
         match self.identity(v)? {
             None => Ok(RenderExpr::Literal(Literal::Null)),
             Some(mut cols) if cols.len() == 1 => Ok(cols.remove(0)),
-            Some(_) => unsupported("a composite identity used as one value"),
+            // A composite id is one value as its text in an element id
+            // spells it (ELEMENT_IDENTITY.md I5a, #1387).
+            Some(_) => self.composite_id_value(v),
         }
     }
 
