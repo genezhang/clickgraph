@@ -54,9 +54,18 @@ cargo test --no-default-features
 
 # live-ClickHouse integration (registry tests need the test instance)
 export CLICKHOUSE_URL=http://127.0.0.1:8123 CLICKHOUSE_USER=test_user CLICKHOUSE_PASSWORD=test_pass
+# The live tests read CLICKHOUSE_DATABASE too: every probe table and registry
+# row lands in that database (CI's step below points it at `test_integration`,
+# one shared job database, instead of a fixed name).
+export CLICKHOUSE_DATABASE=it_registry
 cargo test --no-default-features --test integration schema_registry
+# (CI runs exactly this immediately after "Wait for ClickHouse to be ready"
+# — ci.yml "Schema registry live tier (rust)" — so the store tier fails fast
+# on a broken regression before the server-level steps even start.)
 
-# regression ratchet + corpus census (unchanged: 1477 queries, both dialects)
+# regression ratchet + corpus census (locked at 1476 of the 1548 corpus
+# queries, both dialects - `LOWERED` in binder_corpus.rs pins it; unchanged
+# by this feature, and rerun here as part of the section above)
 cargo test --no-default-features --test ratchet
 cargo test --no-default-features --test integration the_corpus_lowers
 
@@ -80,10 +89,9 @@ src/server/schema_registry.rs          ← NEW. Store enum + ClickHouse impl +
       │                                    registration; does not touch translator.
 src/server/graph_catalog.rs            ← schema lifecycle CRUD; remove_schema
                                          (DELETE /schemas/{name} in-memory
-                                         half, guarded so one generation is
-                                         removed whole; the store delete is
-                                         last-writer-wins vs a racing
-                                         re-register — Semantics §4)
+                                         half; the store delete is serialized
+                                         with re-registrations by one write
+                                         gate — Semantics §4)
 src/server/mod.rs                      ← boot: after initialize_global_schema,
                                          call replay (config-file names win);
                                          env plumbing (ServerConfig fields)
@@ -120,12 +128,20 @@ One row per registered schema name, in the **configured ClickHouse database**
 | `format` | `LowCardinality(String)` | `yaml` (only value written today) |
 | `payload` | `String` | **the original YAML** the caller posted |
 | `registry_version` | `UInt16` | 1; read side rejects unknown future versions with a warn (upgrade-safe: new fields newly defaulting paths, never crashes) |
-| `registered_at_ms` | `UInt64` | last write, UTC milliseconds (written by the server, server-side) |
+| `registered_at_ms` | `UInt64` | last write, UTC milliseconds (written by the server, server-side, **monotonically** — see below) |
+| `payload_len` | `UInt64` MATERIALIZED `length(payload)` | byte length of `payload`, computed by ClickHouse (never written, never stored — the fetch phase-1's budget currency) |
 
 - Engine `ReplacingMergeTree(registered_at_ms) ORDER BY name`: the version
-  column makes the last-write-wins collapse deterministic (two same-name
-  writes may land in the same millisecond; the merge keeps the latter), cf.
-  Kafka Connect config-topic semantics. Reads always go through `FINAL`.
+  column makes the last-write-wins collapse deterministic, cf.
+  Kafka Connect config-topic semantics. The write path stamps
+  `registered_at_ms` **monotonically**: at table-ensure time the store reads
+  the table's high-water mark (`SELECT max(registered_at_ms)`) as a CAS
+  floor, and each write returns `max(now, floor + 1)` under a CAS loop — so
+  two same-name writes in one millisecond resolve last-write-wins, and a
+  host clock that steps back (NTP correction, VM migration) cannot hand the
+  collapse to a stale row: stamps this server writes only ever rise. Works
+  on any table layout, no migration: legacy tables get the same guarantees
+  through the same server-side stamping. Reads always go through `FINAL`.
   Deletes use ClickHouse **lightweight deletes** (server ≥ 25.x confirmed in
   deployment images); fallback `ALTER TABLE … DELETE` if unavailable.
 - **Read-side gate on stored rows** (`gate_for_replay`): a row is restorable
@@ -137,6 +153,37 @@ One row per registered schema name, in the **configured ClickHouse database**
   belongs to the strictly safer future-version bucket. `format` stays
   checked at restore time (a current-version `api-load` row with a non-yaml
   format is a failed restore, not a silent skip).
+- **Table preparation is once per process, with probe tolerance.** The
+  store issues `CREATE TABLE IF NOT EXISTS` at most once per boot (guarded
+  by an in-store mutex; a *failed* ensure is retried by the next operation,
+  so a least-privilege boot still succeeds as soon as the table appears or a
+  role-privileged write arrives). After the CREATE attempt — succeeded or
+  not — a two-probe read (column then existence) answers "does the table
+  exist (and can we read it)" and "which layout". A user without CREATE
+  over a DBA-provisioned table therefore works end to end: the CREATE fails
+  loudly, the probes see an existing table, and no CREATE grant is needed
+  again until the process restarts. Both probe outcomes merge into one
+  honest error when the table is genuinely missing.
+- **Two fetch shapes, chosen by the probed layout.** Tables created by this
+  version carry `payload_len` and boot replay fetches in two phases: phase 1
+  reads only metadata + `payload_len` — **no payload crosses the wire** —
+  and spends the byte budget server-side (a `sum(payload_len) OVER (ORDER
+  BY registered_at_ms, name)` window; rows past the never-pulled), then the
+  gate runs on the metadata, and phase 2 fetches payloads **only for the
+  rows that can actually restore**, by bound name (`WHERE name IN (?, …)`).
+  Boot materializes payload bytes only where anyone reads them: on a
+  300-row × 900 KiB table the server used to materialize ~1.13 GiB of
+  payload server-side before answering; the phased shape stays within the
+  budget itself. Budget spend stays uniform: every fetched row kind's bytes
+  count in phase 1, and payloads still transfer nothing for rows the gate
+  refuses. Tables provisioned without `payload_len` (older server,
+  hand-written DDL) keep the single-phase select of round-one semantics,
+  byte-identical, through the same budgeted window — and the upgrade is one
+  statement, no rebuild:
+  `ALTER TABLE clickgraph_schema_registry ADD COLUMN payload_len UInt64 MATERIALIZED length(payload)`.
+  Between the two phases a row deleted under a racing rewrite vanishes from
+  the payload set; it is dropped with an exact WARN ("changed between the
+  replay's metadata and payload reads"), never restored empty.
 - The default-alias duplication behavior of `initialize_global_schema` is NOT
   persisted: the store holds exactly the names that were explicitly registered at
   runtime. On replay, restore goes through the *same* `load_schema_from_content`
@@ -164,15 +211,61 @@ One row per registered schema name, in the **configured ClickHouse database**
   unbounded per-restart cost. Rows left un-restored are counted exactly in a
   WARN naming the knob.
 - **Privileges.** The store runs as the ClickHouse user the server is
-  configured with, on the configured database: `SELECT` and `INSERT` on
-  `clickgraph_schema_registry`; `ALTER DELETE` for `DELETE /schemas/{name}`
-  (the lightweight `DELETE FROM` and its `ALTER TABLE ... DELETE` fallback
-  both need it); and `CREATE TABLE`, because the store issues `CREATE TABLE
-  IF NOT EXISTS` before each operation and ClickHouse checks that grant even
-  when the table exists (verified on 26.7), so a table created beforehand
-  does not remove the requirement. With a grant missing a registration still
-  succeeds in memory and reports `persisted: false`. A server that must not
-  hold write grants keeps persistence `off`.
+  configured with, on the configured database. Three provisioning shapes,
+  all first-class:
+
+  - **Self-provisioning server** (the common case): the server user needs
+    `CREATE TABLE` on the database plus `SELECT`, `INSERT`, and
+    `ALTER DELETE` on `clickgraph_schema_registry` (the lightweight
+    `DELETE FROM` and its `ALTER TABLE … DELETE` fallback both need it).
+    Table preparation is once per process; the per-operation
+    `CREATE TABLE` of earlier versions is gone, so the grant is checked
+    only on boots that actually prepare the table.
+  - **Role-hardened server**: keep the *default user read-only*, and put
+    the write privilege on a ClickHouse role the server can act as — the
+    same `RoleConnectionPool` resolution `/query` uses for reads:
+
+    ```sql
+    CREATE ROLE IF NOT EXISTS schema_writer;
+    GRANT SELECT ON db.clickgraph_schema_registry TO schema_writer;
+    GRANT INSERT, ALTER DELETE ON db.clickgraph_schema_registry TO schema_writer;
+    -- only if the role (not the DBA) provisions the table:
+    GRANT CREATE TABLE ON db.clickgraph_schema_registry TO schema_writer;
+    GRANT schema_writer TO clickgraph_user;
+    ```
+
+    Both durability endpoints take the role: `POST /schemas/load` carries
+    `"role": "schema_writer"` in its body; `DELETE /schemas/{name}?role=schema_writer`
+    carries it in a query parameter (a DELETE has no body).
+    Omitted or empty ⇒ default client, exactly as before. **Boot replay
+    never resolves a role and never writes**: a read-only default user
+    boots, replays, and serves — write privilege is consumed only by
+    durability requests, and only through requests that carry the role.
+  - **DBA-provisioned table** (no `CREATE` grant for anyone): provision the
+    table by hand (the DDL above — or the one-statement upgrade for
+    pre-existing tables, the `ALTER TABLE … ADD COLUMN payload_len …` in
+    Storage) and grant `SELECT`, `INSERT`, `ALTER DELETE`. A boot's
+    ensure-once then finds the table through its read probe after the
+    CREATE attempt fails, and every operation works; nothing ever needs
+    the CREATE grant as long as the table exists. (This is why a *failed*
+    ensure is retried by the next operation: a boot may degrade its first
+    writes, and the first role-privileged or post-provisioning request
+    recovers the store without a server restart.)
+
+  With any relevant grant missing, a registration still succeeds in memory
+  and reports `persisted: false` — the honest result, not an error. A
+  server that must not hold write grants keeps persistence `off`.
+- **Store-call timeouts** — no new env knob, deliberately. Every
+  round-trip against the store — DDL, insert, delete, existence probe,
+  replay read — runs under a fixed 10 s bound (`STORE_CALL_TIMEOUT` in
+  `schema_registry.rs`). A slow or wedged ClickHouse now degrades along
+  the already-shipped paths instead of hanging anything: a registration
+  answers `persisted: false` plus a WARN naming the operation; a boot
+  replay lands in the `store unreachable` branch (`0 restored …` knockout
+  line). The value bounds a resource health check, not workload — knobs
+  belong to budgets, and the two budget knobs already exist. Honored
+  detail: a timeout abandons the in-flight call, dropping its connection
+  instead of leaving work to finish in the background.
 
 ### Semantics
 
@@ -185,6 +278,29 @@ One row per registered schema name, in the **configured ClickHouse database**
      restart guarantee degrades but the live guarantee holds. (Debezium's
      `snapshot.mode=recovery` and Kafka's `config` topic treat store health as
      backend health, not request health.)
+   - The request body may carry `role: <clickhouse role>`: the store write
+     (CREATE/INSERT/delete work) resolves through the role pool exactly like
+     `/query`'s `role`; omitted (or empty) keeps the default client. Boot
+     replay never resolves a role — the default client must merely read.
+   - **Restorability honesty — additive fields, only when true.** The store
+     knows one deterministic never-restorable shape: a payload whose own
+     bytes already exceed `CLICKGRAPH_SCHEMA_REPLAY_MAX_BYTES` spends more
+     than the whole budget by itself (the cumulative window sums over its
+     own row), so *no* boot's fetch can admit it. For such a row — and only
+     for it, and only when the row actually landed — the response gains
+     `restorable: false` next to `persisted: true`, plus a
+     `restorable_reason` naming the knob and both numbers. Config-shadowing
+     of a configured name is deliberately NOT predicted here: the config
+     file can change between now and the next boot, and boot replay's
+     `config-shadowed` bucket is the authoritative, documented resolution;
+     the response states what this server guarantees, not a guess about
+     future operator edits. Every other body is byte-identical to the
+     previous shipped shape, and old clients ignore new fields by
+     construction (serde-default additive keys).
+   - Every round-trip against the store runs under the fixed 10 s
+     `STORE_CALL_TIMEOUT` (Configuration): a wedged store answers
+     `persisted: false` with a WARN naming the operation — it never hangs
+     the request.
    - Same name re-registered ⇒ overwrite row (content-hash mismatch warns, exactly
      like the in-memory #463 warning path).
 2. **DDL path — future work, deliberately not wired in v1.** DDL-created tables
@@ -199,18 +315,29 @@ One row per registered schema name, in the **configured ClickHouse database**
    DDL write seam first — recorded as future work, not a claim of this feature.
 3. **Boot replay** (after `initialize_global_schema`, only when enabled and a CH
    client exists):
-   - Load rows **bounded**: the fetch itself caps at
-     `CLICKGRAPH_SCHEMA_REPLAY_MAX_ROWS` oldest-first rows and a cumulative
-     payload of `CLICKGRAPH_SCHEMA_REPLAY_MAX_BYTES` — the byte budget is
-     enforced inside the read (a `sum(length(payload)) OVER (ORDER BY
-     registered_at_ms, name)` window; only rows that still fit are
-     materialized), so a fat table can never make a boot pull 64 MiB+ over
-     the wire whatever its row count; the historical client-side re-check
-     stays as a belt-and-suspenders net. The budget is deliberately spent
-     by every fetched row kind (a foreign or future-versioned payload is
-     materialized too, so it counts against the same bound): the cap
-     bounds boot work, not only restoration. Rows left out are counted
-     exactly in a WARN naming both knobs, never silently dropped.
+   - Load rows **bounded, in two phases on current tables**: the fetch
+     itself caps at `CLICKGRAPH_SCHEMA_REPLAY_MAX_ROWS` oldest-first rows
+     and a cumulative payload of `CLICKGRAPH_SCHEMA_REPLAY_MAX_BYTES`. On
+     tables with `payload_len` (created by this server), phase 1 reads only
+     metadata + the byte lengths — **no payload crosses the wire** — and a
+     `sum(payload_len) OVER (ORDER BY registered_at_ms, name)` window
+     enforces the byte budget server-side; the replay gate then runs on the
+     metadata, and phase 2 fetches payloads by bound name for the rows that
+     can actually restore. Tables without `payload_len` keep the
+     single-phase shape (`sum(length(payload)) …`), outward-identical.
+     Either way the cap bounds boot work, not only restoration (every
+     fetched row kind spends the byte budget in phase 1; payloads transfer
+     only for rows anyone reads), and rows left out are counted exactly in
+     a WARN naming both knobs, never silently dropped. The historical
+     client-side re-check in `replay()` stays as a belt-and-suspenders net
+     (normally a no-op after a budget-honoring fetch).
+   - Restore order and the `ReplacingMergeTree` collapse rest on the
+     monotonic `registered_at_ms` stamping (Storage): a clock that stepped
+     back between boots cannot resurrect a stale row, and same-millisecond
+     writes still resolve last-write-wins.
+   - The replay read shares the 10 s `STORE_CALL_TIMEOUT`: an unreachable
+     store degrades into the documented knockout line instead of wedging
+     the boot.
    - For each name **already present** from the config file ⇒ skip with an INFO
      line (`config-defined schema <name> shadows persisted registration <name>`).
      Determinism over recency — a config file is declared intent, and an upgrade
@@ -251,28 +378,44 @@ One row per registered schema name, in the **configured ClickHouse database**
    - **unknown name** (no memory entry, no stored row — includes persistence
      off): pre-feature 404, same body shape as `GET /schemas/{name}`; the
      store-only probe has no write side effect (it never creates the table).
-   **Delete vs re-register is last-writer-wins, deliberately not atomic**: the
-   memory removals are guarded (one generation removed whole), but the store
-   delete runs after the guard, outside it. If the re-register's insert wins,
-   the name is live in memory and its row persists to the next boot — exactly
-   the state the caller asked for by re-registering; if the DELETE's store
-   statement wins, the name stays live in memory but its row is gone, so it
-   does not survive the next boot (both calls still report `persisted:
-   true`). The same holds for two concurrent registrations of one name:
-   memory and store each keep whichever write landed last there, they can
-   differ, and a restart serves the store's. Serializing the calls per name
-   would hold a lock across a network round-trip; documenting the outcomes
-   instead is the cheaper and honest contract. If the store delete fails,
-   the schema is still removed from memory, the response is 200 with
-   `persisted: false` and the stored row remains (a retry of the DELETE
-   removes it as a store-only row). New endpoint ⇒ additive, backward
-   compatible.
+   **Delete vs re-register (and POST vs POST) is serialized across the
+   server by one write gate** (`AppState.schema_registry_gate`): both
+   admin handlers hold the gate across BOTH halves of their lifecycle —
+   the in-memory registration change and the store change — so the halves
+   can no longer interleave into `memory = A, store = B`, the divergent
+   state a restart then surfaced (reproduced 1-in-60 with concurrent
+   POST/DELETE; this spec previously documented the race as
+   last-writer-wins under memory-side guarding only, and the gate outlaws
+   it). Queuing is the whole cost: an admin-rate endpoint makes one global
+   gate effectively free, and holding it across the store write is exactly
+   the price of the guarantee — serializing per name would hold a keyed
+   lock across a network round-trip for no additional property. Boot
+   replay takes no turn in the gate: it runs before the listener binds,
+   so there is nothing concurrently racing it. Within the store-only
+   path, probe→delete is protected by the same gate (both call sites hold
+   it; nothing can re-add a row between probe and delete).
+   If the store delete fails, the schema is still removed from memory,
+   the response is 200 with `persisted: false` and the stored row remains
+   (a retry of the DELETE removes it as a store-only row). The DELETE
+   accepts `?role=` for its store write, the same resolution as the POST
+   body's `role` (Configuration §Privileges). New endpoint ⇒ additive,
+   backward compatible.
 5. **Concurrency**: two instances replaying simultaneously is out of scope v1
-   (documented; single-instance per the deployment profile). Writes are safe
-   (row-level last-wins); replay is read-only over the store + in-memory writes
-   through the existing lock discipline (no new lock ordering: replay takes the
-   same two write locks the HTTP load path takes, sequentially, via the same
-   function).
+   (documented; single-instance per the deployment profile). Within one
+   server: both admin endpoints serialize their full lifecycle through
+   `schema_registry_gate` (§4); the in-memory maps are mutated only under
+   the gate or by boot replay, which owns the not-yet-bound server
+   outright. The monotonic `registered_at_ms` floor is per-process, seeded
+   once at table-ensure time from the table's high-water mark;
+   cross-process ordering rests on the same single-writer profile as
+   everything else here. Reads are safe everywhere (`FINAL` always).
+6. **Reserved names.** `POST /schemas/load` refuses `load`, `draft`,
+   `introspect`, `discover-prompt` with a 400 naming the reservation —
+   before any gate acquisition, registry, or store work: these spellings
+   belong to the routes (`load`) and the CLI discovery workflow (`draft`,
+   `introspect`, `discover-prompt`). DELETE is deliberately untouched: a
+   name that can never register has no row to delete, and a manually
+   seeded row of such a name stays deletable like every other store row.
 
 ## Code Style
 
@@ -308,7 +451,14 @@ Four levels, each with a named concern:
    - encode/decode round-trips (`registry-v1`), unknown-version rejection,
    - precedence filter (config names subtract correctly incl. alias `default`),
    - the off-mode contract on the enum (`Off` degrades every op locally — the
-     closed enum keeps tests monomorphic, no trait).
+     closed enum keeps tests monomorphic, no trait),
+   - the monotonic `registered_at_ms` floor: seeded from a table's high-water
+     mark, strictly increasing across writes, and past a stepped-back wall
+     clock (`max(now, floor + 1)` under CAS) — three unit tests over the
+     floor machinery itself;
+   - pure helpers: `is_reserved_schema_name` (exact match only), and
+     `unrestorable_reason_if_any` (over-cap ⇒ the knob-and-numbers reason;
+     within-cap ⇒ `None`).
 2. **Integration (live ClickHouse, env-gated)** — same file:
    - table auto-create idempotence; save → bounded replay fetch → delete round-trip;
    - the row budget: a fetch capped below the table's row count returns the cap
@@ -316,11 +466,30 @@ Four levels, each with a named concern:
    - last-write-wins on same name; lightweight-delete path taken;
    - boot replay through `replay()`: a seeded row restores through the live
      load path (`GET /schemas/{name}` counts equal a fresh live registration)
-     and a name already registered in memory is shadowed, not overwritten.
+     and a name already registered in memory is shadowed, not overwritten;
+   - **the gate regression knife**: raw-INSERTed `registry_version`-bumped and
+     foreign-`source` rows land in their exact skip buckets (`0 restored` with
+     both names WARNed) and are absent after replay — a test that goes red if
+     `gate_for_replay` ever stops checking, while every older live test would
+     stay green (they seed only current-version, `api-load` rows). Seeds are
+     the test's own `INSERT` with quoted literal tokens (an operator hole the
+     production path deliberately does NOT have: production writes go through
+     bound parameters); cleanup asserts the table is empty afterwards.
+     CI runs the live tier (`ci.yml`: "Schema registry live tier (rust)",
+     immediately after "Wait for ClickHouse to be ready", env
+     `CLICKHOUSE_URL`/`CLICKHOUSE_USER`/`CLICKHOUSE_PASSWORD`/
+     `CLICKHOUSE_DATABASE`), so this knife cannot stay unexercised;
+   - database is parametrized (`CLICKHOUSE_DATABASE`, CI's
+     `test_integration`): a shared CI job database works because every probe
+     table and registry row is name-namespaced to the run.
 3. **Server-level (rust, router-driven)** — POST/DELETE handlers against
    `StateRouter` like `databricks_introspect_tests.rs`: response shapes (incl.
    `persisted: false` degradation field), 404 shape, old-payload compat (a
-   pre-feature client that ignores extra fields keeps working).
+   pre-feature client that ignores extra fields keeps working); the reserved
+   name 400 arrives **before any gate acquisition or store contact** (a
+   reserved name must stay a pure-router rejection); an optional `role` key is
+   accepted on both endpoints' requests and ignored downstream when it is
+   absent or empty (shape + backward compat, no live CH needed).
 4. **E2E (python, pytest-collectable)** — the restart cycle as CI runs it
    (`pytest tests/e2e/test_schema_persistence_e2e.py`, skipping when
    `CLICKHOUSE_URL` / `CLICKGRAPH_BIN` are unset; plain-python `python …`
@@ -346,7 +515,7 @@ Backward-compat proof is a test class of its own: with the flag unset, a full
 ## Boundaries
 
 - **Always:** run the four gates (`fmt`, `clippy -D warnings`, full no-default
-  suite, ratchet + census 1477) before any push; keep the offline (no-CH) suite
+  suite, ratchet + census 1476) before any push; keep the offline (no-CH) suite
   green without ClickHouse; commit the spec alongside the code that satisfies it.
 - **Ask first:** flipping the default to on; introducing a second store backend
   (file); touching `GLOBAL_SCHEMA_CONFIGS` semantics beyond additive use;
@@ -385,9 +554,28 @@ Backward-compat proof is a test class of its own: with the flag unset, a full
    boots (WARN, `0 restored / 0 config-shadowed / 0 failed (store unreachable
    at boot)`). A ClickHouse that cannot be reached at all stops the server in
    `initialize_global_schema`, with persistence on or off, as before.
-7. Ratchet + census unchanged (1477 both dialects); no golden churn; no new deps.
+7. Ratchet + census unchanged (1476 both dialects — `LOWERED` in
+   `binder_corpus.rs` is not touched); no golden churn; no new deps.
 8. Unit+integration counts added and green on Windows `--no-default-features`
    toolchain and in CI (default features).
+9. **Round-two review items.** Every store round-trip runs under a fixed 10 s
+   bound: a wedged store degrades a registration to `persisted: false` (WARN
+   names the operation — pinned by the `with_timeout` unit tests) and a boot
+   replay to the `store unreachable` knockout line. `POST` vs `POST` and
+   `DELETE` vs re-register are serialized by one write gate held across both
+   the memory and store halves in both admin handlers (the 1-in-60
+   memory/store divergence repro this closes; the divergence was reproduced
+   once by hand and never automated — a racy flake is not shippable, the gate
+   is structural). Table preparation happens once per process with a
+   least-privilege read-probe fallback (the 26.7 grant probe verified it). The
+   replay gate is regression-knifed by the live foreign-sourced /
+   future-versioned bucket test that CI now runs.
+10. **Role-hardening (optional item).** `role` is accepted on both durability
+    endpoints and resolves through the same `RoleConnectionPool::get_client`
+    resolution `/query` has used since #836; boot replay never resolves a
+    role; a read-only default user + `schema_writer` role deployment works end
+    to end (Integration tier covers the default-client path; the role path
+    shares that resolution, so no separate live grant is invented here).
 
 ## Open Questions (for maintainer review, not blocking the build)
 
