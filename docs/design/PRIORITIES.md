@@ -537,7 +537,8 @@ by issue (user: "go ahead with your plan").
    several kinds as texts #1518 (#1393); I3a relationship element ids with
    their edge_id #1520 (#1334); I3b `id(r) = N` #1522 (#1410); I3c unions of edge ids
    of several kinds #1523; I4a scoped id lookup #1524 (#1388); I6 NULL id parts #1525 (#1354);
-   next I2b, I4b, I5.
+   I6b escaped composite node element ids;
+   next I6c (a composite id with a NULL part is a node, user 2026-10-24) with I2b, I4b, I5.
 3. **Expression grammar** — names without backticks, hand-built precedence,
    missing productions (#1489 #1421 #1381 #1398 #1420 #1492 #1413). S1 names #1505, S2 precedence #1507; S3 list predicates #1508, S4 COUNT{} / COLLECT{} + arity #1510 (#1381 stays open for reduce() over an empty-list accumulator).
 4. **Statement front door** — prelude, USE, write dispatch, stack, request
@@ -768,6 +769,7 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-10-24: **P-4d cluster 2: ELEMENT_IDENTITY.md I6b, composite node element ids escaped.** `element_id::node_id_text` / `node_id_parts` / `node_element_id` (a composite id's parts escaped as an `edge_id`'s, NULL `\N`; one column's id its text), `value::element_id_sql` = `edge_id_sql` for several parts, `parse_node_element_id` returns the id text (one trailing `-` stripped); `id(n) = N` reads the parts back (`\N` → `IS NULL`); Bolt node / relationship ends and embedded `query_graph` through it. Live (Bolt): parts holding `|`, `:`, `\` read back by element id and by number, relationship ends and path nodes equal their nodes' ids, Browser's expand query finds both neighbours.
 - 2026-10-20: **P-4d cluster 2: ELEMENT_IDENTITY.md I6, a NULL id part is no node** (#1525, closes #1354; user 2026-10-19). `Lowerer::id_present` (`IS NOT NULL` of an id's nullable parts, by column types) beside the schema filter in every node scan: node of one label, label-union arms, walk node CTEs and node relation, OPTIONAL MATCH. Live (#1354's repro): `MATCH (n:M)` 4 → 3, as walks (3); `count(DISTINCT n)`, OPTIONAL MATCH, UNION agree. Corpus SQL unchanged (no types).
 - 2026-10-20: **P-4d cluster 2: ELEMENT_IDENTITY.md I4a, scoped id lookup** (#1524, closes #1388). `IdMapper::decode_for_query` reads the bit pattern only (its every-session cache read, `static_lookup_element_id`, removed with the unused Bolt parameter decoder); HTTP's mapper scoped by the request's tenant; a session naming no graph scoped to `default`. Live: a Bolt session's string-key id decodes over HTTP of the default graph, not for another tenant.
 - 2026-10-20: **P-4d cluster 2: ELEMENT_IDENTITY.md I3c, unions of edge ids of several kinds** (#1523). A relationship union's identity column whose arms' values are of several kinds (string / integer edge ids, a string edge id with integer ends, a `Date` with a number) is held as each arm's text, integers of no common type in `Int128`: DISTINCT / grouping of such a union (Code 44) and walks over it (Code 386) answer, and `count(DISTINCT r)` no longer counts `'1'` and `1` as one (silently wrong on main). Live (scratch `i3c_types`, reviewer batteries `rv1520`): union errors 34 → 16 (the rest collect() of several types, cluster 5, and a property-type guard, VALUE_TYPES), none new; 149 Bolt queries same as main but 2 main errors now answering. Corpus SQL unchanged.

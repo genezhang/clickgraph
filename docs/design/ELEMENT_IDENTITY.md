@@ -78,6 +78,19 @@ one of the three.
 - **Element-id format: may change.** Composite ids and relationship ids that
   carry an `edge_id` get an unambiguous encoding; single-column node ids keep
   today's text.
+- **Revised 2026-10-24 (user): a composite id with a NULL part is a node.**
+  Asked whether "not a node" loses facts, the user chose to keep them: NULL
+  stays NULL in the data, its element id writes the part `\N` (escaped as
+  an `edge_id`'s parts are, I3a) and reads back as NULL. Identity is
+  compared NULL-safely (an element-id lookup's `\N` is `IS NULL`; `n = m`,
+  DISTINCT and a walk's visited nodes treat a node as itself), while a
+  relationship's end still joins its node with `=`, so no relationship
+  attaches to such a node (as in Neo4j, where `MATCH (m {b: null})` matches
+  nothing). A single-column NULL id, or a composite one that is all NULL,
+  stays no node: every such row would share one id. A relationship whose
+  `edge_id` has a NULL part is kept (in Neo4j only a missing property).
+  Rejected: a random number for NULL (not stable; Browser reads a node
+  again by its id) and the text `null` (a real string `'null'`).
 
 ## 3. Slices
 
@@ -221,6 +234,21 @@ one of the three.
   every session's cache (bit pattern alone), the unused Bolt parameter
   decoder that did is gone, and exports (COPY TO, apoc export) read through
   the caller's mapper. Two names of one graph are two scopes.
+- [x] **I6b — composite node element ids escaped.** A composite id's text
+  in its element id (`element_id::node_id_text`) escapes each part as an
+  `edge_id`'s (`\`, `:`, `|` as `\\`, `\:`, `\|`; a NULL part `\N`), in
+  Rust and in SQL alike (`value::element_id_sql` is `edge_id_sql` for several
+  parts), so `('a|b', 'c')` and `('a', 'b|c')` are two ids and NULL is not
+  the text `'null'`. Reading one back is by the label's number of parts
+  (`node_id_parts`: one column's id is its whole text): `id(n) = N`'s lookup
+  compares each part, a `\N` one `IS NULL`. `parse_node_element_id` returns
+  the id's text and strips one trailing `-`. Bolt's node, relationship ends
+  (now texts, not split on `|` and joined again) and embedded `query_graph`
+  spell it through it, a composite id's NULL part as `\N`. Single-column
+  ids keep their text.
+- [ ] **I6c — a composite id with a NULL part is a node** (§2, revised
+  2026-10-24): `id_present` only where every part may be NULL; identity
+  comparisons NULL-safe (with I2b's one key spelling); ties stay `=`.
 - [ ] **I4b — Bolt ids**: stable hash (not `DefaultHasher`); label codes
   per schema (process-global, clamped at 63, first-seen ordered).
 - [ ] **I5 — ids as values** (#1387, #1383): `id()` of a composite node and

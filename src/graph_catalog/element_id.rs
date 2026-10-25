@@ -7,7 +7,9 @@
 //!
 //! ## Node elementId Format
 //! - Single ID: `"Label:id_value"`
-//! - Composite ID: `"Label:id1|id2|id3"`
+//! - Composite ID: `"Label:id1|id2|id3"`, its parts' texts escaped and a
+//!   NULL part `\N` as an `edge_id`'s are ([`node_id_text`]), so no two
+//!   composite ids spell one text
 //!
 //! Examples:
 //! - `"User:123"` (integer ID)
@@ -29,9 +31,9 @@
 //!
 //! # Reversibility
 //!
-//! All elementId strings are 100% reversible using simple string operations:
+//! Element ids are read back by this module:
 //! - Split on `:` to extract label/type and ID portion
-//! - Split ID portion on `|` for composite IDs
+//! - A composite id's parts at its unescaped `|` ([`node_id_parts`])
 //! - Split relationship IDs on `->` for from/to IDs
 //!
 //! This enables Neo4j Browser's "Expand" feature which requires parsing
@@ -81,7 +83,10 @@ impl std::error::Error for ElementIdError {}
 ///
 /// A string in format:
 /// - Single ID: `"Label:id_value"`
-/// - Composite ID: `"Label:id1|id2|id3"`
+/// - Composite ID: `"Label:id1|id2|id3"`, each part escaped ([`node_id_text`])
+///
+/// A single value is the id's text: one id's, or a composite id's
+/// [`node_id_text`].
 ///
 /// # Examples
 ///
@@ -99,16 +104,71 @@ impl std::error::Error for ElementIdError {}
 /// // Composite ID
 /// let element_id = generate_node_element_id("Account", &["tenant_1", "456"]);
 /// assert_eq!(element_id, "Account:tenant_1|456-");
+///
+/// // A part's `|` is escaped
+/// let element_id = generate_node_element_id("Account", &["a|b", "c"]);
+/// assert_eq!(element_id, "Account:a\\|b|c-");
 /// ```
 pub fn generate_node_element_id(label: &str, id_values: &[&str]) -> String {
+    let parts: Vec<Option<&str>> = id_values.iter().map(|v| Some(*v)).collect();
+    node_element_id(label, &parts)
+}
+
+/// [`generate_node_element_id`] of an id whose parts may be NULL (`None`).
+pub fn node_element_id(label: &str, id_values: &[Option<&str>]) -> String {
     // Trailing `-` is a Neo4j-Browser-compat sentinel: Browser's expand-query
     // generator picks elementId-mode iff the first nodeId string contains `-`,
     // otherwise it falls back to legacy id() mode and tries `parseInt(elementId)`,
     // which yields NaN → 0 for our `Label:id` format and breaks click-to-expand.
     // Parsers strip the trailing `-` so internal callers see the same value.
     // Single ID: "Label:id-"; composite ID: "Label:id1|id2|id3-".
+    node_element_id_of_text(label, &node_id_text(id_values))
+}
+
+/// The element id of a node of `label` whose id's text ([`node_id_text`]) is
+/// `id_text`.
+pub fn node_element_id_of_text(label: &str, id_text: &str) -> String {
     let (prefix, suffix) = node_element_id_affixes(label);
-    format!("{prefix}{}{suffix}", id_values.join("|"))
+    format!("{prefix}{id_text}{suffix}")
+}
+
+/// The text of a node's id in its element id, of its parts (`None`: NULL):
+/// one part's text as it is (single-column ids keep their text), a
+/// composite id's parts escaped and joined as an `edge_id`'s are
+/// ([`edge_id_text`]): `\`, `:` and `|` escaped, a NULL part `\N`. The
+/// relationship's ends in its element id are spelled alike, so they are its
+/// nodes' ids.
+pub fn node_id_text(parts: &[Option<&str>]) -> String {
+    match parts {
+        [Some(one)] => one.to_string(),
+        [None] => NULL_EDGE_ID_PART.to_string(),
+        _ => edge_id_text(parts),
+    }
+}
+
+/// A node's id text ([`node_id_text`]) read back as the `n` parts of its
+/// label's id (`None`: NULL): an id of one column is the whole text, which
+/// may hold any character. `None` where the text is not an id of `n` parts.
+///
+/// ```
+/// use clickgraph::graph_catalog::element_id::{node_id_parts, node_id_text};
+///
+/// let text = node_id_text(&[Some("a|b"), None, Some("")]);
+/// assert_eq!(
+///     node_id_parts(&text, 3),
+///     Some(vec![Some("a|b".to_string()), None, Some(String::new())])
+/// );
+/// assert_eq!(node_id_parts("a|b", 1), Some(vec![Some("a|b".to_string())]));
+/// assert_eq!(node_id_parts("a|b", 3), None);
+/// ```
+pub fn node_id_parts(text: &str, n: usize) -> Option<Vec<Option<String>>> {
+    if n == 1 {
+        return Some(vec![Some(text.to_string())]);
+    }
+    match read_escaped_parts(text, None) {
+        Ok((parts, None)) if parts.len() == n => Some(parts),
+        _ => None,
+    }
 }
 
 /// The text around a node's id in its element id
@@ -134,9 +194,10 @@ pub fn node_element_id_separators() -> (&'static str, &'static str) {
 ///
 /// # Returns
 ///
-/// A tuple of (label, id_values) where:
+/// A tuple of (label, id text) where:
 /// - label: The node label
-/// - id_values: Vector of ID value strings (single or multiple for composite IDs)
+/// - id text: the id's text ([`node_id_text`]), whose parts its label's id
+///   says ([`node_id_parts`])
 ///
 /// # Errors
 ///
@@ -151,18 +212,25 @@ pub fn node_element_id_separators() -> (&'static str, &'static str) {
 /// use clickgraph::graph_catalog::element_id::parse_node_element_id;
 ///
 /// // Single ID
-/// let (label, ids) = parse_node_element_id("User:123").unwrap();
+/// let (label, id) = parse_node_element_id("User:123-").unwrap();
 /// assert_eq!(label, "User");
-/// assert_eq!(ids, vec!["123"]);
+/// assert_eq!(id, "123");
 ///
 /// // Composite ID
-/// let (label, ids) = parse_node_element_id("Account:tenant_1|456").unwrap();
+/// let (label, id) = parse_node_element_id("Account:tenant_1|456-").unwrap();
 /// assert_eq!(label, "Account");
-/// assert_eq!(ids, vec!["tenant_1", "456"]);
+/// assert_eq!(id, "tenant_1|456");
+///
+/// // An id that ends with `-`
+/// let (_, id) = parse_node_element_id("Item:a--").unwrap();
+/// assert_eq!(id, "a-");
 /// ```
-pub fn parse_node_element_id(element_id: &str) -> Result<(String, Vec<String>), ElementIdError> {
-    // Strip the Neo4j-Browser-compat trailing `-` sentinel (see generator docs).
-    let element_id = element_id.trim_end_matches('-');
+pub fn parse_node_element_id(element_id: &str) -> Result<(String, String), ElementIdError> {
+    // Strip the Neo4j-Browser-compat trailing `-` sentinel (see generator
+    // docs): one, as an id's text may end with another.
+    let element_id = element_id
+        .strip_suffix(node_element_id_separators().1)
+        .unwrap_or(element_id);
 
     // Split on first colon: "Label:id_portion"
     let parts: Vec<&str> = element_id.splitn(2, ':').collect();
@@ -174,7 +242,8 @@ pub fn parse_node_element_id(element_id: &str) -> Result<(String, Vec<String>), 
     }
 
     let label = parts[0].trim();
-    let id_portion = parts[1].trim();
+    // As it is: a string id's text may begin or end with a space.
+    let id_portion = parts[1];
 
     if label.is_empty() {
         return Err(ElementIdError::MissingLabel);
@@ -184,10 +253,7 @@ pub fn parse_node_element_id(element_id: &str) -> Result<(String, Vec<String>), 
         return Err(ElementIdError::MissingId);
     }
 
-    // Split ID portion on pipe for composite IDs
-    let id_values: Vec<String> = id_portion.split('|').map(|s| s.to_string()).collect();
-
-    Ok((label.to_string(), id_values))
+    Ok((label.to_string(), id_portion.to_string()))
 }
 
 /// Generate a Neo4j-compatible elementId for a relationship.
@@ -333,23 +399,45 @@ pub fn parse_edge_element_id(element_id: &str) -> Result<EdgeElementId, ElementI
     if rel_type.is_empty() {
         return Err(ElementIdError::MissingRelationshipType);
     }
-    let (between_parts, after_edge) = edge_id_separators();
+    let (parts, ends) = read_escaped_parts(rest, Some(edge_id_separators().1))?;
+    let Some(ends) = ends else {
+        return Err(ElementIdError::InvalidFormat(
+            "an edge id's element id has no ends after its edge id".into(),
+        ));
+    };
+    if ends.is_empty() {
+        return Err(ElementIdError::MissingFromId);
+    }
+    Ok(EdgeElementId {
+        rel_type: rel_type.to_string(),
+        edge_id: parts,
+        ends: ends.to_string(),
+    })
+}
+
+/// The escaped parts ([`edge_id_text`], `None`: NULL) at the start of `text`,
+/// up to its first unescaped `stop`, and the text after it (`None`: `text`
+/// has none, all of it is parts).
+fn read_escaped_parts<'t>(
+    text: &'t str,
+    stop: Option<&str>,
+) -> Result<(Vec<Option<String>>, Option<&'t str>), ElementIdError> {
+    let between_parts = edge_id_separators().0;
     let mut parts: Vec<Option<String>> = Vec::new();
     // The part being read: its text, or NULL (`\\N`, alone in its part).
     let mut part: Option<String> = Some(String::new());
-    let mut chars = rest.char_indices();
-    let ends = loop {
+    let mut chars = text.char_indices();
+    let rest = loop {
         let Some((i, c)) = chars.next() else {
-            return Err(ElementIdError::InvalidFormat(
-                "an edge id's element id has no ends after its edge id".into(),
-            ));
+            parts.push(part);
+            break None;
         };
         let mut buf = [0u8; 4];
-        let text = &*c.encode_utf8(&mut buf);
-        if text == between_parts || text == after_edge {
+        let read = &*c.encode_utf8(&mut buf);
+        if read == between_parts || Some(read) == stop {
             parts.push(part.replace(String::new()));
-            if text == after_edge {
-                break &rest[i + c.len_utf8()..];
+            if Some(read) == stop {
+                break Some(&text[i + c.len_utf8()..]);
             }
             continue;
         }
@@ -374,18 +462,11 @@ pub fn parse_edge_element_id(element_id: &str) -> Result<EdgeElementId, ElementI
         };
         if !read {
             return Err(ElementIdError::InvalidFormat(
-                "an edge id's part is not an escaped text".into(),
+                "an id's part is not an escaped text".into(),
             ));
         }
     };
-    if ends.is_empty() {
-        return Err(ElementIdError::MissingFromId);
-    }
-    Ok(EdgeElementId {
-        rel_type: rel_type.to_string(),
-        edge_id: parts,
-        ends: ends.to_string(),
-    })
+    Ok((parts, rest))
 }
 
 /// The text around a relationship's endpoint ids in its element id
@@ -532,14 +613,14 @@ mod tests {
     fn test_parse_node_element_id_single_integer() {
         let (label, ids) = parse_node_element_id("User:123").unwrap();
         assert_eq!(label, "User");
-        assert_eq!(ids, vec!["123"]);
+        assert_eq!(ids, "123");
     }
 
     #[test]
     fn test_parse_node_element_id_single_string() {
         let (label, ids) = parse_node_element_id("User:alice@example.com").unwrap();
         assert_eq!(label, "User");
-        assert_eq!(ids, vec!["alice@example.com"]);
+        assert_eq!(ids, "alice@example.com");
     }
 
     #[test]
@@ -547,21 +628,24 @@ mod tests {
         let (label, ids) =
             parse_node_element_id("Post:550e8400-e29b-41d4-a716-446655440000").unwrap();
         assert_eq!(label, "Post");
-        assert_eq!(ids, vec!["550e8400-e29b-41d4-a716-446655440000"]);
+        assert_eq!(ids, "550e8400-e29b-41d4-a716-446655440000");
     }
 
     #[test]
     fn test_parse_node_element_id_composite_two() {
         let (label, ids) = parse_node_element_id("Account:tenant_1|456").unwrap();
         assert_eq!(label, "Account");
-        assert_eq!(ids, vec!["tenant_1", "456"]);
+        assert_eq!(
+            node_id_parts(&ids, 2),
+            Some(vec![Some("tenant_1".to_string()), Some("456".to_string())])
+        );
     }
 
     #[test]
     fn test_parse_node_element_id_composite_three() {
         let (label, ids) = parse_node_element_id("Event:2024|01|15").unwrap();
         assert_eq!(label, "Event");
-        assert_eq!(ids, vec!["2024", "01", "15"]);
+        assert_eq!(node_id_parts(&ids, 3).map(|p| p.len()), Some(3));
     }
 
     #[test]
@@ -595,7 +679,9 @@ mod tests {
         let element_id = generate_node_element_id(original_label, &original_ids);
         let (parsed_label, parsed_ids) = parse_node_element_id(&element_id).unwrap();
         assert_eq!(parsed_label, original_label);
-        assert_eq!(parsed_ids, original_ids);
+        let parts = node_id_parts(&parsed_ids, original_ids.len()).unwrap();
+        let parts: Vec<&str> = parts.iter().flatten().map(String::as_str).collect();
+        assert_eq!(parts, original_ids);
     }
 
     #[test]
@@ -605,7 +691,40 @@ mod tests {
         let element_id = generate_node_element_id(original_label, &original_ids);
         let (parsed_label, parsed_ids) = parse_node_element_id(&element_id).unwrap();
         assert_eq!(parsed_label, original_label);
-        assert_eq!(parsed_ids, original_ids);
+        let parts = node_id_parts(&parsed_ids, original_ids.len()).unwrap();
+        let parts: Vec<&str> = parts.iter().flatten().map(String::as_str).collect();
+        assert_eq!(parts, original_ids);
+    }
+
+    #[test]
+    fn a_composite_ids_parts_are_escaped_and_read_back() {
+        // A part holding the separators, the escape, or NULL.
+        let parts = [Some("a|b"), Some("c:d\\"), None, Some("\\N"), Some("")];
+        let id = node_element_id("Account", &parts);
+        assert_eq!(id, "Account:a\\|b|c\\:d\\\\|\\N|\\\\N|-");
+        let (label, text) = parse_node_element_id(&id).unwrap();
+        assert_eq!(label, "Account");
+        let read = node_id_parts(&text, parts.len()).unwrap();
+        let read: Vec<Option<&str>> = read.iter().map(|p| p.as_deref()).collect();
+        assert_eq!(read, parts);
+        // Two composite ids that joined alike before are two texts.
+        assert_ne!(
+            generate_node_element_id("A", &["a|b", "c"]),
+            generate_node_element_id("A", &["a", "b|c"])
+        );
+        // A NULL part is not the text "null".
+        assert_ne!(
+            node_element_id("A", &[Some("1"), None]),
+            node_element_id("A", &[Some("1"), Some("null")])
+        );
+        // A text of another number of parts, or not escaped, is no such id.
+        assert_eq!(node_id_parts("a|b", 3), None);
+        assert_eq!(node_id_parts("a\\x|b", 2), None);
+        // One column's id is its text, as before.
+        assert_eq!(generate_node_element_id("U", &["a|b"]), "U:a|b-");
+        assert_eq!(node_id_parts("a|b", 1), Some(vec![Some("a|b".to_string())]));
+        // One trailing `-` is the sentinel.
+        assert_eq!(parse_node_element_id("U:a--").unwrap().1, "a-");
     }
 
     // ========== Relationship elementId Tests ==========
@@ -742,7 +861,7 @@ mod tests {
 
         let (label, ids) = parse_node_element_id(&element_id).unwrap();
         assert_eq!(label, "User");
-        assert_eq!(ids, vec!["alice+bob@example.com"]);
+        assert_eq!(ids, "alice+bob@example.com");
     }
 
     #[test]
@@ -773,7 +892,7 @@ mod tests {
         let (label, ids) = parse_node_element_id(&element_id).unwrap();
         assert_eq!(label, "Post");
         // splitn(2, ':') will split only on first colon
-        assert_eq!(ids, vec!["post:123:456"]);
+        assert_eq!(ids, "post:123:456");
     }
 
     // ========== Relationship elementId with an edge_id (#1334) ==========

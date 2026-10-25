@@ -218,8 +218,9 @@ impl IdMapper {
         // portion stays the unadorned id (e.g., `"User:1-"` → label `User`,
         // id_value `1`, not `"1-"`). Without this strip, a numeric id like `1`
         // would fail integer parse and fall back to a hash, breaking the
-        // round-trip with id-rewriter callers.
-        let element_id = element_id.trim_end_matches('-');
+        // round-trip with id-rewriter callers. One: an id's text may end
+        // with another (`a-` and `a` are two ids).
+        let element_id = element_id.strip_suffix('-').unwrap_or(element_id);
 
         // Parse "Label:id_value" format
         let (label, id_part) = if let Some(colon_pos) = element_id.find(':') {
@@ -495,7 +496,8 @@ impl Default for IdMapper {
 }
 
 /// The node an integer `id()` value names, as the server reads it: its
-/// label and key (a composite key's parts joined by `|`). The id `id_mapper`
+/// label and key's text (`element_id::node_id_text`: a composite key's
+/// parts escaped and joined by `|`). The id `id_mapper`
 /// gave it (this session's, or another of the same scope), else its bit
 /// pattern decoded (`IdMapper::decode_for_query`: a label code and a small
 /// numeric key), for a label whose key is an integer. `None`: it names no
@@ -506,10 +508,10 @@ pub fn resolve_node_id(
     id_value: i64,
 ) -> Option<(String, String)> {
     if let Some(element_id) = id_mapper.get_element_id(id_value) {
-        if let Ok((label, id_parts)) =
+        if let Ok((label, id_text)) =
             crate::graph_catalog::element_id::parse_node_element_id(&element_id)
         {
-            return Some((label, id_parts.join("|")));
+            return Some((label, id_text));
         }
     }
     // LIMITATION: only simple numeric keys (< 2^31) decode from the bit
@@ -537,6 +539,19 @@ pub fn resolve_node_id(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ids_that_differ_in_a_trailing_dash_are_two() {
+        // One trailing `-` is the sentinel: `a` and `a-` are two ids.
+        assert_ne!(
+            IdMapper::compute_deterministic_id("Item:a-"),
+            IdMapper::compute_deterministic_id("Item:a--")
+        );
+        assert_eq!(
+            IdMapper::compute_deterministic_id("User:7-"),
+            IdMapper::compute_deterministic_id("User:7")
+        );
+    }
     use crate::utils::id_encoding::{ID_BITS, ID_MASK};
 
     /// Helper to extract label code from encoded ID (6 bits at position 47-52)

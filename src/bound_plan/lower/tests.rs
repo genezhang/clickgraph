@@ -6583,6 +6583,52 @@ graph_schema:
     .unwrap()
 }
 
+/// I6b: the server's `id()` of a composite node names its element id, whose
+/// parts are escaped (a `|` in one is no separator) and a NULL one `\\N`:
+/// the node of those parts, its NULL part `IS NULL`; a text of other parts
+/// names none.
+#[test]
+fn an_id_of_a_composite_node_reads_its_escaped_parts() {
+    let server = LowerOptions {
+        id_lookup: Some(IdLookup {
+            node: std::sync::Arc::new(|id| match id {
+                1 => Some(("Acct".to_string(), "b\\|1|7".to_string())),
+                2 => Some(("Acct".to_string(), "b|\\N".to_string())),
+                3 => Some(("Acct".to_string(), "a|b|c".to_string())),
+                // A part holding a backslash: a value, no escape.
+                4 => Some(("Acct".to_string(), "e\\\\f|9".to_string())),
+                _ => None,
+            }),
+            element: std::sync::Arc::new(|_| None),
+        }),
+        ..LowerOptions::default()
+    };
+    let got = lowered(
+        "MATCH (a:Acct) WHERE id(a) = 1 RETURN a.owner",
+        &composite_walk_schema(),
+        &server,
+    );
+    assert!(got.contains("v0.bank = 'b|1' AND v0.num = '7'"), "{got}");
+    let got = lowered(
+        "MATCH (a:Acct) WHERE id(a) = 2 RETURN a.owner",
+        &composite_walk_schema(),
+        &server,
+    );
+    assert!(got.contains("v0.bank = 'b' AND v0.num IS NULL"), "{got}");
+    let got = lowered(
+        "MATCH (a:Acct) WHERE id(a) = 3 RETURN a.owner",
+        &composite_walk_schema(),
+        &server,
+    );
+    assert!(got.contains("WHERE false"), "{got}");
+    let got = lowered(
+        "MATCH (a:Acct) WHERE id(a) = 4 RETURN a.owner",
+        &composite_walk_schema(),
+        &server,
+    );
+    assert!(got.contains("v0.bank = 'e\\\\f' AND v0.num = '9'"), "{got}");
+}
+
 /// S8d: a walk between composite ids joins each step and ties its ends by
 /// the ids' columns (their texts in `start_id` / `end_id` two ids share:
 /// `('B|1', '2')`, `('B', '1|2')`), restricts its first node by the tuple of
@@ -6699,7 +6745,8 @@ fn a_union_walk_between_composite_ids_goes_by_keys() {
 }
 
 /// S8d2c: a composite id in a value or a list: its element id joins its
-/// parts' texts with `|` (the element-id contract), its identity is the text
+/// parts' texts, escaped, with `|` (the element-id contract, I6b: a NULL
+/// part `\\N`, not the text `null`), its identity is the text
 /// of its tuple (which no two ids share), and a list's element tuple holds a
 /// slot per id column.
 #[test]
@@ -6712,8 +6759,9 @@ fn composite_ids_in_values_and_lists() {
     // A walk's nodes as values; its identity by the tuple text.
     let got = lower("MATCH p = (a:Acct)-[:SENT*0..1]->(b:Acct) WITH DISTINCT p RETURN p");
     for p in [
-        "concat(coalesce(toString(start_node.bank), 'null'), '|', \
-         coalesce(toString(start_node.num), 'null'))",
+        "concat(CASE WHEN start_node.bank IS NULL THEN '\\\\N' ELSE \
+         replaceAll(replaceAll(replaceAll(toString(start_node.bank), '\\\\', '\\\\\\\\'), \
+         ':', '\\\\:'), '|', '\\\\|') END, '|', CASE WHEN start_node.num IS NULL",
         "toString(tuple(start_node.bank, start_node.num)) as start_id",
     ] {
         assert!(got.contains(p), "missing `{p}` in\n{got}");
