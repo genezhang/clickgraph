@@ -64,6 +64,21 @@ jobs:
         echo "ClickHouse failed to start"
         exit 1
 
+    # Schema persistence live tier (#1519 review): the schema_registry_tests
+    # module skips itself without CLICKHOUSE_URL, so with ClickHouse up this
+    # step runs the real store tests — including the foreign/future-row
+    # bucket test that goes red if the replay gate stops checking, and the
+    # two-phase payload fetch. Same env contract as the server step below;
+    # the test target is already compiled by the unit-test step above, so
+    # this only runs it.
+    - name: Schema registry live tier (rust)
+      run: cargo test --test integration schema_registry --verbose
+      env:
+        CLICKHOUSE_URL: "http://localhost:8123"
+        CLICKHOUSE_USER: "test_user"
+        CLICKHOUSE_PASSWORD: "test_pass"
+        CLICKHOUSE_DATABASE: "test_integration"
+
     - name: Setup test data
       run: |
         chmod +x scripts/test/setup_social_integration_data.sh
@@ -129,6 +144,27 @@ jobs:
           tests/integration/test_graphrag_schema_variations.py \
           tests/integration/test_smoke_schema_variations.py \
           -m smoke -v
+
+    - name: Schema-persistence restart-cycle e2e
+      # The e2e owns its own server lifecycle (spawn / SIGKILL / re-spawn),
+      # on its own port: 7475 is published by the compose stack's
+      # `clickgraph-test` container, which this step cannot stop, and the
+      # e2e refuses a port that is already in use. This is the
+      # acceptance run `docs/design/SCHEMA_PERSISTENCE.md` pins: register ->
+      # SIGKILL -> restored -> query returns through the restored schema ->
+      # DELETE stays deleted -> off mode writes nothing.
+      run: |
+        # --noconftest: tests/e2e/conftest.py imports `neo4j` (for the Bolt
+        # suites), which this job does not install; this test needs only
+        # the standard library and a live ClickHouse.
+        pytest --noconftest tests/e2e/test_schema_persistence_e2e.py -v
+      env:
+        CLICKHOUSE_URL: http://localhost:8123
+        CLICKHOUSE_USER: test_user
+        CLICKHOUSE_PASSWORD: test_pass
+        CLICKHOUSE_DATABASE: test_integration
+        CLICKGRAPH_BIN: ./target/debug/clickgraph
+        CLICKGRAPH_E2E_PORT: "17475"
 
     - name: Cleanup
       if: always()

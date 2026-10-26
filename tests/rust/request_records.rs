@@ -55,6 +55,11 @@ fn state() -> AppState {
         config: ServerConfig::default(),
         query_semaphore: None,
         pool: None,
+        // No client here, so the registry store is `Off` (as run_server
+        // would build it); this suite never touches the endpoints that
+        // reach into it.
+        schema_store: std::sync::Arc::new(clickgraph::server::schema_registry::SchemaStore::Off),
+        schema_registry_gate: Arc::new(tokio::sync::Mutex::new(())),
     }
 }
 

@@ -507,6 +507,15 @@ Content-Type: application/json
 - `schema_name` (string, required): Name to register the schema under
 - `config_content` (string, required): Full YAML schema configuration as string
 - `validate_schema` (boolean, optional): Validate tables/columns exist in ClickHouse (default: false)
+- `role` (string, optional, only with persistence on): ClickHouse role the registry write runs as
+  (see *Persistence*, Privileges); omitted or empty keeps the server's own user
+
+The names `load`, `draft`, `introspect` and `discover-prompt` are reserved (routes of their own):
+registering one answers `400`. So does a name or role the registry cannot record safely, with a
+message naming the problem — an empty name, a control or invisible formatting character (line and
+paragraph separators, zero-width space, bidirectional overrides; joiners and directional marks are fine) in a name or role, a name over
+512 bytes or a role over 256 (the check runs before any lock, memory work or store contact;
+an empty `role` string is exactly "no role", not an error).
 
 **Response:**
 ```json
@@ -516,12 +525,149 @@ Content-Type: application/json
 }
 ```
 
+When schema persistence is enabled (see *Persistence* below), the response gains an additive
+`persisted` field stating whether the registration actually reached the store — the schema is
+live either way:
+
+```json
+{
+  "message": "Schema 'ecommerce' loaded successfully",
+  "schema_name": "ecommerce",
+  "persisted": true
+}
+```
+
+With persistence off (the default) the field is absent and the response is byte-identical to
+servers without the feature.
+
 **Features:**
 - ✅ Runtime schema registration without server restart
 - ✅ Auto-discovery support: `auto_discover_columns: true` in YAML
 - ✅ Immediate availability for queries
 - ✅ Multiple schemas can coexist
 - ✅ Validates tables/columns if requested
+- ✅ Optional restart persistence (see *Persistence*)
+
+### DELETE /schemas/{name}
+
+Delete a runtime-registered schema: removes it from memory and (when persistence is enabled)
+its stored row, so the next boot does not resurrect it.
+
+```http
+DELETE /schemas/ecommerce HTTP/1.1
+```
+
+**Response:** `{"message": "Schema 'ecommerce' deleted", "schema_name": "ecommerce"}` (plus
+`persisted: true/false` when persistence is on). Unknown names answer `404` with
+`{"error": "..."}`.
+
+Notes:
+- A schema declared in the config file (`GRAPH_CONFIG_PATH`) can be deleted in memory, but
+  unless the file is edited it comes back on the next boot: the config file re-registers it.
+  Its stored row, if one exists (a runtime registration persisted before the name moved
+  into the config, or a POST that re-registered it), is deleted as well.
+- Deleting is cache-safe: query-cache entries for the name are invalidated the same way the
+  load path does.
+- **Store-only rows are deletable**: a row that failed boot replay exists in the store but was
+  never loaded into memory — `DELETE` on that name still 200s, deletes the stored row, and
+  reports `"persisted": true, "store_only": true` (no in-memory entry ever existed for the name
+  this boot). This is the remedy boot replay's WARN advertises. A name with neither a memory
+  entry nor a stored row keeps the pre-feature `404`. A store-only delete whose store call fails
+  answers `500` with a fixed message; the ClickHouse error's own text (it carries the server's
+  user, database, grants and version) is WARNed in the server log and never returned in the body.
+- With persistence on, `POST /schemas/load` and `DELETE /schemas/{name}` run one at a time: one
+  gate covers the in-memory change and the store change, so concurrent calls on a name never leave
+  memory and the store disagreeing. While the store hangs, queued calls each wait their own 10 s
+  store bound; a ClickHouse call that hangs inside a load itself (column discovery) holds the gate
+  until it returns or the request times out (`--query-timeout-secs`, default 300 s). With
+  persistence off there is no gate at all: loads and deletes behave as before the feature.
+- A client that disconnects (or a request that times out) after the schema changed in memory does
+  not abandon the store write: it runs to completion on its own (within its 10 s bound), still
+  holding the gate, so a slow store does not end up disagreeing with memory behind the client's
+  back. If the store never answers, the registration stays memory-only and the server log says so.
+- A store call that reaches its 10 s bound is abandoned by the server, not cancelled in
+  ClickHouse: the response says `"persisted": false`, but the statement may still run afterwards.
+  A `DELETE` that timed out can therefore remove a row that was re-registered in between; check
+  `persisted` and repeat the call if it matters.
+- `?role=<role>` (optional, persistence on) runs the store delete as that ClickHouse role, as the
+  `role` of `POST /schemas/load` does.
+- If the store delete fails, the schema is still removed from memory and the response is `200`
+  with `"persisted": false`; the stored row remains and comes back at the next boot. Repeating
+  the `DELETE` removes it as a store-only row.
+
+### Persistence
+
+Runtime registrations normally live only in memory: a restart (deploy, crash, upgrade) loses
+every `/schemas/load` registration. (DDL-created tables are not part of this registry; they
+keep the pre-existing legacy `graph_catalog`-table recovery.) Enabled persistence stores them
+in ClickHouse — the same system that serves the queries — as source
+rows that are replayed at boot:
+
+```bash
+CLICKGRAPH_SCHEMA_PERSISTENCE=clickhouse
+```
+
+| Value | Behavior |
+|-------|----------|
+| `off` (default) | No writes anywhere; restarts lose runtime registrations; responses keep the exact pre-feature shape. |
+| `clickhouse` | Registrations land in a `clickgraph_schema_registry` table in the configured database and are replayed at boot. |
+
+Semantics (Kafka Connect's `config.storage.topic` pattern, applied on ClickHouse):
+- **The config file wins**: a name defined via `GRAPH_CONFIG_PATH` shadows any persisted
+  registration of the same name at boot (the store is a runtime ledger, never a shadow of
+  declared intent).
+- **Privileges**: the store writes as the ClickHouse user the server runs as or, when a request
+  carries `role`, as that role (the resolution `/query` uses). It needs `SELECT`, `INSERT` and
+  `ALTER DELETE` on `clickgraph_schema_registry`, and `CREATE TABLE` only where the server
+  creates the table: the table is prepared once per process (a `CREATE TABLE IF NOT EXISTS`
+  attempt, then a read probe), so a table a DBA created works without that grant. For a read-only
+  default user, create a role (`CREATE ROLE schema_writer`; grant it `SELECT, INSERT, ALTER
+  DELETE` on the table; `GRANT schema_writer TO <user>`) and send `"role": "schema_writer"` with
+  `POST /schemas/load` or `?role=schema_writer` with `DELETE`; boot replay only reads. The role
+  scopes privileges; it does not authenticate the caller. A server that must stay read-only keeps
+  persistence `off`.
+- **Rows that can never restore**: a registration whose YAML alone is larger than
+  `CLICKGRAPH_SCHEMA_REPLAY_MAX_BYTES` is stored but answers `"restorable": false` with a
+  `restorable_reason`. A row past the row cap or the cumulative byte budget is reported only by
+  the boot WARN.
+- **Registration first, durability best-effort**: a store failure never fails a registration —
+  the response reports `persisted: false` instead. The same degradation covers a registry whose
+  cheap high-water seed (`SELECT max(registered_at_ms)`) cannot be read: that seed keeps every
+  stamp above the table's high-water mark (a row stamped below it would lose the boot's
+  last-write-wins collapse to a stale row), so its failure stops the write, and the next
+  operation retries the whole table preparation. This is also all replay's timeout failure looks
+  like from outside: a promotion/deploy that kills the existing server loses nothing; a degraded
+  store only breaks restart-survival, announced in the logs.
+- **Bounded store calls**: writes run under a fixed 10 s bound per statement; the boot replay's
+  reads run under a separate fixed 60 s bound (they are the one workload the server must finish
+  before serving, and the one that legitimately scans the most). Neither hangs past its bound —
+  a wedged ClickHouse degrades along the paths above.
+- **Bounded boot replay**: the fetch itself caps at `CLICKGRAPH_SCHEMA_REPLAY_MAX_ROWS` rows
+  (default 500) and a cumulative payload of `CLICKGRAPH_SCHEMA_REPLAY_MAX_BYTES` (default
+  64 MiB), enforced in the read (a first query reads metadata and byte lengths only; payloads are then
+  fetched for the rows that fit, and ClickHouse reads whole parts for that, so the server's peak
+  memory is a small multiple of the byte budget, about 3×, not the budget itself), restored
+  oldest first; rows left out are counted exactly in a WARN naming
+  both knobs.
+- **Source gate**: the write path only stamps `api-load`; a stored row whose `source` is
+  anything else (a hand-edit, another tool) is never restored and never guessed at — skipped
+  with a per-name warning, counted in the boot summary. The version check runs first: a row
+  that is simultaneously future-versioned and foreign-sourced is skipped as future-versioned.
+- **Version gate**: rows written by a *newer* ClickGraph's registry format are skipped with a
+  warning at boot instead of guessing at their shape (old servers survive upgrades that
+  returned to them).
+- **Name gate**: a stored row whose name the endpoints above would refuse (empty, control or
+  invisible characters, over 512 bytes) can only be hand-written; it is skipped with a warning
+  that gives the `ALTER TABLE clickgraph_schema_registry DELETE WHERE name = …` that removes it,
+  and counted in the boot summary.
+- **Clusters**: with `CLICKHOUSE_CLUSTER` set, create the registry table yourself as a replicated
+  table on every node before enabling persistence. The server creates a plain table on one node
+  only, and writes that pass a `role` go through the pool that round-robins over the nodes, so
+  they could reach a node without the table (or a local copy replay never reads).
+- **Restart restore goes through the same load path** as a live registration (same alias and
+  cache semantics).
+- Single instance per registry table is the supported shape: multi-instance replay is out of
+  scope for v1 (`docs/design/SCHEMA_PERSISTENCE.md`).
 
 **Examples:**
 

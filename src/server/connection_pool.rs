@@ -136,8 +136,14 @@ impl RoleConnectionPool {
             return clients[idx].clone();
         }
 
-        // Create clients with role for all URLs
-        log::info!("Creating new connection pool for role: {}", role);
+        // Create clients with role for all URLs. The role is log-scrubbed:
+        // it is caller-supplied text (`role` on the registry endpoints) and
+        // the endpoint 400s a control character, but this is the one place
+        // a pool is built for any caller, so the discipline stays local.
+        log::info!(
+            "Creating new connection pool for role: {}",
+            crate::server::schema_registry::log_safe(role)
+        );
         let clients: Vec<Client> = self
             .base_config
             .urls
