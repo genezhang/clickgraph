@@ -927,6 +927,130 @@ pub(super) fn reject_rereads_of_numbered_rows(
     Ok(())
 }
 
+/// Refuse a result decided by a drawn value (#1495): ClickHouse evaluates
+/// a CTE once per read, and a call of [`DRAWN_SQL`] draws again on each
+/// read. A CTE with a drawn call, read more than once (by itself, or
+/// through a CTE reading it — the [`rereads`] dictate), decides across the
+/// reads either when a drawn item's column is a join key of the final
+/// SELECT (the readback of an OPTIONAL MATCH's or a subquery's drive: the
+/// reads draw different values, the joins match no row), or when a drawn
+/// call filters (orders, groups) its rows (the reads keep different rows).
+/// A drawn value no second read decides on lowers as before.
+pub(super) fn reject_reads_of_drawn_values(plan: &RenderPlan) -> Result<(), LowerError> {
+    let (ctes, select) = render_plan_parts_plain(plan.clone());
+    let mut names = BTreeSet::new();
+    let mut aliases: Vec<String> = Vec::new();
+    let mut filters = false;
+    for cte in &ctes {
+        for at in drawn_call_starts(&cte.text) {
+            names.insert(cte.name.clone());
+            match drawn_column_alias(&cte.text[at..]) {
+                Some(alias) => aliases.push(alias.to_string()),
+                None => filters = true,
+            }
+        }
+    }
+    if names.is_empty() || !rereads(plan, &names) {
+        return Ok(());
+    }
+    let select = select.to_ascii_lowercase();
+    if aliases
+        .iter()
+        .any(|alias| select.contains(&format!(".{alias} = ")))
+    {
+        return unsupported(
+            "a value drawn in a WITH read more than once (rand() / randomUUID() / \
+             the clock draw again on every read) is a join key of its reads",
+        );
+    }
+    if filters {
+        return unsupported(
+            "a value drawn in a WITH read more than once (rand() / randomUUID() / \
+             the clock draw again on every read) selects different rows on every \
+             read",
+        );
+    }
+    Ok(())
+}
+
+/// The lowercase SQL spellings of the calls that draw a different value on
+/// each evaluation: `rand()` (`randCanonical()` on ClickHouse, `rand()` on
+/// Spark), `randomUUID()` (spelled through unmapped), the millisecond
+/// clock (`now64(3)`, `current_timestamp()`, and `now()`, nested as in
+/// `toUnixTimestamp(now())`). Whole words, so `rand` does not match
+/// `randCanonical` (the ident-boundary `c`). The day-granular draws
+/// (`today()`, `current_date()`) are not here: the reads of one query
+/// agree within the day, so a join of their reads is correct.
+const DRAWN_SQL: [&str; 6] = [
+    "randcanonical",
+    "rand",
+    "randomuuid",
+    "now64",
+    "now",
+    "current_timestamp",
+];
+
+/// The byte positions in `text` of each drawn call: a drawn function's
+/// name, outside every quoted string (a query that searches for the word
+/// `now` must not look drawn), as a whole word followed by its `(`.
+fn drawn_call_starts(text: &str) -> Vec<usize> {
+    let lower = text.to_ascii_lowercase();
+    let text = lower.as_bytes();
+    let ident = |c: u8| c.is_ascii_alphanumeric() || c == b'_';
+    let mut starts = Vec::new();
+    let mut at = 0;
+    while at < text.len() {
+        match text[at] {
+            quote @ (b'\'' | b'"') => {
+                at += 1;
+                while at < text.len() {
+                    if text[at] == quote {
+                        if text.get(at + 1) == Some(&quote) {
+                            at += 2; // an escaped quote, still inside
+                            continue;
+                        }
+                        at += 1; // the string's own closing quote
+                        break;
+                    }
+                    at += 1;
+                }
+            }
+            _ => {
+                for token in DRAWN_SQL {
+                    let token = token.as_bytes();
+                    if text[at..].starts_with(token)
+                        && (at == 0 || !ident(text[at - 1]))
+                        && text.get(at + token.len()) == Some(&b'(')
+                    {
+                        starts.push(at);
+                        break;
+                    }
+                }
+                at += 1;
+            }
+        }
+    }
+    starts
+}
+
+/// A drawn call's item's exported column: the text after the ` AS ` the
+/// plain renderer spells every select item with, quoted `"v2"`
+/// (ClickHouse) or backticked `` `v2` `` (Spark). `None` for a call
+/// placed where it decides rows (a WHERE's predicate, an ORDER BY's key,
+/// a GROUP BY's key): no select item of its own exists after it.
+fn drawn_column_alias(after_call: &str) -> Option<&str> {
+    const MARKER: &str = " AS ";
+    let after = after_call.find(MARKER)? + MARKER.len();
+    let rest = &after_call[after..];
+    let (quote, within) = match (rest.strip_prefix('"'), rest.strip_prefix('`')) {
+        (Some(within), _) => ('"', within),
+        (_, Some(within)) => ('`', within),
+        (None, None) => return None,
+    };
+    let end = within.find(quote)?;
+    Some(&within[..end])
+}
+
 /// Whether the plan reads more than once a CTE of `marked` (by name), or
 /// one reading such a CTE.
 ///

@@ -260,17 +260,23 @@ fn lower_over(
     // path's seed) then matches the wrong rows. Such CTEs are those the
     // stable lowering spells otherwise; when one is read more than once,
     // directly or through others, the stable lowering is the plan.
-    if !unwind::rereads(&lowered.plan, &unwind::cte_names(&lowered.plan)) {
-        return Ok(lowered);
-    }
-    let (stable, stable_unstable) = lower_pass(stmt, schema, options, &demand, true)?;
-    let mut order_dependent = unwind::changed_ctes(&lowered.plan, &stable.plan);
-    order_dependent.extend(unstable);
-    if !unwind::rereads(&lowered.plan, &order_dependent) {
-        return Ok(lowered);
-    }
-    unwind::reject_rereads_of_numbered_rows(&stable.plan, &stable_unstable)?;
-    Ok(stable)
+    let chosen = if !unwind::rereads(&lowered.plan, &unwind::cte_names(&lowered.plan)) {
+        lowered
+    } else {
+        let (stable, stable_unstable) = lower_pass(stmt, schema, options, &demand, true)?;
+        let mut order_dependent = unwind::changed_ctes(&lowered.plan, &stable.plan);
+        order_dependent.extend(unstable);
+        if !unwind::rereads(&lowered.plan, &order_dependent) {
+            lowered
+        } else {
+            unwind::reject_rereads_of_numbered_rows(&stable.plan, &stable_unstable)?;
+            stable
+        }
+    };
+    // The plan is returned: a drawn value (#1495) that decides across the
+    // reads the lowered SQL makes of a read-more-than-once CTE is refused.
+    unwind::reject_reads_of_drawn_values(&chosen.plan)?;
+    Ok(chosen)
 }
 
 /// One lowering of the statement ([`Lowerer::stable`] when `stable`), and

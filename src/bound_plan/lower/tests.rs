@@ -10498,3 +10498,118 @@ graph_schema:
         "{got}"
     );
 }
+
+/// #1495: a value drawn in a CTE read more than once (rand() /
+/// randomUUID() / the clock draw again on every read) decides the result
+/// across the reads when it is joined back as a join key of the reads.
+#[test]
+fn a_drawn_value_joined_back_across_two_reads_is_refused() {
+    let err = translate_bound_plan(
+        "MATCH (a:User) WITH a, rand() AS r \
+         OPTIONAL MATCH (b:User) WHERE b.user_id = a.user_id AND r < 2 \
+         RETURN count(*), count(b)",
+        &social(),
+        &ReadOptions::default(),
+    )
+    .unwrap_err();
+    assert!(
+        err.contains("draw again on every read") && err.contains("is a join key of its reads"),
+        "{err}"
+    );
+    // A literal on the other side does not agree the reads either.
+    let err = translate_bound_plan(
+        "MATCH (a:User) WITH a, rand() AS r \
+         OPTIONAL MATCH (b:User) WHERE b.user_id = a.user_id AND r = 0.5 \
+         RETURN count(*), count(b)",
+        &social(),
+        &ReadOptions::default(),
+    )
+    .unwrap_err();
+    assert!(err.contains("is a join key of its reads"), "{err}");
+}
+
+/// #1495: the same on Databricks, whose drawn spellings are `rand` and
+/// `current_timestamp` (the refusal machinery is dialect-shared).
+#[test]
+fn a_databricks_drive_that_joins_on_a_drawn_value_is_refused() {
+    let err = databricks_sql(
+        "MATCH (a:User) WITH a, rand() AS r \
+         OPTIONAL MATCH (b:User) WHERE b.user_id = a.user_id AND r < 2 \
+         RETURN count(*), count(b)",
+        &social(),
+    )
+    .unwrap_err();
+    assert!(err.contains("is a join key of its reads"), "{err}");
+}
+
+/// #1495: a drawn call that filters (orders, groups) the rows of a CTE
+/// read more than once keeps a different row set per read (the counts of
+/// the drive and of the final read disagree).
+#[test]
+fn a_drawn_filter_of_a_reread_cte_is_refused() {
+    for q in [
+        "MATCH (a:User) WHERE rand() < 0.5 \
+         OPTIONAL MATCH (b:User) WHERE b.user_id = a.user_id \
+         RETURN count(*), count(b)",
+        "MATCH (a:User) WITH a WHERE rand() < 0.5 \
+         OPTIONAL MATCH (b:User) WHERE b.user_id = a.user_id \
+         RETURN count(*), count(b)",
+    ] {
+        let err = translate_bound_plan(q, &social(), &ReadOptions::default()).unwrap_err();
+        assert!(
+            err.contains("draw again on every read")
+                && err.contains("selects different rows on every read"),
+            "{q}: {err}"
+        );
+    }
+}
+
+/// #1495: a drawn value that cannot decide across the reads lowers as
+/// before: dropped by the drive, read once, summed or counted, or a
+/// same-day draw whose reads agree.
+#[test]
+fn a_drawn_value_that_cannot_decide_across_reads_lowers_as_before() {
+    // Carried and unread by the drive: the drive drops the column, and
+    // the join is by identity alone.
+    let got = sql("MATCH (a:User) WITH a, rand() AS r \
+         OPTIONAL MATCH (b:User) WHERE b.user_id = a.user_id \
+         RETURN count(*), count(b)");
+    assert!(got.contains(r#"randCanonical() AS "v2""#), "{got}");
+    assert!(!got.contains("w1.v2 = o3.v2"), "{got}");
+    // Read once, by the inner MATCH only (no re-read is left to
+    // disagree): one external draw.
+    let got = sql("MATCH (a:User) WITH a, rand() AS r \
+         MATCH (b:User) WHERE b.user_id = a.user_id \
+         RETURN count(*) AS c, sum(r) AS s");
+    assert!(got.contains(r#"coalesce(sum(w1.v2), 0) AS "s""#), "{got}");
+    // Read again, but its drawn column is only summed over the final
+    // SELECT's own rows: never a join key.
+    has(
+        "MATCH (a:User) WITH a, rand() AS r \
+         OPTIONAL MATCH (b:User) WHERE b.user_id = a.user_id \
+         RETURN count(*) AS c, sum(r) AS s",
+        &[
+            r#"coalesce(sum(w1.v2), 0) AS "s""#,
+            "ON w1.v1__user_id = o3.v1__user_id",
+        ],
+    );
+    // The clock drawn carried (a nested drawn call), unread.
+    let got = sql("MATCH (a:User) WITH a, timestamp() AS t \
+         OPTIONAL MATCH (b:User) WHERE b.user_id = a.user_id \
+         RETURN count(*) AS c, count(t) AS n");
+    assert!(got.contains(r#"toUnixTimestamp(now()) AS "v2""#), "{got}");
+    // randomUUID() is spelled through unmapped; carried, unread.
+    let got = sql("MATCH (a:User) WITH a, randomUUID() AS u \
+         OPTIONAL MATCH (b:User) WHERE b.user_id = a.user_id \
+         RETURN count(*) AS c, count(u) AS n");
+    assert!(got.contains(r#"randomUUID() AS "v2""#), "{got}");
+    // A same-day draw whose drawn column IS carried and joined back: the
+    // reads agree within the day, so this is correct as it is.
+    let got = sql("MATCH (a:User) WITH a, date() AS d \
+         OPTIONAL MATCH (b:User) WHERE b.user_id = a.user_id AND d < date('2030-01-01') \
+         RETURN count(*), count(b)");
+    assert!(
+        got.contains(r#"toDate(today()) AS "v2""#) && got.contains("w1.v2 = o3.v2"),
+        "{got}"
+    );
+}
