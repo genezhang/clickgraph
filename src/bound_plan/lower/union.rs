@@ -128,6 +128,13 @@ fn lower_arms(
         } = q.lower(arm, &mut ctes)?;
         let shape = in_union_order(shape, &projection.items, columns)?;
         if let Some(first) = &first {
+            // `id()`s of different labels (or of a relationship): each arm
+            // returns the element id the server numbers (I5b). A text
+            // needs no element identity, so under UNION as well as UNION ALL.
+            let mixed_ids = mixed_ids(first, &shape);
+            if !mixed_ids.is_empty() {
+                return Ok(Pass::AsValues(mixed_ids));
+            }
             let mixed = mixed_elements(first, &shape);
             if !mixed.is_empty() {
                 if !all {
@@ -299,7 +306,7 @@ fn lower_arms(
         // properties. Through the key, as a column may be of a type
         // ClickHouse cannot group by (`Dynamic`).
         plan.group_by.0.push(match kind {
-            ResultKind::NodeId { .. } | ResultKind::RelId => column,
+            ResultKind::NodeId { .. } | ResultKind::ElementIdNumber => column,
             ResultKind::Value
             | ResultKind::Graph(_)
             | ResultKind::Node { .. }
@@ -345,6 +352,19 @@ fn mixed_elements(first: &[ResultColumn], other: &[ResultColumn]) -> BTreeSet<St
         .filter(|(a, b)| {
             a.kind != b.kind && ((node(&a.kind) && node(&b.kind)) || (rel(&a.kind) && rel(&b.kind)))
         })
+        .map(|(a, _)| a.name.clone())
+        .collect()
+}
+
+/// The columns where `first` and `other` hold `id()`s read differently: of
+/// nodes of different labels, or of a relationship or a node of several
+/// labels (`ResultKind::ElementIdNumber`).
+fn mixed_ids(first: &[ResultColumn], other: &[ResultColumn]) -> BTreeSet<String> {
+    let id = |k: &ResultKind| matches!(k, ResultKind::NodeId { .. } | ResultKind::ElementIdNumber);
+    first
+        .iter()
+        .zip(other)
+        .filter(|(a, b)| a.kind != b.kind && id(&a.kind) && id(&b.kind))
         .map(|(a, _)| a.name.clone())
         .collect()
 }

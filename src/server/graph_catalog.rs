@@ -102,7 +102,7 @@ async fn warn_on_schema_content_collision(schema_name: &str, yaml_content: &str)
 /// Pre-register all labels from a schema with the ID encoding registry.
 /// This enables id() decoding to work on first query without requiring
 /// prior node returns to populate the registry.
-fn preregister_schema_labels(schema: &GraphSchema) {
+pub fn preregister_schema_labels(schema: &GraphSchema) {
     // Sort labels alphabetically for deterministic code assignment across restarts
     let mut node_labels: Vec<_> = schema.all_node_schemas().keys().cloned().collect();
     node_labels.sort();
@@ -708,6 +708,12 @@ pub async fn load_schema_from_content(
 
             // Warn (not block) if this name was already registered with different content.
             warn_on_schema_content_collision(schema_name, yaml_content).await;
+
+            // Give its labels their id codes now, in sorted order, as the
+            // schemas loaded at startup get theirs; the codes are
+            // process-wide, and a label met later is numbered in the order
+            // a query first returns it.
+            preregister_schema_labels(&schema);
 
             // Add to multi-schema storage
             let schemas_lock = GLOBAL_SCHEMAS

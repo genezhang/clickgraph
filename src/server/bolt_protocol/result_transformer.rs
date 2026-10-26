@@ -470,20 +470,29 @@ pub fn transform_row(
                 // is assigned in the session, so `WHERE id(n) = N` reads the
                 // number back (ELEMENT_IDENTITY.md I5a); a key's bits need not
                 // be.
-                let encoded_id = if super::id_mapper::IdMapper::is_hashed(&element_id) {
-                    id_mapper.get_or_assign(&element_id)
-                } else {
+                let encoded_id = if super::id_mapper::IdMapper::holds_key_bits(schema, &element_id)
+                {
                     super::id_mapper::IdMapper::compute_deterministic_id(&element_id)
+                } else {
+                    id_mapper.get_or_assign(&element_id)
                 };
                 log::debug!("id() encoded: {} -> {}", element_id, encoded_id);
                 result.push(BoltValue::Json(Value::Number(encoded_id.into())));
             }
             ReturnItemType::ElementIdNumber => {
                 // Assigned in the session, so that `id(r) = N` of the number
-                // reads it back (#1410).
+                // reads it back (#1410). A node's number that holds its key's
+                // bits (`id(n)` of a node of several labels, I5b) reads back
+                // from the number alone: nothing is kept for it.
                 let value = match meta.value(&row).cloned().unwrap_or(Value::Null) {
                     Value::String(element_id) => {
-                        Value::Number(id_mapper.get_or_assign(&element_id).into())
+                        let number =
+                            if super::id_mapper::IdMapper::holds_key_bits(schema, &element_id) {
+                                super::id_mapper::IdMapper::compute_deterministic_id(&element_id)
+                            } else {
+                                id_mapper.get_or_assign(&element_id)
+                            };
+                        Value::Number(number.into())
                     }
                     other => other,
                 };
@@ -543,6 +552,16 @@ pub(crate) fn transform_to_node(
             }
         }
     }
+
+    // The node's element id as SQL spells it, where an id part is one SQL
+    // alone spells (`NODE_ELEMENT_ID_KEY`, #1528): taken as is, whatever the
+    // properties are.
+    let sql_element_id = properties
+        .remove(crate::bound_plan::lower::NODE_ELEMENT_ID_KEY)
+        .and_then(|v| match v {
+            Value::String(s) => Some(s),
+            _ => None,
+        });
 
     // VLP CTE results: o.properties is a JSON blob, o.id is the ID string
     // Parse JSON properties and merge into the properties map
@@ -661,27 +680,34 @@ pub(crate) fn transform_to_node(
     //
     // A composite id's part may be NULL (`None`, its element id's `\\N`); an
     // id of no part that is not is no node's.
-    let id_values: Vec<Option<String>> = id_columns
-        .iter()
-        .map(|col_name| {
-            let missing = || format!("Missing ID column '{}' for node '{}'", col_name, var_name);
-            match properties
-                .get(*col_name)
-                .or_else(|| row.get(&format!("{}.{}", var_name, col_name)))
-            {
-                Some(Value::Null) if id_columns.len() > 1 => Ok(None),
-                Some(v) => value_to_string(v).map(Some).ok_or_else(missing),
-                None => Err(missing()),
+    let element_id = match sql_element_id {
+        // Spelled in SQL (#1528).
+        Some(element_id) => element_id,
+        None => {
+            let id_values: Vec<Option<String>> = id_columns
+                .iter()
+                .map(|col_name| {
+                    let missing =
+                        || format!("Missing ID column '{}' for node '{}'", col_name, var_name);
+                    match properties
+                        .get(*col_name)
+                        .or_else(|| row.get(&format!("{}.{}", var_name, col_name)))
+                    {
+                        Some(Value::Null) if id_columns.len() > 1 => Ok(None),
+                        Some(v) => value_to_string(v).map(Some).ok_or_else(missing),
+                        None => Err(missing()),
+                    }
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            if id_values.iter().all(Option::is_none) {
+                return Err(format!("Missing ID columns for node '{}'", var_name));
             }
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    if id_values.iter().all(Option::is_none) {
-        return Err(format!("Missing ID columns for node '{}'", var_name));
-    }
 
-    // Generate elementId using Phase 3 function
-    let id_value_refs: Vec<Option<&str>> = id_values.iter().map(|s| s.as_deref()).collect();
-    let element_id = node_element_id(&label, &id_value_refs);
+            // Generate elementId using Phase 3 function
+            let id_value_refs: Vec<Option<&str>> = id_values.iter().map(|s| s.as_deref()).collect();
+            node_element_id(&label, &id_value_refs)
+        }
+    };
 
     // Derive integer ID from element_id (ensures uniqueness across labels)
     let id: i64 = generate_id_from_element_id(&element_id);
@@ -3206,37 +3232,170 @@ graph_schema:
     /// not be.
     #[test]
     fn an_id_item_of_a_hashed_key_is_assigned_in_the_session() {
-        let schema = GraphSchema::build(1, "test".to_string(), HashMap::new(), HashMap::new());
-        let item = ReturnItemMetadata {
+        let schema = keyed_labels_schema();
+        let item_of = |label: &str| ReturnItemMetadata {
             field_name: "i".to_string(),
             item_type: ReturnItemType::IdFunction {
                 alias: "a".to_string(),
-                labels: vec!["Account".to_string()],
+                labels: vec![label.to_string()],
             },
             columns: Some(vec![("i".to_string(), "i".to_string())]),
         };
-        let number = |ids: &mut super::super::id_mapper::IdMapper, key: Value| -> i64 {
-            let row: HashMap<String, Value> = [("i".to_string(), key)].into();
-            match transform_row(row, std::slice::from_ref(&item), &schema, ids)
-                .unwrap()
-                .as_slice()
-            {
-                [BoltValue::Json(Value::Number(n))] => n.as_i64().unwrap(),
-                other => panic!("{other:?}"),
-            }
-        };
+        let number =
+            |ids: &mut super::super::id_mapper::IdMapper, label: &str, key: Value| -> i64 {
+                let row: HashMap<String, Value> = [("i".to_string(), key)].into();
+                match transform_row(row, std::slice::from_ref(&item_of(label)), &schema, ids)
+                    .unwrap()
+                    .as_slice()
+                {
+                    [BoltValue::Json(Value::Number(n))] => n.as_i64().unwrap(),
+                    other => panic!("{other:?}"),
+                }
+            };
         let mut ids = super::super::id_mapper::IdMapper::new();
         // A composite key (its escaped text), and a string one.
-        let composite = number(&mut ids, Value::from("CHASE|CHK-001"));
+        let composite = number(&mut ids, "Account", Value::from("CHASE|CHK-001"));
         assert_eq!(
             ids.get_element_id(composite).as_deref(),
             Some("Account:CHASE|CHK-001-")
         );
-        let string = number(&mut ids, Value::from("LAX"));
+        let string = number(&mut ids, "Account", Value::from("LAX"));
         assert_eq!(ids.get_element_id(string).as_deref(), Some("Account:LAX-"));
-        // A small integer key is its number's bits: nothing to assign.
-        let small = number(&mut ids, Value::from(7));
-        assert_eq!(ids.get_element_id(small), None);
+        // A string key of digits is no integer's bits: its number is kept.
+        let digits = number(&mut ids, "Account", Value::from("12345678901"));
+        assert_eq!(
+            ids.get_element_id(digits).as_deref(),
+            Some("Account:12345678901-")
+        );
+        // An integer key is its number's bits: nothing to assign, whether it
+        // is small or 2^31 or more (most LDBC ids).
+        for key in [7_i64, 2_336_468_743_926] {
+            let n = number(&mut ids, "Num", Value::from(key));
+            assert_eq!(ids.get_element_id(n), None, "{key}");
+            // ... and the number reads back from its bits.
+            assert_eq!(
+                super::super::id_mapper::resolve_node_id(&ids, Some(&schema), n),
+                Some(("Num".to_string(), key.to_string())),
+                "{key}"
+            );
+        }
+        // A key too large for the bits is hashed, and kept.
+        let huge = number(&mut ids, "Num", Value::from(i64::MAX));
+        assert!(ids.get_element_id(huge).is_some());
+    }
+
+    /// A schema of an integer-keyed label (`Num`, and `User`) and a
+    /// string-keyed one (`Account`).
+    fn keyed_labels_schema() -> GraphSchema {
+        let mut schema = crate::graph_catalog::config::GraphSchemaConfig::from_yaml_str(
+            r#"
+graph_schema:
+  name: t
+  nodes:
+    - {label: Num, database: test, table: num, node_id: id, property_mappings: {id: id}}
+    - {label: User, database: test, table: users, node_id: id, property_mappings: {id: id}}
+    - {label: Account, database: test, table: acct, node_id: code, property_mappings: {code: code}}
+"#,
+        )
+        .expect("parse schema")
+        .to_graph_schema()
+        .expect("to graph schema");
+        // As the column's discovered type makes it.
+        let mut account = schema.node_schema("Account").expect("Account").clone();
+        account.node_id.dtype = crate::graph_catalog::schema_types::SchemaType::String;
+        schema.insert_node_schema("Account".to_string(), account);
+        schema
+    }
+
+    /// #1528: a node's element id spelled in SQL (`NODE_ELEMENT_ID_KEY`) is
+    /// taken as it is, and is no property; a relationship's ends are texts.
+    #[test]
+    fn a_node_takes_its_element_id_from_sql() {
+        let schema = keyed_labels_schema();
+        let key = crate::bound_plan::lower::NODE_ELEMENT_ID_KEY;
+        let row: HashMap<String, Value> = [
+            ("n.id".to_string(), Value::from(1.5e20)),
+            (
+                format!("n.{key}"),
+                Value::from("Num:150000000000000000000-"),
+            ),
+        ]
+        .into();
+        let node = transform_to_node(&row, "n", &["Num".to_string()], &schema).unwrap();
+        assert_eq!(node.element_id, "Num:150000000000000000000-");
+        assert!(!node.properties.contains_key(key), "{:?}", node.properties);
+        assert_eq!(
+            node.id,
+            super::super::id_mapper::IdMapper::compute_deterministic_id(&node.element_id)
+        );
+        // Without it, spelled from the value as before.
+        let row: HashMap<String, Value> = [("n.id".to_string(), Value::from(7))].into();
+        let node = transform_to_node(&row, "n", &["Num".to_string()], &schema).unwrap();
+        assert_eq!(node.element_id, "Num:7-");
+    }
+
+    /// ELEMENT_IDENTITY.md I5b: the number of an element id item (`id(r)`, or
+    /// `id(n)` of a node of several labels) is the number of the same element
+    /// id returned whole; a node's that holds its key's bits is not kept in
+    /// the session, a hash is (as a relationship's always is).
+    #[test]
+    fn an_element_id_item_is_numbered_like_the_element_returned_whole() {
+        let schema = keyed_labels_schema();
+        let item = ReturnItemMetadata {
+            field_name: "i".to_string(),
+            item_type: ReturnItemType::ElementIdNumber,
+            columns: Some(vec![("i".to_string(), "i".to_string())]),
+        };
+        let number = |ids: &mut super::super::id_mapper::IdMapper, text: Value| -> Value {
+            let row: HashMap<String, Value> = [("i".to_string(), text)].into();
+            match transform_row(row, std::slice::from_ref(&item), &schema, ids)
+                .unwrap()
+                .as_slice()
+            {
+                [BoltValue::Json(v)] => v.clone(),
+                other => panic!("{other:?}"),
+            }
+        };
+        let mut ids = super::super::id_mapper::IdMapper::new();
+        let small = number(&mut ids, Value::from("User:7-"));
+        assert_eq!(
+            small.as_i64(),
+            Some(super::super::id_mapper::IdMapper::compute_deterministic_id(
+                "User:7-"
+            ))
+        );
+        assert_eq!(ids.get_element_id(small.as_i64().unwrap()), None);
+        let hashed = number(&mut ids, Value::from("Account:CHASE|CHK-001-"));
+        assert_eq!(
+            ids.get_element_id(hashed.as_i64().unwrap()).as_deref(),
+            Some("Account:CHASE|CHK-001-")
+        );
+        let rel = number(&mut ids, Value::from("FOLLOWS:1->2-"));
+        assert_eq!(
+            ids.get_element_id(rel.as_i64().unwrap()).as_deref(),
+            Some("FOLLOWS:1->2-")
+        );
+        // An integer key's number holds its bits, up to 2^31 and beyond: not
+        // kept, and read back from the number. A string key of digits, and a
+        // key of a label not in the schema, are kept.
+        for (text, bits) in [
+            ("Num:7-", true),
+            ("Num:2336468743926-", true),
+            ("Account:12345678901-", false),
+            ("Nowhere:5-", false),
+        ] {
+            let n = number(&mut ids, Value::from(text)).as_i64().unwrap();
+            assert_eq!(ids.get_element_id(n).is_none(), bits, "{text}");
+        }
+        let n = number(&mut ids, Value::from("Num:2336468743926-"))
+            .as_i64()
+            .unwrap();
+        assert_eq!(
+            super::super::id_mapper::resolve_node_id(&ids, Some(&schema), n),
+            Some(("Num".to_string(), "2336468743926".to_string()))
+        );
+        // NULL stays NULL.
+        assert_eq!(number(&mut ids, Value::Null), Value::Null);
     }
 
     /// #486: `transform_vlp_path` must decode the standard (single-type) VLP

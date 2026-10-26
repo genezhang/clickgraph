@@ -261,15 +261,29 @@ pub(super) fn node_object(
     id: &str,
     props: &[(String, String)],
 ) -> String {
-    let (prefix, suffix) = node_element_id_affixes(label);
     let labels = node_labels_sql(schema, label);
     (g.object)(&[
-        (
-            string("elementId"),
-            (g.text)(&[string(&prefix), (g.to_text)(id), string(suffix)]),
-        ),
+        (string("elementId"), node_element_id_text(g, label, id)),
         (string("labels"), labels),
         (string("properties"), properties(g, props)),
+    ])
+}
+
+/// The element id (SQL) of a node of `label` whose id is the SQL `id`.
+fn node_element_id_text(g: &GraphValues, label: &str, id: &str) -> String {
+    let (prefix, suffix) = node_element_id_affixes(label);
+    (g.text)(&[string(&prefix), (g.to_text)(id), string(suffix)])
+}
+
+/// The element id (SQL) of a node whose label is the SQL `label` (a column:
+/// one of several possible labels) and whose id is the SQL `id`.
+fn labeled_node_element_id_text(g: &GraphValues, label: &str, id: &str) -> String {
+    let (after_label, suffix) = node_element_id_separators();
+    (g.text)(&[
+        label.to_string(),
+        string(after_label),
+        (g.to_text)(id),
+        string(suffix),
     ])
 }
 
@@ -309,17 +323,11 @@ fn labeled_node_object(
     id: &str,
     props: &[(String, String)],
 ) -> String {
-    let (after_label, suffix) = node_element_id_separators();
     let labels = labeled_node_labels_sql(schema, label);
     (g.object)(&[
         (
             string("elementId"),
-            (g.text)(&[
-                label.to_string(),
-                string(after_label),
-                (g.to_text)(id),
-                string(suffix),
-            ]),
+            labeled_node_element_id_text(g, label, id),
         ),
         (string("labels"), labels),
         (string("properties"), properties(g, props)),
@@ -530,6 +538,9 @@ pub(super) enum EndSpell {
     In(String),
     DayOrTime,
     Exact(String),
+    /// Its text in SQL (#1528: a part Rust would spell another way from the
+    /// JSON of its value).
+    Text,
 }
 
 /// How a relationship's `from` and `to` ends' id parts are spelled as their
@@ -542,6 +553,7 @@ pub(super) fn spell_end(part: &str, spell: &EndSpell) -> String {
         EndSpell::Own => part.to_string(),
         EndSpell::In(t) => format!("CAST({part} AS {t})"),
         EndSpell::DayOrTime => day_or_time(part),
+        EndSpell::Text => format!("{}({part})", current_function_mapper().cast_string()),
         EndSpell::Exact(t) => {
             let text = current_function_mapper().cast_string();
             format!(
@@ -1178,6 +1190,29 @@ impl<'s> Lowerer<'s> {
         let g = spelling()?;
         let text = element_id_sql(&g, &self.node_id_parts(v)?);
         self.unless_null(&[v], RenderExpr::Raw(text))
+    }
+
+    /// The element id (SQL) of node `v` as its value spells it (Bolt's, from
+    /// which its `id()` number is computed): its label (a column, for a node
+    /// of several labels) and its id ([`element_id_sql`]); `None`: not a
+    /// node scan. Not NULL-guarded (`Lowerer::unless_null`).
+    pub(super) fn node_element_id_sql(
+        &self,
+        v: VarId,
+        s: &GraphValues,
+    ) -> Result<Option<String>, LowerError> {
+        match self.scans.get(&v) {
+            Some(Scan::Node { label, .. }) => {
+                let id = element_id_sql(s, &self.node_id_parts(v)?);
+                Ok(Some(node_element_id_text(s, label, &id)))
+            }
+            Some(Scan::Labels { .. }) => {
+                let id = element_id_sql(s, &self.node_id_parts(v)?);
+                let label = sql(&self.physical(v, super::LABEL_COLUMN)?);
+                Ok(Some(labeled_node_element_id_text(s, &label, &id)))
+            }
+            _ => Ok(None),
+        }
     }
 
     /// A variable-length relationship's list: its relationships (two empty

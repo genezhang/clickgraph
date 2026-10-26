@@ -845,7 +845,18 @@ fn what_is_not_lowered_yet() {
         "MATCH (:User)-[r:FOLLOWS|LIKED]->() RETURN r.*",
         "`v.*` of an element of several",
     );
-    not_lowered("MATCH (n) RETURN id(n)", "id()");
+    // `id(n)` of a node of several labels as a value other than a RETURN
+    // item (I5b): carried by a WITH, collected, aggregated.
+    for q in [
+        "MATCH (n) WITH id(n) AS i RETURN i",
+        "MATCH (n) RETURN collect(id(n)) AS i",
+        "MATCH (n) RETURN count(DISTINCT id(n)) AS i",
+    ] {
+        not_lowered(
+            q,
+            "id() of a node of several labels other than as a RETURN item",
+        );
+    }
 }
 
 /// §4.1: the bound-plan path depends on neither the analyzer nor the render
@@ -5907,10 +5918,6 @@ fn a_union_of_columns_read_differently_is_not_lowered() {
         "MATCH (a:User) RETURN a AS x UNION ALL RETURN 1 AS x",
         "UNION column `x` of a different kind or label in another arm",
     );
-    not_lowered(
-        "MATCH (a:User) RETURN id(a) AS x UNION ALL MATCH (p:Post) RETURN id(p) AS x",
-        "UNION column `x` of a different kind or label in another arm",
-    );
 }
 
 /// UNION groups by each returned element's identity too: rows equal in
@@ -7457,7 +7464,7 @@ fn ids_as_values() {
     )
     .unwrap();
     assert!(
-        matches!(rel.shape[0].kind, ResultKind::RelId),
+        matches!(rel.shape[0].kind, ResultKind::ElementIdNumber),
         "{:?}",
         rel.shape
     );
@@ -7477,7 +7484,7 @@ fn ids_as_values() {
     )
     .unwrap();
     assert!(
-        matches!(rels.shape[0].kind, ResultKind::RelId)
+        matches!(rels.shape[0].kind, ResultKind::ElementIdNumber)
             && squash(&rels.sql).contains("concat(v1.__cg_type, ':', CASE WHEN"),
         "{:?}\n{}",
         rels.shape,
@@ -7488,12 +7495,103 @@ fn ids_as_values() {
         "MATCH (a:User)-[r:FOLLOWS]->(b:User) RETURN id(r) AS i ORDER BY i",
         "MATCH (a:User)-[r:FOLLOWS]->(b:User) RETURN id(r) AS i ORDER BY id(r) DESC",
     ] {
-        not_lowered(q, "ORDER BY a relationship's id()");
+        not_lowered(q, "ORDER BY an id() the server numbers");
     }
     has(
         "MATCH (a:User)-[r:FOLLOWS]->(b:User), (c:User)-[s:FOLLOWS]->(d:User) \
          WHERE id(r) <> id(s) RETURN count(*) AS n",
         &["v1.follow_id <> v4.follow_id"],
+    );
+}
+
+/// `id(n)` of a node of several labels (I5b, #1383) is the node's element id,
+/// which the server and the library return as Bolt's number for it, as a
+/// relationship's is; a UNION column of `id()`s of different labels is so in
+/// every arm.
+#[test]
+fn id_of_a_node_of_several_labels_is_its_element_id() {
+    let (sql, shape) = shaped("MATCH (n) RETURN id(n) AS i", &social());
+    assert!(
+        matches!(shape[0].kind, ResultKind::ElementIdNumber)
+            && sql.contains(r#"concat(v0.__cg_label, ':', toString(v0.__cg_id_0), '-') AS "i""#),
+        "{shape:?}\n{sql}"
+    );
+    // Sorted by the node's identity, as `ORDER BY id(n)` is.
+    let (sql, _) = shaped("MATCH (n) RETURN id(n) AS i ORDER BY i DESC", &social());
+    assert!(
+        sql.ends_with("ORDER BY v0.__cg_label DESC NULLS FIRST, v0.__cg_id_0 DESC NULLS FIRST"),
+        "{sql}"
+    );
+    // NULL where an OPTIONAL MATCH found no node.
+    let (sql, _) = shaped(
+        "MATCH (a:User) OPTIONAL MATCH (a)-[:FOLLOWS|LIKED]->(m) RETURN id(m) AS i",
+        &social(),
+    );
+    assert!(
+        sql.contains(
+            "CASE WHEN o1.v2____cg_label IS NULL THEN NULL ELSE \
+             concat(o1.v2____cg_label, ':', toString(o1.v2____cg_id_0), '-') END"
+        ),
+        "{sql}"
+    );
+    // An expression of the item would read the element id's text.
+    for q in [
+        "MATCH (n) RETURN id(n) AS i ORDER BY i + 1",
+        "MATCH (n) RETURN id(n) AS i ORDER BY toString(i)",
+        "MATCH (n) RETURN id(n) AS i ORDER BY [i]",
+        "MATCH (a:User)-[r:FOLLOWS]->(b:User) RETURN id(r) AS i ORDER BY toString(i)",
+    ] {
+        not_lowered(q, "ORDER BY an expression of an id() the server numbers");
+    }
+    // No identity column is a column of a grouped or distinct result.
+    for q in [
+        "MATCH (n) RETURN id(n) AS i, count(*) AS c ORDER BY i",
+        "MATCH (n) RETURN DISTINCT id(n) AS i ORDER BY i",
+    ] {
+        not_lowered(q, "ORDER BY an id() the server numbers");
+    }
+    let (sql, _) = shaped("MATCH (n) RETURN id(n) AS i, count(*) AS c", &social());
+    assert!(
+        sql.contains(r#"GROUP BY concat(v0.__cg_label, ':', toString(v0.__cg_id_0), '-')"#),
+        "{sql}"
+    );
+    // Of different labels in a UNION column: every arm returns the element
+    // id, under UNION as under UNION ALL (a text needs no element identity).
+    for union in ["UNION ALL", "UNION"] {
+        let (sql, shape) = shaped(
+            &format!("MATCH (a:User) RETURN id(a) AS x {union} MATCH (p:Post) RETURN id(p) AS x"),
+            &social(),
+        );
+        assert!(
+            matches!(shape[0].kind, ResultKind::ElementIdNumber)
+                && sql.contains("concat('User:', toString(v0.user_id), '-')")
+                && sql.contains("concat('Post:', toString(v2.post_id), '-')"),
+            "{union}: {shape:?}\n{sql}"
+        );
+    }
+    // Of one label in every arm: the keys, as before.
+    let (_, shape) = shaped(
+        "MATCH (a:User) RETURN id(a) AS x UNION ALL MATCH (b:User) RETURN id(b) AS x",
+        &social(),
+    );
+    assert!(
+        matches!(&shape[0].kind, ResultKind::NodeId { label } if label == "User"),
+        "{shape:?}"
+    );
+    // A node of several labels and a relationship in one column.
+    let (_, shape) = shaped(
+        "MATCH (n) RETURN id(n) AS x UNION ALL MATCH ()-[r:FOLLOWS]->() RETURN id(r) AS x",
+        &social(),
+    );
+    assert!(
+        matches!(shape[0].kind, ResultKind::ElementIdNumber),
+        "{shape:?}"
+    );
+    // A key a WITH carried cannot be read as the element id.
+    not_lowered(
+        "MATCH (a:User) WITH id(a) AS i RETURN i AS x \
+         UNION ALL MATCH (p:Post) RETURN id(p) AS x",
+        "one carried by a WITH",
     );
 }
 
@@ -8633,6 +8731,212 @@ graph_schema:
     assert!(
         got.contains("CAST(start_node.d AS DateTime64(3))"),
         "the Date part is folded with the DateTime ends:\n{got}"
+    );
+}
+
+/// #1528: where an id part is one SQL alone spells (a Float, a FixedString, a
+/// 128-bit integer, a Decimal of 16 digits or more), a node returned whole
+/// carries its element id from SQL and its relationship's ends are texts;
+/// any other id's SQL is as it was.
+#[test]
+fn an_id_part_sql_alone_spells_is_spelled_in_sql() {
+    let schema = |node_type: &str| {
+        crate::graph_catalog::config::GraphSchemaConfig::from_yaml_str(&format!(
+            r#"
+name: lower_exotic_ids
+graph_schema:
+  nodes:
+    - label: P
+      database: db
+      table: ps
+      node_id: k
+      column_types: {{k: "{node_type}"}}
+      property_mappings: {{k: k, name: name}}
+  edges:
+    - type: E
+      database: db
+      table: es
+      from_id: fk
+      to_id: tk
+      from_node: P
+      to_node: P
+      column_types: {{fk: "{node_type}", tk: "{node_type}"}}
+      property_mappings: {{}}
+"#
+        ))
+        .unwrap()
+        .to_graph_schema()
+        .unwrap()
+    };
+    for exotic in [
+        "Float64",
+        "Float32",
+        "FixedString(4)",
+        "Int128",
+        "UInt256",
+        "Decimal(18, 2)",
+        "Decimal128(4)",
+    ] {
+        let schema = schema(exotic);
+        let (sql, shape) = shaped("MATCH (a:P) RETURN a", &schema);
+        assert!(
+            sql.contains(r#"AS "a.elementId""#) && sql.contains("concat('P:', toString("),
+            "{exotic}: {sql}"
+        );
+        assert!(
+            shape[0]
+                .columns
+                .iter()
+                .any(|(k, c)| k == crate::bound_plan::lower::NODE_ELEMENT_ID_KEY
+                    && c == "a.elementId"),
+            "{exotic}: {:?}",
+            shape[0].columns
+        );
+        // The ends of its relationship are texts.
+        let (sql, _) = shaped("MATCH (a:P)-[r:E]->(b:P) RETURN r", &schema);
+        assert!(
+            sql.contains(r#"toString(v1.fk) AS "r.from_id""#)
+                && sql.contains(r#"toString(v1.tk) AS "r.to_id""#),
+            "{exotic}: {sql}"
+        );
+        // id(n) is the key, as it was.
+        let (_, shape) = shaped("MATCH (a:P) RETURN id(a) AS i", &schema);
+        assert!(
+            matches!(shape[0].kind, ResultKind::NodeId { .. }),
+            "{exotic}: {shape:?}"
+        );
+    }
+    // Other ids: no element id column, the ends as they are, id(n) the key.
+    for plain in [
+        "Int64",
+        "UInt64",
+        "String",
+        "Decimal(10, 2)",
+        "Date",
+        "UUID",
+    ] {
+        let schema = schema(plain);
+        let (sql, _) = shaped("MATCH (a:P) RETURN a", &schema);
+        assert!(!sql.contains("a.elementId"), "{plain}: {sql}");
+        let (sql, _) = shaped("MATCH (a:P)-[r:E]->(b:P) RETURN r", &schema);
+        assert!(sql.contains(r#"v1.fk AS "r.from_id""#), "{plain}: {sql}");
+        let (_, shape) = shaped("MATCH (a:P) RETURN id(a) AS i", &schema);
+        assert!(
+            matches!(shape[0].kind, ResultKind::NodeId { .. }),
+            "{plain}: {shape:?}"
+        );
+    }
+}
+
+/// #1528: composite ids with one such part, an OPTIONAL MATCH that finds no
+/// node, the node's and the end's types known on one side only, and Databricks.
+#[test]
+fn sql_spelled_ids_by_layout() {
+    let schema = |node_types: &str, edge_types: &str| {
+        crate::graph_catalog::config::GraphSchemaConfig::from_yaml_str(&format!(
+            r#"
+name: lower_exotic_layouts
+graph_schema:
+  nodes:
+    - label: C
+      database: db
+      table: cs
+      node_id: [b, k]
+      {node_types}
+      property_mappings: {{b: b, k: k}}
+  edges:
+    - type: E
+      database: db
+      table: es
+      from_id: [fb, fk]
+      to_id: [tb, tk]
+      from_node: C
+      to_node: C
+      {edge_types}
+      property_mappings: {{}}
+"#
+        ))
+        .unwrap()
+        .to_graph_schema()
+        .unwrap()
+    };
+    // One part of two is a Float64: the node and its ends are spelled in SQL;
+    // the other end part (a String) is as it was.
+    let both = schema(
+        "column_types: {b: String, k: Float64}",
+        "column_types: {fb: String, fk: Float64, tb: String, tk: Float64}",
+    );
+    let (sql, _) = shaped("MATCH (a:C) RETURN a", &both);
+    assert!(sql.contains(r#"AS "a.elementId""#), "{sql}");
+    let (sql, _) = shaped("MATCH (a:C)-[r:E]->(b:C) RETURN r", &both);
+    assert!(
+        sql.contains(r#"v1.fb AS "r.from_id_1""#)
+            && sql.contains(r#"toString(v1.fk) AS "r.from_id_2""#)
+            && sql.contains(r#"toString(v1.tk) AS "r.to_id_2""#),
+        "{sql}"
+    );
+    // ... NULL where an OPTIONAL MATCH found no node (a NULL part of a
+    // composite id is `\\N` in its text, never a NULL).
+    let (sql, _) = shaped("MATCH (m:C) OPTIONAL MATCH (m)-[:E]->(n:C) RETURN n", &both);
+    assert!(
+        sql.contains(") THEN NULL ELSE concat('C:', ") && sql.contains(r#"END AS "n.elementId""#),
+        "{sql}"
+    );
+    // The node's type decides with the end's: a plain node (known) with an
+    // exotic stored end: the end is text (the node spells its id plain, the
+    // JSON of a FixedString is padded); an exotic node with a plain end: text.
+    let plain_node = schema(
+        "column_types: {b: String, k: Int64}",
+        "column_types: {fb: String, fk: Float64, tb: String, tk: Int64}",
+    );
+    let (sql, _) = shaped("MATCH (a:C)-[r:E]->(b:C) RETURN r", &plain_node);
+    assert!(
+        !sql.contains("a.elementId")
+            && sql.contains(r#"toString(v1.fk) AS "r.from_id_2""#)
+            && sql.contains(r#"v1.tk AS "r.to_id_2""#),
+        "{sql}"
+    );
+    let exotic_node = schema(
+        "column_types: {b: String, k: Float64}",
+        "column_types: {fb: String, fk: Int64, tb: String, tk: Int64}",
+    );
+    let (sql, _) = shaped("MATCH (a:C)-[r:E]->(b:C) RETURN r", &exotic_node);
+    assert!(
+        sql.contains(r#"toString(v1.fk) AS "r.from_id_2""#)
+            && sql.contains(r#"toString(v1.tk) AS "r.to_id_2""#),
+        "{sql}"
+    );
+    // The node's types unknown (a node embedded in an edge table's are), or
+    // only the other part's known: the ends are as they were, spelled in
+    // Rust with the node.
+    let part_known = schema(
+        "column_types: {b: String}",
+        "column_types: {fb: String, fk: Float64, tb: String, tk: Float64}",
+    );
+    let (sql, _) = shaped("MATCH (a:C)-[r:E]->(b:C) RETURN r", &part_known);
+    assert!(
+        !sql.contains("toString(v1.fk)") && sql.contains(r#"v1.fk AS "r.from_id_2""#),
+        "{sql}"
+    );
+    let unknown_node = schema(
+        "",
+        "column_types: {fb: String, fk: Float64, tb: String, tk: Float64}",
+    );
+    let (sql, _) = shaped("MATCH (a:C)-[r:E]->(b:C) RETURN r", &unknown_node);
+    assert!(
+        !sql.contains("toString(v1.fk)") && sql.contains(r#"v1.fk AS "r.from_id_2""#),
+        "{sql}"
+    );
+    // Databricks spells the text in its own function.
+    let got = squash(&databricks_sql("MATCH (a:C) RETURN a", &both).unwrap());
+    assert!(
+        got.contains("AS STRING") && got.contains(r#"AS `a.elementId`"#),
+        "{got}"
+    );
+    let got = squash(&databricks_sql("MATCH (a:C)-[r:E]->(b:C) RETURN r", &both).unwrap());
+    assert!(
+        got.contains("AS `r.from_id_2`") && !got.contains("toString("),
+        "{got}"
     );
 }
 

@@ -32,7 +32,6 @@ several labels and NULL parts. The open issues are where two sites disagree:
 | F6 / F7 ignore `edge_id`: parallel relationships share one element id and number; HTTP Graph and embedded dedupe one away | #1334 (#1409) |
 | `id(r) = N` has no decode for relationships | #1410 |
 | `id()` of a composite node as a value is refused (I5a) | #1387 |
-| `id()` across a mixed-label UNION is refused | #1383 |
 | Bolt's static id lookup ignores the session's scope | #1388 |
 | A NULL id part: present for `null_test`, `'null'` in F6, an error in Rust, never equal in F1, dropped by the embedded relation, the union walk and the search | #1354 |
 
@@ -167,7 +166,7 @@ one of the three.
   `composite_key`, I1's `cast_key_part`). What is left is folding
   `composite_key` and the walk generator's `emit_id_expr` into
   `identity_text`: a tidy with no failing query behind it, so parked behind
-  I5b, #1528 and I4b.
+  I4b.
 - [x] **I3a — relationship element ids** (#1334). A relationship whose
   schema declares an `edge_id` carries it: `TYPE:edge_id:from->to-`
   (`element_id::relationship_element_id`), its parts' texts escaped (`\`,
@@ -306,8 +305,49 @@ one of the three.
   patterns 2 for 12). Two relationships with one NULL `edge_id` and the
   same ends are one (as their element ids are): a known discrepancy with
   Neo4j (user, 2026-10-24; `docs/wiki/Known-Limitations.md` §4).
-- [ ] **I4b — Bolt ids**: stable hash (not `DefaultHasher`); label codes
-  per schema (process-global, clamped at 63, first-seen ordered).
+- [x] **I7 — element ids spelled in SQL for ids Rust spells otherwise** (#1528).
+  A node returned whole had its element id spelled in Rust from the JSON of
+  its id, a node in a value from SQL (`element_id_sql`), and four kinds of id
+  part spell differently: a Float (`1e20` vs `100000000000000000000`, `-0.0`
+  vs `-0`, a Float32 widened to a double), a FixedString (NUL-padded in JSON,
+  not in `toString`), a 128 / 256-bit integer (a double in JSON), a Decimal
+  of 16 digits or more or of a scale of 5 or more (the same: `1e-6` against
+  `0.000001`). Where the node's id has such a part (by the column's type,
+  `KeyPartType::is_spelled_in_sql`, any spelling ClickHouse accepts:
+  discovered or declared; an unknown type is as it was), the SQL adds
+  `name.elementId` (`NODE_ELEMENT_ID_KEY`, a relationship's key) with the
+  element id as SQL spells it (NULL where an OPTIONAL MATCH found no node),
+  and `transform_to_node` (Bolt, HTTP graph output) and the library's
+  `query_graph` take it as it is; a relationship's returned `from_id` /
+  `to_id` are the texts (`EndSpell::Text`) where the node's own part type is
+  known and that part or the stored end is such a type, and Rust spells the
+  ends' element ids from them. Other ids' SQL is unchanged. Live (Bolt,
+  FixedString / Float64 / Int128 / Decimal ids): a node's element id, the
+  element id of the same node in a list and a relationship's
+  `startNodeElementId` agree, and `WHERE id(n) = N` / `elementId(n) = $e`
+  find each node. Left: a node embedded in an edge table keeps its types
+  unknown (they are read by the id's name in a table that does not have it),
+  so it and its relationship's ends stay Rust-spelled, as before; `id(n)` of
+  such a node is still the key (a Bolt number made from the key's JSON
+  value, which for these types can differ from the `id` of the node returned
+  whole); an all-NUL FixedString key is the empty id (`L:-`), which a lookup
+  by element id does not read back, and a NaN Float key is found by no
+  lookup.
+- [x] **I4b-a — distinct numbers** (from #1532's review): `IdMapper::numeric_key`
+  takes only a non-negative integer in its plain decimal spelling (`+7` and
+  `007` were `7`'s number, and key `0` was key `1`'s: `.max(1)` of the key
+  part; `0` is now the label's code alone), a label past the 63rd (the codes
+  are process-wide) hashes its name with the key (`IdMapper::number_of`;
+  all of them shared code 63 and an equal key) and is kept in the Bolt
+  session (`holds_key_bits`). A hashed number is read back only in a session
+  (or one of the same graph and tenant) that gave it.
+- [ ] **I4b — Bolt ids** (left): stable hash (not `DefaultHasher`); label
+  codes per schema (they are process-wide: a server of several schemas
+  passes 63, the later labels are hashed and kept in the session); the
+  session map has no cap. (Done: a schema loaded with `POST /schemas/load`
+  registers its labels in sorted order when it is loaded, as the startup
+  schemas do, and the registry keeps at most 254 labels, however many names
+  a client makes up with `elementId(n) = $e`.)
 - [x] **I5a — `id()` of a composite node** (#1387, #1531). `id(n)` of a node whose
   id has several columns, as a RETURN item or a value (WITH, ORDER BY,
   DISTINCT, `collect`), is the id's text as its element id spells it
@@ -331,16 +371,39 @@ one of the three.
   share (as a single-column key, S11l): wrapped in a map, a list, a CASE or
   a function (`{k: id(a)}`, `collect(id(a))`, `toString(id(a))`, `max(id(a))`)
   and as a pattern's property value (`(b {bank: id(a)})`) it is not
-  guarded. An integer key of 2^31 to 2^47 is found by `id()` only after its
-  node was returned whole (`decode_for_query` reads smaller bits only; on
-  main alike); a Decimal part of 16 or more digits, a Float or a
-  FixedString has another text in Rust and SQL (#1528).
-- [ ] **I5b — `id()` across labels** (#1383): `id()` of a node of several
+  guarded. (An integer key of 2^31 to 2^47 was found by `id()` only after
+  its node was returned whole: `decode_for_query` reads the 47 bits since
+  I5b.) A Decimal part of 16 or more digits, a Float, a FixedString or a
+  128 / 256-bit integer had another text in Rust and SQL: spelled in SQL
+  since #1528 (below).
+- [x] **I5b — `id()` across labels** (#1383): `id()` of a node of several
   labels (`MATCH (n) RETURN id(n)`) and of a UNION column whose arms are
-  nodes of different labels. Refused today: the key alone is ambiguous
-  (a Post and a User share `1`), and Bolt needs each row's label. Wants a
-  decision on what HTTP returns (a relationship's `id()` is the server's
-  number, `ResultKind::RelId`; a node's is its key).
+  nodes of different labels was refused: the key alone is ambiguous (a Post
+  and a User share `1`), and Bolt needs each row's label. Now (user
+  2026-10-24, "follow your recommendations") it is a relationship's `id()`:
+  the node's element id (`Lowerer::node_element_id_sql`: the label column,
+  `:`, the id as `element_id_sql` spells it, `-`), returned as the server's
+  number for it (`ResultKind::ElementIdNumber`, formerly `RelId`), on HTTP
+  and in the library as over Bolt, where it is the `id` of the node
+  returned whole; a number that holds its key's bits (an integer key) is not
+  kept in the session, a hash is (`IdMapper::holds_key_bits`: an integer key
+  of up to 47 bits of a label whose key is an integer; `decode_for_query` now
+  reads the 47 bits, not 31), so `WHERE id(n) = N` reads either back. The
+  library registers a schema's label codes in sorted order when it opens
+  it (`preregister_schema_labels`), as the server does at load: the arms of
+  a node of several labels come back in any order, and the codes were
+  assigned as they were met. A UNION column of `id()`s of
+  different labels (or of a relationship) returns the element id in every
+  arm, under UNION and UNION ALL (`mixed_ids`, `Query::as_values`). Other
+  uses of the value are refused, as a relationship's: `WITH id(n)`,
+  `collect(id(n))`, `count(DISTINCT id(n))`, comparisons with a number but
+  `id(n) = N`; `ORDER BY` the item sorts by the node's identity (label, key)
+  as `ORDER BY id(n)` does, and is refused where the rows are grouped or
+  distinct by it, and an expression of it is refused. The id of a node of
+  one label stays its key on HTTP. CSV / `export` / `cg sql` return the
+  element id text. (The numbers, shared with whole nodes, had collisions
+  that I4b-a removed: keys `0` and `1` of a label, the string keys `'7'` /
+  `'007'` / `'+7'`, and the labels past the 63rd.)
 - [x] **I6 — NULL id parts** (#1354): not a node (§2; revised by I6c). Every scan of a
   label (a node of one label, each arm of a node of several, a walk's
   nodes and its node relation, OPTIONAL MATCH) reads a row as a node only

@@ -204,6 +204,7 @@ impl Database {
         schema: Arc<GraphSchema>,
         config: SystemConfig,
     ) -> Result<Self, EmbeddedError> {
+        preregister_labels(&schema);
         let (runtime, executor) = open_chdb_session(&config)?;
         let remote_executor = Self::build_remote_executor(&runtime, config.remote.as_ref())?;
         Self::finish_chdb(schema, runtime, executor, remote_executor, Vec::new())
@@ -359,6 +360,7 @@ impl Database {
         schema: Arc<GraphSchema>,
         executor: Arc<dyn QueryExecutor>,
     ) -> Result<Self, EmbeddedError> {
+        preregister_labels(&schema);
         Ok(Database {
             executor,
             remote_executor: None,
@@ -458,9 +460,20 @@ fn read_schema_config(schema_path: &Path) -> Result<GraphSchemaConfig, EmbeddedE
 /// Load a YAML schema file into a `GraphSchema` without a database: a schema
 /// that asks to discover columns (`auto_discover_columns`) is refused.
 fn load_graph_schema(schema_path: &Path) -> Result<GraphSchema, EmbeddedError> {
-    read_schema_config(schema_path)?
+    let schema = read_schema_config(schema_path)?
         .to_graph_schema()
-        .map_err(schema_build_error)
+        .map_err(schema_build_error)?;
+    preregister_labels(&schema);
+    Ok(schema)
+}
+
+/// Give the schema's labels and types their id codes in a fixed (sorted)
+/// order, as the server does at load: a library process otherwise numbers
+/// them in the order its queries first meet them, which for the arms of a
+/// node of several labels is the order ClickHouse returns them in, so the
+/// same node had a different `id()` from one run to the next.
+fn preregister_labels(schema: &GraphSchema) {
+    clickgraph::server::graph_catalog::preregister_schema_labels(schema);
 }
 
 /// Same as [`load_graph_schema`] but also returns the optional top-level
@@ -484,6 +497,7 @@ fn load_graph_schema_with_catalog(
     let schema = schema_config
         .to_graph_schema()
         .map_err(schema_build_error)?;
+    preregister_labels(&schema);
     Ok((schema, catalog))
 }
 
@@ -554,6 +568,7 @@ fn build_graph_schema(
     let schema = schema_config
         .to_graph_schema_with_columns(&columns)
         .map_err(schema_build_error)?;
+    preregister_labels(&schema);
     Ok((schema, warnings))
 }
 
@@ -727,6 +742,73 @@ graph_schema:
         f.write_all(MINIMAL_SCHEMA.as_bytes()).expect("write");
         f.flush().expect("flush");
         f
+    }
+
+    /// I5b review: the id codes of a schema's labels are given in sorted
+    /// order when the library opens it, so the number of a node does not
+    /// depend on which of its label's rows ClickHouse answers first.
+    #[test]
+    fn labels_get_their_id_codes_in_sorted_order() {
+        let mut f = tempfile::NamedTempFile::new().expect("tempfile");
+        let yaml = r#"
+name: db_codes
+graph_schema:
+  nodes:
+    - {label: I5bZeta, database: d, table: z, node_id: id, property_mappings: {id: id}}
+    - {label: I5bAlpha, database: d, table: a, node_id: id, property_mappings: {id: id}}
+    - {label: I5bMid, database: d, table: m, node_id: id, property_mappings: {id: id}}
+  edges: []
+"#;
+        f.write_all(yaml.as_bytes()).expect("write");
+        f.flush().expect("flush");
+        Database::sql_only(f.path()).expect("open");
+        let code = |label: &str| {
+            clickgraph::utils::id_encoding::LABEL_CODE_REGISTRY
+                .read()
+                .expect("registry")
+                .get_code(label)
+        };
+        let (alpha, mid, zeta) = (code("I5bAlpha"), code("I5bMid"), code("I5bZeta"));
+        assert!(alpha < mid && mid < zeta, "{alpha:?} {mid:?} {zeta:?}");
+    }
+
+    /// ... through every constructor that builds or takes a schema: a
+    /// library that opens its schema by `new_remote` / `new` (`build_graph_schema`)
+    /// or `from_executor` numbers as the server does.
+    #[test]
+    fn every_way_to_open_a_schema_registers_its_labels_in_order() {
+        let yaml = |a: &str, z: &str| {
+            format!(
+                "name: db_codes2\ngraph_schema:\n  nodes:\n    \
+                 - {{label: {z}, database: d, table: z, node_id: id, property_mappings: {{id: id}}}}\n    \
+                 - {{label: {a}, database: d, table: a, node_id: id, property_mappings: {{id: id}}}}\n  edges: []\n"
+            )
+        };
+        let code = |label: &str| {
+            clickgraph::utils::id_encoding::LABEL_CODE_REGISTRY
+                .read()
+                .expect("registry")
+                .get_code(label)
+        };
+        // build_graph_schema (new_remote, new)
+        let config: GraphSchemaConfig =
+            GraphSchemaConfig::from_yaml_str(&yaml("I5bBuildA", "I5bBuildZ")).expect("config");
+        let runtime = build_runtime().expect("runtime");
+        let readers = ColumnReaders {
+            sources: None,
+            tables: None,
+        };
+        build_graph_schema(&config, readers, &runtime).expect("schema");
+        let (a, z) = (code("I5bBuildA"), code("I5bBuildZ"));
+        assert!(a.is_some() && a < z, "{a:?} {z:?}");
+        // from_executor (a schema built by the caller)
+        let schema = GraphSchemaConfig::from_yaml_str(&yaml("I5bExecA", "I5bExecZ"))
+            .expect("config")
+            .to_graph_schema()
+            .expect("schema");
+        Database::from_executor(Arc::new(schema), Arc::new(NullExecutor)).expect("open");
+        let (a, z) = (code("I5bExecA"), code("I5bExecZ"));
+        assert!(a.is_some() && a < z, "{a:?} {z:?}");
     }
 
     #[test]
