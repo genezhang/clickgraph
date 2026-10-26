@@ -158,13 +158,13 @@ vlp_v1_bfs AS (
 FROM v0_labels AS v0
 WHERE v0.p2_v0_user_id = 1))
     UNION ALL
-    SELECT DISTINCT f.start_id AS start_id, end_node.__cg_key AS node, CAST(f.depth + 1 AS UInt32) AS depth, CAST(1 AS UInt8) AS new
-    FROM vlp_v1_bfs AS f
-    JOIN v1_rels AS rel ON rel.__cg_start_key = f.node
+    SELECT DISTINCT vlp_v1_frontier.start_id AS start_id, end_node.__cg_key AS node, CAST(vlp_v1_frontier.depth + 1 AS UInt32) AS depth, CAST(1 AS UInt8) AS new
+    FROM vlp_v1_bfs AS vlp_v1_frontier
+    JOIN v1_rels AS rel ON rel.__cg_start_key = vlp_v1_frontier.node
     JOIN vlp_v1_nodes AS end_node ON end_node.__cg_key = rel.__cg_end_key
-    WHERE f.new = 1
-      AND (f.start_id, end_node.__cg_key) NOT IN (SELECT start_id, node FROM vlp_v1_bfs)
-      AND f.start_id NOT IN (SELECT start_id FROM vlp_v1_bfs GROUP BY start_id HAVING countIf(node IN (SELECT end_node.__cg_key FROM vlp_v1_nodes AS end_node WHERE ((end_node.__cg_label, end_node.__cg_id_0) IN (SELECT DISTINCT 
+    WHERE vlp_v1_frontier.new = 1
+      AND (vlp_v1_frontier.start_id, end_node.__cg_key) NOT IN (SELECT start_id, node FROM vlp_v1_bfs)
+      AND vlp_v1_frontier.start_id NOT IN (SELECT start_id FROM vlp_v1_bfs GROUP BY start_id HAVING countIf(node IN (SELECT end_node.__cg_key FROM vlp_v1_nodes AS end_node WHERE ((end_node.__cg_label, end_node.__cg_id_0) IN (SELECT DISTINCT 
       v2.__cg_label AS "label", 
       v2.__cg_id_0 AS "id"
 FROM v2_labels AS v2

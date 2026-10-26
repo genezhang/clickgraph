@@ -22,14 +22,14 @@ vlp_v2_bfs AS (
     FROM ldbc.Person AS start_node
     WHERE start_node.id IS NOT NULL AND (start_node.id = 14)
     UNION ALL
-    SELECT f.start_id AS start_id, end_node.id AS node, CAST(f.depth + 1 AS UInt32) AS depth, min(f.node) AS parent, CAST(1 AS UInt8) AS new
-    FROM vlp_v2_bfs AS f
-    JOIN v2_both AS rel ON rel.__cg_start_0 = f.node
+    SELECT vlp_v2_frontier.start_id AS start_id, end_node.id AS node, CAST(vlp_v2_frontier.depth + 1 AS UInt32) AS depth, min(vlp_v2_frontier.node) AS parent, CAST(1 AS UInt8) AS new
+    FROM vlp_v2_bfs AS vlp_v2_frontier
+    JOIN v2_both AS rel ON rel.__cg_start_0 = vlp_v2_frontier.node
     JOIN ldbc.Person AS end_node ON end_node.id = rel.__cg_end_0
-    WHERE f.new = 1
-      AND (f.start_id, end_node.id) NOT IN (SELECT start_id, node FROM vlp_v2_bfs)
-      AND f.start_id NOT IN (SELECT start_id FROM vlp_v2_bfs GROUP BY start_id HAVING countIf(node IN (SELECT end_node.id FROM ldbc.Person AS end_node WHERE (end_node.id = 16))) >= (SELECT count(DISTINCT end_node.id) FROM (SELECT end_node.id FROM ldbc.Person AS end_node WHERE (end_node.id = 16)) AS end_node))
-    GROUP BY f.start_id, end_node.id, f.depth
+    WHERE vlp_v2_frontier.new = 1
+      AND (vlp_v2_frontier.start_id, end_node.id) NOT IN (SELECT start_id, node FROM vlp_v2_bfs)
+      AND vlp_v2_frontier.start_id NOT IN (SELECT start_id FROM vlp_v2_bfs GROUP BY start_id HAVING countIf(node IN (SELECT end_node.id FROM ldbc.Person AS end_node WHERE (end_node.id = 16))) >= (SELECT count(DISTINCT end_node.id) FROM (SELECT end_node.id FROM ldbc.Person AS end_node WHERE (end_node.id = 16)) AS end_node))
+    GROUP BY vlp_v2_frontier.start_id, end_node.id, vlp_v2_frontier.depth
     UNION ALL
     SELECT start_id, node, depth, parent, CAST(0 AS UInt8) AS new
     FROM vlp_v2_bfs
