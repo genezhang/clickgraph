@@ -117,16 +117,19 @@ const MAX_ROLE_NAME_LEN: usize = 256;
 /// schema name, a role) or in a log line that quotes one. Control characters
 /// (Unicode `Cc`: `\n`, `\r`, NUL, DEL, the C1 range) forge log entries;
 /// the line and paragraph separators (U+2028/U+2029) are line breaks to
-/// many log viewers and JSON tooling; the zero-width and bidirectional
-/// formatting characters (`Cf`) make one name read as another (U+202E
-/// reverses the text after it, U+200B/U+FEFF are invisible). None of them is
-/// part of a name anyone types on purpose.
+/// many log viewers and JSON tooling; the explicit bidirectional embeddings,
+/// overrides and isolates (U+202A–U+202E, U+2066–U+2069) make one name read
+/// as another (U+202E reverses the text after it), and U+200B, U+2060–U+2064
+/// and U+FEFF are invisible. None of them is part of a name anyone types on
+/// purpose. Deliberately NOT refused: the zero-width joiner and non-joiner
+/// (U+200C/U+200D) and the directional marks (U+200E/U+200F, U+061C) — they
+/// are ordinary parts of Persian, Indic and right-to-left text, and a
+/// legitimate name must not be turned away.
 pub(crate) fn is_unsafe_identifier_char(c: char) -> bool {
     c.is_control()
         || matches!(
             c,
-            '\u{061C}'
-                | '\u{200B}'..='\u{200F}'
+            '\u{200B}'
                 | '\u{2028}'..='\u{202E}'
                 | '\u{2060}'..='\u{2064}'
                 | '\u{2066}'..='\u{2069}'
@@ -1470,8 +1473,8 @@ mod tests {
     #[test]
     fn invisible_formatting_characters_are_refused_in_names_and_roles() {
         for unsafe_char in [
-            '\u{2028}', '\u{2029}', '\u{202E}', '\u{200B}', '\u{FEFF}', '\u{2066}', '\u{061C}',
-            '\u{0085}', '\0', '\u{7f}',
+            '\u{2028}', '\u{2029}', '\u{202A}', '\u{202E}', '\u{200B}', '\u{FEFF}', '\u{2066}',
+            '\u{2069}', '\u{2060}', '\u{0085}', '\0', '\u{7f}',
         ] {
             let name = format!("a{unsafe_char}b");
             assert!(
@@ -1490,9 +1493,20 @@ mod tests {
                 unsafe_char as u32
             );
         }
-        // Ordinary non-ASCII names stay legal.
+        // Ordinary non-ASCII names stay legal — including the joiners and
+        // directional marks that Persian, Indic and right-to-left text use.
         assert_eq!(schema_name_error_if_any("réseau-社交"), None);
         assert_eq!(log_safe("réseau-社交"), "réseau-社交");
+        for legit in [
+            "نام\u{200C}گذاری",
+            "क्\u{200D}ष",
+            "abc\u{200E}123",
+            "\u{061C}ب",
+        ] {
+            assert_eq!(schema_name_error_if_any(legit), None, "{legit:?}");
+            assert_eq!(role_error_if_any(legit), None, "{legit:?}");
+            assert_eq!(log_safe(legit), legit, "{legit:?}");
+        }
     }
 
     #[test]

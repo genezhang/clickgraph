@@ -522,10 +522,12 @@ One row per registered schema name, in the **configured ClickHouse database**
    character, or exceeds 512 **bytes**, and a role that carries one of those
    characters or exceeds 256 bytes, are all refused. "Control" is Unicode
    `Cc` (`\n`, `\r`, NUL, DEL, the C1 range); "invisible formatting" is the
-   line/paragraph separators (U+2028/U+2029), the zero-width characters
-   (U+200B–U+200F, U+2060–U+2064, U+FEFF) and the bidirectional controls
-   (U+061C, U+202A–U+202E, U+2066–U+2069) — characters that forge a log
-   line or make one name read as another. Boot replay applies the same name
+   line/paragraph separators (U+2028/U+2029), the invisible characters
+   (U+200B, U+2060–U+2064, U+FEFF) and the explicit bidirectional embeddings,
+   overrides and isolates (U+202A–U+202E, U+2066–U+2069) — characters that
+   forge a log line or make one name read as another. The zero-width joiner
+   and non-joiner (U+200C/U+200D) and the directional marks (U+200E/U+200F,
+   U+061C) stay legal: Persian, Indic and right-to-left names use them. Boot replay applies the same name
    check to every stored row (a hand-written row the API would refuse is
    skipped into the `invalid-name` bucket, not restored). Rationale: these
    are operator-supplied bytes that otherwise ride

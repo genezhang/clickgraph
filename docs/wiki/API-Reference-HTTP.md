@@ -513,7 +513,7 @@ Content-Type: application/json
 The names `load`, `draft`, `introspect` and `discover-prompt` are reserved (routes of their own):
 registering one answers `400`. So does a name or role the registry cannot record safely, with a
 message naming the problem — an empty name, a control or invisible formatting character (line and
-paragraph separators, zero-width and bidirectional controls) in a name or role, a name over
+paragraph separators, zero-width space, bidirectional overrides; joiners and directional marks are fine) in a name or role, a name over
 512 bytes or a role over 256 (the check runs before any lock, memory work or store contact;
 an empty `role` string is exactly "no role", not an error).
 
