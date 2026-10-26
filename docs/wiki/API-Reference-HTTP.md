@@ -511,7 +511,10 @@ Content-Type: application/json
   (see *Persistence*, Privileges); omitted or empty keeps the server's own user
 
 The names `load`, `draft`, `introspect` and `discover-prompt` are reserved (routes of their own):
-registering one answers `400`.
+registering one answers `400`. So does a name or role the registry cannot record safely, with a
+message naming the problem — an empty name, a control character in a name or role, a name over
+512 characters or a role over 256 (the check runs before any lock, memory work or store contact;
+an empty `role` string is exactly "no role", not an error).
 
 **Response:**
 ```json
@@ -568,7 +571,9 @@ Notes:
   never loaded into memory — `DELETE` on that name still 200s, deletes the stored row, and
   reports `"persisted": true, "store_only": true` (no in-memory entry ever existed for the name
   this boot). This is the remedy boot replay's WARN advertises. A name with neither a memory
-  entry nor a stored row keeps the pre-feature `404`.
+  entry nor a stored row keeps the pre-feature `404`. A store-only delete whose store call fails
+  answers `500` with a fixed message; the ClickHouse error's own text (it carries the server's
+  user, database, grants and version) is WARNed in the server log and never returned in the body.
 - `POST /schemas/load` and `DELETE /schemas/{name}` run one at a time: one gate covers the
   in-memory change and the store change, so concurrent calls on a name never leave memory and the
   store disagreeing. While the store hangs, queued calls each wait their own 10 s store bound; a
@@ -620,8 +625,17 @@ Semantics (Kafka Connect's `config.storage.topic` pattern, applied on ClickHouse
   `restorable_reason`. A row past the row cap or the cumulative byte budget is reported only by
   the boot WARN.
 - **Registration first, durability best-effort**: a store failure never fails a registration —
-  the response reports `persisted: false` instead. A promotion/deploy that kills the existing
-  server loses nothing; a degraded store only breaks restart-survival, announced in the logs.
+  the response reports `persisted: false` instead. The same degradation covers a registry whose
+  cheap high-water seed (`SELECT max(registered_at_ms)`) cannot be read: that seed keeps every
+  stamp above the table's high-water mark (a row stamped below it would lose the boot's
+  last-write-wins collapse to a stale row), so its failure stops the write, and the next
+  operation retries the whole table preparation. This is also all replay's timeout failure looks
+  like from outside: a promotion/deploy that kills the existing server loses nothing; a degraded
+  store only breaks restart-survival, announced in the logs.
+- **Bounded store calls**: writes run under a fixed 10 s bound per statement; the boot replay's
+  reads run under a separate fixed 60 s bound (they are the one workload the server must finish
+  before serving, and the one that legitimately scans the most). Neither hangs past its bound —
+  a wedged ClickHouse degrades along the paths above.
 - **Bounded boot replay**: the fetch itself caps at `CLICKGRAPH_SCHEMA_REPLAY_MAX_ROWS` rows
   (default 500) and a cumulative payload of `CLICKGRAPH_SCHEMA_REPLAY_MAX_BYTES` (default
   64 MiB), enforced in the read (a first query reads metadata and byte lengths only; payloads are then
