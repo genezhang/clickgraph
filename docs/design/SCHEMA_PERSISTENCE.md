@@ -459,10 +459,15 @@ One row per registered schema name, in the **configured ClickHouse database**
    and no log line (a restart then lost it), the detached half stores it.
    A store that never answers still leaves the registration memory-only
    (`persisted: false`, which the dropped client never sees) — but that is now
-   a WARN in the log, and the gate stays held until the call's bound, so a
-   late-landing statement cannot interleave with the next admin call. The
-   task is bounded by the store's call bounds, so it cannot hold the gate for
-   long. Boot
+   a WARN in the log. The store half is bounded by the store's call bounds,
+   so it cannot hold the gate for long; the *memory* half is not detached and
+   not bounded (it can hold the gate until the request times out), and a
+   request dropped inside the memory half (only observable under lock
+   contention in `load_schema_from_content` / `remove_schema`, as on `main`)
+   can leave memory partly changed with no store write. The gate does not
+   outlive the bound: after it the call is abandoned, not cancelled, and a
+   statement that ClickHouse runs late can still land after the next admin
+   call (the delayed-DELETE case in the next paragraph). Boot
    replay takes no turn in the gate: it runs before the listener binds,
    so there is nothing concurrently racing it. Within the store-only
    path, probe→delete is protected by the same gate (both call sites hold
@@ -479,7 +484,8 @@ One row per registered schema name, in the **configured ClickHouse database**
 5. **Concurrency**: two instances replaying simultaneously is out of scope v1
    (documented; single-instance per the deployment profile). Within one
    server: both admin endpoints serialize their full lifecycle through
-   `schema_registry_gate` (§4); the in-memory maps are mutated only under
+   `schema_registry_gate` (§4, persistence on only); with persistence on the
+   in-memory maps are mutated only under
    the gate or by boot replay, which owns the not-yet-bound server
    outright. The monotonic `registered_at_ms` floor is per-process, seeded
    once at table-ensure time from the table's high-water mark;
@@ -525,7 +531,10 @@ One row per registered schema name, in the **configured ClickHouse database**
    line/paragraph separators (U+2028/U+2029), the invisible characters
    (U+200B, U+2060–U+2064, U+FEFF) and the explicit bidirectional embeddings,
    overrides and isolates (U+202A–U+202E, U+2066–U+2069) — characters that
-   forge a log line or make one name read as another. The zero-width joiner
+   forge a log line or make one name read as another (a curated list, not a
+   homoglyph or invisible-character filter: look-alike names remain
+   possible; every Unicode line break is refused, so log forging is closed).
+   The zero-width joiner
    and non-joiner (U+200C/U+200D) and the directional marks (U+200E/U+200F,
    U+061C) stay legal: Persian, Indic and right-to-left names use them. Boot replay applies the same name
    check to every stored row (a hand-written row the API would refuse is
@@ -759,7 +768,10 @@ Backward-compat proof is a test class of its own: with the flag unset, a full
 12. **Maintainer round four.** The admin gate is taken only when there is a
     store (persistence off is the pre-feature behavior again); the store half
     of a POST or DELETE runs as its own task that owns the gate, so a dropped
-    request cannot split memory from the store; boot replay refuses rows with
+    request no longer abandons the store write once the memory half is done
+    (a store that never answers, a request dropped inside the memory half and
+    a statement that lands after its bound can still split them); boot replay
+    refuses rows with
     names the API would refuse and counts rows lost between its two reads
     separately from the budget; unsafe-character checks cover the line/
     paragraph separators and zero-width/bidirectional characters; the cap is

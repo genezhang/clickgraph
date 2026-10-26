@@ -1328,20 +1328,55 @@ pub async fn replay(app_state: &super::AppState, config: &ServerConfig) {
     // skipped + unknown-source skipped + invalid-name skipped + lost between
     // reads.
     log::info!(
-        "schema persistence: {} restored / {} config-shadowed / {} failed \
-         / {} skipped over replay budget / {} newer-version skipped \
-         / {} unknown-source skipped / {} invalid-name skipped \
-         / {} lost between reads (failed: {:?})",
-        restored,
-        shadowed.len(),
-        failed_names.len(),
-        over_budget + byte_skipped as u64,
-        fetch.future_versioned.len(),
-        fetch.unknown_source.len(),
-        fetch.invalid_name.len(),
-        fetch.vanished,
-        failed_names
+        "{}",
+        ReplaySummary {
+            restored,
+            config_shadowed: shadowed.len(),
+            failed: failed_names.len(),
+            skipped_over_budget: over_budget + byte_skipped as u64,
+            newer_version: fetch.future_versioned.len(),
+            unknown_source: fetch.unknown_source.len(),
+            invalid_name: fetch.invalid_name.len(),
+            lost_between_reads: fetch.vanished,
+            failed_names: &failed_names,
+        }
     );
+}
+
+/// The boot replay's one INFO line: a count per bucket, in a fixed order,
+/// so a log scraper sees the same shape on every boot and every stored row
+/// lands in exactly one segment.
+struct ReplaySummary<'a> {
+    restored: usize,
+    config_shadowed: usize,
+    failed: usize,
+    skipped_over_budget: u64,
+    newer_version: usize,
+    unknown_source: usize,
+    invalid_name: usize,
+    lost_between_reads: usize,
+    failed_names: &'a [String],
+}
+
+impl std::fmt::Display for ReplaySummary<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "schema persistence: {} restored / {} config-shadowed / {} failed \
+             / {} skipped over replay budget / {} newer-version skipped \
+             / {} unknown-source skipped / {} invalid-name skipped \
+             / {} lost between reads (failed: {:?})",
+            self.restored,
+            self.config_shadowed,
+            self.failed,
+            self.skipped_over_budget,
+            self.newer_version,
+            self.unknown_source,
+            self.invalid_name,
+            self.lost_between_reads,
+            self.failed_names
+        )
+    }
 }
 
 /// A schema name is operator input routed into log lines: replace control
@@ -1507,6 +1542,75 @@ mod tests {
             assert_eq!(role_error_if_any(legit), None, "{legit:?}");
             assert_eq!(log_safe(legit), legit, "{legit:?}");
         }
+    }
+
+    #[test]
+    fn the_boot_summary_names_every_bucket_in_a_fixed_order() {
+        let failed = vec!["broken".to_string()];
+        let line = ReplaySummary {
+            restored: 1,
+            config_shadowed: 2,
+            failed: 3,
+            skipped_over_budget: 4,
+            newer_version: 5,
+            unknown_source: 6,
+            invalid_name: 7,
+            lost_between_reads: 8,
+            failed_names: &failed,
+        }
+        .to_string();
+        assert_eq!(
+            line,
+            "schema persistence: 1 restored / 2 config-shadowed / 3 failed \
+             / 4 skipped over replay budget / 5 newer-version skipped \
+             / 6 unknown-source skipped / 7 invalid-name skipped \
+             / 8 lost between reads (failed: [\"broken\"])"
+        );
+    }
+
+    #[test]
+    fn the_refused_character_ranges_have_their_documented_edges() {
+        // Inside each documented range: refused.
+        for refused in [
+            '\u{2061}', '\u{2062}', '\u{2063}', '\u{2064}', '\u{202B}', '\u{202C}', '\u{202D}',
+            '\u{2067}', '\u{2068}',
+        ] {
+            assert!(
+                schema_name_error_if_any(&format!("a{refused}b")).is_some(),
+                "U+{:04X} is documented as refused",
+                refused as u32
+            );
+        }
+        // Just outside, and the marks the docs promise stay legal.
+        for legal in [
+            '\u{2027}', '\u{202F}', '\u{205F}', '\u{200C}', '\u{200D}', '\u{200E}', '\u{200F}',
+            '\u{061C}',
+        ] {
+            assert_eq!(
+                schema_name_error_if_any(&format!("a{legal}b")),
+                None,
+                "U+{:04X} is documented as legal",
+                legal as u32
+            );
+        }
+    }
+
+    #[test]
+    fn the_role_cap_counts_bytes_like_the_name_cap() {
+        // 'é' is two bytes: 128 of them are 256 bytes (at the cap), 129 over.
+        assert_eq!(role_error_if_any(&"é".repeat(128)), None);
+        assert!(role_error_if_any(&"é".repeat(129)).is_some());
+    }
+
+    #[test]
+    fn the_shipped_store_bounds_are_ten_and_sixty_seconds() {
+        // The docs, the CHANGELOG and CLAUDE.md all state these two values;
+        // a store built the production way must carry them.
+        assert_eq!(STORE_CALL_TIMEOUT, Duration::from_secs(10));
+        assert_eq!(REPLAY_READ_TIMEOUT, Duration::from_secs(60));
+        let store = ClickhouseSchemaStore::new(clickhouse::Client::default());
+        assert_eq!(store.call_bound, STORE_CALL_TIMEOUT);
+        assert_eq!(store.replay_bound, REPLAY_READ_TIMEOUT);
     }
 
     #[test]
@@ -3261,6 +3365,89 @@ mod mutation_tests {
             );
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
+    }
+
+    #[tokio::test]
+    async fn a_dropped_store_only_delete_keeps_the_gate_and_still_deletes() {
+        ensure_globals().await;
+        let fake = FakeClickHouse::spawn().await;
+        // A row with no memory entry: the state a failed replay leaves.
+        fake.push_row(stored_row("store-only-dropped", 7));
+        let app = app_state(fake.client(), None, persisted_config());
+
+        fake.set_hang_on("DELETE FROM");
+        let request = tokio::spawn({
+            let app = app.clone();
+            async move {
+                delete_schema_handler(
+                    State(app),
+                    Path("store-only-dropped".to_string()),
+                    Query(DeleteSchemaParams { role: None }),
+                )
+                .await
+                .is_ok()
+            }
+        });
+        fake.wait_for("the held DELETE", Duration::from_secs(10), |reqs| {
+            reqs.iter().any(|r| r.sql.contains("DELETE FROM"))
+        })
+        .await;
+        request.abort();
+        let _ = request.await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        assert!(
+            app.schema_registry_gate.clone().try_lock_owned().is_err(),
+            "the store-only delete's task owns the gate (mutation: the \
+             store-only branch gets no gate, or awaits inline and the guard \
+             dies with the dropped handler)"
+        );
+        fake.release();
+        let start = std::time::Instant::now();
+        while !fake.rows_snapshot().is_empty() {
+            assert!(
+                start.elapsed() < Duration::from_secs(10),
+                "the store-only delete was abandoned with the request"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn the_store_only_delete_holds_the_gate_through_its_probe() {
+        ensure_globals().await;
+        let fake = FakeClickHouse::spawn().await;
+        fake.push_row(stored_row("store-only-probe", 7));
+        let app = app_state(fake.client(), None, persisted_config());
+
+        fake.set_hang_on("FINAL WHERE name =");
+        let request = tokio::spawn({
+            let app = app.clone();
+            async move {
+                body_json(
+                    delete_schema_handler(
+                        State(app),
+                        Path("store-only-probe".to_string()),
+                        Query(DeleteSchemaParams { role: None }),
+                    )
+                    .await,
+                )
+                .await
+            }
+        });
+        fake.wait_for("the held exists probe", Duration::from_secs(10), |reqs| {
+            reqs.iter().any(|r| r.sql.contains("FINAL WHERE name ="))
+        })
+        .await;
+        assert!(
+            app.schema_registry_gate.clone().try_lock_owned().is_err(),
+            "the gate is held across the probe -> delete pair (mutation: \
+             the guard is dropped before the probe)"
+        );
+        fake.release();
+        let body = request.await.expect("task").expect("store-only delete 200");
+        assert_eq!(body["store_only"], serde_json::json!(true), "{body}");
+        assert!(fake.rows_snapshot().is_empty());
     }
 
     #[tokio::test]
