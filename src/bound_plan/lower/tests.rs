@@ -2052,11 +2052,11 @@ fn a_shortest_path_is_a_breadth_first_search() {
              FROM test_integration.users_test AS start_node \
              WHERE start_node.user_id IS NOT NULL AND (start_node.user_id = 1) \
              UNION ALL",
-            "FROM vlp_v1_bfs AS f \
-             JOIN test_integration.user_follows_test AS rel ON rel.follower_id = f.node \
+            "FROM vlp_v1_bfs AS vlp_v1_frontier \
+             JOIN test_integration.user_follows_test AS rel ON rel.follower_id = vlp_v1_frontier.node \
              JOIN test_integration.users_test AS end_node ON end_node.user_id = rel.followed_id \
-             WHERE f.new = 1 \
-             AND (f.start_id, end_node.user_id) NOT IN (SELECT start_id, node FROM vlp_v1_bfs) \
+             WHERE vlp_v1_frontier.new = 1 \
+             AND (vlp_v1_frontier.start_id, end_node.user_id) NOT IN (SELECT start_id, node FROM vlp_v1_bfs) \
              UNION ALL SELECT start_id, node, depth, CAST(0 AS UInt8) AS new FROM vlp_v1_bfs \
              WHERE start_id IN (SELECT start_id FROM vlp_v1_bfs WHERE new = 1) )",
             "vlp_v1_path AS ( SELECT start_id, node AS end_id, depth AS hop_count \
@@ -2068,7 +2068,7 @@ fn a_shortest_path_is_a_breadth_first_search() {
     has(
         "MATCH p = shortestPath((a:User)-[:FOLLOWS*0..3]->(b:User)) RETURN count(*) AS c",
         &[
-            "WHERE f.new = 1 AND f.depth < 3 AND",
+            "WHERE vlp_v1_frontier.new = 1 AND vlp_v1_frontier.depth < 3 AND",
             "WHERE new = 1 AND depth >= 0",
         ],
     );
@@ -2077,7 +2077,7 @@ fn a_shortest_path_is_a_breadth_first_search() {
         "MATCH p = shortestPath((a:User {user_id: 1})<-[:FOLLOWS*]-(b:User)) RETURN b.name AS n",
         &[
             "WHERE start_node.user_id IS NOT NULL AND (start_node.user_id = 1)",
-            "ON rel.followed_id = f.node",
+            "ON rel.followed_id = vlp_v1_frontier.node",
             "ON end_node.user_id = rel.follower_id",
             "JOIN test_integration.users_test AS v0 ON v1.start_id = v0.user_id",
             "JOIN test_integration.users_test AS v2 ON v1.end_id = v2.user_id",
@@ -2095,10 +2095,10 @@ fn all_shortest_paths_are_counted_by_the_search() {
          RETURN count(*) AS c",
         &[
             "CAST(0 AS UInt32) AS depth, CAST(1 AS UInt256) AS paths, CAST(1 AS UInt8) AS new",
-            "SELECT f.start_id AS start_id, end_node.user_id AS node, \
-             CAST(f.depth + 1 AS UInt32) AS depth, CAST(sum(f.paths) AS UInt256) AS paths, \
+            "SELECT vlp_v1_frontier.start_id AS start_id, end_node.user_id AS node, \
+             CAST(vlp_v1_frontier.depth + 1 AS UInt32) AS depth, CAST(sum(vlp_v1_frontier.paths) AS UInt256) AS paths, \
              CAST(1 AS UInt8) AS new",
-            "GROUP BY f.start_id, end_node.user_id, f.depth UNION ALL \
+            "GROUP BY vlp_v1_frontier.start_id, end_node.user_id, vlp_v1_frontier.depth UNION ALL \
              SELECT start_id, node, depth, paths, CAST(0 AS UInt8) AS new",
             "vlp_v1_path AS ( SELECT start_id, node AS end_id, depth AS hop_count FROM vlp_v1_bfs \
              ARRAY JOIN range(accurateCast(paths, 'UInt64')) AS copy \
@@ -2186,7 +2186,7 @@ fn a_bound_on_the_length_from_above_bounds_the_search() {
         "MATCH p = shortestPath((a:User {user_id: 1})-[:FOLLOWS*]->(b:User {user_id: 2})) \
          WHERE length(p) < 10 RETURN length(p) AS l",
     ));
-    assert!(got.contains("AND f.depth < 9 AND"), "{got}");
+    assert!(got.contains("AND vlp_v1_frontier.depth < 9 AND"), "{got}");
     assert!(
         !got.contains("vlp_v1_near") && !got.contains("ROW_NUMBER"),
         "{got}"
@@ -2194,13 +2194,16 @@ fn a_bound_on_the_length_from_above_bounds_the_search() {
     has(
         "MATCH p = shortestPath((a:User)-[:FOLLOWS*..5]->(b:User)) WHERE 3 >= length(p) \
          RETURN count(*) AS c",
-        &["AND f.depth < 3 AND"],
+        &["AND vlp_v1_frontier.depth < 3 AND"],
     );
     // `=` bounds it and stays a condition.
     has(
         "MATCH p = shortestPath((a:User)-[:FOLLOWS*]->(b:User)) WHERE length(p) = 3 \
          RETURN count(*) AS c",
-        &["AND f.depth < 3 AND", "WHERE (v1.hop_count = 3)"],
+        &[
+            "AND vlp_v1_frontier.depth < 3 AND",
+            "WHERE (v1.hop_count = 3)",
+        ],
     );
     // Below the range: nothing.
     let got = sql(
@@ -2218,7 +2221,7 @@ fn a_shortest_path_search_stops_at_its_ends() {
         "MATCH p = shortestPath((a:User {user_id: 1})-[:FOLLOWS*]->(b:User {user_id: 3})) \
          RETURN length(p) AS l",
         &[
-            "AND f.start_id NOT IN (SELECT start_id FROM vlp_v1_bfs GROUP BY start_id \
+            "AND vlp_v1_frontier.start_id NOT IN (SELECT start_id FROM vlp_v1_bfs GROUP BY start_id \
              HAVING countIf(node IN (SELECT end_node.user_id FROM test_integration.users_test \
              AS end_node WHERE (end_node.user_id = 3))) >= (SELECT count(DISTINCT end_node.user_id) \
              FROM (SELECT end_node.user_id FROM test_integration.users_test AS end_node \
@@ -2240,7 +2243,7 @@ fn a_shortest_path_starts_at_an_end_pinned_by_its_identity() {
          WHERE a.city = 'Paris' RETURN count(*) AS c",
         &[
             "WHERE start_node.user_id IS NOT NULL AND (start_node.user_id = 5)",
-            "ON rel.followed_id = f.node",
+            "ON rel.followed_id = vlp_v1_frontier.node",
             "JOIN test_integration.users_test AS v2 ON v1.start_id = v2.user_id",
         ],
     );
@@ -2341,7 +2344,7 @@ fn a_shortest_path_follows_relationships_its_property_map_allows() {
     has(
         "MATCH p = shortestPath((a:User {user_id: 1})-[:FOLLOWS*1.. {follow_date: '2024-01-01'}]->(b:User)) \
          RETURN count(*) AS c",
-        &["WHERE f.new = 1 AND (rel.follow_date = '2024-01-01') AND (f.start_id, end_node.user_id)"],
+        &["WHERE vlp_v1_frontier.new = 1 AND (rel.follow_date = '2024-01-01') AND (vlp_v1_frontier.start_id, end_node.user_id)"],
     );
     // Walked back by the relationships it allows.
     for f in ["shortestPath", "allShortestPaths"] {
@@ -2785,9 +2788,9 @@ fn a_shortest_path_is_walked_back_through_its_parents() {
          RETURN p",
         &[
             "CAST(0 AS UInt32) AS depth, start_node.user_id AS parent, CAST(1 AS UInt8) AS new",
-            "SELECT f.start_id AS start_id, end_node.user_id AS node, \
-             CAST(f.depth + 1 AS UInt32) AS depth, min(f.node) AS parent, CAST(1 AS UInt8) AS new",
-            "GROUP BY f.start_id, end_node.user_id, f.depth UNION ALL \
+            "SELECT vlp_v1_frontier.start_id AS start_id, end_node.user_id AS node, \
+             CAST(vlp_v1_frontier.depth + 1 AS UInt32) AS depth, min(vlp_v1_frontier.node) AS parent, CAST(1 AS UInt8) AS new",
+            "GROUP BY vlp_v1_frontier.start_id, end_node.user_id, vlp_v1_frontier.depth UNION ALL \
              SELECT start_id, node, depth, parent, CAST(0 AS UInt8) AS new",
             // The search's rows are the walk's levels; it starts at the
             // paths' last nodes.
@@ -2840,7 +2843,7 @@ fn all_shortest_paths_are_walked_through_every_parent() {
         q,
         &[
             "CAST(0 AS UInt32) AS depth, [start_node.user_id] AS parents, CAST(1 AS UInt8) AS new",
-            "CAST(f.depth + 1 AS UInt32) AS depth, groupUniqArray(f.node) AS parents, \
+            "CAST(vlp_v1_frontier.depth + 1 AS UInt32) AS depth, groupUniqArray(vlp_v1_frontier.node) AS parents, \
              CAST(1 AS UInt8) AS new",
             "SELECT w.start_id AS start_id, lv.parent AS node, CAST(w.depth - 1 AS UInt32) AS depth",
             "w.parents AS parents, CAST(0 AS UInt8) AS level, CAST(1 AS UInt8) AS frontier \
@@ -2855,7 +2858,13 @@ fn all_shortest_paths_are_walked_through_every_parent() {
         ],
     );
     let got = sql(q);
-    for absent in ["UInt256", "copy", "min(f.node)", "pick", "path_rel_values"] {
+    for absent in [
+        "UInt256",
+        "copy",
+        "min(vlp_v1_frontier.node)",
+        "pick",
+        "path_rel_values",
+    ] {
         assert!(!got.contains(absent), "`{absent}` in\n{got}");
     }
 }
@@ -3140,7 +3149,7 @@ fn an_undirected_shortest_path_searches_and_walks_both_directions() {
     has(
         "MATCH p = shortestPath((a:User {user_id: 1})-[:FOLLOWS*]-(b:User {user_id: 2})) RETURN p",
         &[
-            "JOIN v1_both AS rel ON rel.__cg_start_0 = f.node",
+            "JOIN v1_both AS rel ON rel.__cg_start_0 = vlp_v1_frontier.node",
             "JOIN (SELECT * FROM v1_both WHERE __cg_end_0 IN",
             "ON rel.__cg_start_0 = lv.parent AND rel.__cg_end_0 = w.node",
         ],
@@ -4150,7 +4159,7 @@ graph_schema:
     assert!(
         got.contains(
             "JOIN db.ce1 AS rel ON \
-                      toString(tuple(rel.kk, CAST(rel.vv AS DateTime64(3)))) = f.node"
+                      toString(tuple(rel.kk, CAST(rel.vv AS DateTime64(3)))) = vlp_v1_frontier.node"
         ),
         "the step joins the relationship's casted from key:\n{got}"
     );
@@ -5040,7 +5049,7 @@ fn a_shortest_path_over_several_types_searches_their_union() {
         "concat('Person', ':', toString(e.pid)) AS \"__cg_start_key\", \
          concat('Company', ':', toString(e.cid)) AS \"__cg_end_key\" FROM db.likes_co AS e FINAL",
         "SELECT DISTINCT start_node.__cg_key AS start_id, start_node.__cg_key AS node",
-        "JOIN v1_rels AS rel ON rel.__cg_start_key = f.node \
+        "JOIN v1_rels AS rel ON rel.__cg_start_key = vlp_v1_frontier.node \
          JOIN vlp_v1_nodes AS end_node ON end_node.__cg_key = rel.__cg_end_key",
         // The pairs' ends: the nodes of those identities.
         "vlp_v1_ends AS ( SELECT start_node.__cg_label AS start_label, \
@@ -5065,7 +5074,7 @@ fn a_shortest_path_over_several_types_searches_their_union() {
          WHERE (end_node.__cg_label = 'Post') AND ((end_node.__cg_label, end_node.__cg_id_0) \
          IN (SELECT DISTINCT 'Post' AS \"label\", v2.id AS \"id\" FROM db.posts AS v2 \
          WHERE v2.id = 2))))",
-        "groupUniqArray(f.node) AS parents",
+        "groupUniqArray(vlp_v1_frontier.node) AS parents",
         "arrayConcat([rel.__cg_key], w.path_edges) AS path_edges",
         "arrayConcat([end_node.__cg_value], w.path_node_values) AS path_node_values",
         "JOIN vlp_v1_nodes AS start_node ON start_node.__cg_key = w.start_id",
@@ -5679,7 +5688,7 @@ fn databricks_shortest_path_search() {
         .unwrap(),
     );
     assert!(
-        got.contains("UNION ALL (SELECT DISTINCT f.start_id AS start_id"),
+        got.contains("UNION ALL (SELECT DISTINCT vlp_v1_frontier.start_id AS start_id"),
         "{got}"
     );
     assert!(
@@ -5703,7 +5712,7 @@ fn databricks_shortest_path_search() {
         .unwrap(),
     );
     assert!(!got.contains("path_nodes"), "{got}");
-    assert!(!got.contains("GROUP BY f.start_id"), "{got}");
+    assert!(!got.contains("GROUP BY vlp_v1_frontier.start_id"), "{got}");
     assert!(
         got.contains("SELECT start_id, node AS end_id, depth AS hop_count FROM vlp_v1_bfs"),
         "{got}"
@@ -5724,10 +5733,10 @@ fn databricks_shortest_path_search() {
         .unwrap(),
     );
     assert!(
-        got.contains("concat(f.path_nodes, array(end_node.user_id)) AS path_nodes"),
+        got.contains("concat(vlp_v1_frontier.path_nodes, array(end_node.user_id)) AS path_nodes"),
         "{got}"
     );
-    assert!(!got.contains("GROUP BY f.start_id"), "{got}");
+    assert!(!got.contains("GROUP BY vlp_v1_frontier.start_id"), "{got}");
     assert!(
         got.contains(
             "ROW_NUMBER() OVER (PARTITION BY start_id, node \
@@ -6808,7 +6817,7 @@ fn a_shortest_path_between_composite_ids_keys_nodes_by_their_tuples() {
     );
     for p in [
         "toString(tuple(start_node.bank, start_node.num)) AS start_id",
-        "JOIN db.sent AS rel ON toString(tuple(rel.fb, rel.fnum)) = f.node \
+        "JOIN db.sent AS rel ON toString(tuple(rel.fb, rel.fnum)) = vlp_v2_frontier.node \
          JOIN db.acct AS end_node ON toString(tuple(end_node.bank, end_node.num)) = \
          toString(tuple(rel.tb, rel.tnum))",
         // A row with a NULL end part relates no node (a key's text of NULL
@@ -10728,4 +10737,93 @@ fn detector_tokens_spell_every_dialect_spelling_of_the_mapped_drawn_calls() {
             }
         }
     }
+}
+/// #1515: the repro schema — its edge table is named `f`, the BFS search's
+/// fixed frontier alias.
+fn f_schema() -> GraphSchema {
+    GraphSchemaConfig::from_yaml_str(
+        r"
+name: lower_default_f
+graph_schema:
+  nodes:
+    - label: U
+      database: db
+      table: u
+      node_id: uid
+      property_mappings: { uid: uid, name: name }
+  edges:
+    - type: F
+      database: db
+      table: f
+      from_id: from_id
+      to_id: to_id
+      from_node: U
+      to_node: U
+      property_mappings: {}
+",
+    )
+    .unwrap()
+    .to_graph_schema()
+    .unwrap()
+}
+
+/// #1515: the BFS search's own aliases are not spellings a query's tables
+/// can shadow. The issue's repro: a shortestPath over an edge table named
+/// `f`, where the search's fixed frontier alias `f` collides with the
+/// table's name and ClickHouse refuses (`f.node` cannot be resolved); the
+/// frontier is the search's own namespaced name instead.
+#[test]
+fn an_edge_table_named_f_does_not_shadow_the_bfs_frontier() {
+    let schema = f_schema();
+    let q =
+        "MATCH p = shortestPath((x:U {uid: 1})-[:F*1..5]->(y:U {uid: 2})) RETURN length(p) AS l";
+    let got = squash(
+        &translate_bound_plan(q, &schema, &ReadOptions::default())
+            .unwrap()
+            .sql,
+    );
+    assert!(got.contains("vlp_v1_bfs AS vlp_v1_frontier"), "{got}");
+    assert!(
+        got.contains(" JOIN db.f AS rel ON rel.from_id = vlp_v1_frontier.node"),
+        "{got}"
+    );
+    assert!(!got.contains("vlp_v1_bfs AS f"), "{got}");
+    // A path carried (its parents kept): the frontier rides the same name,
+    // and the step keeps its `min(frontier.node)` GROUP BY.
+    let q = "MATCH p = shortestPath((x:U)-[:F*1..5]->(y:U)) RETURN p";
+    let got = squash(
+        &translate_bound_plan(q, &schema, &ReadOptions::default())
+            .unwrap()
+            .sql,
+    );
+    assert!(got.contains("FROM vlp_v1_bfs AS vlp_v1_frontier"), "{got}");
+    assert!(
+        got.contains(" GROUP BY vlp_v1_frontier.start_id, "),
+        "{got}"
+    );
+    assert!(!got.contains("vlp_v1_bfs AS f"), "{got}");
+    // ... and on Databricks, whose search steps cannot group the same way.
+    let got = squash(&databricks_sql(q, &schema).unwrap());
+    assert!(got.contains("vlp_v1_bfs AS vlp_v1_frontier"), "{got}");
+    assert!(!got.contains("vlp_v1_bfs AS f"), "{got}");
+    let q =
+        "MATCH p = shortestPath((x:U {uid: 1})-[:F*1..5]->(y:U {uid: 2})) RETURN length(p) AS l";
+    let got = squash(&databricks_sql(q, &schema).unwrap());
+    assert!(got.contains("vlp_v1_bfs AS vlp_v1_frontier"), "{got}");
+    assert!(!got.contains("vlp_v1_bfs AS f"), "{got}");
+}
+
+/// #1515: the seed and the kept-steps' subqueries of a search whose paths
+/// its own step spells row-wise are the search's own names too — never the
+/// fixed `s` / `reached` a table could shadow.
+#[test]
+fn a_rowwise_bfs_names_its_seed_and_kept_steps() {
+    let q = "MATCH p = shortestPath((x:U)-[:F*1..5]->(y:U)) RETURN p";
+    let got = squash(&databricks_sql(q, &f_schema()).unwrap());
+    assert!(got.contains(") AS vlp_v1_seed UNION ALL"), "{got}");
+    assert!(got.contains(" AS vlp_v1_reached)"), "{got}");
+    assert!(
+        !got.contains(" AS s ") && !got.contains(" AS reached"),
+        "{got}"
+    );
 }

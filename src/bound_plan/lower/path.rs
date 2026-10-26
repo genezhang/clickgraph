@@ -648,6 +648,10 @@ pub(super) fn search_cte(call: &Search, all: bool, parents: Parents) -> Result<C
     let (start_key, end_key) = (call.node_key("start_node"), call.node_key("end_node"));
     let (rel_from, rel_to) = (call.rel_start_key("rel"), call.rel_end_key("rel"));
     let bfs = format!("vlp_{}_bfs", call.var);
+    // The frontier is aliased the search's own name (#1515): a query's
+    // table could be named the bare alias otherwise, and ClickHouse would
+    // then not resolve the frontier's rows from it.
+    let f = format!("vlp_{}_frontier", call.var);
     // A row whose id is NULL is no node: none starts a search (Spark's
     // `(a, b) NOT IN` of a row holding NULL rejects every pair, and the
     // search would end at its first nodes).
@@ -675,17 +679,17 @@ pub(super) fn search_cte(call: &Search, all: bool, parents: Parents) -> Result<C
     );
     // `*0..0`: the first nodes only (the edge may join other labels).
     if let (Some(edge_table), false) = (&call.edge_table, call.max == Some(0)) {
-        let mut step = vec!["f.new = 1".to_string()];
+        let mut step = vec![format!("{f}.new = 1")];
         if let Some(max) = call.max {
-            step.push(format!("f.depth < {max}"));
+            step.push(format!("{f}.depth < {max}"));
         }
         step.extend(conjunction(&call.rel));
         step.push(format!(
-            "(f.start_id, {end_key}) NOT IN (SELECT start_id, node FROM {bfs})"
+            "({f}.start_id, {end_key}) NOT IN (SELECT start_id, node FROM {bfs})"
         ));
         if let (Some(targets), true) = (call.targets(), spelling.stops_early) {
             step.push(format!(
-                "f.start_id NOT IN (SELECT start_id FROM {bfs} GROUP BY start_id \
+                "{f}.start_id NOT IN (SELECT start_id FROM {bfs} GROUP BY start_id \
                  HAVING {count_if}(node IN ({targets})) >= \
                  (SELECT count(DISTINCT {target}) FROM ({targets}) AS {END}))",
                 count_if = current_function_mapper().count_if(),
@@ -697,19 +701,19 @@ pub(super) fn search_cte(call: &Search, all: bool, parents: Parents) -> Result<C
         let (distinct, step_paths, reach, carried) = if all {
             (
                 "",
-                format!(", CAST(sum(f.paths) AS {count}) AS paths"),
-                format!("\n    GROUP BY f.start_id, {end_key}, f.depth"),
+                format!(", CAST(sum({f}.paths) AS {count}) AS paths"),
+                format!("\n    GROUP BY {f}.start_id, {end_key}, {f}.depth"),
                 ", paths",
             )
         } else if parents != Parents::None {
             let (kept, column) = match parents {
-                Parents::All => ((spelling.distinct_list)("f.node"), "parents"),
-                _ => ("min(f.node)".to_string(), "parent"),
+                Parents::All => ((spelling.distinct_list)(&format!("{f}.node")), "parents"),
+                _ => (format!("min({f}.node)"), "parent"),
             };
             (
                 "",
                 format!(", {kept} AS {column}"),
-                format!("\n    GROUP BY f.start_id, {end_key}, f.depth"),
+                format!("\n    GROUP BY {f}.start_id, {end_key}, {f}.depth"),
                 if column == "parent" {
                     ", parent"
                 } else {
@@ -720,10 +724,10 @@ pub(super) fn search_cte(call: &Search, all: bool, parents: Parents) -> Result<C
             ("DISTINCT ", String::new(), String::new(), "")
         };
         let reached = format!(
-            "SELECT {distinct}f.start_id AS start_id, {end_key} AS node, \
-             CAST(f.depth + 1 AS {depth}) AS depth{step_paths}, CAST(1 AS {flag}) AS new\n    \
-             FROM {bfs} AS f\n    \
-             JOIN {edge_table} AS rel ON {rel_from} = f.node\n    \
+            "SELECT {distinct}{f}.start_id AS start_id, {end_key} AS node, \
+             CAST({f}.depth + 1 AS {depth}) AS depth{step_paths}, CAST(1 AS {flag}) AS new\n    \
+             FROM {bfs} AS {f}\n    \
+             JOIN {edge_table} AS rel ON {rel_from} = {f}.node\n    \
              JOIN {node_table} AS end_node ON {end_key} = {rel_to}\n    \
              WHERE {}{reach}",
             step.join("\n      AND "),
@@ -767,6 +771,11 @@ fn path_search_cte(
     let (start_key, end_key) = (call.node_key(START), call.node_key(END));
     let (rel_from, rel_to) = (call.rel_start_key(REL), call.rel_end_key(REL));
     let bfs = format!("vlp_{}_bfs", call.var);
+    // As `search_cte` (#1515): the frontier, the seed's row and the
+    // kept-steps' rows are the search's own rows, aliased to its own name.
+    let f = format!("vlp_{}_frontier", call.var);
+    let seed = format!("vlp_{}_seed", call.var);
+    let reached = format!("vlp_{}_reached", call.var);
     let seed_where = std::iter::once(format!("{start_key} IS NOT NULL"))
         .chain(conjunction(&call.start))
         .collect::<Vec<_>>()
@@ -784,37 +793,37 @@ fn path_search_cte(
     };
     let mut search = format!(
         "{bfs} AS (\n    \
-         SELECT s.start_id AS start_id, s.start_id AS node, CAST(0 AS {depth}) AS depth\
+         SELECT {seed}.start_id AS start_id, {seed}.start_id AS node, CAST(0 AS {depth}) AS depth\
          {}, CAST(1 AS {flag}) AS new\n    \
          FROM (SELECT DISTINCT {start_key} AS start_id FROM {node_table} AS {START} \
-         WHERE {seed_where}) AS s",
-        empty("s.start_id")?
+         WHERE {seed_where}) AS {seed}",
+        empty(&format!("{seed}.start_id"))?
     );
     // `*0..0`: the first nodes only (the edge may join other labels).
     if let (Some(edge_table), false) = (&call.edge_table, call.max == Some(0)) {
-        let mut step = vec!["f.new = 1".to_string()];
+        let mut step = vec![format!("{f}.new = 1")];
         if let Some(max) = call.max {
-            step.push(format!("f.depth < {max}"));
+            step.push(format!("{f}.depth < {max}"));
         }
         step.extend(conjunction(&call.rel));
         step.push(format!(
-            "(f.start_id, {end_key}) NOT IN (SELECT start_id, node FROM {bfs})"
+            "({f}.start_id, {end_key}) NOT IN (SELECT start_id, node FROM {bfs})"
         ));
         let stepped: String = carried("node")?
             .iter()
             .map(|(c, _, one)| {
                 format!(
                     ",\n      {} AS {c}",
-                    (g.concat)(&[format!("f.{c}"), (g.list)(std::slice::from_ref(one))])
+                    (g.concat)(&[format!("{f}.{c}"), (g.list)(std::slice::from_ref(one))])
                 )
             })
             .collect();
-        let reached = format!(
-            "SELECT f.start_id AS start_id, {end_key} AS node, \
-             CAST(f.depth + 1 AS {depth}) AS depth{},\n      \
+        let reached_sql = format!(
+            "SELECT {f}.start_id AS start_id, {end_key} AS node, \
+             CAST({f}.depth + 1 AS {depth}) AS depth{},\n      \
              CAST(1 AS {flag}) AS new\n    \
-             FROM {bfs} AS f\n    \
-             JOIN {edge_table} AS {REL} ON {rel_from} = f.node\n    \
+             FROM {bfs} AS {f}\n    \
+             JOIN {edge_table} AS {REL} ON {rel_from} = {f}.node\n    \
              JOIN {node_table} AS {END} ON {end_key} = {rel_to}\n    \
              WHERE {}",
             stepped,
@@ -825,12 +834,12 @@ fn path_search_cte(
             "SELECT start_id, node, depth{}, CAST(0 AS {flag}) AS new FROM (\n      \
              SELECT DISTINCT start_id, node, depth FROM {bfs}\n      \
              WHERE start_id IN (SELECT start_id FROM {bfs} WHERE new = 1)\n    \
-             ) AS reached",
+             ) AS {reached}",
             empty("node")?
         );
         search.push_str(&format!(
             "\n    UNION ALL\n    {}",
-            (spelling.recursive_steps)(&[reached, kept])
+            (spelling.recursive_steps)(&[reached_sql, kept])
         ));
     }
     search.push_str("\n)");
