@@ -51,6 +51,8 @@ fn test_state() -> AppState {
         config: ServerConfig::default(),
         query_semaphore: None,
         pool: None,
+        schema_store: Arc::new(clickgraph::server::schema_registry::SchemaStore::Off),
+        schema_registry_gate: Arc::new(tokio::sync::Mutex::new(())),
     }
 }
 

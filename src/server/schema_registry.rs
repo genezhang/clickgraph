@@ -104,19 +104,63 @@ pub fn is_reserved_schema_name(name: &str) -> bool {
     RESERVED_SCHEMA_NAMES.contains(&name)
 }
 
-/// Bounds one store round-trip ([`STORE_CALL_TIMEOUT`]) and maps the
-/// elapsed-outcome to the error path every caller already handles. The op
-/// name lands in the message for the log/API trail only — values never do.
-async fn with_timeout<T>(
-    op: &'static str,
-    fut: impl Future<Output = Result<T, String>>,
-) -> Result<T, String> {
-    with_timeout_within(STORE_CALL_TIMEOUT, op, fut).await
+/// Generous caps for the two operator-entered identifiers (`schema_name` on
+/// `POST /schemas/load`, `role` on both endpoints). Not storage limits —
+/// hygiene: both identifiers can reach operator-facing logs, and a tiny
+/// ceiling keeps an API abuser from turning log entries or the store into
+/// their dustbin. The ClickHouse identifier limit is a few hundred bytes
+/// anyway; these sit above it wherever it is.
+const MAX_SCHEMA_NAME_LEN: usize = 512;
+const MAX_ROLE_NAME_LEN: usize = 256;
+
+/// Pure (unit-tested) schema-name acceptability check, run by both admin
+/// endpoints before any gate, registry or store work. `None` = accept.
+/// Every rejection is a 400 at the door — an empty name registers (`404`s
+/// on GET/DELETE afterwards, unrestorable by construction), and a control
+/// character forges log lines ("Cache invalidated for schema: ...\nERROR").
+pub fn schema_name_error_if_any(name: &str) -> Option<&'static str> {
+    if name.is_empty() {
+        Some("schema name must not be empty")
+    } else if name.chars().any(|c| c.is_control()) {
+        Some("schema name must not contain control characters")
+    } else if name.len() > MAX_SCHEMA_NAME_LEN {
+        Some("schema name exceeds the 512-byte limit")
+    } else {
+        None
+    }
 }
 
-/// The boundable core of [`with_timeout`]: every store op routes through the
-/// public-shaped wrapper's duration, and unit tests pin the mapping with
-/// option values (`Duration` is an argument, never a caller-visible knob).
+/// Pure (unit-tested) `role` acceptability check for both endpoints. Empty
+/// is deliberately not an error here: callers normalize it away before this
+/// check, and an accidental `""` must stay a "no role", not a 400 (the
+/// round-one contract). Control characters are refused because the pool
+/// logs each first-seen role raw; an absurd length keeps a role from
+/// becoming a log-line payload.
+pub fn role_error_if_any(role: &str) -> Option<&'static str> {
+    if role.chars().any(|c| c.is_control()) {
+        Some("role must not contain control characters")
+    } else if role.len() > MAX_ROLE_NAME_LEN {
+        Some("role exceeds the 256-byte limit")
+    } else {
+        None
+    }
+}
+
+/// The read side's longer bound: a boot replay carries up to the payload
+/// byte budget (64 MiB) over a fetch pair (metadata, then payloads over
+/// `FINAL`), and a healthy-but-slow store answering a few seconds per
+/// statement would spend half the 10 s one and read as an outage at boot.
+/// Published for the docs; constructed into every store alongside
+/// [`STORE_CALL_TIMEOUT`] — both constants, never knobs: they bound a
+/// degenerate store, not workload capacity.
+pub const REPLAY_READ_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Whether an op runs under [`STORE_CALL_TIMEOUT`] or
+/// [`REPLAY_READ_TIMEOUT`], the elapsed-outcome maps onto the error path
+/// every caller already handles. The op name lands in the message for the
+/// log/API trail only — values never do. One engine; unit tests reach it
+/// with option durations because a `Duration` is an argument, never a
+/// caller-visible knob.
 async fn with_timeout_within<T>(
     bound: Duration,
     op: &'static str,
@@ -175,10 +219,16 @@ pub struct ReplayMetaRow {
     pub payload_len: u64,
 }
 
-/// Phase-2 pairing (name → payload) of the two-phase fetch.
+/// Phase-2 pairing (name → payload) of the two-phase fetch. The row's
+/// `registered_at_ms` rides with each payload: phase 2 fetches by
+/// (name, timestamp), because a name alone admits a row that was
+/// re-registered between the two phases — its new payload landing under
+/// the old phase-1 metadata (the client-side budget re-check catches the
+/// shape, but the pipe closes at the fetch itself).
 #[derive(Debug, Clone, Row, Serialize, Deserialize)]
 struct NamePayload {
     name: String,
+    registered_at_ms: u64,
     payload: String,
 }
 
@@ -413,6 +463,12 @@ pub struct ClickhouseSchemaStore {
     /// time, raised by every write this process makes (see
     /// [`ClickhouseSchemaStore::next_registered_at_ms`]).
     registered_at_floor: AtomicU64,
+    /// Per-instance op bounds, defaulting to the module constants: the
+    /// production paths run the shipped values; unit tests reach the same
+    /// call sites with short bounds instead of a free fn that ignores the
+    /// store — a test must go red if a call site ever bypasses the bound.
+    call_bound: Duration,
+    replay_bound: Duration,
 }
 
 impl ClickhouseSchemaStore {
@@ -431,7 +487,22 @@ impl ClickhouseSchemaStore {
             role_pool,
             table_prepared: tokio::sync::Mutex::new(None),
             registered_at_floor: AtomicU64::new(0),
+            call_bound: STORE_CALL_TIMEOUT,
+            replay_bound: REPLAY_READ_TIMEOUT,
         }
+    }
+
+    /// The bounded call a store op makes: the same
+    /// [`with_timeout_within`] engine the replay read uses, with this
+    /// store's per-call duration. Tests construct a store with short
+    /// bounds so a wedged route surfaces in milliseconds instead of the
+    /// (deliberate, no-knob) 10 s.
+    async fn bound_call<T>(
+        &self,
+        op: &'static str,
+        fut: impl Future<Output = Result<T, String>>,
+    ) -> Result<T, String> {
+        with_timeout_within(self.call_bound, op, fut).await
     }
 
     /// The client a store write runs under. `None` keeps the default client
@@ -503,8 +574,13 @@ impl ClickhouseSchemaStore {
     /// contention) the read probe decides whether the table already exists —
     /// the least-privilege path a DBA-provisioned table takes, and the
     /// reason a server whose user cannot CREATE still boots, replays, and
-    /// persists. A successful ensure caches the layout for the process's
-    /// lifetime; a failed one stays uncached and is retried by the next op.
+    /// persists. The ensure succeeds only when the table reads AND the
+    /// monotonic clock seeds from it: a success is cached for the process's
+    /// lifetime, and a failed seed, like a failed create/probe pair, stays
+    /// uncached and is retried by the next op — otherwise a floor of 0 (or
+    /// whatever a warned seed left) would be frozen into the process and a
+    /// re-registration of an old name could stamp a row BELOW the table's
+    /// high-water mark with `persisted: true`, which a restart then serves.
     async fn ensure_table(&self, client: &Client) -> Result<TableLayout, String> {
         let mut prepared = self.table_prepared.lock().await;
         if let Some(layout) = *prepared {
@@ -513,11 +589,18 @@ impl ClickhouseSchemaStore {
 
         let create = self.try_create_table(client).await;
         match self.detect_layout(client).await {
-            Ok(layout) => {
-                self.seed_registered_at_floor(client).await;
-                *prepared = Some(layout);
-                Ok(layout)
-            }
+            Ok(layout) => match self.seed_registered_at_floor(client).await {
+                Ok(()) => {
+                    *prepared = Some(layout);
+                    Ok(layout)
+                }
+                Err(seed_err) => Err(format!(
+                    "registry registered-at seed failed: {seed_err}\n\
+                     (the table answered its probe; the high-water read \
+                      did not - the write's registered_at_ms floor must \
+                      not be assumed 0)"
+                )),
+            },
             Err(probe_err) => match create {
                 Ok(()) => Err(probe_err),
                 Err(create_err) => Err(format!("{create_err} (table probe: {probe_err})")),
@@ -529,27 +612,29 @@ impl ClickhouseSchemaStore {
     /// this process writes are never below what any earlier process wrote —
     /// the fix for a host clock that stepped back between boots. `max` with
     /// the floor is read over all parts (no `FINAL`): any part's value can
-    /// only raise it, and a higher floor is always safe.
-    async fn seed_registered_at_floor(&self, client: &Client) {
-        match client
+    /// only raise it, and a higher floor is always safe. An unreadable
+    /// high-water mark is an ERROR, not a warning: the floor is load-bearing
+    /// (a row stamped below the table high-water can win `ReplacingMergeTree`'s
+    /// collapse against every row written after it), so the ensure that owns
+    /// this read must not cache itself past the failure.
+    async fn seed_registered_at_floor(&self, client: &Client) -> Result<(), String> {
+        client
             .query(&format!(
                 "SELECT max(registered_at_ms) FROM {REGISTRY_TABLE}"
             ))
             .fetch_one::<u64>()
             .await
-        {
-            Ok(high_water) => {
+            .map(|high_water| {
                 self.registered_at_floor
                     .fetch_max(high_water, Ordering::Relaxed);
-            }
-            Err(e) => {
-                log::warn!(
-                    "could not read the registry's registered-at high-water \
-                     mark ({e}); timestamps stay monotonic within this boot \
-                     only"
-                );
-            }
-        }
+            })
+            .map_err(|e| {
+                format!(
+                    "the table's registered-at high-water mark is \
+                     unreadable ({e}); timestamps would stay monotonic \
+                     within this boot only"
+                )
+            })
     }
 
     /// Strictly increasing, even when the host clock steps back: each call
@@ -557,12 +642,18 @@ impl ClickhouseSchemaStore {
     /// regressed writes values above the table's high-water mark instead of
     /// randomly losing `ReplacingMergeTree`'s collapse to an old row. Within
     /// one boot the values can only rise (`floor` is carried by every
-    /// successful CAS).
+    /// successful CAS). The `+1` saturates: a hand-edited row with
+    /// `registered_at_ms = u64::MAX` must fold the floor to a standstill,
+    /// not wrap it to 0 (a release-mode overflow would).
     fn next_registered_at_ms(&self) -> u64 {
         let now = Registration::now_ms();
         let mut current = self.registered_at_floor.load(Ordering::Relaxed);
         loop {
-            let next = if now > current { now } else { current + 1 };
+            let next = if now > current {
+                now
+            } else {
+                current.saturating_add(1)
+            };
             match self.registered_at_floor.compare_exchange(
                 current,
                 next,
@@ -583,10 +674,9 @@ impl ClickhouseSchemaStore {
         payload: String,
         role: Option<&str>,
     ) -> Result<(), String> {
-        with_timeout(
-            "registry upsert",
-            self.upsert_inner(name, source, format, payload, role),
-        )
+        self.bound_call("registry upsert", async {
+            self.upsert_inner(name, source, format, payload, role).await
+        })
         .await
     }
 
@@ -629,7 +719,8 @@ impl ClickhouseSchemaStore {
     /// probe into a DDL side effect. A missing table errors; the caller
     /// treats that as `false` (nothing was ever persisted there).
     pub async fn exists(&self, name: &str) -> Result<bool, String> {
-        with_timeout("registry exists probe", self.exists_inner(name)).await
+        self.bound_call("registry exists probe", self.exists_inner(name))
+            .await
     }
 
     async fn exists_inner(&self, name: &str) -> Result<bool, String> {
@@ -684,7 +775,8 @@ impl ClickhouseSchemaStore {
         max_rows: usize,
         max_bytes: u64,
     ) -> Result<ReplayFetch, String> {
-        with_timeout(
+        with_timeout_within(
+            self.replay_bound,
             "registry replay read",
             self.load_replay_rows_inner(max_rows, max_bytes),
         )
@@ -795,7 +887,7 @@ impl ClickhouseSchemaStore {
             let mut with_payload = Vec::with_capacity(gate.restorable.len());
             let mut vanished = 0usize;
             for row in std::mem::take(&mut gate.restorable) {
-                match payloads.get(&row.name) {
+                match payloads.get(&(row.name.clone(), row.registered_at_ms)) {
                     Some(payload) => {
                         let mut row = row;
                         row.payload = payload.clone();
@@ -804,9 +896,9 @@ impl ClickhouseSchemaStore {
                     None => {
                         vanished += 1;
                         log::warn!(
-                            "registry row '{}' vanished between the replay's \
-                             metadata and payload reads; not restored this \
-                             boot",
+                            "registry row '{}' vanished or was rewritten \
+                             between the replay's metadata and payload \
+                             reads; not restored this boot",
                             log_safe(&row.name)
                         );
                     }
@@ -832,21 +924,30 @@ impl ClickhouseSchemaStore {
         })
     }
 
-    /// Phase 2 of the two-phase fetch: payloads for exactly these rows,
-    /// by bound parameters (names are operator input — never interpolated
-    /// into SQL text). The bound name list is capped by phase 1's
-    /// `max_rows`, so the statement stays small however fat the table is.
-    async fn payloads_for(&self, rows: &[Registration]) -> Result<HashMap<String, String>, String> {
+    /// Phase 2 of the two-phase fetch: payloads for exactly these rows, by
+    /// bound (name, registered_at_ms) pairs — names and timestamps are
+    /// operator input, never interpolated into SQL text. The pair list is
+    /// capped by phase 1's `max_rows`, so the statement stays small however
+    /// fat the table is. The timestamp in every key is what closes a
+    /// re-register between the two phases: a name whose row now carries a
+    /// newer timestamp no longer matches, so the vanishing logic below
+    /// (drop, WARN, exact count) instead restores nothing, and a later boot
+    /// replays the rewrite — never the rewrite's payload under the old
+    /// metadata's timestamp.
+    async fn payloads_for(
+        &self,
+        rows: &[Registration],
+    ) -> Result<HashMap<(String, u64), String>, String> {
         if rows.is_empty() {
             return Ok(HashMap::new());
         }
-        let placeholders = vec!["?"; rows.len()].join(", ");
+        let pairs_sql = rows.iter().map(|_| "(?, ?)").collect::<Vec<_>>().join(", ");
         let mut query = self.client.query(&format!(
-            "SELECT name, payload FROM {REGISTRY_TABLE} FINAL \
-             WHERE name IN ({placeholders})"
+            "SELECT name, registered_at_ms, payload FROM {REGISTRY_TABLE} FINAL \
+             WHERE (name, registered_at_ms) IN ({pairs_sql})"
         ));
         for row in rows {
-            query = query.bind(row.name.clone());
+            query = query.bind(row.name.clone()).bind(row.registered_at_ms);
         }
         let pairs: Vec<NamePayload> = query
             .fetch_all::<NamePayload>()
@@ -854,7 +955,7 @@ impl ClickhouseSchemaStore {
             .map_err(|e| format!("registry read failed: {e}"))?;
         Ok(pairs
             .into_iter()
-            .map(|pair| (pair.name, pair.payload))
+            .map(|pair| ((pair.name, pair.registered_at_ms), pair.payload))
             .collect())
     }
 
@@ -866,7 +967,8 @@ impl ClickhouseSchemaStore {
     /// registered, this creates the (empty) registry table. `role` resolves
     /// the write client (see [`ClickhouseSchemaStore::client_for_write`]).
     pub async fn delete(&self, name: &str, role: Option<&str>) -> Result<bool, String> {
-        with_timeout("registry delete", self.delete_inner(name, role)).await
+        self.bound_call("registry delete", self.delete_inner(name, role))
+            .await
     }
 
     async fn delete_inner(&self, name: &str, role: Option<&str>) -> Result<bool, String> {
@@ -1444,5 +1546,1339 @@ mod tests {
             "inner detail",
             "an inner error must not be rewritten as a timeout"
         );
+    }
+}
+
+// =====================================================================
+// Mutation-red tests for the round-3 review — a fake ClickHouse wire
+// server so every mutation the review names turns at least one test red
+// at the call site it would corrupt:
+//
+//   - removing the handlers' registry gate   → racing_load_and_delete…
+//   - bypassing `with_timeout_within` at a
+//     call site                              → a_wedged_store_statement…
+//   - ignoring `role` on the write path      → the_endpoint_role_rides…
+//   - issuing CREATE on every operation      → the_registry_table_is_created…
+//   - failing the ensure on a failed CREATE  → a_failed_create_falls…
+//   - making the floor seed a no-op          → a_floor_left_unseeded…
+//   - breaking the legacy-layout select      → the_legacy_layout_restores…
+//   - (name-only) phase-2 fetch              → phase_two_fetches_payloads…
+//   - caching past a failed seed (item 1)    → a_failed_high_water_seed…
+//
+// The fake speaks exactly the shapes clickhouse-0.13.3 puts on the wire
+// (verified against the crate's sources): fetches are GETs with the SQL in
+// the `query=` URL parameter; non-fetch statements are POSTs with the SQL
+// as the body; INSERTs are POSTs with the SQL in the `query=` parameter and
+// the rows in a RowBinary body; binds are substituted client-side, so
+// statements arrive with their literals; RowBinary strings are LEB128
+// length-prefixed, numbers little-endian fixed-width; every option,
+// including an endpoint's `role`, rides as a URL parameter.
+#[cfg(test)]
+mod mutation_tests {
+    use super::*;
+
+    use crate::executor::{ExecutorError, QueryExecutor};
+    use crate::server::handlers::{
+        delete_schema_handler, load_schema_handler, DeleteSchemaParams, LoadSchemaRequest,
+    };
+    use crate::server::AppState;
+    use axum::extract::{Path, Query, State};
+    use axum::http::{StatusCode, Uri};
+    use axum::Json;
+    use std::sync::atomic::{AtomicBool, AtomicU64};
+    use std::sync::{Arc, Mutex};
+    use tokio::sync::Notify;
+
+    // ------------------------------------------------------------- plumbing
+
+    /// The schema-lifecycle endpoints never invoke the executor.
+    struct StubExecutor;
+
+    #[async_trait::async_trait]
+    impl QueryExecutor for StubExecutor {
+        async fn execute_json(
+            &self,
+            _sql: &str,
+            _role: Option<&str>,
+        ) -> Result<Vec<serde_json::Value>, ExecutorError> {
+            Ok(vec![])
+        }
+        async fn execute_text(
+            &self,
+            _sql: &str,
+            _format: &str,
+            _role: Option<&str>,
+        ) -> Result<String, ExecutorError> {
+            Ok(String::new())
+        }
+    }
+
+    /// The global once-cells a load needs (idempotent, first-initializer
+    /// wins; the same pattern the integration suite uses).
+    async fn ensure_globals() {
+        use crate::server::graph_catalog::initialize_global_schema;
+        use crate::server::{GLOBAL_SCHEMAS, GLOBAL_SCHEMA_CONFIGS};
+        use tokio::sync::RwLock;
+        let _ = GLOBAL_SCHEMAS
+            .get_or_init(|| async { RwLock::new(HashMap::new()) })
+            .await;
+        let _ = GLOBAL_SCHEMA_CONFIGS
+            .get_or_init(|| async { RwLock::new(HashMap::new()) })
+            .await;
+        let _ = initialize_global_schema(None, false).await;
+    }
+
+    fn persisted_config() -> ServerConfig {
+        ServerConfig {
+            schema_persistence: SchemaPersistenceMode::Clickhouse,
+            ..ServerConfig::default()
+        }
+    }
+
+    /// A tiny valid schema in the config grammar's list form. The database
+    /// is never contacted (`validate_schema` stays off), so the name is a
+    /// plain placeholder.
+    fn tiny_yaml(name: &str) -> String {
+        format!(
+            "name: {name}\n\
+             graph_schema:\n\
+             \x20 nodes:\n\
+             \x20   - label: Doc\n\
+             \x20     database: mutation_tests\n\
+             \x20     table: it_dummy_table\n\
+             \x20     node_id: id\n\
+             \x20     property_mappings:\n\
+             \x20       id: id\n\
+             \x20 edges: []",
+        )
+    }
+
+    /// Process-unique names: two parallel tests must not collide on the
+    /// in-memory registries (the integration suite learned this the hard way).
+    fn unique_name(tag: &str) -> String {
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        format!(
+            "mutation_{tag}_{}_{}",
+            std::process::id(),
+            SEQ.fetch_add(1, Ordering::Relaxed)
+        )
+    }
+
+    /// The load path auto-discovers columns through a `Some(client)`, so the
+    /// test state carries `None` (the offline build's shape) and only the
+    /// schema_store points at the fake — exactly the half the gate and the
+    /// store write under test use.
+    fn app_state(
+        store_client: Client,
+        role_pool: Option<Arc<RoleConnectionPool>>,
+        config: ServerConfig,
+    ) -> Arc<AppState> {
+        let store = SchemaStore::Clickhouse(Box::new(ClickhouseSchemaStore::with_role_pool(
+            store_client,
+            role_pool.clone(),
+        )));
+        Arc::new(AppState {
+            executor: Arc::new(StubExecutor),
+            clickhouse_client: None,
+            config,
+            query_semaphore: None,
+            pool: role_pool,
+            schema_store: Arc::new(store),
+            schema_registry_gate: Arc::new(tokio::sync::Mutex::new(())),
+        })
+    }
+
+    // ------------------------------------------------- RowBinary wire codecs
+
+    /// LEB128 (unsigned, the RowBinary String/variable padding actually on
+    /// the wire) length prefix + UTF-8 bytes.
+    fn write_string(s: &str, out: &mut Vec<u8>) {
+        let mut len = s.len() as u64;
+        loop {
+            let mut byte = (len & 0x7f) as u8;
+            len >>= 7;
+            if len != 0 {
+                byte |= 0x80;
+            }
+            out.push(byte);
+            if len == 0 {
+                break;
+            }
+        }
+        out.extend_from_slice(s.as_bytes());
+    }
+
+    fn read_varint(bytes: &[u8], pos: &mut usize) -> Option<u64> {
+        let mut value = 0u64;
+        let mut shift = 0u32;
+        loop {
+            let byte = *bytes.get(*pos)?;
+            *pos += 1;
+            value |= ((byte & 0x7f) as u64) << shift;
+            if byte & 0x80 == 0 {
+                return Some(value);
+            }
+            shift += 7;
+            if shift > 63 {
+                return None;
+            }
+        }
+    }
+
+    fn read_string(bytes: &[u8], pos: &mut usize) -> Option<String> {
+        let len = read_varint(bytes, pos)? as usize;
+        let end = *pos + len;
+        let text = String::from_utf8_lossy(bytes.get(*pos..end)?).into_owned();
+        *pos = end;
+        Some(text)
+    }
+
+    /// One body = exactly one `Registration` row's RowBinary encoding (a
+    /// single `write` + `end`), strings LEB-prefixed, numbers LE.
+    fn decode_insert_row(body: &[u8]) -> Option<Registration> {
+        let mut pos = 0usize;
+        let name = read_string(body, &mut pos)?;
+        let source = read_string(body, &mut pos)?;
+        let format = read_string(body, &mut pos)?;
+        let payload = read_string(body, &mut pos)?;
+        if pos + 2 > body.len() {
+            return None;
+        }
+        let registry_version = u16::from_le_bytes([body[pos], body[pos + 1]]);
+        pos += 2;
+        if pos + 8 > body.len() {
+            return None;
+        }
+        let mut ms = [0u8; 8];
+        ms.copy_from_slice(&body[pos..pos + 8]);
+        let registered_at_ms = u64::from_le_bytes(ms);
+        pos += 8;
+        if pos != body.len() {
+            return None;
+        }
+        Some(Registration {
+            name,
+            source,
+            format,
+            payload,
+            registry_version,
+            registered_at_ms,
+        })
+    }
+
+    fn encode_meta_row(row: &Registration) -> Vec<u8> {
+        let mut out = Vec::new();
+        write_string(&row.name, &mut out);
+        write_string(&row.source, &mut out);
+        write_string(&row.format, &mut out);
+        out.extend_from_slice(&row.registry_version.to_le_bytes());
+        out.extend_from_slice(&row.registered_at_ms.to_le_bytes());
+        out.extend_from_slice(&(row.payload.len() as u64).to_le_bytes());
+        out
+    }
+
+    fn encode_legacy_row(row: &Registration) -> Vec<u8> {
+        let mut out = Vec::new();
+        write_string(&row.name, &mut out);
+        write_string(&row.source, &mut out);
+        write_string(&row.format, &mut out);
+        write_string(&row.payload, &mut out);
+        out.extend_from_slice(&row.registry_version.to_le_bytes());
+        out.extend_from_slice(&row.registered_at_ms.to_le_bytes());
+        out
+    }
+
+    fn encode_u64(value: u64) -> Vec<u8> {
+        value.to_le_bytes().to_vec()
+    }
+
+    // ------------------------------------------------------- the fake server
+
+    struct Recorded {
+        sql: String,
+        /// The `role=` URL parameter (an endpoint's role rides there).
+        role: Option<String>,
+        /// Decoded INSERT row (`None` on every other statement).
+        inserted: Option<Registration>,
+    }
+
+    struct FakeShared {
+        /// The "table" — ReplacingMergeTree+FINAL semantics applied at write:
+        /// one row per name, the higher `registered_at_ms` wins. A held
+        /// INSERT is NOT here yet (a not-yet-answered write is invisible to
+        /// reads, as it is in ClickHouse).
+        rows: Mutex<Vec<Registration>>,
+        /// Every statement, in wire order.
+        requests: Mutex<Vec<Recorded>>,
+        create_fails: AtomicBool,
+        seed_fails: AtomicBool,
+        delete_fails: AtomicBool,
+        legacy_layout: AtomicBool,
+        hang_create: AtomicBool,
+        hold_inserts: AtomicBool,
+        /// The `SELECT max(registered_at_ms)` answer (the floor's high-water).
+        high_water: AtomicU64,
+        /// Steers a held INSERT (and a hung CREATE) back to life — the tests
+        /// release once their mid-flight assertions ran.
+        release: Notify,
+        released: AtomicBool,
+    }
+
+    impl FakeShared {
+        // The release steering lives in `park_until_released` below.
+    }
+
+    /// A fake ClickHouse HTTP endpoint on an ephemeral loopback port, one
+    /// per test. Route keys are SQL substrings (mutually exclusive by
+    /// construction, asserted implicitly by the tests' greenness).
+    struct FakeClickHouse {
+        url: String,
+        shared: Arc<FakeShared>,
+    }
+
+    impl FakeClickHouse {
+        async fn spawn() -> Self {
+            let shared = Arc::new(FakeShared {
+                rows: Mutex::new(Vec::new()),
+                requests: Mutex::new(Vec::new()),
+                create_fails: AtomicBool::new(false),
+                seed_fails: AtomicBool::new(false),
+                delete_fails: AtomicBool::new(false),
+                legacy_layout: AtomicBool::new(false),
+                hang_create: AtomicBool::new(false),
+                hold_inserts: AtomicBool::new(false),
+                high_water: AtomicU64::new(1_700_000_000_000),
+                release: Notify::new(),
+                released: AtomicBool::new(false),
+            });
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("fake bind");
+            let addr = listener.local_addr().expect("fake addr");
+            let app = axum::Router::new()
+                .route("/", axum::routing::get(fake_handle).post(fake_handle))
+                .with_state(shared.clone());
+            tokio::spawn(async move {
+                let _ = axum::serve(listener, app).await;
+            });
+            Self {
+                url: format!("http://{addr}"),
+                shared,
+            }
+        }
+
+        fn client(&self) -> Client {
+            Client::default().with_url(&self.url)
+        }
+
+        fn set_create_fails(&self, on: bool) {
+            self.shared.create_fails.store(on, Ordering::Relaxed);
+        }
+        fn set_seed_fails(&self, on: bool) {
+            self.shared.seed_fails.store(on, Ordering::Relaxed);
+        }
+        fn set_delete_fails(&self, on: bool) {
+            self.shared.delete_fails.store(on, Ordering::Relaxed);
+        }
+        fn set_legacy_layout(&self, on: bool) {
+            self.shared.legacy_layout.store(on, Ordering::Relaxed);
+        }
+        fn set_hang_create(&self, on: bool) {
+            self.shared.hang_create.store(on, Ordering::Relaxed);
+        }
+        fn set_hold_inserts(&self, on: bool) {
+            self.shared.hold_inserts.store(on, Ordering::Relaxed);
+        }
+        fn set_high_water(&self, value: u64) {
+            self.shared.high_water.store(value, Ordering::Relaxed);
+        }
+
+        /// Let a held INSERT (or a hung CREATE) finish: the world resumes.
+        fn release(&self) {
+            self.shared.released.store(true, Ordering::SeqCst);
+            self.shared.release.notify_waiters();
+        }
+
+        fn rows_snapshot(&self) -> Vec<Registration> {
+            self.shared.rows.lock().unwrap().clone()
+        }
+
+        fn requests_snapshot(&self) -> Vec<Recorded> {
+            // Recorded is not Clone; snapshot to owned values.
+            self.shared
+                .requests
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|recorded| Recorded {
+                    sql: recorded.sql.clone(),
+                    role: recorded.role.clone(),
+                    inserted: recorded.inserted.clone(),
+                })
+                .collect()
+        }
+
+        fn create_count(&self) -> usize {
+            self.requests_snapshot()
+                .iter()
+                .filter(|r| r.sql.contains("CREATE TABLE IF NOT EXISTS"))
+                .count()
+        }
+
+        fn insert_count(&self) -> usize {
+            self.requests_snapshot()
+                .iter()
+                .filter(|r| r.inserted.is_some())
+                .count()
+        }
+
+        fn inserted_rows(&self) -> Vec<Registration> {
+            self.requests_snapshot()
+                .iter()
+                .filter_map(|r| r.inserted.clone())
+                .collect()
+        }
+
+        /// DELETE-shaped store traffic: the DELETE statements themselves and
+        /// the exists probe a store-only delete runs before them.
+        fn delete_traffic_count(&self) -> usize {
+            self.requests_snapshot()
+                .iter()
+                .filter(|r| {
+                    r.sql.contains("DELETE FROM")
+                        || r.sql.contains("ALTER TABLE")
+                        || (r.sql.contains("SELECT count() FROM") && r.sql.contains("WHERE name ="))
+                })
+                .count()
+        }
+
+        async fn wait_for(
+            &self,
+            what: &str,
+            deadline: Duration,
+            pred: impl Fn(&[Recorded]) -> bool,
+        ) {
+            let start = std::time::Instant::now();
+            while !pred(&self.requests_snapshot()) {
+                assert!(
+                    start.elapsed() < deadline,
+                    "fake server never observed {what} within {deadline:?}"
+                );
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        }
+
+        /// Give a row directly to the "table" (bypassing the INSERT route —
+        /// the state a hand-written row or a prior boot left behind).
+        fn push_row(&self, row: Registration) {
+            let mut rows = self.shared.rows.lock().unwrap();
+            match rows.iter().position(|r| r.name == row.name) {
+                Some(idx) if rows[idx].registered_at_ms <= row.registered_at_ms => {
+                    rows[idx] = row;
+                }
+                Some(_) => {}
+                None => rows.push(row),
+            }
+        }
+    }
+
+    /// Park until the test releases the fake, re-checking the flag around
+    /// the await so the release can never be lost in the tiny race window.
+    async fn park_until_released(shared: &FakeShared) {
+        while !shared.released.load(Ordering::SeqCst) {
+            let notified = shared.release.notified();
+            if shared.released.load(Ordering::SeqCst) {
+                return;
+            }
+            notified.await;
+        }
+    }
+
+    fn ok(body: Vec<u8>) -> (StatusCode, Vec<u8>) {
+        (StatusCode::OK, body)
+    }
+
+    fn fail(message: &str) -> (StatusCode, Vec<u8>) {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            message.as_bytes().to_vec(),
+        )
+    }
+
+    fn query_param(uri: &Uri, name: &str) -> Option<String> {
+        for pair in uri.query()?.split('&') {
+            let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
+            if key == name {
+                return Some(percent_decode(value));
+            }
+        }
+        None
+    }
+
+    fn percent_decode(text: &str) -> String {
+        let bytes = text.as_bytes();
+        let mut out = Vec::with_capacity(bytes.len());
+        let mut i = 0;
+        while i < bytes.len() {
+            if bytes[i] == b'%' && i + 2 < bytes.len() {
+                out.push(u8::from_str_radix(&text[i + 1..i + 3], 16).unwrap_or(b'%'));
+                i += 3;
+            } else if bytes[i] == b'+' {
+                // form-urlencoded spaces ride as '+'
+                out.push(b' ');
+                i += 1;
+            } else {
+                out.push(bytes[i]);
+                i += 1;
+            }
+        }
+        String::from_utf8_lossy(&out).into_owned()
+    }
+
+    fn digits_after(sql: &str, needle: &str) -> Option<u64> {
+        let start = sql.find(needle)? + needle.len();
+        let rest = &sql[start..];
+        let len = rest
+            .find(|c: char| !c.is_ascii_digit())
+            .unwrap_or(rest.len());
+        rest[..len].parse().ok()
+    }
+
+    fn single_quoted_after(sql: &str, needle: &str) -> Option<String> {
+        let start = sql.find(needle)? + needle.len();
+        let rest = &sql[start..];
+        let open = rest.find('\'')?;
+        let close = rest[open + 1..].find('\'')?;
+        Some(rest[open + 1..open + 1 + close].to_string())
+    }
+
+    /// The (name, registered_at_ms) bind pairs of a phase-2 fetch, parsed off
+    /// the client-substituted literals: `(('n1', 111), ('n2', 222))`. The
+    /// crate suffixes fetched SQL with `FORMAT RowBinaryWithNamesAndTypes`
+    /// (verified in the crate's `sql::SqlBuilder::finish`), so everything
+    /// from that marker on is stripped first.
+    fn phase2_pairs(sql: &str) -> Vec<(String, u64)> {
+        let sql = match sql.find(" FORMAT ") {
+            Some(cut) => &sql[..cut],
+            None => sql,
+        };
+        let Some(start) = sql.find("IN (") else {
+            return Vec::new();
+        };
+        let inner = sql[start + 4..].trim_start();
+        let inner = inner.strip_suffix(')').unwrap_or(inner);
+        inner
+            .split("), (")
+            .map(|piece| {
+                let piece = piece.trim().trim_start_matches('(');
+                let piece = piece.trim_end_matches(')').trim();
+                let (name_part, ms_part) = piece.split_once(',').unwrap_or(("", ""));
+                (
+                    name_part.trim().trim_matches('\'').to_string(),
+                    ms_part.trim().parse().unwrap_or(0),
+                )
+            })
+            .collect()
+    }
+
+    /// The one router: answers every statement shape the registry store
+    /// emits, honoring the fake's fault flags, and records everything.
+    async fn fake_handle(
+        State(shared): State<Arc<FakeShared>>,
+        uri: Uri,
+        body: axum::body::Bytes,
+    ) -> (StatusCode, Vec<u8>) {
+        let param_sql = query_param(&uri, "query");
+        let sql = match param_sql {
+            Some(sql) => sql,
+            None => String::from_utf8_lossy(&body).into_owned(),
+        };
+        let role = query_param(&uri, "role");
+
+        // ---------------------------------------------------- INSERT (held?)
+        if sql.contains("INSERT INTO") && sql.contains("FORMAT RowBinary") {
+            let row = match decode_insert_row(&body) {
+                Some(row) => row,
+                None => {
+                    return fail("fake: undecodable INSERT body (wire shape drift)");
+                }
+            };
+            shared.requests.lock().unwrap().push(Recorded {
+                sql: sql.clone(),
+                role,
+                inserted: Some(row.clone()),
+            });
+            if shared.hold_inserts.load(Ordering::SeqCst) {
+                park_until_released(&shared).await;
+            }
+            // Apply only after any hold: a not-yet-answered write is
+            // invisible to reads, as it is in ClickHouse.
+            let mut rows = shared.rows.lock().unwrap();
+            match rows.iter().position(|r| r.name == row.name) {
+                Some(idx) if rows[idx].registered_at_ms <= row.registered_at_ms => {
+                    rows[idx] = row;
+                }
+                Some(_) => {}
+                None => rows.push(row),
+            }
+            drop(rows);
+            return ok(Vec::new());
+        }
+
+        shared.requests.lock().unwrap().push(Recorded {
+            sql: sql.clone(),
+            role,
+            inserted: None,
+        });
+
+        // ------------------------------------------------ table preparation
+        if sql.contains("CREATE TABLE IF NOT EXISTS") {
+            if shared.hang_create.load(Ordering::SeqCst) {
+                park_until_released(&shared).await;
+            }
+            if shared.create_fails.load(Ordering::SeqCst) {
+                return fail("fake: CREATE rejected - unsigned privilege (CH-CREATE-FAULT)");
+            }
+            return ok(Vec::new());
+        }
+
+        // ---------------------------------------------------------- deletes
+        if sql.contains("DELETE FROM") {
+            if shared.delete_fails.load(Ordering::SeqCst) {
+                return fail("fake: DELETE rejected - CH-FAULT d34dbeef mutations are disabled");
+            }
+            let name = match single_quoted_after(&sql, "WHERE name =") {
+                Some(name) => name,
+                None => return fail("fake: unparseable DELETE name"),
+            };
+            shared.rows.lock().unwrap().retain(|r| r.name != name);
+            return ok(Vec::new());
+        }
+        if sql.contains("ALTER TABLE") {
+            if shared.delete_fails.load(Ordering::SeqCst) {
+                return fail(
+                    "fake: ALTER DELETE rejected - CH-FAULT d34dbeef mutations are disabled",
+                );
+            }
+            let name = match single_quoted_after(&sql, "WHERE name =") {
+                Some(name) => name,
+                None => return fail("fake: unparseable ALTER DELETE name"),
+            };
+            shared.rows.lock().unwrap().retain(|r| r.name != name);
+            return ok(Vec::new());
+        }
+
+        // ------------------------------------------------- layout detection
+        if sql.contains("SELECT payload_len FROM") {
+            if shared.legacy_layout.load(Ordering::SeqCst) {
+                return fail("fake: no column payload_len (column probe fault)");
+            }
+            return ok(Vec::new());
+        }
+        if sql.contains("SELECT name FROM") {
+            return ok(Vec::new());
+        }
+
+        // ------------------------------------------------------- replay read
+        if sql.contains("sum(payload_len) OVER") {
+            let max_bytes = digits_after(&sql, "cum_bytes <= ").unwrap_or(0);
+            let limit = digits_after(&sql, "LIMIT ").unwrap_or(0) as usize;
+            let mut rows = shared.rows.lock().unwrap().clone();
+            rows.sort_by(|a, b| (a.registered_at_ms, &a.name).cmp(&(b.registered_at_ms, &b.name)));
+            let mut out = Vec::new();
+            let mut cum = 0u64;
+            for row in rows {
+                cum += row.payload.len() as u64;
+                if cum > max_bytes {
+                    break;
+                }
+                if out.len() == limit {
+                    break;
+                }
+                out.extend_from_slice(&encode_meta_row(&row));
+            }
+            return ok(out);
+        }
+        if sql.contains("sum(length(payload)) OVER") {
+            let max_bytes = digits_after(&sql, "cum_bytes <= ").unwrap_or(0);
+            let limit = digits_after(&sql, "LIMIT ").unwrap_or(0) as usize;
+            let mut rows = shared.rows.lock().unwrap().clone();
+            rows.sort_by(|a, b| (a.registered_at_ms, &a.name).cmp(&(b.registered_at_ms, &b.name)));
+            let mut out = Vec::new();
+            let mut cum = 0u64;
+            for row in rows {
+                cum += row.payload.len() as u64;
+                if cum > max_bytes {
+                    break;
+                }
+                if out.len() == limit {
+                    break;
+                }
+                out.extend_from_slice(&encode_legacy_row(&row));
+            }
+            return ok(out);
+        }
+        if sql.contains("SELECT name, registered_at_ms, payload") {
+            let pairs = phase2_pairs(&sql);
+            let rows = shared.rows.lock().unwrap().clone();
+            let mut out = Vec::new();
+            for (name, at_ms) in pairs {
+                for row in &rows {
+                    if row.name == name && row.registered_at_ms == at_ms {
+                        let mut encoded = Vec::new();
+                        write_string(&row.name, &mut encoded);
+                        encoded.extend_from_slice(&row.registered_at_ms.to_le_bytes());
+                        write_string(&row.payload, &mut encoded);
+                        out.extend_from_slice(&encoded);
+                    }
+                }
+            }
+            return ok(out);
+        }
+
+        // ------------------------------------------------------ floor seed
+        if sql.contains("SELECT max(registered_at_ms)") {
+            if shared.seed_fails.load(Ordering::SeqCst) {
+                return fail("fake: high-water read rejected - CH-FAULT b7adwater");
+            }
+            return ok(encode_u64(shared.high_water.load(Ordering::Relaxed)));
+        }
+
+        // ------------------------------------------------------------ counts
+        if sql.contains("SELECT count() FROM") && sql.contains("WHERE name =") {
+            let name = match single_quoted_after(&sql, "WHERE name =") {
+                Some(name) => name,
+                None => return fail("fake: unparseable count name"),
+            };
+            let count = shared
+                .rows
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|r| r.name == name)
+                .count() as u64;
+            return ok(encode_u64(count));
+        }
+        if sql.contains("SELECT count() FROM") {
+            let count = shared.rows.lock().unwrap().len() as u64;
+            return ok(encode_u64(count));
+        }
+
+        fail("fake: unmatched statement — the store emitted SQL the fake (and the tests) do not know")
+    }
+
+    // ------------------------------------------------------------ ::: tests
+
+    async fn body_json(
+        result: Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)>,
+    ) -> Result<serde_json::Value, (StatusCode, serde_json::Value)> {
+        match result {
+            Ok(Json(value)) => Ok(value),
+            Err((status, Json(value))) => Err((status, value)),
+        }
+    }
+
+    #[tokio::test]
+    async fn racing_load_and_delete_of_one_name_cannot_leave_memory_and_store_disagreeing() {
+        ensure_globals().await;
+        let fake = FakeClickHouse::spawn().await;
+        fake.set_hold_inserts(true);
+        let app = app_state(fake.client(), None, persisted_config());
+
+        let name = unique_name("gate");
+        let app_post = app.clone();
+        let post_payload = LoadSchemaRequest {
+            schema_name: name.clone(),
+            config_content: tiny_yaml(&name),
+            validate_schema: None,
+            role: None,
+        };
+        let post = tokio::spawn(async move {
+            body_json(load_schema_handler(State(app_post), Json(post_payload)).await).await
+        });
+        // The load is mid-write: the promise is that no concurrent DELETE can
+        // interleave a store statement past this point.
+        fake.wait_for("the held INSERT", Duration::from_secs(10), |reqs| {
+            reqs.iter().any(|r| r.inserted.is_some())
+        })
+        .await;
+
+        let app_delete = app.clone();
+        let name_delete = name.clone();
+        let delete = tokio::spawn(async move {
+            body_json(
+                delete_schema_handler(
+                    State(app_delete),
+                    Path(name_delete),
+                    Query(DeleteSchemaParams { role: None }),
+                )
+                .await,
+            )
+            .await
+        });
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        assert_eq!(
+            fake.delete_traffic_count(),
+            0,
+            "no DELETE-shaped store traffic may arrive while the load's \
+             INSERT is still held — remove either handler's \
+             `schema_registry_gate.lock()` and the DELETE races the held \
+             write (this assert is that mutation's half)"
+        );
+
+        fake.release();
+        let post_body = post.await.expect("post task").expect("post 200");
+        let delete_body = delete.await.expect("delete task").expect("delete 200");
+        assert_eq!(
+            post_body["persisted"],
+            serde_json::json!(true),
+            "{post_body}"
+        );
+        assert_eq!(
+            delete_body["persisted"],
+            serde_json::json!(true),
+            "{delete_body}"
+        );
+
+        // The money assert, memory against the fake's FINAL-collapsed table:
+        // after the DELETE both sides agree the name is gone. The race
+        // mutation ends `memory = gone, store = row` here (a restart would
+        // resurrect a schema the operator deleted).
+        let store_names: Vec<String> = fake.rows_snapshot().into_iter().map(|r| r.name).collect();
+        assert!(
+            store_names.is_empty(),
+            "the store must hold nothing for the deleted name: {store_names:?}"
+        );
+        assert!(
+            graph_catalog::get_graph_schema_by_name(&name)
+                .await
+                .is_err(),
+            "memory must hold nothing for the deleted name"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_endpoint_role_rides_on_the_registry_write() {
+        ensure_globals().await;
+        let fake = FakeClickHouse::spawn().await;
+        let pool = Arc::new(
+            RoleConnectionPool::new_with_params(
+                &fake.url,
+                "fake-user",
+                "fake-pass",
+                Some("default"),
+                None,
+                100,
+            )
+            .await
+            .expect("role pool"),
+        );
+        let app = app_state(fake.client(), Some(pool), persisted_config());
+
+        // Role-less write: the write client must not claim a role.
+        let plain_name = unique_name("role-plain");
+        let plain_body = body_json(
+            load_schema_handler(
+                State(app.clone()),
+                Json(LoadSchemaRequest {
+                    schema_name: plain_name.clone(),
+                    config_content: tiny_yaml(&plain_name),
+                    validate_schema: None,
+                    role: None,
+                }),
+            )
+            .await,
+        )
+        .await;
+        fake.wait_for("the role-less INSERT", Duration::from_secs(10), |reqs| {
+            reqs.iter().any(|r| r.inserted.is_some())
+        })
+        .await;
+        assert_eq!(
+            plain_body.expect("plain post 200")["persisted"],
+            serde_json::json!(true)
+        );
+
+        // Role'd write: the endpoint's role must reach the write path.
+        let writer_name = unique_name("role-writer");
+        let writer_body = body_json(
+            load_schema_handler(
+                State(app.clone()),
+                Json(LoadSchemaRequest {
+                    schema_name: writer_name.clone(),
+                    config_content: tiny_yaml(&writer_name),
+                    validate_schema: None,
+                    role: Some("writer".to_string()),
+                }),
+            )
+            .await,
+        )
+        .await;
+        fake.wait_for("the role'd INSERT", Duration::from_secs(10), |reqs| {
+            reqs.iter().filter(|r| r.inserted.is_some()).count() >= 2
+        })
+        .await;
+        assert_eq!(
+            writer_body.expect("writer post 200")["persisted"],
+            serde_json::json!(true)
+        );
+
+        let snapshot = fake.requests_snapshot();
+        let inserts: Vec<&Recorded> = snapshot.iter().filter(|r| r.inserted.is_some()).collect();
+        assert_eq!(inserts.len(), 2, "two plain INSERT statements expected");
+        assert!(
+            inserts[0].role.is_none(),
+            "a registry write without `role` must not claim one (mutation: \
+             ignore role → default client): {:?}",
+            inserts[0].sql
+        );
+        assert_eq!(
+            inserts[1].role.as_deref(),
+            Some("writer"),
+            "the write must run as the endpoint's role — a mutation that \
+             drops `role` from `client_for_write` turns this red: {:?}",
+            inserts[1].role
+        );
+    }
+
+    #[tokio::test]
+    async fn the_registry_table_is_created_once_per_process_not_per_operation() {
+        ensure_globals().await;
+        let fake = FakeClickHouse::spawn().await;
+        let app = app_state(fake.client(), None, persisted_config());
+
+        let names: Vec<String> = vec![unique_name("create-once-a"), unique_name("create-once-b")];
+        for name in &names {
+            let body = body_json(
+                load_schema_handler(
+                    State(app.clone()),
+                    Json(LoadSchemaRequest {
+                        schema_name: name.clone(),
+                        config_content: tiny_yaml(name),
+                        validate_schema: None,
+                        role: None,
+                    }),
+                )
+                .await,
+            )
+            .await;
+            assert_eq!(
+                body.expect("post 200")["persisted"],
+                serde_json::json!(true)
+            );
+        }
+
+        // A memory-path delete rides the same cached preparation.
+        let delete_name = fake.rows_snapshot()[0].name.clone();
+        let delete_body = body_json(
+            delete_schema_handler(
+                State(app.clone()),
+                Path(delete_name.clone()),
+                Query(DeleteSchemaParams { role: None }),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(
+            delete_body.expect("delete 200")["persisted"],
+            serde_json::json!(true)
+        );
+
+        assert_eq!(
+            fake.create_count(),
+            1,
+            "issuing a CREATE before every operation (the round-1 design the \
+             review called out) makes this 3; the process prepares its table \
+             exactly once"
+        );
+        let store_names: Vec<String> = fake.rows_snapshot().into_iter().map(|r| r.name).collect();
+        let survivor = names
+            .iter()
+            .find(|candidate| **candidate != delete_name)
+            .expect("exactly one registration survives the delete");
+        assert_eq!(
+            store_names,
+            vec![survivor.clone()],
+            "the surviving registration stays stored: {store_names:?}"
+        );
+        assert!(
+            graph_catalog::get_graph_schema_by_name(&delete_name)
+                .await
+                .is_err(),
+            "the deleted schema must be gone from memory"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_create_falls_through_to_the_probe_and_still_stores() {
+        ensure_globals().await;
+        let fake = FakeClickHouse::spawn().await;
+        fake.set_create_fails(true);
+        let app = app_state(fake.client(), None, persisted_config());
+
+        let name = unique_name("least-privilege");
+        let body = body_json(
+            load_schema_handler(
+                State(app),
+                Json(LoadSchemaRequest {
+                    schema_name: name.clone(),
+                    config_content: tiny_yaml(&name),
+                    validate_schema: None,
+                    role: None,
+                }),
+            )
+            .await,
+        )
+        .await;
+        let body = body.expect("post 200");
+        assert_eq!(
+            body["persisted"],
+            serde_json::json!(true),
+            "a user without the CREATE grant must still persist (the \
+             DBA-provisioned-table path); mutation: a failed CREATE fails \
+             the ensure → body: {body}"
+        );
+        assert_eq!(
+            fake.create_count(),
+            1,
+            "the CREATE was attempted, then the probes settled the layout"
+        );
+        assert!(
+            fake.rows_snapshot().into_iter().any(|r| r.name == name),
+            "sanity: the row is stored"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_wedged_store_statement_degrades_within_the_bound() {
+        let fake = FakeClickHouse::spawn().await;
+        let mut inner = ClickhouseSchemaStore::new(fake.client());
+        inner.call_bound = Duration::from_millis(20);
+        inner.replay_bound = Duration::from_millis(60);
+        // save_yaml lives on the SchemaStore enum (the handlers' door), not
+        // on the concrete Clickhouse store.
+        let store = SchemaStore::Clickhouse(Box::new(inner));
+        fake.set_hang_create(true);
+
+        let saved = tokio::time::timeout(
+            Duration::from_secs(5),
+            store.save_yaml(&unique_name("wedged"), "name: wedged", None),
+        )
+        .await;
+        let outcome = saved.expect(
+            "every store op must be bounded at ITS call site (`bound_call`): \
+             save_yaml hung past the harness deadline, meaning the op itself \
+             was left unbounded — remove `with_timeout_within` at a call \
+             site and this assertion fires instead of the API hanging",
+        );
+        let outcome =
+            outcome.expect_err("a wedged server must surface the bounded-call error, not success");
+        assert!(
+            outcome.contains("store unreachable"),
+            "the wedged CREATE must surface as the mapped error, not the raw \
+             one: {outcome}"
+        );
+        assert!(
+            outcome.contains("'registry upsert'"),
+            "the op name trails for the log trail: {outcome}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_high_water_seed_never_caches_the_preparation_and_never_writes() {
+        ensure_globals().await;
+        let fake = FakeClickHouse::spawn().await;
+        fake.set_seed_fails(true);
+        let app = app_state(fake.client(), None, persisted_config());
+
+        let first = unique_name("seed-fail");
+        let body = body_json(
+            load_schema_handler(
+                State(app.clone()),
+                Json(LoadSchemaRequest {
+                    schema_name: first.clone(),
+                    config_content: tiny_yaml(&first),
+                    validate_schema: None,
+                    role: None,
+                }),
+            )
+            .await,
+        )
+        .await;
+        let body = body.expect("post 200");
+        assert_eq!(
+            body["persisted"],
+            serde_json::json!(false),
+            "item 1: the ensure fails when the floor's high-water read \
+             fails; the write never happens — body: {body}"
+        );
+        assert_eq!(
+            fake.insert_count(),
+            0,
+            "a seed that cannot be read must stop the write: the floor is \
+             load-bearing (a row stamped below the table high-water wins the \
+             collapse and a restart serves a stale schema)"
+        );
+
+        // The failure was NOT cached: fixing the store makes the very next
+        // op succeed, having re-run the whole preparation.
+        fake.set_seed_fails(false);
+        let second = unique_name("seed-ok");
+        let body = body_json(
+            load_schema_handler(
+                State(app),
+                Json(LoadSchemaRequest {
+                    schema_name: second.clone(),
+                    config_content: tiny_yaml(&second),
+                    validate_schema: None,
+                    role: None,
+                }),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(
+            body.expect("post 200")["persisted"],
+            serde_json::json!(true)
+        );
+        assert_eq!(
+            fake.create_count(),
+            2,
+            "the failed ensure ran once, its retry ran again — caching past \
+             a failed seed (the pre-round-3 bug) answers false retries"
+        );
+        assert_eq!(fake.insert_count(), 1, "exactly the retry succeeds");
+    }
+
+    #[tokio::test]
+    async fn a_floor_left_unseeded_cannot_stamp_below_the_table_high_water() {
+        let fake = FakeClickHouse::spawn().await;
+        let store = SchemaStore::Clickhouse(Box::new(ClickhouseSchemaStore::new(fake.client())));
+        // 100 seconds past this process's wall clock: a stamp below this can
+        // only come from a no-op seed (the mutation).
+        let now_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        let high_water = now_ms + 100_000_000;
+        fake.set_high_water(high_water);
+
+        let name = unique_name("seeded-floor");
+        store
+            .save_yaml(&name, "name: seeded-floor", None)
+            .await
+            .expect("the store write succeeds on a healthy fake");
+
+        let inserted = fake.inserted_rows();
+        assert_eq!(inserted.len(), 1, "exactly one write");
+        assert!(
+            inserted[0].registered_at_ms >= high_water,
+            "the write's stamp ({}) must carry the SEEDED floor (= {high_water} \
+             here, then strict-increase): a no-op seed leaves it at wall \
+             clock and the row loses ReplacingMergeTree's collapse to an \
+             older row",
+            inserted[0].registered_at_ms
+        );
+    }
+
+    #[tokio::test]
+    async fn the_legacy_layout_restores_through_the_single_phase_select() {
+        let fake = FakeClickHouse::spawn().await;
+        fake.set_legacy_layout(true);
+        let store = ClickhouseSchemaStore::new(fake.client());
+
+        let first = Registration {
+            name: "legacy-alpha".to_string(),
+            source: SOURCE_API_LOAD.to_string(),
+            format: FORMAT_YAML.to_string(),
+            payload: "alpha-legacy-payload".to_string(),
+            registry_version: REGISTRY_VERSION,
+            registered_at_ms: 111,
+        };
+        let second = Registration {
+            name: "legacy-bravo".to_string(),
+            payload: "bravo-legacy-payload".to_string(),
+            registered_at_ms: 222,
+            ..first.clone()
+        };
+        fake.push_row(first);
+        fake.push_row(second);
+
+        let fetch = store
+            .load_replay_rows(500, 16_777_216)
+            .await
+            .expect("a legacy table keeps restoring");
+        assert_eq!(
+            fetch.total_rows, 2,
+            "the count read sees both rows before any budget math"
+        );
+        assert_eq!(fetch.fetched, 2);
+        assert_eq!(fetch.restorable.len(), 2, "both rows are restorable");
+        let payloads: Vec<&str> = fetch
+            .restorable
+            .iter()
+            .map(|row| row.payload.as_str())
+            .collect();
+        assert!(
+            payloads.contains(&"alpha-legacy-payload")
+                && payloads.contains(&"bravo-legacy-payload"),
+            "the legacy select carries the payloads themselves (mutation: a \
+             legacy-layout select broken → empty payloads or an error): \
+             {payloads:?}"
+        );
+
+        let snapshot = fake.requests_snapshot();
+        let replay_reads: Vec<&str> = snapshot
+            .iter()
+            .map(|r| r.sql.as_str())
+            .filter(|sql| sql.contains("sum("))
+            .collect();
+        assert_eq!(
+            replay_reads.len(),
+            1,
+            "one layout probe fell through to the legacy shape: \
+             {replay_reads:?}"
+        );
+        assert!(
+            replay_reads[0].contains("sum(length(payload))"),
+            "the legacy fetch answers through the single-phase select: {}",
+            replay_reads[0]
+        );
+        assert!(
+            !replay_reads[0].contains("sum(payload_len)"),
+            "the legacy table has no payload_len column: {}",
+            replay_reads[0]
+        );
+    }
+
+    #[tokio::test]
+    async fn phase_two_fetches_payloads_by_name_and_registered_at_ms() {
+        let fake = FakeClickHouse::spawn().await;
+        let store = ClickhouseSchemaStore::new(fake.client());
+
+        fake.push_row(Registration {
+            name: "pair-alpha".to_string(),
+            source: SOURCE_API_LOAD.to_string(),
+            format: FORMAT_YAML.to_string(),
+            payload: "alpha-current-payload".to_string(),
+            registry_version: REGISTRY_VERSION,
+            registered_at_ms: 123,
+        });
+        fake.push_row(Registration {
+            name: "pair-bravo".to_string(),
+            source: SOURCE_API_LOAD.to_string(),
+            format: FORMAT_YAML.to_string(),
+            payload: "bravo-current-payload".to_string(),
+            registry_version: REGISTRY_VERSION,
+            registered_at_ms: 456,
+        });
+
+        let fetch = store.load_replay_rows(500, 16_777_216).await.expect("read");
+        assert_eq!(fetch.restorable.len(), 2);
+        for row in &fetch.restorable {
+            let expected = match row.name.as_str() {
+                "pair-alpha" => "alpha-current-payload",
+                "pair-bravo" => "bravo-current-payload",
+                other => panic!("unexpected row {other}"),
+            };
+            assert_eq!(
+                row.payload, expected,
+                "the payload must land on ITS (name, registered_at_ms) row"
+            );
+        }
+
+        let snapshot = fake.requests_snapshot();
+        let phase2_sqls: Vec<&str> = snapshot
+            .iter()
+            .map(|r| r.sql.as_str())
+            .filter(|sql| sql.contains("SELECT name, registered_at_ms, payload"))
+            .collect();
+        assert_eq!(phase2_sqls.len(), 1, "one phase-2 fetch");
+        let sql = phase2_sqls[0];
+        assert!(
+            sql.contains("(name, registered_at_ms) IN ("),
+            "the phase-2 fetch keys rows by BOTH columns — reverting to a \
+             name-only IN restores a rewritten row under stale metadata \
+             (the round-3 note): {sql}"
+        );
+        assert!(
+            sql.contains("('pair-alpha', 123)") && sql.contains("('pair-bravo', 456)"),
+            "the binds arrive as client-substituted literals: {sql}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_store_only_delete_answers_500_without_leaking_the_clickhouse_error() {
+        ensure_globals().await;
+        let fake = FakeClickHouse::spawn().await;
+        fake.set_delete_fails(true);
+        // A row in the store, deliberately absent from memory: exactly the
+        // state a failed replay leaves behind.
+        fake.push_row(Registration {
+            name: "store-only-faulty".to_string(),
+            source: SOURCE_API_LOAD.to_string(),
+            format: FORMAT_YAML.to_string(),
+            payload: "rows".to_string(),
+            registry_version: REGISTRY_VERSION,
+            registered_at_ms: 42,
+        });
+        let app = app_state(fake.client(), None, persisted_config());
+
+        let attempted = body_json(
+            delete_schema_handler(
+                State(app),
+                Path("store-only-faulty".to_string()),
+                Query(DeleteSchemaParams { role: None }),
+            )
+            .await,
+        )
+        .await;
+        let Err((status, body)) = attempted else {
+            panic!("a failing store must not answer 200: {attempted:?}");
+        };
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+        let error = body["error"].as_str().expect("error body");
+        assert!(
+            error.contains("could not be deleted") && error.contains("registry store answered"),
+            "item 4: the fixed message promises nothing about the store \
+             internals — body: {error}"
+        );
+        assert!(
+            !error.contains("d34dbeef"),
+            "the ClickHouse-side fault detail stays in the log (the WARN), \
+             never in an API body: {error}"
+        );
+    }
+
+    #[test]
+    fn the_endpoint_validators_refuse_what_the_registry_cannot_record_safely() {
+        // The good cases first: the happy path must not trip anything.
+        assert_eq!(schema_name_error_if_any("good-name2"), None);
+        assert_eq!(schema_name_error_if_any(&"x".repeat(512)), None, "at cap");
+        assert_eq!(role_error_if_any("writer"), None);
+        // An empty role is NOT a validator error: both endpoints normalize ''
+        // to no-role before the check (the round-one contract), and a stray
+        // empty string must stay a default write, not a 400.
+        assert_eq!(role_error_if_any(""), None);
+
+        // Names: empty, control characters, over-cap — all refusals.
+        assert!(schema_name_error_if_any("").is_some(), "empty name");
+        assert!(
+            schema_name_error_if_any("forged\nlog-line").is_some(),
+            "a control character forges log lines"
+        );
+        assert!(schema_name_error_if_any("f\u{7}orged").is_some());
+        assert!(
+            schema_name_error_if_any(&"x".repeat(513)).is_some(),
+            "past the cap"
+        );
+
+        // Roles: control characters and over-cap — refusals.
+        assert!(
+            role_error_if_any("candidate\nrole").is_some(),
+            "the pool logs a first-seen role verbatim"
+        );
+        assert!(role_error_if_any(&"x".repeat(257)).is_some());
+        assert_eq!(role_error_if_any(&"x".repeat(256)), None, "at cap");
     }
 }

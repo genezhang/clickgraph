@@ -2281,6 +2281,26 @@ pub async fn load_schema_handler(
     // write instead of a mystery `persisted: false`).
     let role = payload.role.as_deref().filter(|r| !r.is_empty());
 
+    // Any schema-name or role the registry cannot record safely is a 400
+    // before any gate, registry or store work (both endpoints; the same
+    // checks run on DELETE). An empty name would register and 404 forever
+    // after; a control character in either identifier forges log lines
+    // (the pool logs a first-seen role verbatim).
+    if let Some(problem) = schema_registry::schema_name_error_if_any(&payload.schema_name) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": problem })),
+        ));
+    }
+    if let Some(role) = role {
+        if let Some(problem) = schema_registry::role_error_if_any(role) {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": problem })),
+            ));
+        }
+    }
+
     // Reserved names never touch the registries: the routes and the CLI's
     // introspection workflow own these spellings.
     if schema_registry::is_reserved_schema_name(&payload.schema_name) {
@@ -2316,7 +2336,10 @@ pub async fn load_schema_handler(
             // Invalidate cache entries for this schema
             if let Some(cache) = GLOBAL_QUERY_CACHE.get() {
                 cache.invalidate_schema(&payload.schema_name);
-                log::info!("Cache invalidated for schema: {}", payload.schema_name);
+                log::info!(
+                    "Cache invalidated for schema: {}",
+                    schema_registry::log_safe(&payload.schema_name)
+                );
             }
 
             // Durability is opt-in: with persistence off the response stays
@@ -2458,6 +2481,23 @@ pub async fn delete_schema_handler(
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
     // Same normalization the POST does: an empty role string is no role.
     let role = params.role.as_deref().filter(|r| !r.is_empty());
+    // The POST's at-the-door checks, mirrored: a control character or a
+    // pathological length in either identifier is a 400 before any lock,
+    // memory work or store contact.
+    if let Some(problem) = schema_registry::schema_name_error_if_any(&schema_name) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": problem })),
+        ));
+    }
+    if let Some(role) = role {
+        if let Some(problem) = schema_registry::role_error_if_any(role) {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": problem })),
+            ));
+        }
+    }
     let _registry_gate = app_state.schema_registry_gate.lock().await;
 
     let memory_removal = graph_catalog::remove_schema(&schema_name).await;
@@ -2506,6 +2546,11 @@ pub async fn delete_schema_handler(
                 Err(store_err) => {
                     // Nothing was deleted (no memory entry ever existed,
                     // the row survived): refusal to lie beats a fake 200.
+                    // The response is a FIXED message: a ClickHouse error
+                    // carries the server's user, database, grant names and
+                    // version, and none of it belongs in an API body. The
+                    // detail is logged (this WARN, with the name already
+                    // log-safe), the operators read it there.
                     log::warn!(
                         "store-only delete of schema '{}' failed ({store_err})",
                         schema_registry::log_safe(&schema_name)
@@ -2515,8 +2560,9 @@ pub async fn delete_schema_handler(
                         Json(serde_json::json!({
                             "error": format!(
                                 "stored row for schema '{}' could not be \
-                                 deleted: {store_err}",
-                                schema_name
+                                 deleted (the registry store answered with \
+                                 a failure; the server log names the cause)",
+                                schema_registry::log_safe(&schema_name)
                             )
                         })),
                     ))
