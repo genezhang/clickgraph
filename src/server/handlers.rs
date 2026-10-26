@@ -2271,6 +2271,47 @@ pub async fn list_schemas_handler(
     })))
 }
 
+/// The admin-write gate's guard, owned so the store half of a call can carry
+/// it into its own task (see [`run_store_half`]).
+type RegistryGate = Option<tokio::sync::OwnedMutexGuard<()>>;
+
+/// Takes the admin-write gate when this server has a store to keep in step
+/// with memory. With persistence off (the default) there is no second half,
+/// so no gate: loads and deletes behave exactly as they did before the
+/// feature, and a slow load blocks only itself.
+async fn registry_gate_if_persisting(app_state: &AppState) -> RegistryGate {
+    if matches!(*app_state.schema_store, schema_registry::SchemaStore::Off) {
+        return None;
+    }
+    Some(app_state.schema_registry_gate.clone().lock_owned().await)
+}
+
+/// Runs the store half of an admin call as its own task, holding `gate`
+/// until the store answers. A request dropped by the client (disconnect) or
+/// by the server's request timeout drops its handler future; without a task
+/// of its own the store write would be abandoned at that point while the
+/// in-memory change it belongs to stays. The task is bounded by the store's
+/// own call bounds, so it cannot hold the gate for long. `None` = the task
+/// died (a panic), which the caller reports honestly.
+async fn run_store_half<T, F>(gate: RegistryGate, what: &str, store_half: F) -> Option<T>
+where
+    T: Send + 'static,
+    F: std::future::Future<Output = T> + Send + 'static,
+{
+    match tokio::spawn(async move {
+        let _gate = gate;
+        store_half.await
+    })
+    .await
+    {
+        Ok(value) => Some(value),
+        Err(join_error) => {
+            log::error!("registry {what}: the store task failed ({join_error})");
+            None
+        }
+    }
+}
+
 pub async fn load_schema_handler(
     State(app_state): State<Arc<AppState>>,
     Json(payload): Json<LoadSchemaRequest>,
@@ -2321,8 +2362,11 @@ pub async fn load_schema_handler(
     // their halves into `memory = A, store = B` — the divergence a restart
     // then surfaced as whichever boot-reload made it. Admin-endpoint rates
     // make one global gate cost-free; boot replay needs no turn (it runs
-    // before the listener binds).
-    let _registry_gate = app_state.schema_registry_gate.lock().await;
+    // before the listener binds). Only a server that has a store takes it:
+    // with persistence off there is no second half to keep in step, and a
+    // slow load must not queue every other load behind it (the pre-feature
+    // behavior).
+    let registry_gate = registry_gate_if_persisting(&app_state).await;
 
     match graph_catalog::load_schema_from_content(
         &payload.schema_name,
@@ -2349,14 +2393,41 @@ pub async fn load_schema_handler(
             // The store is the app state's one shared instance, not a
             // per-request build: its one-time table preparation serializes
             // concurrent first registrations across the server.
-            let outcome = schema_registry::persist_yaml_after_load(
-                &app_state.config,
-                &app_state.schema_store,
-                &payload.schema_name,
-                &payload.config_content,
-                role,
-            )
-            .await;
+            //
+            // The store half runs as its own task and owns the gate: a
+            // client that disconnects (or a request that times out) after
+            // the schema went live in memory must not abandon the write
+            // mid-flight, leaving memory at NEW and the store at OLD until
+            // someone retries. The task is bounded by the store's own call
+            // bounds, so it cannot hold the gate for long.
+            let store_half = {
+                let app_state = app_state.clone();
+                let schema_name = payload.schema_name.clone();
+                let config_content = payload.config_content.clone();
+                let role = role.map(str::to_owned);
+                run_store_half(registry_gate, "persist schema", async move {
+                    schema_registry::persist_yaml_after_load(
+                        &app_state.config,
+                        &app_state.schema_store,
+                        &schema_name,
+                        &config_content,
+                        role.as_deref(),
+                    )
+                    .await
+                })
+                .await
+            };
+            let outcome = match store_half {
+                Some(outcome) => outcome,
+                // The task died (a panic in the store code): the schema is
+                // live, the row is unknown — the honest answer is "not
+                // persisted", never a lie in either direction.
+                None => (app_state.config.schema_persistence == SchemaPersistenceMode::Clickhouse)
+                    .then_some(schema_registry::PersistOutcome {
+                        persisted: false,
+                        unrestorable_reason: None,
+                    }),
+            };
 
             let mut body = serde_json::json!({
                 "message": format!("Schema '{}' loaded successfully", payload.schema_name),
@@ -2498,7 +2569,7 @@ pub async fn delete_schema_handler(
             ));
         }
     }
-    let _registry_gate = app_state.schema_registry_gate.lock().await;
+    let registry_gate = registry_gate_if_persisting(&app_state).await;
 
     let memory_removal = graph_catalog::remove_schema(&schema_name).await;
 
@@ -2525,7 +2596,20 @@ pub async fn delete_schema_handler(
             // success that reports `true`) — the old `!deleted → 404`
             // branch here was unreachable dead code. The bool return stays
             // because the memory-backed path below does read it.
-            return match app_state.schema_store.delete(&schema_name, role).await {
+            let deleted = {
+                let app_state = app_state.clone();
+                let schema_name = schema_name.clone();
+                let role = role.map(str::to_owned);
+                run_store_half(registry_gate, "store-only delete", async move {
+                    app_state
+                        .schema_store
+                        .delete(&schema_name, role.as_deref())
+                        .await
+                })
+                .await
+            }
+            .unwrap_or_else(|| Err("the store task did not complete".to_string()));
+            return match deleted {
                 Ok(_always_true) => {
                     log::info!(
                         "store-only delete: stored row for schema '{}' \
@@ -2592,7 +2676,23 @@ pub async fn delete_schema_handler(
         // instance the load path persists through, so its one-time table
         // preparation serializes first registrations across the whole
         // server instead of within one request's throwaway store.
-        match app_state.schema_store.delete(&schema_name, role).await {
+        // Detached like the POST's store half: the memory entry is already
+        // gone, and a client that hangs up now must not leave the stored row
+        // behind to resurrect the schema at the next boot.
+        let deleted = {
+            let app_state = app_state.clone();
+            let schema_name = schema_name.clone();
+            let role = role.map(str::to_owned);
+            run_store_half(registry_gate, "delete stored row", async move {
+                app_state
+                    .schema_store
+                    .delete(&schema_name, role.as_deref())
+                    .await
+            })
+            .await
+        }
+        .unwrap_or_else(|| Err("the store task did not complete".to_string()));
+        match deleted {
             Ok(deleted) => Some(deleted),
             Err(e) => {
                 // The schema is gone from memory; a failing store must not

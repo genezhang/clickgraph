@@ -151,9 +151,15 @@ One row per registered schema name, in the **configured ClickHouse database**
   bucket with a per-name WARN, never guessed at (a hand-edited or foreign
   row's payload is not this server's contract). The version check runs
   first: a row that is simultaneously future-versioned and foreign-sourced
-  belongs to the strictly safer future-version bucket. `format` stays
-  checked at restore time (a current-version `api-load` row with a non-yaml
-  format is a failed restore, not a silent skip).
+  belongs to the strictly safer future-version bucket. The same gate refuses,
+  into a fourth counted bucket (`invalid-name`), a row of this server's own
+  kind whose **name the admin API would answer 400** (empty, control or
+  invisible formatting characters, over 512 bytes): such a row can only be a
+  hand-written one, restoring it would register a schema
+  `DELETE /schemas/{name}` can never reach, and its name would reach the log.
+  The per-row WARN names it (scrubbed) and gives the SQL that removes it.
+  `format` stays checked at restore time (a current-version `api-load` row
+  with a non-yaml format is a failed restore, not a silent skip).
 - **Table preparation is once per process, with probe tolerance.** The
   store issues `CREATE TABLE IF NOT EXISTS` at most once per boot (guarded
   by an in-store mutex; a *failed* ensure is retried by the next operation,
@@ -388,10 +394,14 @@ One row per registered schema name, in the **configured ClickHouse database**
      `registry_version`, unknown `source` — are not failures: they are never
      attempted and are counted in their own summary segments below.)
    - Knockout summary: `n restored / m config-shadowed / k failed / b skipped
-     over replay budget / v newer-version skipped / u unknown-source skipped`
-     in one INFO line — the six segments account for every row (`total_rows =
-     restored + config-shadowed + failed + budget-skipped + newer-version +
-     unknown-source`); when the store is unreachable:
+     over replay budget / v newer-version skipped / u unknown-source skipped /
+     i invalid-name skipped / l lost between reads` in one INFO line — the
+     eight segments account for every row (`total_rows = restored +
+     config-shadowed + failed + budget-skipped + newer-version +
+     unknown-source + invalid-name + lost-between-reads`). A row *lost
+     between reads* was returned by the metadata read and then deleted or
+     re-registered before the payload read (Current tables): it is counted as
+     such, never as one the budget left out. When the store is unreachable:
      `0 restored / 0 config-shadowed / 0 failed (store unreachable at boot)`.
 4. **Delete**: `DELETE /schemas/{name}` removes the in-memory registration +
    query-cache invalidation (the same call the load path makes) and deletes the
@@ -428,11 +438,31 @@ One row per registered schema name, in the **configured ClickHouse database**
    it). Queuing is the whole cost: an admin-rate endpoint makes one global
    gate effectively free, and holding it across the store write is exactly
    the price of the guarantee — serializing per name would hold a keyed
-   lock across a network round-trip for no additional property. The
-    queue's own wait is bounded: whatever the store call at the gate's head
-    is doing, it answers within its call bound (10 s on the write path), so
-    a wedged store drains the queue into degraded answers instead of
-    starving the endpoints. Boot
+   lock across a network round-trip for no additional property.
+   **The gate exists only where there is a store to keep in step.** With
+   persistence off (the default) neither handler takes it: loads and deletes
+   behave exactly as before the feature, and a slow load blocks only itself.
+   With persistence on, the *store* half of a call is bounded (it answers
+   within its call bound, 10 s on the write path, so a wedged store drains
+   the queue into degraded answers — N queued calls answer after N × 10 s at
+   worst), but the *memory* half of a load (column discovery in
+   `load_schema_from_content`) has no client-side bound of its own: a
+   ClickHouse call that hangs inside a load holds the gate until the request
+   times out (`--query-timeout-secs`, default 300 s; unbounded at `0`).
+   **A dropped request does not abandon its store half.** After the schema
+   went live in memory (POST) or left it (DELETE), the store write runs as
+   its own task and owns the gate until the store answers or its bound
+   elapses; a client that disconnects (or a request that times out) in that
+   window no longer abandons a store call that was still being prepared or
+   sent — verified against a real server whose store was slow at first use:
+   the round-three server left the schema live in memory with no stored row
+   and no log line (a restart then lost it), the detached half stores it.
+   A store that never answers still leaves the registration memory-only
+   (`persisted: false`, which the dropped client never sees) — but that is now
+   a WARN in the log, and the gate stays held until the call's bound, so a
+   late-landing statement cannot interleave with the next admin call. The
+   task is bounded by the store's call bounds, so it cannot hold the gate for
+   long. Boot
    replay takes no turn in the gate: it runs before the listener binds,
    so there is nothing concurrently racing it. Within the store-only
    path, probe→delete is protected by the same gate (both call sites hold
@@ -465,6 +495,16 @@ One row per registered schema name, in the **configured ClickHouse database**
    engine is added for the store's guarantees; multi-writer ClickGraph
    servers stay out of scope v1 per the single-writer deployment profile.
    Reads are safe everywhere (`FINAL` always).
+   **With `CLICKHOUSE_CLUSTER` set, use a replicated registry table (or do
+   not pass `role`).** The server creates the table once, on one node, as a
+   plain `ReplacingMergeTree` (no `ON CLUSTER`). Writes with a `role` go
+   through the role pool, which round-robins over the cluster nodes, while
+   the default client — and boot replay — use the seed URL: on a cluster, a
+   role-scoped write can reach a node that has no such table or a different
+   node's local copy that replay never reads. Provision the table as a
+   `Replicated` engine on every node (the DBA-provisioned profile, see
+   Configuration › Privileges) before enabling persistence on a cluster; the
+   server's own `CREATE` does not do that for you.
 6. **Reserved names.** `POST /schemas/load` refuses `load`, `draft`,
    `introspect`, `discover-prompt` with a 400 naming the reservation —
    before any gate acquisition, registry, or store work: these spellings
@@ -478,13 +518,21 @@ One row per registered schema name, in the **configured ClickHouse database**
    durability endpoints validate their identifiers at the door, with a 400
    naming the problem **before any gate acquisition, memory work, or store
    contact** (the reservation check above shares that property): a name that
-   is empty, carries a control character, or exceeds 512 characters, and a
-   role that carries a control character or exceeds 256 characters, are all
-   refused. Rationale: these are operator-supplied bytes that otherwise ride
+   is empty, carries a control character or an invisible formatting
+   character, or exceeds 512 **bytes**, and a role that carries one of those
+   characters or exceeds 256 bytes, are all refused. "Control" is Unicode
+   `Cc` (`\n`, `\r`, NUL, DEL, the C1 range); "invisible formatting" is the
+   line/paragraph separators (U+2028/U+2029), the zero-width characters
+   (U+200B–U+200F, U+2060–U+2064, U+FEFF) and the bidirectional controls
+   (U+061C, U+202A–U+202E, U+2066–U+2069) — characters that forge a log
+   line or make one name read as another. Boot replay applies the same name
+   check to every stored row (a hand-written row the API would refuse is
+   skipped into the `invalid-name` bucket, not restored). Rationale: these
+   are operator-supplied bytes that otherwise ride
    into log lines (a `\n` in a name could forge entries after the prompt) —
    the store's own logging prefers to route them through `log_safe`, and
    refusing up front keeps the raw byte away from every downstream surface.
-   The caps are outright refusals, not truncations: a 513-character name is
+   The caps are outright refusals, not truncations: a 513-byte name is
    no deployment's spelling. An **empty role is not an error**: both
    endpoints normalize `""` to no-role (default client), exactly as
    round-two shipped, and that normalization runs before the validator —
@@ -590,7 +638,24 @@ Four station levels and a mutation-red tier, each with a named concern:
    - item-4: the store-only delete answers the **fixed 500 message**
      whose body provably carries no ClickHouse fault token;
    - the **validators' refusal matrix** (empty/control/oversize name and
-     role; empty role stays a default write).
+     role; empty role stays a default write);
+   - maintainer round four, each verified red by its mutation: the
+     **handlers** refuse unsafe identifiers before any store contact (the
+     fake sees zero requests — removing a handler's validator, name or role,
+     turns it red); the **DELETE `role`** rides on the memory-path and the
+     store-only delete; **every store op is bounded at its own call site**
+     (`exists`, `delete`, the replay read each wedged on their own statement)
+     and the **replay read runs under `replay_bound`** (a slow-but-healthy
+     link must not read as an outage); the **`ALTER … DELETE` fallback**; a
+     failing store delete after the memory removal stays a 200 with
+     `persisted: false`; an unreadable exists probe is a 404, never a
+     DELETE; a rejected INSERT answers `persisted: false`; a row **lost
+     between the replay reads** is counted and not restored empty; rows with
+     **names the API refuses** are skipped; the **timestamp stamp saturates**
+     at `u64::MAX`; **a dropped POST / DELETE does not abandon its store
+     half** (the write still lands, the gate is held until it does); and the
+     **gate is taken only with a store** (with persistence off a held gate
+     blocks nothing; with a store it queues the call).
 5. **E2E (python, pytest-collectable)** — the restart cycle as CI runs it
    (`pytest tests/e2e/test_schema_persistence_e2e.py`, skipping when
    `CLICKHOUSE_URL` / `CLICKGRAPH_BIN` are unset; plain-python `python …`
@@ -688,6 +753,17 @@ Backward-compat proof is a test class of its own: with the flag unset, a full
     the fixed message, never a ClickHouse error text. Phase 2 fetch keys
     are `(name, registered_at_ms)` pairs. All of it is pinned by the
     offline mutation-red tier above, plus the round-two live tier.
+
+12. **Maintainer round four.** The admin gate is taken only when there is a
+    store (persistence off is the pre-feature behavior again); the store half
+    of a POST or DELETE runs as its own task that owns the gate, so a dropped
+    request cannot split memory from the store; boot replay refuses rows with
+    names the API would refuse and counts rows lost between its two reads
+    separately from the budget; unsafe-character checks cover the line/
+    paragraph separators and zero-width/bidirectional characters; the cap is
+    documented in bytes; the cluster + `role` limitation is stated; and the
+    survivors of the round-three mutation run are pinned (see the
+    mutation-red tier).
 
 ## Open Questions (for maintainer review, not blocking the build)
 

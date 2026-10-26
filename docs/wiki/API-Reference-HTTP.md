@@ -512,8 +512,9 @@ Content-Type: application/json
 
 The names `load`, `draft`, `introspect` and `discover-prompt` are reserved (routes of their own):
 registering one answers `400`. So does a name or role the registry cannot record safely, with a
-message naming the problem — an empty name, a control character in a name or role, a name over
-512 characters or a role over 256 (the check runs before any lock, memory work or store contact;
+message naming the problem — an empty name, a control or invisible formatting character (line and
+paragraph separators, zero-width and bidirectional controls) in a name or role, a name over
+512 bytes or a role over 256 (the check runs before any lock, memory work or store contact;
 an empty `role` string is exactly "no role", not an error).
 
 **Response:**
@@ -574,11 +575,16 @@ Notes:
   entry nor a stored row keeps the pre-feature `404`. A store-only delete whose store call fails
   answers `500` with a fixed message; the ClickHouse error's own text (it carries the server's
   user, database, grants and version) is WARNed in the server log and never returned in the body.
-- `POST /schemas/load` and `DELETE /schemas/{name}` run one at a time: one gate covers the
-  in-memory change and the store change, so concurrent calls on a name never leave memory and the
-  store disagreeing. While the store hangs, queued calls each wait their own 10 s store bound; a
-  ClickHouse call that hangs inside a load itself (column discovery) holds the gate until it
-  returns.
+- With persistence on, `POST /schemas/load` and `DELETE /schemas/{name}` run one at a time: one
+  gate covers the in-memory change and the store change, so concurrent calls on a name never leave
+  memory and the store disagreeing. While the store hangs, queued calls each wait their own 10 s
+  store bound; a ClickHouse call that hangs inside a load itself (column discovery) holds the gate
+  until it returns or the request times out (`--query-timeout-secs`, default 300 s). With
+  persistence off there is no gate at all: loads and deletes behave as before the feature.
+- A client that disconnects (or a request that times out) after the schema changed in memory does
+  not abandon the store write: it runs to completion on its own (within its 10 s bound), still
+  holding the gate, so a slow store does not end up disagreeing with memory behind the client's
+  back. If the store never answers, the registration stays memory-only and the server log says so.
 - A store call that reaches its 10 s bound is abandoned by the server, not cancelled in
   ClickHouse: the response says `"persisted": false`, but the statement may still run afterwards.
   A `DELETE` that timed out can therefore remove a row that was re-registered in between; check
@@ -650,6 +656,14 @@ Semantics (Kafka Connect's `config.storage.topic` pattern, applied on ClickHouse
 - **Version gate**: rows written by a *newer* ClickGraph's registry format are skipped with a
   warning at boot instead of guessing at their shape (old servers survive upgrades that
   returned to them).
+- **Name gate**: a stored row whose name the endpoints above would refuse (empty, control or
+  invisible characters, over 512 bytes) can only be hand-written; it is skipped with a warning
+  that gives the `ALTER TABLE clickgraph_schema_registry DELETE WHERE name = …` that removes it,
+  and counted in the boot summary.
+- **Clusters**: with `CLICKHOUSE_CLUSTER` set, create the registry table yourself as a replicated
+  table on every node before enabling persistence. The server creates a plain table on one node
+  only, and writes that pass a `role` go through the pool that round-robins over the nodes, so
+  they could reach a node without the table (or a local copy replay never reads).
 - **Restart restore goes through the same load path** as a live registration (same alias and
   cache semantics).
 - Single instance per registry table is the supported shape: multi-instance replay is out of

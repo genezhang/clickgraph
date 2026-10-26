@@ -113,16 +113,38 @@ pub fn is_reserved_schema_name(name: &str) -> bool {
 const MAX_SCHEMA_NAME_LEN: usize = 512;
 const MAX_ROLE_NAME_LEN: usize = 256;
 
+/// Whether a character may not appear in an operator-entered identifier (a
+/// schema name, a role) or in a log line that quotes one. Control characters
+/// (Unicode `Cc`: `\n`, `\r`, NUL, DEL, the C1 range) forge log entries;
+/// the line and paragraph separators (U+2028/U+2029) are line breaks to
+/// many log viewers and JSON tooling; the zero-width and bidirectional
+/// formatting characters (`Cf`) make one name read as another (U+202E
+/// reverses the text after it, U+200B/U+FEFF are invisible). None of them is
+/// part of a name anyone types on purpose.
+pub(crate) fn is_unsafe_identifier_char(c: char) -> bool {
+    c.is_control()
+        || matches!(
+            c,
+            '\u{061C}'
+                | '\u{200B}'..='\u{200F}'
+                | '\u{2028}'..='\u{202E}'
+                | '\u{2060}'..='\u{2064}'
+                | '\u{2066}'..='\u{2069}'
+                | '\u{FEFF}'
+        )
+}
+
 /// Pure (unit-tested) schema-name acceptability check, run by both admin
-/// endpoints before any gate, registry or store work. `None` = accept.
-/// Every rejection is a 400 at the door — an empty name registers (`404`s
-/// on GET/DELETE afterwards, unrestorable by construction), and a control
-/// character forges log lines ("Cache invalidated for schema: ...\nERROR").
+/// endpoints before any gate, registry or store work — and by boot replay
+/// on every stored row. `None` = accept. Every rejection is a 400 at the
+/// door — an empty name registers (`404`s on GET/DELETE afterwards,
+/// unrestorable by construction), and a control character forges log lines
+/// ("Cache invalidated for schema: ...\nERROR").
 pub fn schema_name_error_if_any(name: &str) -> Option<&'static str> {
     if name.is_empty() {
         Some("schema name must not be empty")
-    } else if name.chars().any(|c| c.is_control()) {
-        Some("schema name must not contain control characters")
+    } else if name.chars().any(is_unsafe_identifier_char) {
+        Some("schema name must not contain control or invisible formatting characters")
     } else if name.len() > MAX_SCHEMA_NAME_LEN {
         Some("schema name exceeds the 512-byte limit")
     } else {
@@ -137,8 +159,8 @@ pub fn schema_name_error_if_any(name: &str) -> Option<&'static str> {
 /// logs each first-seen role raw; an absurd length keeps a role from
 /// becoming a log-line payload.
 pub fn role_error_if_any(role: &str) -> Option<&'static str> {
-    if role.chars().any(|c| c.is_control()) {
-        Some("role must not contain control characters")
+    if role.chars().any(is_unsafe_identifier_char) {
+        Some("role must not contain control or invisible formatting characters")
     } else if role.len() > MAX_ROLE_NAME_LEN {
         Some("role exceeds the 256-byte limit")
     } else {
@@ -232,32 +254,42 @@ struct NamePayload {
     payload: String,
 }
 
-/// A replay gate. Three buckets, each conservative:
+/// A replay gate. Four buckets, each conservative:
 /// - `restorable`: this server wrote the row (known source) in a version it
-///   knows how to read (a `yaml` payload).
+///   knows how to read (a `yaml` payload) under a name the admin API accepts.
 /// - `future_versioned`: written by a NEWER ClickGraph — never guessed at,
 ///   never crashed into.
 /// - `unknown_source`: correct version, but produced by a writer this server
 ///   does not claim (`source != api-load` today). The version check wins over
 ///   the source check: a row from an unknown future server can be either
 ///   kind, and "future version" is the strictly safer refusal.
+/// - `invalid_name`: a row of this server's own kind whose name the admin
+///   endpoints would answer 400 (empty, control or invisible characters, over
+///   512 bytes) — a hand-written row. Restoring it would register a schema
+///   `DELETE /schemas/{name}` can never reach, and its name would reach the
+///   log raw; the row is refused instead and named in a WARN with the SQL
+///   that removes it.
 pub struct ReplayGate {
     pub restorable: Vec<Registration>,
     pub future_versioned: Vec<Registration>,
     pub unknown_source: Vec<Registration>,
+    pub invalid_name: Vec<Registration>,
 }
 
 /// Gate rows for boot replay (pure — unit-tested): registry version first,
-/// then the writer source.
+/// then the writer source, then the name.
 pub fn gate_for_replay(rows: Vec<Registration>) -> ReplayGate {
     let mut restorable = Vec::new();
     let mut future_versioned = Vec::new();
     let mut unknown_source = Vec::new();
+    let mut invalid_name = Vec::new();
     for row in rows {
         if row.registry_version > REGISTRY_VERSION {
             future_versioned.push(row);
         } else if row.source != SOURCE_API_LOAD {
             unknown_source.push(row);
+        } else if schema_name_error_if_any(&row.name).is_some() {
+            invalid_name.push(row);
         } else {
             restorable.push(row);
         }
@@ -266,6 +298,7 @@ pub fn gate_for_replay(rows: Vec<Registration>) -> ReplayGate {
         restorable,
         future_versioned,
         unknown_source,
+        invalid_name,
     }
 }
 
@@ -420,12 +453,22 @@ pub struct ReplayFetch {
     /// each name and source at fetch time. Same payload note as
     /// `future_versioned`.
     pub unknown_source: Vec<Registration>,
+    /// Current-version api-load rows whose name the admin API refuses (see
+    /// [`ReplayGate`]) — never restored; the store warns with each name.
+    pub invalid_name: Vec<Registration>,
     /// Deduped rows in the table (`FINAL` count) — rows beyond either
     /// budget were never fetched, so this may exceed the vectors' lengths.
     pub total_rows: u64,
-    /// Rows actually fetched (`restorable + future_versioned +
-    /// unknown_source` lengths).
+    /// Rows the budgeted metadata read returned (`restorable +
+    /// future_versioned + unknown_source + invalid_name + vanished`): the
+    /// rows within both budgets, whatever became of them afterwards. A row
+    /// that vanished between the two reads is still a fetched row — it just
+    /// has no payload to restore — so it is counted here and in `vanished`,
+    /// never as one the budget left out.
     pub fetched: usize,
+    /// Rows the payload pass lost to a concurrent delete or re-register
+    /// between the metadata read and the payload read (Current tables only).
+    pub vanished: usize,
 }
 
 /// What the registry's table is capable of (probed once per process):
@@ -628,13 +671,7 @@ impl ClickhouseSchemaStore {
                 self.registered_at_floor
                     .fetch_max(high_water, Ordering::Relaxed);
             })
-            .map_err(|e| {
-                format!(
-                    "the table's registered-at high-water mark is \
-                     unreadable ({e}); timestamps would stay monotonic \
-                     within this boot only"
-                )
-            })
+            .map_err(|e| format!("the table's registered-at high-water mark is unreadable ({e})"))
     }
 
     /// Strictly increasing, even when the host clock steps back: each call
@@ -860,6 +897,16 @@ impl ClickhouseSchemaStore {
         };
 
         let mut gate = gate_for_replay(std::mem::take(&mut rows));
+        for row in &gate.invalid_name {
+            log::warn!(
+                "registry row '{}' has a name the admin API refuses (empty, \
+                 control or invisible characters, or over {MAX_SCHEMA_NAME_LEN} \
+                 bytes), so it is not restored and DELETE /schemas/{{name}} \
+                 cannot reach it; remove it with ALTER TABLE {REGISTRY_TABLE} \
+                 DELETE WHERE name = <that name>",
+                log_safe(&row.name)
+            );
+        }
         for row in &gate.future_versioned {
             log::warn!(
                 "registry row '{}' was written by registry_version {} \
@@ -877,6 +924,14 @@ impl ClickhouseSchemaStore {
             );
         }
 
+        // Rows the budgeted metadata read returned, before any of them is
+        // lost to the payload pass below.
+        let fetched = gate.restorable.len()
+            + gate.future_versioned.len()
+            + gate.unknown_source.len()
+            + gate.invalid_name.len();
+        let mut vanished = 0usize;
+
         // Phase 2 (Current tables only): payload transfer for the rows the
         // gate admits — the only rows whose payload anyone reads. A name
         // that vanished between the two reads (a concurrent delete or
@@ -885,7 +940,6 @@ impl ClickhouseSchemaStore {
         if matches!(layout, TableLayout::Current) {
             let payloads = self.payloads_for(&gate.restorable).await?;
             let mut with_payload = Vec::with_capacity(gate.restorable.len());
-            let mut vanished = 0usize;
             for row in std::mem::take(&mut gate.restorable) {
                 match payloads.get(&(row.name.clone(), row.registered_at_ms)) {
                     Some(payload) => {
@@ -914,13 +968,13 @@ impl ClickhouseSchemaStore {
         }
 
         Ok(ReplayFetch {
-            fetched: gate.restorable.len()
-                + gate.future_versioned.len()
-                + gate.unknown_source.len(),
+            fetched,
             restorable: gate.restorable,
             future_versioned: gate.future_versioned,
             unknown_source: gate.unknown_source,
+            invalid_name: gate.invalid_name,
             total_rows,
+            vanished,
         })
     }
 
@@ -1263,32 +1317,38 @@ pub async fn replay(app_state: &super::AppState, config: &ServerConfig) {
         }
     }
 
-    // The summary accounts for every fetched row — restored, shadowed,
-    // failed, over either budget, newer-versioned, unknown-sourced — so
-    // nothing crosses the fetch and vanishes between the buckets:
-    // total_rows = restored + config-shadowed + failed + skipped over
-    // replay budget + newer-version skipped + unknown-source skipped.
+    // The summary accounts for every stored row — restored, shadowed,
+    // failed, over either budget, newer-versioned, unknown-sourced, refused
+    // for its name, lost between the two reads — so nothing crosses the
+    // fetch and vanishes between the buckets: total_rows = restored +
+    // config-shadowed + failed + skipped over replay budget + newer-version
+    // skipped + unknown-source skipped + invalid-name skipped + lost between
+    // reads.
     log::info!(
         "schema persistence: {} restored / {} config-shadowed / {} failed \
          / {} skipped over replay budget / {} newer-version skipped \
-         / {} unknown-source skipped (failed: {:?})",
+         / {} unknown-source skipped / {} invalid-name skipped \
+         / {} lost between reads (failed: {:?})",
         restored,
         shadowed.len(),
         failed_names.len(),
         over_budget + byte_skipped as u64,
         fetch.future_versioned.len(),
         fetch.unknown_source.len(),
+        fetch.invalid_name.len(),
+        fetch.vanished,
         failed_names
     );
 }
 
 /// A schema name is operator input routed into log lines: replace control
-/// characters so a `\n` in a name cannot forge entries after this one. Names
+/// and invisible formatting characters (see [`is_unsafe_identifier_char`]) so
+/// a `\n` in a name cannot forge entries after this one. Names
 /// in `Vec/Option` debug output (`{:?}`) are already escaped by the formatter
 /// and need no scrubbing.
 pub(crate) fn log_safe(name: &str) -> String {
     name.chars()
-        .map(|c| if c.is_control() { '?' } else { c })
+        .map(|c| if is_unsafe_identifier_char(c) { '?' } else { c })
         .collect()
 }
 
@@ -1373,6 +1433,87 @@ mod tests {
     }
 
     #[test]
+    fn rows_the_admin_api_would_refuse_are_never_restored() {
+        let names = [
+            String::new(),
+            "forged\nentry".to_string(),
+            "reversed\u{202E}name".to_string(),
+            "x".repeat(MAX_SCHEMA_NAME_LEN + 1),
+        ];
+        let mut rows = vec![row("fine", 1)];
+        rows.extend(names.iter().map(|name| row(name, 2)));
+        let gate = gate_for_replay(rows);
+        assert_eq!(gate.restorable.len(), 1);
+        assert_eq!(gate.restorable[0].name, "fine");
+        assert_eq!(
+            gate.invalid_name.len(),
+            names.len(),
+            "each unsafe name lands in the invalid-name bucket"
+        );
+        // The version and the source verdicts come first: a foreign or
+        // future row is reported as that, whatever its name.
+        let gate = gate_for_replay(vec![
+            Registration {
+                registry_version: REGISTRY_VERSION + 1,
+                ..row("", 1)
+            },
+            Registration {
+                source: "not-api-load".to_string(),
+                ..row("", 2)
+            },
+        ]);
+        assert_eq!(gate.future_versioned.len(), 1);
+        assert_eq!(gate.unknown_source.len(), 1);
+        assert!(gate.invalid_name.is_empty());
+    }
+
+    #[test]
+    fn invisible_formatting_characters_are_refused_in_names_and_roles() {
+        for unsafe_char in [
+            '\u{2028}', '\u{2029}', '\u{202E}', '\u{200B}', '\u{FEFF}', '\u{2066}', '\u{061C}',
+            '\u{0085}', '\0', '\u{7f}',
+        ] {
+            let name = format!("a{unsafe_char}b");
+            assert!(
+                schema_name_error_if_any(&name).is_some(),
+                "name with U+{:04X}",
+                unsafe_char as u32
+            );
+            assert!(
+                role_error_if_any(&name).is_some(),
+                "role with U+{:04X}",
+                unsafe_char as u32
+            );
+            assert!(
+                !log_safe(&name).contains(unsafe_char),
+                "log_safe must scrub U+{:04X}",
+                unsafe_char as u32
+            );
+        }
+        // Ordinary non-ASCII names stay legal.
+        assert_eq!(schema_name_error_if_any("réseau-社交"), None);
+        assert_eq!(log_safe("réseau-社交"), "réseau-社交");
+    }
+
+    #[test]
+    fn the_name_cap_counts_bytes() {
+        // 'é' is two bytes: 256 of them are 512 bytes (at the cap), 257 are
+        // 514 (over it) — the limit, the message and the docs all say bytes.
+        assert_eq!(schema_name_error_if_any(&"é".repeat(256)), None);
+        assert!(schema_name_error_if_any(&"é".repeat(257)).is_some());
+    }
+
+    #[test]
+    fn the_timestamp_stamp_saturates_instead_of_wrapping() {
+        // A hand-edited row can carry u64::MAX; the floor +1 must hold at
+        // the ceiling, not wrap to 0 and stamp below everything.
+        let store = ClickhouseSchemaStore::new(clickhouse::Client::default());
+        store.registered_at_floor.store(u64::MAX, Ordering::Relaxed);
+        assert_eq!(store.next_registered_at_ms(), u64::MAX);
+        assert_eq!(store.next_registered_at_ms(), u64::MAX);
+    }
+
+    #[test]
     fn config_defined_names_shadow_persisted_ones() {
         let rows = vec![row("from-file", 1), row("from-api", 2), row("default", 3)];
         let (restore, shadowed) = partition_for_replay(rows, &["from-file".to_string()]);
@@ -1424,6 +1565,8 @@ mod tests {
         assert!(fetch.restorable.is_empty());
         assert!(fetch.future_versioned.is_empty());
         assert!(fetch.unknown_source.is_empty());
+        assert!(fetch.invalid_name.is_empty());
+        assert_eq!(fetch.vanished, 0);
     }
 
     // ------------------------------------------------ registration clock
@@ -1688,6 +1831,55 @@ mod mutation_tests {
         })
     }
 
+    /// A server with persistence off (the default): the `Off` store, so no
+    /// registry statement can ever reach any ClickHouse.
+    fn app_state_persistence_off() -> Arc<AppState> {
+        Arc::new(AppState {
+            executor: Arc::new(StubExecutor),
+            clickhouse_client: None,
+            config: ServerConfig::default(),
+            query_semaphore: None,
+            pool: None,
+            schema_store: Arc::new(SchemaStore::Off),
+            schema_registry_gate: Arc::new(tokio::sync::Mutex::new(())),
+        })
+    }
+
+    async fn role_pool_for(fake_url: &str) -> Arc<RoleConnectionPool> {
+        Arc::new(
+            RoleConnectionPool::new_with_params(
+                fake_url,
+                "fake-user",
+                "fake-pass",
+                Some("default"),
+                None,
+                100,
+            )
+            .await
+            .expect("role pool"),
+        )
+    }
+
+    fn load_request(name: &str, role: Option<&str>) -> LoadSchemaRequest {
+        LoadSchemaRequest {
+            schema_name: name.to_string(),
+            config_content: tiny_yaml(name),
+            validate_schema: None,
+            role: role.map(str::to_string),
+        }
+    }
+
+    fn stored_row(name: &str, at_ms: u64) -> Registration {
+        Registration {
+            name: name.to_string(),
+            source: SOURCE_API_LOAD.to_string(),
+            format: FORMAT_YAML.to_string(),
+            payload: format!("payload-of-{name}"),
+            registry_version: REGISTRY_VERSION,
+            registered_at_ms: at_ms,
+        }
+    }
+
     // ------------------------------------------------- RowBinary wire codecs
 
     /// LEB128 (unsigned, the RowBinary String/variable padding actually on
@@ -1816,6 +2008,22 @@ mod mutation_tests {
         legacy_layout: AtomicBool,
         hang_create: AtomicBool,
         hold_inserts: AtomicBool,
+        /// Every INSERT is answered 500.
+        insert_fails: AtomicBool,
+        /// `DELETE FROM` is answered 500 while `ALTER TABLE ... DELETE`
+        /// still works (a server with lightweight deletes disabled).
+        lightweight_delete_fails: AtomicBool,
+        /// A non-INSERT statement containing this text parks until the test
+        /// releases the fake (a wedged statement of exactly one kind).
+        hang_on: Mutex<Option<String>>,
+        /// A statement containing this text is answered 500.
+        fail_on: Mutex<Option<String>>,
+        /// Every statement is answered this many milliseconds late (a
+        /// healthy but slow store).
+        delay_ms: AtomicU64,
+        /// Once the replay's metadata read is answered, the row of this name
+        /// disappears (a delete landing between the two replay reads).
+        vanish_after_phase1: Mutex<Option<String>>,
         /// The `SELECT max(registered_at_ms)` answer (the floor's high-water).
         high_water: AtomicU64,
         /// Steers a held INSERT (and a hung CREATE) back to life — the tests
@@ -1847,6 +2055,12 @@ mod mutation_tests {
                 legacy_layout: AtomicBool::new(false),
                 hang_create: AtomicBool::new(false),
                 hold_inserts: AtomicBool::new(false),
+                insert_fails: AtomicBool::new(false),
+                lightweight_delete_fails: AtomicBool::new(false),
+                hang_on: Mutex::new(None),
+                fail_on: Mutex::new(None),
+                delay_ms: AtomicU64::new(0),
+                vanish_after_phase1: Mutex::new(None),
                 high_water: AtomicU64::new(1_700_000_000_000),
                 release: Notify::new(),
                 released: AtomicBool::new(false),
@@ -1891,6 +2105,26 @@ mod mutation_tests {
         }
         fn set_high_water(&self, value: u64) {
             self.shared.high_water.store(value, Ordering::Relaxed);
+        }
+        fn set_insert_fails(&self, on: bool) {
+            self.shared.insert_fails.store(on, Ordering::Relaxed);
+        }
+        fn set_lightweight_delete_fails(&self, on: bool) {
+            self.shared
+                .lightweight_delete_fails
+                .store(on, Ordering::Relaxed);
+        }
+        fn set_hang_on(&self, sql_part: &str) {
+            *self.shared.hang_on.lock().unwrap() = Some(sql_part.to_string());
+        }
+        fn set_fail_on(&self, sql_part: &str) {
+            *self.shared.fail_on.lock().unwrap() = Some(sql_part.to_string());
+        }
+        fn set_delay_ms(&self, millis: u64) {
+            self.shared.delay_ms.store(millis, Ordering::Relaxed);
+        }
+        fn set_vanish_after_phase1(&self, name: &str) {
+            *self.shared.vanish_after_phase1.lock().unwrap() = Some(name.to_string());
         }
 
         /// Let a held INSERT (or a hung CREATE) finish: the world resumes.
@@ -1949,6 +2183,15 @@ mod mutation_tests {
                         || r.sql.contains("ALTER TABLE")
                         || (r.sql.contains("SELECT count() FROM") && r.sql.contains("WHERE name ="))
                 })
+                .count()
+        }
+
+        /// Statements that actually remove a row (not the exists probe a
+        /// store-only delete runs before them).
+        fn delete_statement_count(&self) -> usize {
+            self.requests_snapshot()
+                .iter()
+                .filter(|r| r.sql.contains("DELETE FROM") || r.sql.contains("ALTER TABLE"))
                 .count()
         }
 
@@ -2095,6 +2338,11 @@ mod mutation_tests {
         };
         let role = query_param(&uri, "role");
 
+        let delay = shared.delay_ms.load(Ordering::Relaxed);
+        if delay > 0 {
+            tokio::time::sleep(Duration::from_millis(delay)).await;
+        }
+
         // ---------------------------------------------------- INSERT (held?)
         if sql.contains("INSERT INTO") && sql.contains("FORMAT RowBinary") {
             let row = match decode_insert_row(&body) {
@@ -2108,6 +2356,9 @@ mod mutation_tests {
                 role,
                 inserted: Some(row.clone()),
             });
+            if shared.insert_fails.load(Ordering::Relaxed) {
+                return fail("fake: INSERT rejected (CH-INSERT-FAULT)");
+            }
             if shared.hold_inserts.load(Ordering::SeqCst) {
                 park_until_released(&shared).await;
             }
@@ -2131,6 +2382,16 @@ mod mutation_tests {
             inserted: None,
         });
 
+        // ---------------------------------------- statement-scoped faults
+        let hang_part = shared.hang_on.lock().unwrap().clone();
+        if hang_part.is_some_and(|part| sql.contains(&part)) {
+            park_until_released(&shared).await;
+        }
+        let fail_part = shared.fail_on.lock().unwrap().clone();
+        if fail_part.is_some_and(|part| sql.contains(&part)) {
+            return fail("fake: statement rejected (CH-STATEMENT-FAULT)");
+        }
+
         // ------------------------------------------------ table preparation
         if sql.contains("CREATE TABLE IF NOT EXISTS") {
             if shared.hang_create.load(Ordering::SeqCst) {
@@ -2144,6 +2405,9 @@ mod mutation_tests {
 
         // ---------------------------------------------------------- deletes
         if sql.contains("DELETE FROM") {
+            if shared.lightweight_delete_fails.load(Ordering::Relaxed) {
+                return fail("fake: lightweight DELETE is disabled (CH-LIGHTWEIGHT-FAULT)");
+            }
             if shared.delete_fails.load(Ordering::SeqCst) {
                 return fail("fake: DELETE rejected - CH-FAULT d34dbeef mutations are disabled");
             }
@@ -2196,6 +2460,10 @@ mod mutation_tests {
                     break;
                 }
                 out.extend_from_slice(&encode_meta_row(&row));
+            }
+            let vanishing = shared.vanish_after_phase1.lock().unwrap().clone();
+            if let Some(name) = vanishing {
+                shared.rows.lock().unwrap().retain(|r| r.name != name);
             }
             return ok(out);
         }
@@ -2880,5 +3148,514 @@ mod mutation_tests {
         );
         assert!(role_error_if_any(&"x".repeat(257)).is_some());
         assert_eq!(role_error_if_any(&"x".repeat(256)), None, "at cap");
+    }
+    // ----------------------------------------- round-four maintainer tests
+
+    #[tokio::test]
+    async fn a_dropped_post_does_not_abandon_its_store_write() {
+        ensure_globals().await;
+        let fake = FakeClickHouse::spawn().await;
+        fake.set_hold_inserts(true);
+        let app = app_state(fake.client(), None, persisted_config());
+        let name = unique_name("dropped-post");
+
+        let request = tokio::spawn({
+            let app = app.clone();
+            let payload = load_request(&name, None);
+            async move { load_schema_handler(State(app), Json(payload)).await.is_ok() }
+        });
+        fake.wait_for("the held INSERT", Duration::from_secs(10), |reqs| {
+            reqs.iter().any(|r| r.inserted.is_some())
+        })
+        .await;
+
+        // The client hangs up: axum drops the handler future.
+        request.abort();
+        let _ = request.await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        assert!(
+            app.schema_registry_gate.clone().try_lock_owned().is_err(),
+            "the in-flight store write still owns the gate (mutation: the \
+             guard stays with the dropped handler and the next request \
+             races the write)"
+        );
+        fake.release();
+        let start = std::time::Instant::now();
+        while !fake.rows_snapshot().iter().any(|r| r.name == name) {
+            assert!(
+                start.elapsed() < Duration::from_secs(10),
+                "the store write was abandoned with the request: memory \
+                 holds the schema, the store does not, and a restart serves \
+                 the old one (mutation: await the store half in the handler \
+                 instead of running it as its own task)"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            app.schema_registry_gate.clone().lock_owned(),
+        )
+        .await
+        .expect("the gate is free again once the store write ended");
+    }
+
+    #[tokio::test]
+    async fn a_dropped_delete_does_not_leave_the_stored_row_behind() {
+        ensure_globals().await;
+        let fake = FakeClickHouse::spawn().await;
+        let app = app_state(fake.client(), None, persisted_config());
+        let name = unique_name("dropped-delete");
+        body_json(load_schema_handler(State(app.clone()), Json(load_request(&name, None))).await)
+            .await
+            .expect("load 200");
+        assert!(fake.rows_snapshot().iter().any(|r| r.name == name));
+
+        fake.set_hang_on("DELETE FROM");
+        let request = tokio::spawn({
+            let app = app.clone();
+            let name = name.clone();
+            async move {
+                delete_schema_handler(
+                    State(app),
+                    Path(name),
+                    Query(DeleteSchemaParams { role: None }),
+                )
+                .await
+                .is_ok()
+            }
+        });
+        fake.wait_for("the held DELETE", Duration::from_secs(10), |reqs| {
+            reqs.iter().any(|r| r.sql.contains("DELETE FROM"))
+        })
+        .await;
+        request.abort();
+        let _ = request.await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        assert!(
+            app.schema_registry_gate.clone().try_lock_owned().is_err(),
+            "the in-flight store delete still owns the gate"
+        );
+        fake.release();
+        let start = std::time::Instant::now();
+        while fake.rows_snapshot().iter().any(|r| r.name == name) {
+            assert!(
+                start.elapsed() < Duration::from_secs(10),
+                "memory dropped the schema but the stored row survived the \
+                 hung-up client: the next boot would resurrect it"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn with_persistence_off_the_admin_gate_is_never_taken() {
+        ensure_globals().await;
+        let app = app_state_persistence_off();
+        // A wedged load would hold the gate; with no store there is nothing
+        // to keep in step, so no other call may queue behind it.
+        let _held = app.schema_registry_gate.clone().lock_owned().await;
+
+        let name = unique_name("gate-off");
+        let loaded = tokio::time::timeout(
+            Duration::from_secs(10),
+            load_schema_handler(State(app.clone()), Json(load_request(&name, None))),
+        )
+        .await
+        .expect("a load with persistence off must not queue behind the gate");
+        let body = body_json(loaded).await.expect("load 200");
+        assert!(
+            body.get("persisted").is_none(),
+            "off mode keeps the pre-feature body: {body}"
+        );
+        let deleted = tokio::time::timeout(
+            Duration::from_secs(10),
+            delete_schema_handler(
+                State(app.clone()),
+                Path(name),
+                Query(DeleteSchemaParams { role: None }),
+            ),
+        )
+        .await
+        .expect("a delete with persistence off must not queue behind the gate");
+        body_json(deleted).await.expect("delete 200");
+    }
+
+    #[tokio::test]
+    async fn with_persistence_on_a_held_gate_queues_the_call() {
+        ensure_globals().await;
+        let fake = FakeClickHouse::spawn().await;
+        let app = app_state(fake.client(), None, persisted_config());
+        let held = app.schema_registry_gate.clone().lock_owned().await;
+
+        let name = unique_name("gate-on");
+        let queued = tokio::time::timeout(
+            Duration::from_millis(300),
+            load_schema_handler(State(app.clone()), Json(load_request(&name, None))),
+        )
+        .await;
+        assert!(
+            queued.is_err(),
+            "with a store the load must wait for the gate (mutation: gate \
+             never taken)"
+        );
+        drop(held);
+        body_json(load_schema_handler(State(app), Json(load_request(&name, None))).await)
+            .await
+            .expect("load 200 once the gate is free");
+        assert_eq!(fake.insert_count(), 1, "only the call that ran wrote");
+    }
+
+    #[tokio::test]
+    async fn the_handlers_refuse_unsafe_identifiers_before_any_store_contact() {
+        ensure_globals().await;
+        let fake = FakeClickHouse::spawn().await;
+        let app = app_state(fake.client(), None, persisted_config());
+
+        let too_long = "x".repeat(513);
+        let bad_names = [
+            "",
+            "a\nb",
+            "a\u{202E}b",
+            "a\u{2028}b",
+            "a\0b",
+            too_long.as_str(),
+        ];
+        for bad in bad_names {
+            let posted = body_json(
+                load_schema_handler(State(app.clone()), Json(load_request(bad, None))).await,
+            )
+            .await;
+            let Err((status, _)) = posted else {
+                panic!("POST of name {bad:?} must be refused: {posted:?}");
+            };
+            assert_eq!(status, StatusCode::BAD_REQUEST, "POST name {bad:?}");
+
+            let deleted = body_json(
+                delete_schema_handler(
+                    State(app.clone()),
+                    Path(bad.to_string()),
+                    Query(DeleteSchemaParams { role: None }),
+                )
+                .await,
+            )
+            .await;
+            let Err((status, _)) = deleted else {
+                panic!("DELETE of name {bad:?} must be refused: {deleted:?}");
+            };
+            assert_eq!(status, StatusCode::BAD_REQUEST, "DELETE name {bad:?}");
+        }
+
+        let long_role = "r".repeat(257);
+        for bad_role in ["a\nb", "a\u{202E}b", long_role.as_str()] {
+            let posted = body_json(
+                load_schema_handler(
+                    State(app.clone()),
+                    Json(load_request(&unique_name("bad-role"), Some(bad_role))),
+                )
+                .await,
+            )
+            .await;
+            let Err((status, _)) = posted else {
+                panic!("POST with role {bad_role:?} must be refused: {posted:?}");
+            };
+            assert_eq!(status, StatusCode::BAD_REQUEST, "POST role {bad_role:?}");
+
+            let deleted = body_json(
+                delete_schema_handler(
+                    State(app.clone()),
+                    Path("fine-name".to_string()),
+                    Query(DeleteSchemaParams {
+                        role: Some(bad_role.to_string()),
+                    }),
+                )
+                .await,
+            )
+            .await;
+            let Err((status, _)) = deleted else {
+                panic!("DELETE with role {bad_role:?} must be refused: {deleted:?}");
+            };
+            assert_eq!(status, StatusCode::BAD_REQUEST, "DELETE role {bad_role:?}");
+        }
+
+        assert!(
+            fake.requests_snapshot().is_empty(),
+            "a refused identifier must not reach the store (mutation: a \
+             handler's validator removed): {:?}",
+            fake.requests_snapshot()
+                .iter()
+                .map(|r| r.sql.clone())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[tokio::test]
+    async fn the_delete_role_rides_on_the_registry_delete() {
+        ensure_globals().await;
+        let fake = FakeClickHouse::spawn().await;
+        let pool = role_pool_for(&fake.url).await;
+        let app = app_state(fake.client(), Some(pool), persisted_config());
+
+        // Memory path: the schema is registered, then retired with a role.
+        let with_role = unique_name("del-role");
+        let without_role = unique_name("del-plain");
+        for name in [&with_role, &without_role] {
+            body_json(
+                load_schema_handler(State(app.clone()), Json(load_request(name, None))).await,
+            )
+            .await
+            .expect("load 200");
+        }
+        body_json(
+            delete_schema_handler(
+                State(app.clone()),
+                Path(with_role.clone()),
+                Query(DeleteSchemaParams {
+                    role: Some("writer".to_string()),
+                }),
+            )
+            .await,
+        )
+        .await
+        .expect("delete 200");
+        body_json(
+            delete_schema_handler(
+                State(app.clone()),
+                Path(without_role.clone()),
+                Query(DeleteSchemaParams { role: None }),
+            )
+            .await,
+        )
+        .await
+        .expect("delete 200");
+
+        // Store-only path: a row with no memory entry.
+        let store_only = unique_name("del-store-only");
+        fake.push_row(stored_row(&store_only, 42));
+        body_json(
+            delete_schema_handler(
+                State(app.clone()),
+                Path(store_only.clone()),
+                Query(DeleteSchemaParams {
+                    role: Some("writer".to_string()),
+                }),
+            )
+            .await,
+        )
+        .await
+        .expect("store-only delete 200");
+
+        let role_of_delete = |name: &str| -> Option<Option<String>> {
+            fake.requests_snapshot()
+                .into_iter()
+                .find(|r| r.sql.contains("DELETE FROM") && r.sql.contains(name))
+                .map(|r| r.role)
+        };
+        assert_eq!(
+            role_of_delete(&with_role),
+            Some(Some("writer".to_string())),
+            "the memory-path delete must run as the endpoint's role"
+        );
+        assert_eq!(
+            role_of_delete(&without_role),
+            Some(None),
+            "a delete without `role` must not claim one"
+        );
+        assert_eq!(
+            role_of_delete(&store_only),
+            Some(Some("writer".to_string())),
+            "the store-only delete must run as the endpoint's role"
+        );
+    }
+
+    #[tokio::test]
+    async fn every_store_op_is_bounded_at_its_own_call_site() {
+        for (op, hung_statement) in [
+            ("exists", "FINAL WHERE name ="),
+            ("delete", "DELETE FROM"),
+            ("replay read", "sum(payload_len) OVER"),
+        ] {
+            let fake = FakeClickHouse::spawn().await;
+            fake.set_hang_on(hung_statement);
+            let mut store = ClickhouseSchemaStore::new(fake.client());
+            store.call_bound = Duration::from_millis(40);
+            store.replay_bound = Duration::from_millis(80);
+
+            let outcome = tokio::time::timeout(Duration::from_secs(5), async {
+                match op {
+                    "exists" => store.exists("n").await.map(|_| ()),
+                    "delete" => store.delete("n", None).await.map(|_| ()),
+                    _ => store.load_replay_rows(500, 1 << 20).await.map(|_| ()),
+                }
+            })
+            .await
+            .unwrap_or_else(|_| {
+                panic!(
+                    "{op}: a wedged statement hung past the harness deadline — \
+                     the op is unbounded at its call site"
+                )
+            });
+            let err = outcome.expect_err("a wedged statement must not succeed");
+            assert!(
+                err.contains("store unreachable"),
+                "{op}: the bound maps to the unreachable error: {err}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn the_replay_read_runs_under_its_own_longer_bound() {
+        let fake = FakeClickHouse::spawn().await;
+        fake.push_row(stored_row("slow-a", 1));
+        fake.push_row(stored_row("slow-b", 2));
+        // A healthy, slow link: each statement answers in 40 ms, the replay
+        // makes six of them. The write bound would call that an outage.
+        fake.set_delay_ms(40);
+        let mut store = ClickhouseSchemaStore::new(fake.client());
+        store.call_bound = Duration::from_millis(100);
+        store.replay_bound = Duration::from_secs(10);
+
+        let fetch = store
+            .load_replay_rows(500, 1 << 20)
+            .await
+            .expect("the replay read is bounded by replay_bound, not call_bound");
+        assert_eq!(fetch.restorable.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_store_that_refuses_lightweight_deletes_falls_back_to_alter_delete() {
+        let fake = FakeClickHouse::spawn().await;
+        fake.set_lightweight_delete_fails(true);
+        fake.push_row(stored_row("fallback", 1));
+        let store = ClickhouseSchemaStore::new(fake.client());
+
+        store
+            .delete("fallback", None)
+            .await
+            .expect("the ALTER ... DELETE fallback must retire the row");
+        assert!(fake.rows_snapshot().is_empty(), "the row is gone");
+        assert!(
+            fake.requests_snapshot()
+                .iter()
+                .any(|r| r.sql.contains("ALTER TABLE")),
+            "the fallback statement was issued"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failing_store_delete_after_the_memory_removal_is_a_200_not_persisted() {
+        ensure_globals().await;
+        let fake = FakeClickHouse::spawn().await;
+        let app = app_state(fake.client(), None, persisted_config());
+        let name = unique_name("del-store-fails");
+        body_json(load_schema_handler(State(app.clone()), Json(load_request(&name, None))).await)
+            .await
+            .expect("load 200");
+
+        fake.set_delete_fails(true);
+        let body = body_json(
+            delete_schema_handler(
+                State(app),
+                Path(name.clone()),
+                Query(DeleteSchemaParams { role: None }),
+            )
+            .await,
+        )
+        .await
+        .expect("the schema is gone from memory: the retirement is a 200");
+        assert_eq!(body["persisted"], serde_json::json!(false), "{body}");
+        assert!(
+            !body.to_string().contains("d34dbeef"),
+            "no ClickHouse text in the body: {body}"
+        );
+        assert!(
+            graph_catalog::get_graph_schema_by_name(&name)
+                .await
+                .is_err(),
+            "memory no longer holds it"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unreadable_exists_probe_is_a_404_not_a_delete() {
+        ensure_globals().await;
+        let fake = FakeClickHouse::spawn().await;
+        fake.push_row(stored_row("probe-unreadable", 1));
+        fake.set_fail_on("FINAL WHERE name =");
+        let app = app_state(fake.client(), None, persisted_config());
+
+        let attempted = body_json(
+            delete_schema_handler(
+                State(app),
+                Path("probe-unreadable".to_string()),
+                Query(DeleteSchemaParams { role: None }),
+            )
+            .await,
+        )
+        .await;
+        let Err((status, _)) = attempted else {
+            panic!("an unprovable row must not be reported deleted: {attempted:?}");
+        };
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(
+            fake.delete_statement_count(),
+            0,
+            "no DELETE statement may follow a probe that could not read"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_rejected_insert_answers_persisted_false() {
+        ensure_globals().await;
+        let fake = FakeClickHouse::spawn().await;
+        fake.set_insert_fails(true);
+        let app = app_state(fake.client(), None, persisted_config());
+        let name = unique_name("insert-fails");
+
+        let body =
+            body_json(load_schema_handler(State(app), Json(load_request(&name, None))).await)
+                .await
+                .expect("a failed store never fails the registration");
+        assert_eq!(body["persisted"], serde_json::json!(false), "{body}");
+        assert!(fake.rows_snapshot().is_empty(), "nothing was stored");
+        assert!(
+            graph_catalog::get_graph_schema_by_name(&name).await.is_ok(),
+            "the schema is live in memory"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_row_lost_between_the_replay_reads_is_counted_not_restored_empty() {
+        let fake = FakeClickHouse::spawn().await;
+        fake.push_row(stored_row("stays", 1));
+        fake.push_row(stored_row("vanishes", 2));
+        fake.set_vanish_after_phase1("vanishes");
+        let store = ClickhouseSchemaStore::new(fake.client());
+
+        let fetch = store.load_replay_rows(500, 1 << 20).await.expect("read");
+        assert_eq!(fetch.restorable.len(), 1, "{:?}", fetch.restorable);
+        assert_eq!(fetch.restorable[0].name, "stays");
+        assert_eq!(fetch.vanished, 1);
+        assert_eq!(
+            fetch.fetched, 2,
+            "a row lost between the reads was still fetched: it is not one \
+             the budget left out"
+        );
+    }
+
+    #[tokio::test]
+    async fn stored_rows_with_names_the_api_refuses_are_skipped_not_restored() {
+        let fake = FakeClickHouse::spawn().await;
+        fake.push_row(stored_row("fine", 1));
+        fake.push_row(stored_row("", 2));
+        fake.push_row(stored_row("forged\nentry", 3));
+        let store = ClickhouseSchemaStore::new(fake.client());
+
+        let fetch = store.load_replay_rows(500, 1 << 20).await.expect("read");
+        assert_eq!(fetch.restorable.len(), 1);
+        assert_eq!(fetch.restorable[0].name, "fine");
+        assert_eq!(fetch.invalid_name.len(), 2);
+        assert_eq!(fetch.fetched, 3);
     }
 }
