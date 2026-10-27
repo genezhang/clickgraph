@@ -93,6 +93,10 @@ ClickGraph is designed for **analytical queries** over existing ClickHouse data,
 - ✅ Simple CASE: `CASE WHEN ... THEN ... END`
 - ⚠️ May have edge cases in complex GROUP BY scenarios
 
+**Nondeterministic draws in a CTE read twice** (#1495):
+- ✅ A drawn value (`rand()`, `randomUUID()`, the clock) that no second read decides on lowers correctly
+- ❌ A drawn value joined back as a join key of its reads, or one that filters / orders / groups the CTE's rows, is refused: `Not supported: a value drawn in WITH … draws again on every read …`. ClickHouse re-evaluates a CTE once per read, so the reads of the draw disagree where Neo4j's one execution agrees. Workaround: reshape the query so the drawn value is read once.
+
 ### ✅ Recently Implemented (v0.5.3-v0.6.0)
 
 - ✅ Path variables: `p = (a)-[:TYPE*]->(b)` with `nodes(p)`, `relationships(p)`, `length(p)`

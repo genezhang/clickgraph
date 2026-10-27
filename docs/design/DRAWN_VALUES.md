@@ -71,16 +71,24 @@ and closed for change (no rewrites of lowering), no new trait to implement.
    text contains a drawn call: a drawn token as a whole word followed by `(`,
    outside every quoted string (queries that search for the text `now` / a
    drawn name in a literal must not refuse).
-2. Reuse the `rereads` dictate verbatim: `rereads(plan, &{drawn CTE names})`.
+2. Reuse the `rereads` dictate verbatim: each drawn CTE reads the SELECT or
+   other CTEs more than once (`those_reread(ctes, select, &{drawn names})`,
+   on the parts already rendered in step 1 — the plan renders exactly once).
    With no re-read the recycles stay impossible and we return allow.
-3. Refuse when the drawn value *decides across reads*:
+3. Refuse, per drawn CTE — each carries its own fate (its drawn items'
+   aliases, whether a drawn call decides its rows, its call families),
+   never a pool over all CTEs: a read-once CTE's drawn filter must not
+   refuse a re-read one, and the blame must be the guilty CTE's own:
    - **joined back** — a drawn item's column alias (the text after the first
-     ` AS "` following a drawn call) is a join key of the final SELECT
-     (`.alias = ` precedes: the left operand, as the join builder spells
-     keys, literals included);
+     ` AS "` following a drawn call, case-folded like the select text it is
+     matched against) is a join key of the final SELECT (`.alias = `
+     precedes: the left operand, as the join builder spells keys, literals
+     included);
    - **row-set drawing** — a drawn call is not an item's aliased expression
      (no ` AS "` follows its call before the CTE text ends): it filters,
-     orders or groups the CTE's rows, so each read keeps a different set.
+     orders or groups the CTE's rows, so each read keeps a different set;
+   - the `Unsupported` names the re-read CTE (`WITH {name}`) and the blamed
+     call family, as the criteria's "naming" asks.
 4. Tokens (lowercase whole-word): `randcanonical`, `rand`, `randomuuid`,
    `now64`, `now`, `current_timestamp`. Day-granular `today` / `current_date`
    stay out: within one query execution the reads agree, so joins on them are
@@ -103,16 +111,22 @@ tests flip from `.unwrap_err()` to render assertions.
 
 - Refusals: the issue's repro; a drawn value set down a WHERE filter of the
   re-read CTE (MATCH-WHERE and WITH-WHERE spellings); the same over Databricks
-  (`databricks_sql`, tokens `rand` / `current_timestamp`).
+  (`databricks_sql`, tokens `rand` and the clock drawn and joined back). Each
+  refusal's names are pinned: the re-read CTE (`WITH with_w1`) and the blamed
+  call family — the clock's repro blames the clock family, not `rand()`.
 - Allows: benign (no draw), carried unread (#3), read once (#4), summed only
   (#5), verbatim `randomUUID` carried (#8), clock carried (#9), a day-granular
-  draw joined back (#10 — pinned NOT refused, the deliberate exclusion).
+  draw joined back (#10 — pinned NOT refused, the deliberate exclusion), and
+  a quoted literal spelling a drawn name (`'r now() rand()'`) — the whole-word
+  scan reads the quotes first.
 - Goldens: `cargo test --no-default-features --test ratchet` and
   `integration the_corpus_lowers` byte-identical.
-- Gate: `cargo fmt --check`, `clippy -D warnings`,
-  `cargo test --no-default-features` (lib suite 1451 + the new battery).
-- Live tier (CI only — no local ClickHouse): the same repro raises the
-  refusal against a real server; Neo4j oracle corpus unchanged.
+- Gate: `cargo fmt --check`, `clippy -D warnings`, `cargo test
+  --no-default-features` (lib suite green: 1482 passed / 4 ignored, the
+  battery included).
+- Live tier (no local ClickHouse; CI's `build` runs the offline battery and
+  audit / deny — no live repro check exists in CI): disclosed in the PR body;
+  Neo4j oracle corpus unchanged.
 
 ## Boundaries
 
@@ -133,10 +147,14 @@ tests flip from `.unwrap_err()` to render assertions.
 
 ## Success criteria
 
-1. The issue's repro raises `Unsupported` naming the drawn calls and the
-   re-read, on ClickHouse and on Databricks, offline and on CI's live tier.
+1. The issue's repro raises `Unsupported` naming the drawn call family and
+   the re-read CTE, on ClickHouse and on Databricks, offline.
 2. The WHERE-filter siblings raise the refusal naming different rows.
 3. Every allow case above lowers green with bytes unchanged.
 4. Ratchet + corpus goldens byte-identical; lib suite green; fmt/clippy clean.
-5. `PRIORITIES.md` §2/§4 and the `OPEN_ISSUE_PLAN.md` wave table updated in
-   the same PR; the residual `randomUUID` mapping gap filed as its own issue.
+5. `PRIORITIES.md` §2/§4 updated in the same PR (§2 stands: the next queue
+   rows are other issues' — this slice is a P-1 follow-up, no reorder owed);
+   the `OPEN_ISSUE_PLAN.md` wave table is the plan branch's
+   (`plan/open-issues-2026-10`, kept outside this tree on purpose) and is
+   updated there at merge; the residual `randomUUID` mapping gap filed as
+   its own issue (#1540).
