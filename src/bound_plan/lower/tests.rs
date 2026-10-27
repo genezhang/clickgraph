@@ -10512,8 +10512,13 @@ fn a_drawn_value_joined_back_across_two_reads_is_refused() {
         &ReadOptions::default(),
     )
     .unwrap_err();
+    // The refusal names the re-read CTE and the call family (the slice
+    // review: no pooling, no canned blame).
     assert!(
-        err.contains("draw again on every read") && err.contains("is a join key of its reads"),
+        err.contains("draws again on every read")
+            && err.contains("is a join key of its reads")
+            && err.contains("WITH with_w1")
+            && err.contains("rand()"),
         "{err}"
     );
     // A literal on the other side does not agree the reads either.
@@ -10540,6 +10545,34 @@ fn a_databricks_drive_that_joins_on_a_drawn_value_is_refused() {
     )
     .unwrap_err();
     assert!(err.contains("is a join key of its reads"), "{err}");
+    // The clock draws its own blame: the refusal names the re-read CTE and
+    // the family, not rand's (the pooled message did).
+    let err = translate_bound_plan(
+        "MATCH (a:User) WITH a, timestamp() AS t \
+         OPTIONAL MATCH (b:User) WHERE b.user_id = a.user_id AND t < 2 \
+         RETURN count(*), count(b)",
+        &social(),
+        &ReadOptions::default(),
+    )
+    .unwrap_err();
+    assert!(
+        err.contains("the clock (now64(3) / current_timestamp() / now())")
+            && err.contains("WITH with_w1")
+            && err.contains("is a join key of its reads")
+            && !err.contains("rand()"),
+        "{err}"
+    );
+}
+
+/// #1495: a drawn call's name inside a quoted literal is a search's text,
+/// not a call — the whole-word scan reads the quotes before the tokens.
+#[test]
+fn a_drawn_name_inside_a_quoted_literal_is_not_a_call() {
+    let got = sql("MATCH (a:User) WHERE a.name = 'r now() rand()' \
+         WITH a \
+         OPTIONAL MATCH (b:User) WHERE b.user_id = a.user_id \
+         RETURN count(*), count(b)");
+    assert!(got.contains("'r now() rand()'"), "{got}");
 }
 
 /// #1495: a drawn call that filters (orders, groups) the rows of a CTE
@@ -10557,11 +10590,46 @@ fn a_drawn_filter_of_a_reread_cte_is_refused() {
     ] {
         let err = translate_bound_plan(q, &social(), &ReadOptions::default()).unwrap_err();
         assert!(
-            err.contains("draw again on every read")
-                && err.contains("selects different rows on every read"),
+            err.contains("draws again on every read")
+                && err.contains("selects different rows on every read")
+                && err.contains("WITH with_w1"),
             "{q}: {err}"
         );
     }
+}
+
+/// #1495: the drawn-filter refusal is dialect-shared (Databricks).
+#[test]
+fn a_databricks_drawn_filter_of_a_reread_cte_is_refused() {
+    let err = databricks_sql(
+        "MATCH (a:User) WHERE rand() < 0.5 \
+         OPTIONAL MATCH (b:User) WHERE b.user_id = a.user_id \
+         RETURN count(*), count(b)",
+        &social(),
+    )
+    .unwrap_err();
+    assert!(
+        err.contains("selects different rows on every read"),
+        "{err}"
+    );
+}
+
+/// #1495: the clock, drawn and joined back on Databricks, is refused and
+/// blamed by its own family.
+#[test]
+fn a_databricks_drawn_clock_joined_back_is_refused() {
+    let err = databricks_sql(
+        "MATCH (a:User) WITH a, current_timestamp() AS t \
+         OPTIONAL MATCH (b:User) WHERE b.user_id = a.user_id AND t < 2 \
+         RETURN count(*), count(b)",
+        &social(),
+    )
+    .unwrap_err();
+    assert!(
+        err.contains("the clock (now64(3) / current_timestamp() / now())")
+            && err.contains("is a join key of its reads"),
+        "{err}"
+    );
 }
 
 /// #1495: a drawn value that cannot decide across the reads lowers as
