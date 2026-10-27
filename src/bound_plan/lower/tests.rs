@@ -10811,6 +10811,21 @@ fn an_edge_table_named_f_does_not_shadow_the_bfs_frontier() {
     let got = squash(&databricks_sql(q, &schema).unwrap());
     assert!(got.contains("vlp_v1_bfs AS vlp_v1_frontier"), "{got}");
     assert!(!got.contains("vlp_v1_bfs AS f"), "{got}");
+    // The counted sibling (paths carried into the search): the step sums
+    // and groups by the frontier's own name too.
+    let q = "MATCH p = allShortestPaths((x:U {uid: 1})-[:F*1..5]->(y:U {uid: 2})) \
+             RETURN count(*) AS c";
+    let got = squash(
+        &translate_bound_plan(q, &schema, &ReadOptions::default())
+            .unwrap()
+            .sql,
+    );
+    assert!(got.contains("sum(vlp_v1_frontier.paths)"), "{got}");
+    assert!(got.contains("GROUP BY vlp_v1_frontier.start_id, "), "{got}");
+    assert!(
+        !got.contains(" AS f ") && !got.contains("vlp_v1_bfs AS f"),
+        "{got}"
+    );
 }
 
 /// #1515: the seed and the kept-steps' subqueries of a search whose paths
