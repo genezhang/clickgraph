@@ -215,6 +215,12 @@ async fn try_render(
     .await
 }
 
+/// Forward slashes on every platform: golden keys and collected paths
+/// name the same files by them.
+fn slash(path: &str) -> String {
+    path.replace('\\', "/")
+}
+
 /// The golden's path, with forward slashes on every platform: the keys it
 /// returns and the collected files' (`collect_files`) name the same files,
 /// or a Windows checkout counts every checked-in golden stale (and
@@ -222,7 +228,7 @@ async fn try_render(
 fn golden_path(schema: &str, name: &str, dialect: &str, ext: &str) -> String {
     format!(
         "{}/tests/rust/integration/golden/corpus/{schema}/{name}.{dialect}.{ext}",
-        env!("CARGO_MANIFEST_DIR").replace('\\', "/")
+        slash(env!("CARGO_MANIFEST_DIR"))
     )
 }
 
@@ -234,7 +240,7 @@ fn collect_files(dir: &std::path::Path, out: &mut Vec<String>) {
             collect_files(&path, out);
         } else {
             // Forward slashes, as `golden_path` spells its keys.
-            out.push(path.to_string_lossy().replace('\\', "/"));
+            out.push(slash(&path.to_string_lossy()));
         }
     }
 }
