@@ -23,7 +23,7 @@
 //! A node, relationship or path in the list is `Unsupported` (S7e lists),
 //! as is a property of the element (a map).
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use crate::graph_catalog::expression_parser::PropertyValue;
 use crate::graph_catalog::schema_types::{KeyPartType, SchemaType};
@@ -32,7 +32,7 @@ use crate::render_plan::render_expr::{Literal, RenderCase, RenderExpr, TableAlia
 use crate::render_plan::RenderPlan;
 use crate::render_plan::{ArrayJoin, OrderByItem, OrderByOrder};
 use crate::sql_generator::emitters::clickhouse::to_sql_query::{
-    order_keys_to_sql_plain, render_expr_to_sql_plain, render_plan_parts_plain,
+    order_keys_to_sql_plain, render_expr_to_sql_plain, render_plan_parts_plain, PlainCte,
 };
 use crate::sql_generator::function_mapper::{current_function_mapper, Unwind};
 
@@ -936,39 +936,80 @@ pub(super) fn reject_rereads_of_numbered_rows(
 /// reads draw different values, the joins match no row), or when a drawn
 /// call filters (orders, groups) its rows (the reads keep different rows).
 /// A drawn value no second read decides on lowers as before.
+/// A drawn CTE's own fate: the aliases its WITH exports for a drawn item
+/// (the column's readback a join key may carry back), whether a drawn call
+/// decides its rows (a WHERE's predicate, an ORDER BY's key, a GROUP BY's
+/// key), and the call families its text spells.
+#[derive(Default)]
+struct DrawnFate {
+    aliases: Vec<String>,
+    filters: bool,
+    families: Vec<&'static str>,
+}
+
 pub(super) fn reject_reads_of_drawn_values(plan: &RenderPlan) -> Result<(), LowerError> {
     let (ctes, select) = render_plan_parts_plain(plan.clone());
-    let mut names = BTreeSet::new();
-    let mut aliases: Vec<String> = Vec::new();
-    let mut filters = false;
+    // Each drawn CTE carries its own fate, not a pooled one: a CTE read
+    // once decides on its read's own draw (the spec's fact 4) and lowers
+    // as written. Only the fate of a CTE the reads read more than once
+    // refuses, and the refusal names that CTE and the call family — never
+    // another CTE's drawn item.
+    let mut drawn: BTreeMap<&str, DrawnFate> = BTreeMap::new();
     for cte in &ctes {
-        for at in drawn_call_starts(&cte.text) {
-            names.insert(cte.name.clone());
+        let mut fate = DrawnFate::default();
+        for (at, family) in drawn_call_families(&cte.text) {
+            fate.families.push(family);
             match drawn_column_alias(&cte.text[at..]) {
-                Some(alias) => aliases.push(alias.to_string()),
-                None => filters = true,
+                Some(alias) => fate.aliases.push(alias.to_string()),
+                None => fate.filters = true,
             }
         }
+        if fate.families.is_empty() {
+            continue;
+        }
+        fate.families.dedup();
+        drawn.insert(cte.name.as_str(), fate);
     }
-    if names.is_empty() || !rereads(plan, &names) {
+    // The drawn CTEs the reads read more than once, by name — from the
+    // parts already rendered above, so the plan renders once.
+    let named: BTreeSet<String> = drawn.keys().map(|n| (*n).to_string()).collect();
+    let reread = those_reread(&ctes, &select, &named);
+    if reread.is_empty() {
         return Ok(());
     }
     let select = select.to_ascii_lowercase();
-    if aliases
-        .iter()
-        .any(|alias| select.contains(&format!(".{alias} = ")))
-    {
-        return unsupported(
-            "a value drawn in a WITH read more than once (rand() / randomUUID() / \
-             the clock draw again on every read) is a join key of its reads",
-        );
+    // The join keys answer first, CTE by CTE (as a pooled check did):
+    // a readback equal on the drawn column joins two draws, which agree
+    // no more. Case-folded, as the select's text is.
+    for name in &reread {
+        let Some(fate) = drawn.get(name.as_str()) else {
+            continue;
+        };
+        if fate
+            .aliases
+            .iter()
+            .any(|alias| select.contains(&format!(".{} = ", alias.to_ascii_lowercase())))
+        {
+            return unsupported(format!(
+                "a value drawn in WITH {name} by {} draws again on every read \
+                 and is a join key of its reads",
+                fate.families.join(" / "),
+            ));
+        }
     }
-    if filters {
-        return unsupported(
-            "a value drawn in a WITH read more than once (rand() / randomUUID() / \
-             the clock draw again on every read) selects different rows on every \
-             read",
-        );
+    // Then the row-deciding drawn calls: a WHERE's predicate, an ORDER
+    // BY's key or a GROUP BY's key keeps a different row set per read.
+    for name in &reread {
+        let Some(fate) = drawn.get(name.as_str()) else {
+            continue;
+        };
+        if fate.filters {
+            return unsupported(format!(
+                "a value drawn in WITH {name} by {} draws again on every read \
+                 and selects different rows on every read",
+                fate.families.join(" / "),
+            ));
+        }
     }
     Ok(())
 }
@@ -990,10 +1031,11 @@ const DRAWN_SQL: [&str; 6] = [
     "current_timestamp",
 ];
 
-/// The byte positions in `text` of each drawn call: a drawn function's
-/// name, outside every quoted string (a query that searches for the word
-/// `now` must not look drawn), as a whole word followed by its `(`.
-fn drawn_call_starts(text: &str) -> Vec<usize> {
+/// The byte positions in `text` of each drawn call, with its family: a
+/// drawn function's name, outside every quoted string (a query that
+/// searches for the word `now` must not look drawn), as a whole word
+/// followed by its `(`.
+fn drawn_call_families(text: &str) -> Vec<(usize, &'static str)> {
     let lower = text.to_ascii_lowercase();
     let text = lower.as_bytes();
     let ident = |c: u8| c.is_ascii_alphanumeric() || c == b'_';
@@ -1022,7 +1064,7 @@ fn drawn_call_starts(text: &str) -> Vec<usize> {
                         && (at == 0 || !ident(text[at - 1]))
                         && text.get(at + token.len()) == Some(&b'(')
                     {
-                        starts.push(at);
+                        starts.push((at, drawn_call_family(token)));
                         break;
                     }
                 }
@@ -1031,6 +1073,16 @@ fn drawn_call_starts(text: &str) -> Vec<usize> {
         }
     }
     starts
+}
+
+/// A drawn token's call family, as the Cypher spells it (the SQL spelling
+/// varies by dialect: `rand` the map, `randCanonical` ClickHouse's).
+fn drawn_call_family(token: &[u8]) -> &'static str {
+    match token {
+        b"randcanonical" | b"rand" => "rand()",
+        b"randomuuid" => "randomUUID()",
+        _ => "the clock (now64(3) / current_timestamp() / now())",
+    }
 }
 
 /// A drawn call's item's exported column: the text after the ` AS ` the
@@ -1063,10 +1115,17 @@ fn drawn_column_alias(after_call: &str) -> Option<&str> {
 /// each CTE that reads them, directly or through others, is itself named
 /// once in the rest of the SQL.
 pub(super) fn rereads(plan: &RenderPlan, marked: &BTreeSet<String>) -> bool {
-    if marked.is_empty() {
-        return false;
-    }
     let (ctes, select) = render_plan_parts_plain(plan.clone());
+    !those_reread(&ctes, &select, marked).is_empty()
+}
+
+/// The names, among `marked`, that the SQL reads more than once (marked
+/// itself, or a CTE reading one of them), from parts a caller has already
+/// rendered.
+fn those_reread(ctes: &[PlainCte], select: &str, marked: &BTreeSet<String>) -> BTreeSet<String> {
+    if marked.is_empty() {
+        return BTreeSet::new();
+    }
     // The names each CTE defines: its own, and a path relation's helpers.
     let names: Vec<Vec<&str>> = ctes
         .iter()
@@ -1083,7 +1142,7 @@ pub(super) fn rereads(plan: &RenderPlan, marked: &BTreeSet<String>) -> bool {
             .enumerate()
             .filter(|(j, _)| *j != i)
             .map(|(_, c)| c.text.as_str())
-            .chain(std::iter::once(select.as_str()));
+            .chain(std::iter::once(select));
         elsewhere
             .map(|text| names[i].iter().map(|n| word_count(text, n)).sum::<usize>())
             .sum()
@@ -1097,7 +1156,10 @@ pub(super) fn rereads(plan: &RenderPlan, marked: &BTreeSet<String>) -> bool {
                 .any(|j| tainted[j] && names[j].iter().any(|n| word_count(&ctes[i].text, n) > 0));
         }
     }
-    (0..ctes.len()).any(|i| tainted[i] && reads(i) > 1)
+    (0..ctes.len())
+        .filter(|&i| tainted[i] && reads(i) > 1)
+        .map(|i| ctes[i].name.clone())
+        .collect()
 }
 
 /// The names of the plan's CTEs.
