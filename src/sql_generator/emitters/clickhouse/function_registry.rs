@@ -506,6 +506,20 @@ lazy_static::lazy_static! {
             arg_transform: None,
         });
 
+        // randomUUID() -> generateUUIDv4() [#1540]. The Cypher UUID generator was
+        // unmapped, so its spelling rendered verbatim and produced invalid SQL on
+        // both dialects: ClickHouse has no `randomUUID()` (its generator is
+        // `generateUUIDv4()`), and Spark/Databricks spells it `uuid()`. Arity 0,
+        // no argument transform. `rand()` above is drawn from the server state the
+        // same way; note that the drawn-value reuse detector (DRAWN_VALUES.md)
+        // already covers the outcome spellings independently of this entry.
+        m.insert("randomuuid", FunctionMapping {
+            neo4j_name: "randomUUID",
+            clickhouse_name: "generateUUIDv4",
+            databricks_name: Some("uuid"),
+            arg_transform: None,
+        });
+
         // sign() -> sign() [1:1 mapping]
         m.insert("sign", FunctionMapping {
             neo4j_name: "sign",
@@ -1328,6 +1342,30 @@ mod tests {
         let mapping =
             get_function_mapping("ceil").expect("get_function_mapping failed for function in test");
         assert_eq!(mapping.clickhouse_name, "ceil");
+    }
+
+    // #1540: Cypher randomUUID() was unmapped and rendered verbatim, producing
+    // invalid SQL. ClickHouse's UUID generator is generateUUIDv4(), Spark/Databricks
+    // spells it uuid(); both are arity-0 with no argument transform.
+    #[test]
+    fn test_uuid_functions() {
+        let mapping = get_function_mapping("randomUUID")
+            .expect("randomUUID mapping should exist (rendered verbatim before #1540)");
+        assert_eq!(mapping.clickhouse_name, "generateUUIDv4");
+        assert_eq!(mapping.databricks_name, Some("uuid"));
+        assert!(mapping.arg_transform.is_none());
+        // Dialect layer parity: name_for() is what the translator actually prints.
+        assert_eq!(
+            mapping.name_for(crate::sql_generator::SqlDialect::ClickHouse),
+            "generateUUIDv4"
+        );
+        assert_eq!(
+            mapping.name_for(crate::sql_generator::SqlDialect::Databricks),
+            "uuid"
+        );
+        // Lookup is case-insensitive like the rest of the registry.
+        assert!(get_function_mapping("RANDOMUUID").is_some());
+        assert!(get_function_mapping("random_uuid").is_none()); // not a Cypher spelling
     }
 
     #[test]
