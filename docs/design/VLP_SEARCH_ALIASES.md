@@ -119,7 +119,19 @@ repro is the frontier).
   tests above, not by convention).
 - A schema table literally named `vlp_…_frontier` would collide as today's
   table named `f` does; inventing such a name is out of ordinary practice,
-  and the ratchet / oracle would flag it.
+  and the ratchet / oracle would flag it. The var under every `vlp_{var}_…`
+  name is the lowering's own allocation (`VarId::name` = `v{N}`, a counter,
+  never the query's text), so the templates' identifiers stay bounded
+  [a-zA-Z0-9_] shapes and stay apart for two walks — the existing pins
+  (which assert `vlp_v1_frontier` literally) notice any drift.
+
+## End state (#1542)
+
+Every FROM alias the search bakes takes the same `vlp_{var}_*` scheme in the
+follow-up (`rel`, `start_node` / `end_node`, and the carried values' START /
+END / REL alias parameters), so the collision class closes once — and the
+#1085 gate on a VLP endpoint named `t` (rejected today, `TODO(multi-vlp)`)
+folds into the same namespacing instead of rejecting the query.
 
 ## Success criteria
 
