@@ -511,8 +511,11 @@ lazy_static::lazy_static! {
         // both dialects: ClickHouse has no `randomUUID()` (its generator is
         // `generateUUIDv4()`), and Spark/Databricks spells it `uuid()`. Arity 0,
         // no argument transform. `rand()` above is drawn from the server state the
-        // same way; note that the drawn-value reuse detector (DRAWN_VALUES.md)
-        // already covers the outcome spellings independently of this entry.
+        // same way; the drawn-value reuse detector (DRAWN_VALUES.md) scans the
+        // rendered SQL, so a mapping change of a drawn call carries the
+        // detector's tokens — this entry's `generateuuidv4` / `uuid` tokens ride
+        // this PR, and the spelling-tie guard (#1495 review) fails if a later
+        // mapping change drops one.
         m.insert("randomuuid", FunctionMapping {
             neo4j_name: "randomUUID",
             clickhouse_name: "generateUUIDv4",
