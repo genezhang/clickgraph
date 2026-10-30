@@ -75,6 +75,8 @@
 
 ### 🧹 Infrastructure
 
+- **CI and local builds move to Rust 1.94.1.** A new `rust-toolchain.toml` pins the channel, and the `toolchain:` inputs in `ci.yml`, `nightly.yml` and `security.yml` move from the committed 1.92.0 to 1.94.1 — the floor the project actually runs on locally. The committed floor had silently lagged it, so a dependency whose MSRV is above 1.92.0 could not build in CI. The library MSRV (`rust-version = "1.85"`) is unchanged: the pin sets the dev/CI toolchain, not the version the published library supports. Verified 1.94.1 is clean across the tree (both `cargo clippy … -D warnings` gates and `cargo fmt --check`).
+
 - **rustls 0.23.45 → 0.23.46** for RUSTSEC-2026-0346, -0347, -0348 and -0349 (TLS secrets in `Debug` output, data sent after an ECH rejection, Brotli certificate decompression allocating up to 1 GiB, a ServerHello downgrading later key exchanges). `Cargo.lock` only.
 
 - **The variable-length walk generator keeps only what the bound plan uses** (P-4c S14c8, ~9k lines): the standard layout's walk, without the denormalized, mixed, FK-edge, weighted, BFS, polymorphic and doubled-edge arms the legacy planner drove, and `pattern_schema` keeps only the layout classification. The corpus SQL goldens are byte-identical.
