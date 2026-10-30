@@ -1,0 +1,30 @@
+# osv-scanner's triage file (the `osv` reporting job scans this root): every
+# row below is already fixed, or unfixable by a pin and documented with the
+# same rationale in `deny.toml` (the RustSec lane). A new advisory not
+# listed here still fails the reporting job — that is its purpose. The
+# `h2` row is the one "fixable" version the scanner sees: the fix is the
+# `chdb-rust` 2.0.0 slice (its own follow-up, API-compat work), not a pin
+# this branch can take.
+[[IgnoredVulns]]
+id = "GHSA-qwgh-2vcv-g2f7"
+reason = "block-buffer 0.10.4 (Medium 6.3): no fixed version is published; consumers are sha2 (compile-time digests) and the SHA-1 inside tokio-tungstenite 0.21's wire paths. Revisit the row when a fix lands upstream."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0374"
+reason = "basic-toml 0.1.10 is unmaintained: compile-time-only, pulled by askama_derive (template codegen); no runtime artifact, not a security vulnerability. Retires with askama's own upgrade."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0258"
+reason = "h2 unbounded empty DATA frames: the server path (axum/hyper 1.x) runs the patched h2 0.4.16; the residual 0.3.27 copy is the optional `embedded` feature's chdb-rust → reqwest 0.11 outbound client, off the default build. reqwest 0.11 is pinned by chdb-rust; the row dies with the chdb-rust 2.0.0 slice."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0173"
+reason = "proc-macro-error2 is unmaintained: compile-time-only transitive of validator → validator_derive, never shipped at runtime. Ignore until a validator release drops it upstream."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2025-0134"
+reason = "rustls-pemfile is unmaintained but a functional transitive of reqwest 0.11 (the chdb-rust chain); not a security vulnerability. Dies with the same chdb-rust 2.0.0 slice."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2024-0449"
+reason = "unsafe-libyaml is unmaintained (archived upstream), pulled only by serde_yaml 0.9, which parses operator-supplied schema YAML; not a security vulnerability. Ignore until serde_yaml is replaced (35 call sites: a separate change)."
