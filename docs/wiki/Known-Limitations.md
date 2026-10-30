@@ -95,7 +95,7 @@ ClickGraph is designed for **analytical queries** over existing ClickHouse data,
 
 **Nondeterministic draws in a CTE read twice** (#1495):
 - ✅ A drawn value (`rand()`, `randomUUID()`, the clock) that no second read decides on lowers correctly
-- ❌ A drawn value joined back as a join key of its reads, or one that filters / orders / groups the CTE's rows, is refused: `Not supported: a value drawn in WITH … draws again on every read …`. ClickHouse re-evaluates a CTE once per read, so the reads of the draw disagree where Neo4j's one execution agrees. Workaround: reshape the query so the drawn value is read once.
+- ❌ A drawn value joined back as a join key of its reads, or one that filters / orders / groups the CTE's rows, is refused: `not lowered yet: a value drawn in WITH … by rand() draws again on every read and is a join key of its reads`. ClickHouse re-evaluates a CTE once per read, so the reads of the draw disagree where Neo4j's one execution agrees. The clock's refusal is conservative: two reads of a same-query `now()` may in practice agree, but may not — a query this rule refuses should be reshaped. Workaround: reshape the query so the drawn value is read once.
 
 ### ✅ Recently Implemented (v0.5.3-v0.6.0)
 

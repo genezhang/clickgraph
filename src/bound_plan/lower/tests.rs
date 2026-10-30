@@ -10681,3 +10681,51 @@ fn a_drawn_value_that_cannot_decide_across_reads_lowers_as_before() {
         "{got}"
     );
 }
+
+/// #1539 review: the registry is where a drawn call's dialect spelling is
+/// decided, so a spelling change must carry its detector token in the
+/// same change — otherwise the detector silently stops refusing and the
+/// silent-wrong join shape returns (the #1540 class: `randomUUID`
+/// mapping to `generateUUIDv4()` / `uuid()`). Every dialect spelling the
+/// mapping resolves to is probed through the scan itself; an unmapped
+/// drawn call is spelled verbatim (`randomUUID()`, today). The clock's
+/// spellings (`now64(3)` / `now()` / `current_timestamp()`) are authored
+/// inside arg transforms, not mapping names — the battery's clock
+/// refusals (`a_drawn_value_joined_back_across_two_reads_is_refused`,
+/// the Databricks clock pair) pin them behaviorally.
+#[test]
+fn detector_tokens_spell_every_dialect_spelling_of_the_mapped_drawn_calls() {
+    use crate::sql_generator::emitters::clickhouse::function_registry::get_function_mapping;
+    use crate::sql_generator::SqlDialect;
+
+    for (cypher, family) in [("rand", "rand()"), ("randomUUID", "randomUUID()")] {
+        match get_function_mapping(cypher) {
+            None => {
+                // Unmapped: the rendered SQL spells the Cypher name verbatim.
+                assert_eq!(
+                    super::unwind::drawn_call_families(&format!("{cypher}()")),
+                    vec![(0, family)],
+                    "`{cypher}` is unmapped, so the detector must recognize the \
+                     verbatim spelling",
+                );
+            }
+            Some(mapping) => {
+                for (dialect, spelling) in [
+                    (SqlDialect::ClickHouse, mapping.clickhouse_name),
+                    (
+                        SqlDialect::Databricks,
+                        mapping.name_for(SqlDialect::Databricks),
+                    ),
+                ] {
+                    assert_eq!(
+                        super::unwind::drawn_call_families(&format!("{spelling}()")),
+                        vec![(0, family)],
+                        "the detector does not recognize `{spelling}`, the \
+                         {dialect:?} spelling of `{cypher}`: the mapper's spelling \
+                         and the detector's tokens have drifted",
+                    );
+                }
+            }
+        }
+    }
+}

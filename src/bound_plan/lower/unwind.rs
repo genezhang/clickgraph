@@ -1034,8 +1034,9 @@ const DRAWN_SQL: [&str; 6] = [
 /// The byte positions in `text` of each drawn call, with its family: a
 /// drawn function's name, outside every quoted string (a query that
 /// searches for the word `now` must not look drawn), as a whole word
-/// followed by its `(`.
-fn drawn_call_families(text: &str) -> Vec<(usize, &'static str)> {
+/// followed by its `(`. Visible to the battery's spelling tie, which
+/// probes the registry's mapped spellings against this scan.
+pub(super) fn drawn_call_families(text: &str) -> Vec<(usize, &'static str)> {
     let lower = text.to_ascii_lowercase();
     let text = lower.as_bytes();
     let ident = |c: u8| c.is_ascii_alphanumeric() || c == b'_';

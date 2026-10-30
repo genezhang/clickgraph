@@ -102,9 +102,11 @@ already refused), no legacy-path edits, no SQL-emitter change.
 
 Backward compat: only queries that are wrong today refuse; the corpus is
 touched nowhere (asserted byte-identical by the ratchet). Future compat: a
-new dialect mapping of a nullary drawn call adds one token to the const plus
-one probe assertion; candidate (b) materialization, when the server floor
-reaches ClickHouse 26.3+, replaces refusals with correct answers — the same
+new dialect mapping of a nullary drawn call adds one token to the const —
+the spelling-tie guard test resolves the mapping and fails at that change
+if the token is missing, so the coupling cannot drift silently; candidate
+(b) materialization, when the server floor reaches
+ClickHouse 26.3+, replaces refusals with correct answers — the same
 tests flip from `.unwrap_err()` to render assertions.
 
 ## Testing
@@ -119,6 +121,12 @@ tests flip from `.unwrap_err()` to render assertions.
   draw joined back (#10 — pinned NOT refused, the deliberate exclusion), and
   a quoted literal spelling a drawn name (`'r now() rand()'`) — the whole-word
   scan reads the quotes first.
+- Spelling tie: every dialect spelling the registry resolves for a drawn
+  Cypher call (`rand`, `randomUUID`) is probed through the scan itself
+  (`<spelling>()` outside quoted literals), and an unmapped drawn call is
+  probed verbatim — a mapping change without its token fails the guard.
+  The clock's spellings are authored inside arg transforms, not mapping
+  names, and are pinned behaviorally by the refusals above.
 - Goldens: `cargo test --no-default-features --test ratchet` and
   `integration the_corpus_lowers` byte-identical.
 - Gate: `cargo fmt --check`, `clippy -D warnings`, `cargo test
@@ -158,3 +166,7 @@ tests flip from `.unwrap_err()` to render assertions.
    (`plan/open-issues-2026-10`, kept outside this tree on purpose) and is
    updated there at merge; the residual `randomUUID` mapping gap filed as
    its own issue (#1540).
+6. The registry's mapped spellings and the detector's tokens cannot drift:
+   the spelling-tie guard fails on a drawn call's mapping change without
+   its token, and the tolerance the clock's transform-authored spellings
+   get is stated in the spec itself (behaviorally pinned by the battery).
