@@ -55,10 +55,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install osv-scanner
+      - name: Install osv-scanner (pinned v2.7.0)
+        # Pinned (the review): the step installs from the release's asset and
+        # runs the arg-syntax-sensitive `scan source -r .` under
+        # `continue-on-error`, so a v3 with changed arguments would fail the
+        # job and leave the check green — the blind-spot lane would silently
+        # reopen. The binary verifies against the release's own SHA256SUMS
+        # so a tampered or truncated fetch cannot run instead.
+        env:
+          OSV_SCANNER_VERSION: v2.7.0
         run: |
-          curl -fsSL -o /usr/local/bin/osv-scanner "https://github.com/google/osv-scanner/releases/latest/download/osv-scanner_linux_amd64"
-          chmod +x /usr/local/bin/osv-scanner
+          curl -fsSL -o osv-scanner "https://github.com/google/osv-scanner/releases/download/${OSV_SCANNER_VERSION}/osv-scanner_linux_amd64"
+          curl -fsSL -o osv-scanner_SHA256SUMS "https://github.com/google/osv-scanner/releases/download/${OSV_SCANNER_VERSION}/osv-scanner_SHA256SUMS"
+          echo "$(awk '$2 == "osv-scanner_linux_amd64" {print $1}' osv-scanner_SHA256SUMS)\tosv-scanner" | sha256sum --strict --quiet --check -
+          install -m 0755 osv-scanner /usr/local/bin/osv-scanner
 
       - name: osv-scanner scan
         run: osv-scanner scan source -r .
