@@ -20,7 +20,7 @@ jobs:
     - name: Setup Rust
       uses: dtolnay/rust-toolchain@stable
       with:
-        toolchain: 1.92.0
+        toolchain: 1.94.1
         components: rustfmt, clippy
 
     - name: Code format check
