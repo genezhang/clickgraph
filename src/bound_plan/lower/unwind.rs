@@ -1016,16 +1016,25 @@ pub(super) fn reject_reads_of_drawn_values(plan: &RenderPlan) -> Result<(), Lowe
 
 /// The lowercase SQL spellings of the calls that draw a different value on
 /// each evaluation: `rand()` (`randCanonical()` on ClickHouse, `rand()` on
-/// Spark), `randomUUID()` (spelled through unmapped), the millisecond
-/// clock (`now64(3)`, `current_timestamp()`, and `now()`, nested as in
-/// `toUnixTimestamp(now())`). Whole words, so `rand` does not match
-/// `randCanonical` (the ident-boundary `c`). The day-granular draws
-/// (`today()`, `current_date()`) are not here: the reads of one query
-/// agree within the day, so a join of their reads is correct.
-const DRAWN_SQL: [&str; 6] = [
+/// Spark), `randomUUID()` (`randomUUID()` spelled through unmapped, or the
+/// mapping #1540 resolves for it — ClickHouse's `generateUUIDv4()`, Spark's
+/// `uuid()`; `randomuuid` stays so a dialect spelling it verbatim again,
+/// or spelling that surfaces before this list is updated, still draws),
+/// the millisecond clock (`now64(3)`, `current_timestamp()`, and `now()`,
+/// nested as in `toUnixTimestamp(now())`). Whole words, so `rand` does not
+/// match `randCanonical` (the ident-boundary `c`), and `uuid` does not
+/// match inside `generateUUIDv4` (the boundary `e`). The day-granular
+/// draws (`today()`, `current_date()`) are not here: the reads of one
+/// query agree within the day, so a join of their reads is correct. The
+/// mapping's spellings are tied to this list by the battery's spelling
+/// test (#1495 review, DRAWN_VALUES.md): a mapping change without its
+/// token fails there.
+const DRAWN_SQL: [&str; 8] = [
     "randcanonical",
     "rand",
     "randomuuid",
+    "generateuuidv4",
+    "uuid",
     "now64",
     "now",
     "current_timestamp",
@@ -1081,7 +1090,7 @@ pub(super) fn drawn_call_families(text: &str) -> Vec<(usize, &'static str)> {
 fn drawn_call_family(token: &[u8]) -> &'static str {
     match token {
         b"randcanonical" | b"rand" => "rand()",
-        b"randomuuid" => "randomUUID()",
+        b"randomuuid" | b"generateuuidv4" | b"uuid" => "randomUUID()",
         _ => "the clock (now64(3) / current_timestamp() / now())",
     }
 }

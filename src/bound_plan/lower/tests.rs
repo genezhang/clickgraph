@@ -10666,11 +10666,14 @@ fn a_drawn_value_that_cannot_decide_across_reads_lowers_as_before() {
          OPTIONAL MATCH (b:User) WHERE b.user_id = a.user_id \
          RETURN count(*) AS c, count(t) AS n");
     assert!(got.contains(r#"toUnixTimestamp(now()) AS "v2""#), "{got}");
-    // randomUUID() is spelled through unmapped; carried, unread.
+    // randomUUID() maps to the dialect's generator (#1540); carried,
+    // unread — the spelling below is the mapping's own, and the refusal
+    // battery of this PR (after the #1539 rebase) refuses the same drawn
+    // shape once it decides across the reads.
     let got = sql("MATCH (a:User) WITH a, randomUUID() AS u \
          OPTIONAL MATCH (b:User) WHERE b.user_id = a.user_id \
          RETURN count(*) AS c, count(u) AS n");
-    assert!(got.contains(r#"randomUUID() AS "v2""#), "{got}");
+    assert!(got.contains(r#"generateUUIDv4() AS "v2""#), "{got}");
     // A same-day draw whose drawn column IS carried and joined back: the
     // reads agree within the day, so this is correct as it is.
     let got = sql("MATCH (a:User) WITH a, date() AS d \
@@ -10728,4 +10731,49 @@ fn detector_tokens_spell_every_dialect_spelling_of_the_mapped_drawn_calls() {
             }
         }
     }
+}
+
+/// #1545 review: once `randomUUID()` maps to the dialect's generator
+/// (`generateUUIDv4()` / `uuid()`), the rendered CTE text no longer spells
+/// `randomuuid` — the detector's tokens must follow the mapping or the
+/// #1495 refusal silently loses randomUUID coverage (the cross-PR trap on
+/// both branches' reviews).
+#[test]
+fn a_drawn_uuid_joined_back_across_two_reads_is_refused() {
+    let err = translate_bound_plan(
+        "MATCH (a:User) WITH a, randomUUID() AS u \
+         OPTIONAL MATCH (b:User) WHERE b.user_id = a.user_id AND u < 'x' \
+         RETURN count(*), count(b)",
+        &social(),
+        &ReadOptions::default(),
+    )
+    .unwrap_err();
+    assert!(
+        err.contains("randomUUID()")
+            && err.contains("WITH with_w1")
+            && err.contains("is a join key of its reads"),
+        "{err}"
+    );
+    // The drawn-filter shape refuses by its rows too.
+    let err = translate_bound_plan(
+        "MATCH (a:User) WHERE randomUUID() < 'x' \
+         OPTIONAL MATCH (b:User) WHERE b.user_id = a.user_id \
+         RETURN count(*), count(b)",
+        &social(),
+        &ReadOptions::default(),
+    )
+    .unwrap_err();
+    assert!(
+        err.contains("selects different rows on every read"),
+        "{err}"
+    );
+    // Databricks: the same, through the Spark spelling.
+    let err = databricks_sql(
+        "MATCH (a:User) WITH a, randomUUID() AS u \
+         OPTIONAL MATCH (b:User) WHERE b.user_id = a.user_id AND u < 'x' \
+         RETURN count(*), count(b)",
+        &social(),
+    )
+    .unwrap_err();
+    assert!(err.contains("is a join key of its reads"), "{err}");
 }
