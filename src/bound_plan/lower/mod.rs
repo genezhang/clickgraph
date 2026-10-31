@@ -7138,7 +7138,10 @@ impl<'s> Lowerer<'s> {
             }
         }
         let mut body = Body {
-            distinct: p.distinct,
+            // Cypher: DISTINCT over an aggregating RETURN changes nothing —
+            // the grouping already makes the rows distinct. Keeping it makes
+            // ClickHouse put the aggregate into the GROUP BY (ILLEGAL_AGGREGATION).
+            distinct: p.distinct && !(aggregating && p.items.iter().any(|i| !i.aggregate)),
             grouped: aggregating && p.items.iter().any(|i| !i.aggregate),
             skip: p.skip,
             limit: p.limit,
