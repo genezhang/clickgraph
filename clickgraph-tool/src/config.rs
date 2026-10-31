@@ -253,8 +253,14 @@ fn parse_dialect(s: &str) -> Option<DialectArg> {
 }
 
 fn load_file_config() -> FileConfig {
-    let Some(config_dir) = dirs::config_dir() else {
-        return FileConfig::default();
+    // Prefer XDG_CONFIG_HOME when set (test + Linux-style setups); fall back
+    // to the platform's config dir (macOS: ~/Library/Application Support).
+    let config_dir = match std::env::var_os("XDG_CONFIG_HOME") {
+        Some(v) if !v.is_empty() => std::path::PathBuf::from(v),
+        _ => match dirs::config_dir() {
+            Some(d) => d,
+            None => return FileConfig::default(),
+        },
     };
     let config_path = config_dir.join("cg").join("config.toml");
     let Ok(content) = std::fs::read_to_string(&config_path) else {

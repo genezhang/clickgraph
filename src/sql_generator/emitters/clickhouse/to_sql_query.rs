@@ -2218,6 +2218,27 @@ impl RenderExpr {
                     return mapper.to_string_float(&arg_sql);
                 }
 
+                // ClickHouse `split(str, delim)`: Cypher split uses a literal
+                // delimiter, but CH's splitByChar requires a single-byte constant
+                // and splitByString returns [str] for an empty delimiter. Cover
+                // empty / multi-byte / non-constant delimiters with a CASE that
+                // splits into code points when the delimiter is empty. (#1418)
+                if fn_name_lower == "split"
+                    && fn_call.args.len() == 2
+                    && matches!(
+                        crate::server::query_context::get_current_dialect(),
+                        crate::sql_generator::SqlDialect::ClickHouse
+                    )
+                {
+                    let str_sql = fn_call.args[0].to_sql();
+                    let delim_sql = fn_call.args[1].to_sql();
+                    return format!(
+                        "CASE WHEN {delim} = '' THEN arrayMap(i -> substring({s}, i, 1), range(1, lengthUTF8({s}) + 1)) ELSE splitByString({delim}, {s}) END",
+                        delim = delim_sql,
+                        s = str_sql,
+                    );
+                }
+
                 // Check if we have a Neo4j -> ClickHouse mapping
                 match get_function_mapping(&fn_name_lower) {
                     Some(mapping) => {
@@ -2559,6 +2580,17 @@ impl RenderExpr {
                         } else {
                             tri
                         };
+                        // Databricks rejects a bare NULL predicate
+                        // (FILTER_NOT_BOOLEAN); spell Cypher NULL as a boolean
+                        // NULL on Spark. ClickHouse accepts the bare form. (#1414)
+                        if result == CypherTriBool::Null
+                            && matches!(
+                                crate::server::query_context::get_current_dialect(),
+                                crate::sql_generator::SqlDialect::Databricks
+                            )
+                        {
+                            return "CAST(NULL AS BOOLEAN)".to_string();
+                        }
                         return result.sql_str().to_string();
                     }
                 }

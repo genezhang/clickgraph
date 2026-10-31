@@ -48,6 +48,7 @@ use crate::render_plan::cte_manager::CteManager;
 use crate::render_plan::render_expr::RenderExpr;
 use crate::render_plan::variable_length::VariableLengthSpec;
 use crate::render_plan::{CategorizedFilters, Cte, CteContent};
+use crate::sql_generator::emitters::clickhouse::qualified_column;
 use crate::sql_generator::emitters::clickhouse::to_sql_query::render_expr_to_sql_plain;
 use crate::sql_generator::emitters::clickhouse::variable_length_cte::{
     spell_edge_identity, NodeProperty, PathValues,
@@ -399,7 +400,7 @@ impl Search {
             .map(|(i, c)| {
                 let part = match alias {
                     "" => c.clone(),
-                    a => format!("{a}.{c}"),
+                    a => qualified_column(a, c),
                 };
                 super::value::cast_key_part(&part, casts.get(i).and_then(|t| t.as_deref()))
             })
@@ -468,8 +469,8 @@ impl Search {
     /// The column of [`Self::targets`], over `alias`.
     fn target_column(&self, alias: &str) -> String {
         match self.id.as_slice() {
-            [one] => format!("{alias}.{one}"),
-            _ => format!("{alias}.{TARGET}"),
+            [one] => qualified_column(alias, one),
+            _ => qualified_column(alias, TARGET),
         }
     }
 }
@@ -575,7 +576,7 @@ impl PathCall<'_> {
                 let cols: Vec<String> = edge_identity(self.edge)
                     .columns()
                     .into_iter()
-                    .map(|c| format!("{REL}.{c}"))
+                    .map(|c| qualified_column(REL, c))
                     .collect();
                 super::value::identity_text(g, &cols)
             }),
@@ -1294,11 +1295,11 @@ pub(super) fn pick_cte(
             carried.push_str(&format!(", {c}"));
             let value = match (*c, trail_edges) {
                 ("path_edges", TrailEdges::Typed(arity)) => {
-                    (g.prefixed_texts)("''", &format!("{alias}.{c}"), arity)
+                    (g.prefixed_texts)("''", &qualified_column(alias, c), arity)
                 }
                 // `*0..0`: no relationship.
                 ("path_edges", TrailEdges::None) => (g.texts)(&[]),
-                _ => format!("{alias}.{c}"),
+                _ => qualified_column(alias, c),
             };
             of_trail.push_str(&format!(", {value} AS {c}"));
         }
@@ -1447,7 +1448,7 @@ impl UnionWalk<'_> {
     /// (`rels` carries those of the nodes its rows leave and enter,
     /// `REL_START_KEY` / `REL_END_KEY`).
     pub(super) fn search(&self) -> Search {
-        let at = |alias: &str, column: &str| format!("{alias}.{column}");
+        let at = |alias: &str, column: &str| qualified_column(alias, column);
         Search {
             // A walk of several labels or types carries no element tuples
             // (they are of one type each).
@@ -1513,15 +1514,15 @@ pub(super) fn union_path_ctes(w: &UnionWalk<'_>) -> Result<(Vec<Cte>, String), L
             (g.texts)(&[]),
             (g.concat)(&[
                 "vp.path_edges".to_string(),
-                (g.texts)(&[format!("{REL}.{key}")]),
+                (g.texts)(&[qualified_column(REL, key)]),
             ]),
         ),
         (
             "path_nodes",
-            (g.texts)(&[format!("{START}.{key}")]),
+            (g.texts)(&[qualified_column(START, key)]),
             (g.concat)(&[
                 "vp.path_nodes".to_string(),
-                (g.texts)(&[format!("{END}.{key}")]),
+                (g.texts)(&[qualified_column(END, key)]),
             ]),
         ),
     ];
@@ -1529,10 +1530,10 @@ pub(super) fn union_path_ctes(w: &UnionWalk<'_>) -> Result<(Vec<Cte>, String), L
         columns.push(VALUE_COLUMNS[0]);
         carried.push((
             VALUE_COLUMNS[0],
-            (g.list)(&[format!("{START}.{value}")]),
+            (g.list)(&[qualified_column(START, value)]),
             (g.concat)(&[
                 format!("vp.{}", VALUE_COLUMNS[0]),
-                (g.list)(&[format!("{END}.{value}")]),
+                (g.list)(&[qualified_column(END, value)]),
             ]),
         ));
     }
@@ -1543,7 +1544,7 @@ pub(super) fn union_path_ctes(w: &UnionWalk<'_>) -> Result<(Vec<Cte>, String), L
             (g.list)(&[]),
             (g.concat)(&[
                 format!("vp.{}", VALUE_COLUMNS[1]),
-                (g.list)(&[format!("{REL}.{value}")]),
+                (g.list)(&[qualified_column(REL, value)]),
             ]),
         ));
     }
