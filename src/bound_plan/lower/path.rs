@@ -48,8 +48,8 @@ use crate::render_plan::cte_manager::CteManager;
 use crate::render_plan::render_expr::RenderExpr;
 use crate::render_plan::variable_length::VariableLengthSpec;
 use crate::render_plan::{CategorizedFilters, Cte, CteContent};
-use crate::sql_generator::emitters::clickhouse::to_sql_query::render_expr_to_sql_plain;
 use crate::sql_generator::emitters::clickhouse::qualified_column;
+use crate::sql_generator::emitters::clickhouse::to_sql_query::render_expr_to_sql_plain;
 use crate::sql_generator::emitters::clickhouse::variable_length_cte::{
     spell_edge_identity, NodeProperty, PathValues,
 };
