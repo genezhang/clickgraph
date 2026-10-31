@@ -437,14 +437,14 @@ vlp_v1_bfs AS (
     FROM vlp_v1_nodes AS start_node
     WHERE start_node.__cg_key IS NOT NULL AND (start_node.__cg_label = 'User')
     UNION ALL
-    SELECT DISTINCT f.start_id AS start_id, end_node.__cg_key AS node, CAST(f.depth + 1 AS UInt32) AS depth, CAST(1 AS UInt8) AS new
-    FROM vlp_v1_bfs AS f
-    JOIN v1_rels AS rel ON rel.__cg_start_key = f.node
+    SELECT DISTINCT vlp_v1_frontier.start_id AS start_id, end_node.__cg_key AS node, CAST(vlp_v1_frontier.depth + 1 AS UInt32) AS depth, CAST(1 AS UInt8) AS new
+    FROM vlp_v1_bfs AS vlp_v1_frontier
+    JOIN v1_rels AS rel ON rel.__cg_start_key = vlp_v1_frontier.node
     JOIN vlp_v1_nodes AS end_node ON end_node.__cg_key = rel.__cg_end_key
-    WHERE f.new = 1
-      AND f.depth < 5
-      AND (f.start_id, end_node.__cg_key) NOT IN (SELECT start_id, node FROM vlp_v1_bfs)
-      AND f.start_id NOT IN (SELECT start_id FROM vlp_v1_bfs GROUP BY start_id HAVING countIf(node IN (SELECT end_node.__cg_key FROM vlp_v1_nodes AS end_node WHERE (end_node.__cg_label = 'User'))) >= (SELECT count(DISTINCT end_node.__cg_key) FROM (SELECT end_node.__cg_key FROM vlp_v1_nodes AS end_node WHERE (end_node.__cg_label = 'User')) AS end_node))
+    WHERE vlp_v1_frontier.new = 1
+      AND vlp_v1_frontier.depth < 5
+      AND (vlp_v1_frontier.start_id, end_node.__cg_key) NOT IN (SELECT start_id, node FROM vlp_v1_bfs)
+      AND vlp_v1_frontier.start_id NOT IN (SELECT start_id FROM vlp_v1_bfs GROUP BY start_id HAVING countIf(node IN (SELECT end_node.__cg_key FROM vlp_v1_nodes AS end_node WHERE (end_node.__cg_label = 'User'))) >= (SELECT count(DISTINCT end_node.__cg_key) FROM (SELECT end_node.__cg_key FROM vlp_v1_nodes AS end_node WHERE (end_node.__cg_label = 'User')) AS end_node))
     UNION ALL
     SELECT start_id, node, depth, CAST(0 AS UInt8) AS new
     FROM vlp_v1_bfs

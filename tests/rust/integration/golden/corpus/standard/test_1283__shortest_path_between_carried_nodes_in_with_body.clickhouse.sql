@@ -35,14 +35,14 @@ vlp_v4_bfs AS (
       w1.v2__user_id AS "id"
 FROM with_w1 AS w1))
     UNION ALL
-    SELECT DISTINCT f.start_id AS start_id, end_node.user_id AS node, CAST(f.depth + 1 AS UInt32) AS depth, CAST(1 AS UInt8) AS new
-    FROM vlp_v4_bfs AS f
-    JOIN v4_both AS rel ON rel.__cg_start_0 = f.node
+    SELECT DISTINCT vlp_v4_frontier.start_id AS start_id, end_node.user_id AS node, CAST(vlp_v4_frontier.depth + 1 AS UInt32) AS depth, CAST(1 AS UInt8) AS new
+    FROM vlp_v4_bfs AS vlp_v4_frontier
+    JOIN v4_both AS rel ON rel.__cg_start_0 = vlp_v4_frontier.node
     JOIN test_integration.users_test AS end_node ON end_node.user_id = rel.__cg_end_0
-    WHERE f.new = 1
-      AND f.depth < 3
-      AND (f.start_id, end_node.user_id) NOT IN (SELECT start_id, node FROM vlp_v4_bfs)
-      AND f.start_id NOT IN (SELECT start_id FROM vlp_v4_bfs GROUP BY start_id HAVING countIf(node IN (SELECT end_node.user_id FROM test_integration.users_test AS end_node WHERE (end_node.user_id IN (SELECT DISTINCT 
+    WHERE vlp_v4_frontier.new = 1
+      AND vlp_v4_frontier.depth < 3
+      AND (vlp_v4_frontier.start_id, end_node.user_id) NOT IN (SELECT start_id, node FROM vlp_v4_bfs)
+      AND vlp_v4_frontier.start_id NOT IN (SELECT start_id FROM vlp_v4_bfs GROUP BY start_id HAVING countIf(node IN (SELECT end_node.user_id FROM test_integration.users_test AS end_node WHERE (end_node.user_id IN (SELECT DISTINCT 
       w1.v3__user_id AS "id"
 FROM with_w1 AS w1)))) >= (SELECT count(DISTINCT end_node.user_id) FROM (SELECT end_node.user_id FROM test_integration.users_test AS end_node WHERE (end_node.user_id IN (SELECT DISTINCT 
       w1.v3__user_id AS "id"

@@ -3,12 +3,12 @@ WITH RECURSIVE vlp_v1_bfs AS (
     FROM test_integration.users AS start_node
     WHERE start_node.user_id IS NOT NULL AND (start_node.name = 'Alice') AND (start_node.age > 25)
     UNION ALL
-    (SELECT DISTINCT f.start_id AS start_id, end_node.user_id AS node, CAST(f.depth + 1 AS INT) AS depth, CAST(1 AS INT) AS new
-    FROM vlp_v1_bfs AS f
-    JOIN test_integration.follows AS rel ON rel.follower_id = f.node
+    (SELECT DISTINCT vlp_v1_frontier.start_id AS start_id, end_node.user_id AS node, CAST(vlp_v1_frontier.depth + 1 AS INT) AS depth, CAST(1 AS INT) AS new
+    FROM vlp_v1_bfs AS vlp_v1_frontier
+    JOIN test_integration.follows AS rel ON rel.follower_id = vlp_v1_frontier.node
     JOIN test_integration.users AS end_node ON end_node.user_id = rel.followed_id
-    WHERE f.new = 1
-      AND (f.start_id, end_node.user_id) NOT IN (SELECT start_id, node FROM vlp_v1_bfs)
+    WHERE vlp_v1_frontier.new = 1
+      AND (vlp_v1_frontier.start_id, end_node.user_id) NOT IN (SELECT start_id, node FROM vlp_v1_bfs)
     UNION ALL
     SELECT start_id, node, depth, CAST(0 AS INT) AS new
     FROM vlp_v1_bfs

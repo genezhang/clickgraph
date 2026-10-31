@@ -3,13 +3,13 @@ WITH RECURSIVE vlp_v1_bfs AS (
     FROM test_integration.users AS start_node
     WHERE start_node.user_id IS NOT NULL
     UNION ALL
-    SELECT f.start_id AS start_id, end_node.user_id AS node, CAST(f.depth + 1 AS UInt32) AS depth, CAST(sum(f.paths) AS UInt256) AS paths, CAST(1 AS UInt8) AS new
-    FROM vlp_v1_bfs AS f
-    JOIN test_integration.follows AS rel ON rel.follower_id = f.node
+    SELECT vlp_v1_frontier.start_id AS start_id, end_node.user_id AS node, CAST(vlp_v1_frontier.depth + 1 AS UInt32) AS depth, CAST(sum(vlp_v1_frontier.paths) AS UInt256) AS paths, CAST(1 AS UInt8) AS new
+    FROM vlp_v1_bfs AS vlp_v1_frontier
+    JOIN test_integration.follows AS rel ON rel.follower_id = vlp_v1_frontier.node
     JOIN test_integration.users AS end_node ON end_node.user_id = rel.followed_id
-    WHERE f.new = 1
-      AND (f.start_id, end_node.user_id) NOT IN (SELECT start_id, node FROM vlp_v1_bfs)
-    GROUP BY f.start_id, end_node.user_id, f.depth
+    WHERE vlp_v1_frontier.new = 1
+      AND (vlp_v1_frontier.start_id, end_node.user_id) NOT IN (SELECT start_id, node FROM vlp_v1_bfs)
+    GROUP BY vlp_v1_frontier.start_id, end_node.user_id, vlp_v1_frontier.depth
     UNION ALL
     SELECT start_id, node, depth, paths, CAST(0 AS UInt8) AS new
     FROM vlp_v1_bfs
