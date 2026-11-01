@@ -1786,11 +1786,36 @@ fn render_order_by_with_select_aliases(order_by: &OrderByItems, select: &SelectI
 impl ToSql for OrderByItems {
     fn to_sql(&self) -> String {
         let mut sql: String = String::new();
-        if self.0.is_empty() {
+        // Databricks: ORDER BY an aggregate expression such as the
+        // `aggregate_constant`'s `CASE WHEN count(*) >= 0 THEN c ELSE c END`
+        // is rejected (UNSUPPORTED_EXPR_FOR_OPERATOR). The case is a constant
+        // on every group, so ordering by it is a no-op and can be dropped.
+        // ClickHouse keeps it (it accepts the expression). (#1416)
+        let is_databricks = matches!(
+            crate::server::query_context::get_current_dialect(),
+            crate::sql_generator::SqlDialect::Databricks
+        );
+        let items: Vec<&OrderByItem> = self
+            .0
+            .iter()
+            .filter(|item| {
+                if !is_databricks {
+                    return true;
+                }
+                !matches!(
+                    &item.expression,
+                    RenderExpr::Case(rc)
+                        if rc.when_then.len() == 1
+                            && rc.else_expr.as_ref().map(|e| e.as_ref())
+                                == Some(&rc.when_then[0].1)
+                )
+            })
+            .collect();
+        if items.is_empty() {
             return sql;
         }
         sql.push_str("ORDER BY ");
-        for (i, item) in self.0.iter().enumerate() {
+        for (i, item) in items.iter().enumerate() {
             sql.push_str(&item.expression.to_sql());
             sql.push(' ');
             sql.push_str(&item.order.to_sql());
@@ -1801,7 +1826,7 @@ impl ToSql for OrderByItems {
                 crate::sql_generator::function_mapper::current_function_mapper()
                     .order_by_nulls_clause(matches!(item.order, OrderByOrder::Desc)),
             );
-            if i + 1 < self.0.len() {
+            if i + 1 < items.len() {
                 sql.push_str(", ");
             }
         }
