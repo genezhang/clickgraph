@@ -492,6 +492,10 @@ fn table_props(
         String,
         crate::graph_catalog::expression_parser::PropertyValue,
     >,
+    property_types: &std::collections::HashMap<
+        String,
+        crate::graph_catalog::schema_types::SchemaType,
+    >,
     alias: &str,
 ) -> Vec<(String, String)> {
     let mut props: Vec<(String, String)> = mappings
@@ -501,7 +505,19 @@ fn table_props(
                 table_alias: TableAlias(alias.to_string()),
                 column: pv.clone(),
             });
-            (name.clone(), sql(&e))
+            // A whole-number Float serializes as an integer in a Dynamic
+            // map (ClickHouse drops the decimal point), so a float property
+            // `f: 2.0` reaches the reader as `2`. Spell it as a Decimal to
+            // keep the decimal point in JSON. (#1474)
+            let sql_expr = if matches!(
+                property_types.get(name),
+                Some(crate::graph_catalog::schema_types::SchemaType::Float)
+            ) {
+                format!("CAST({} AS Decimal(38, 10))", sql(&e))
+            } else {
+                sql(&e)
+            };
+            (name.clone(), sql_expr)
         })
         .collect();
     props.sort();
@@ -526,7 +542,7 @@ pub(super) fn table_node_object(
         graph,
         label,
         &element_id_sql(g, &ids),
-        &table_props(&schema.property_mappings, alias),
+        &table_props(&schema.property_mappings, &schema.property_types, alias),
     ))
 }
 
@@ -600,7 +616,7 @@ pub(super) fn table_rel_object(
         edge.as_deref(),
         &element_id_sql(g, &spelled_end(cols(schema.from_id.columns()), &ends.0)),
         &element_id_sql(g, &spelled_end(cols(schema.to_id.columns()), &ends.1)),
-        &table_props(&schema.property_mappings, alias),
+        &table_props(&schema.property_mappings, &schema.property_types, alias),
     ))
 }
 
