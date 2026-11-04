@@ -352,9 +352,7 @@ impl Lowerer<'_> {
                                     operator: lx::Operator::Equal,
                                     operands: vec![
                                         column.clone(),
-                                        RenderExpr::Literal(Literal::String(
-                                            crate::utils::sql_literal::value_as_cypher_text(l),
-                                        )),
+                                        RenderExpr::Literal(Literal::String(l.clone())),
                                     ],
                                 })
                             })
@@ -375,9 +373,7 @@ impl Lowerer<'_> {
                             operator: lx::Operator::Equal,
                             operands: vec![
                                 self.physical(v, super::REL_TYPE)?,
-                                RenderExpr::Literal(Literal::String(
-                                    crate::utils::sql_literal::value_as_cypher_text(label),
-                                )),
+                                RenderExpr::Literal(Literal::String(label.clone())),
                             ],
                         }));
                     }

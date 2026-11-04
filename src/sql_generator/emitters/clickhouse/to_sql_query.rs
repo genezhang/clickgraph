@@ -2253,8 +2253,7 @@ impl RenderExpr {
                     && matches!(
                         crate::server::query_context::get_current_dialect(),
                         crate::sql_generator::SqlDialect::ClickHouse
-                    )
-                {
+                    ) {
                     let str_sql = fn_call.args[0].to_sql();
                     let delim_sql = fn_call.args[1].to_sql();
                     // Empty delimiter: split into code points (Neo4j), `['']` for
