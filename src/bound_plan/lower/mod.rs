@@ -231,6 +231,14 @@ pub const REL_ELEMENT_ID_KEY: &str = "#elementId";
 /// ([`ResultKind::Node`]), the relationship's alike.
 pub const NODE_ELEMENT_ID_KEY: &str = REL_ELEMENT_ID_KEY;
 
+/// Internal keys for a returned relationship's end columns (`from_id` /
+/// `to_id`, composite: `from_id_1`, …): a `#`-prefixed name no property
+/// can carry (property names cannot start with `#`, as the demand pass's
+/// markers rely on), so a property literally named `from_id` or `to_id`
+/// no longer collides with the structural end columns. (#1521)
+pub const REL_FROM_ID_KEY: &str = "#fromId";
+pub const REL_TO_ID_KEY: &str = "#toId";
+
 /// Lower a bound statement to a render plan.
 pub fn lower_statement(
     stmt: &BoundStatement,
@@ -7740,16 +7748,26 @@ impl<'s> Lowerer<'s> {
             }) => {
                 // Its ends' ids as their nodes spell theirs (I3).
                 let ends = self.end_spellings(schema);
-                for (role, id, spells) in [
-                    ("from_id", &schema.from_id, &ends.0),
-                    ("to_id", &schema.to_id, &ends.1),
+                for (role, id, spells, internal) in [
+                    (
+                        "from_id",
+                        &schema.from_id,
+                        &ends.0,
+                        crate::bound_plan::lower::REL_FROM_ID_KEY,
+                    ),
+                    (
+                        "to_id",
+                        &schema.to_id,
+                        &ends.1,
+                        crate::bound_plan::lower::REL_TO_ID_KEY,
+                    ),
                 ] {
                     let cols = id.columns();
                     for (i, c) in cols.iter().enumerate() {
                         let suffix = if cols.len() > 1 {
-                            format!("{role}_{}", i + 1)
+                            format!("{}_{}", internal, i + 1)
                         } else {
-                            role.to_string()
+                            internal.to_string()
                         };
                         let e = self.physical(v, c)?;
                         let e = match spells.get(i) {
