@@ -10501,3 +10501,14 @@ graph_schema:
         "{got}"
     );
 }
+
+/// #1418 review: non-ASCII text split by an empty delimiter slices code
+/// points, not bytes (`substringUTF8`, not `substring`).
+#[test]
+fn split_of_non_ascii_text_by_empty_delimiter_is_code_points() {
+    let got = sql("RETURN split('héllo', '')");
+    assert!(got.contains("substringUTF8('héllo', i, 1)"), "{got}");
+    // An empty string splits to a single empty string, as Neo4j has it.
+    let got = sql("RETURN split('', '')");
+    assert!(got.contains("['']"), "{got}");
+}
