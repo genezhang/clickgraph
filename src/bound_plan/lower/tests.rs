@@ -2055,11 +2055,11 @@ fn a_shortest_path_is_a_breadth_first_search() {
              FROM test_integration.users_test AS start_node \
              WHERE start_node.user_id IS NOT NULL AND (start_node.user_id = 1) \
              UNION ALL",
-            "FROM vlp_v1_bfs AS f \
-             JOIN test_integration.user_follows_test AS rel ON rel.follower_id = f.node \
+            "FROM vlp_v1_bfs AS vlp_v1_frontier \
+             JOIN test_integration.user_follows_test AS rel ON rel.follower_id = vlp_v1_frontier.node \
              JOIN test_integration.users_test AS end_node ON end_node.user_id = rel.followed_id \
-             WHERE f.new = 1 \
-             AND (f.start_id, end_node.user_id) NOT IN (SELECT start_id, node FROM vlp_v1_bfs) \
+             WHERE vlp_v1_frontier.new = 1 \
+             AND (vlp_v1_frontier.start_id, end_node.user_id) NOT IN (SELECT start_id, node FROM vlp_v1_bfs) \
              UNION ALL SELECT start_id, node, depth, CAST(0 AS UInt8) AS new FROM vlp_v1_bfs \
              WHERE start_id IN (SELECT start_id FROM vlp_v1_bfs WHERE new = 1) )",
             "vlp_v1_path AS ( SELECT start_id, node AS end_id, depth AS hop_count \
@@ -2071,7 +2071,7 @@ fn a_shortest_path_is_a_breadth_first_search() {
     has(
         "MATCH p = shortestPath((a:User)-[:FOLLOWS*0..3]->(b:User)) RETURN count(*) AS c",
         &[
-            "WHERE f.new = 1 AND f.depth < 3 AND",
+            "WHERE vlp_v1_frontier.new = 1 AND vlp_v1_frontier.depth < 3 AND",
             "WHERE new = 1 AND depth >= 0",
         ],
     );
@@ -2080,7 +2080,7 @@ fn a_shortest_path_is_a_breadth_first_search() {
         "MATCH p = shortestPath((a:User {user_id: 1})<-[:FOLLOWS*]-(b:User)) RETURN b.name AS n",
         &[
             "WHERE start_node.user_id IS NOT NULL AND (start_node.user_id = 1)",
-            "ON rel.followed_id = f.node",
+            "ON rel.followed_id = vlp_v1_frontier.node",
             "ON end_node.user_id = rel.follower_id",
             "JOIN test_integration.users_test AS v0 ON v1.start_id = v0.user_id",
             "JOIN test_integration.users_test AS v2 ON v1.end_id = v2.user_id",
@@ -2098,10 +2098,10 @@ fn all_shortest_paths_are_counted_by_the_search() {
          RETURN count(*) AS c",
         &[
             "CAST(0 AS UInt32) AS depth, CAST(1 AS UInt256) AS paths, CAST(1 AS UInt8) AS new",
-            "SELECT f.start_id AS start_id, end_node.user_id AS node, \
-             CAST(f.depth + 1 AS UInt32) AS depth, CAST(sum(f.paths) AS UInt256) AS paths, \
+            "SELECT vlp_v1_frontier.start_id AS start_id, end_node.user_id AS node, \
+             CAST(vlp_v1_frontier.depth + 1 AS UInt32) AS depth, CAST(sum(vlp_v1_frontier.paths) AS UInt256) AS paths, \
              CAST(1 AS UInt8) AS new",
-            "GROUP BY f.start_id, end_node.user_id, f.depth UNION ALL \
+            "GROUP BY vlp_v1_frontier.start_id, end_node.user_id, vlp_v1_frontier.depth UNION ALL \
              SELECT start_id, node, depth, paths, CAST(0 AS UInt8) AS new",
             "vlp_v1_path AS ( SELECT start_id, node AS end_id, depth AS hop_count FROM vlp_v1_bfs \
              ARRAY JOIN range(accurateCast(paths, 'UInt64')) AS copy \
@@ -2189,7 +2189,7 @@ fn a_bound_on_the_length_from_above_bounds_the_search() {
         "MATCH p = shortestPath((a:User {user_id: 1})-[:FOLLOWS*]->(b:User {user_id: 2})) \
          WHERE length(p) < 10 RETURN length(p) AS l",
     ));
-    assert!(got.contains("AND f.depth < 9 AND"), "{got}");
+    assert!(got.contains("AND vlp_v1_frontier.depth < 9 AND"), "{got}");
     assert!(
         !got.contains("vlp_v1_near") && !got.contains("ROW_NUMBER"),
         "{got}"
@@ -2197,13 +2197,16 @@ fn a_bound_on_the_length_from_above_bounds_the_search() {
     has(
         "MATCH p = shortestPath((a:User)-[:FOLLOWS*..5]->(b:User)) WHERE 3 >= length(p) \
          RETURN count(*) AS c",
-        &["AND f.depth < 3 AND"],
+        &["AND vlp_v1_frontier.depth < 3 AND"],
     );
     // `=` bounds it and stays a condition.
     has(
         "MATCH p = shortestPath((a:User)-[:FOLLOWS*]->(b:User)) WHERE length(p) = 3 \
          RETURN count(*) AS c",
-        &["AND f.depth < 3 AND", "WHERE (v1.hop_count = 3)"],
+        &[
+            "AND vlp_v1_frontier.depth < 3 AND",
+            "WHERE (v1.hop_count = 3)",
+        ],
     );
     // Below the range: nothing.
     let got = sql(
@@ -2221,7 +2224,7 @@ fn a_shortest_path_search_stops_at_its_ends() {
         "MATCH p = shortestPath((a:User {user_id: 1})-[:FOLLOWS*]->(b:User {user_id: 3})) \
          RETURN length(p) AS l",
         &[
-            "AND f.start_id NOT IN (SELECT start_id FROM vlp_v1_bfs GROUP BY start_id \
+            "AND vlp_v1_frontier.start_id NOT IN (SELECT start_id FROM vlp_v1_bfs GROUP BY start_id \
              HAVING countIf(node IN (SELECT end_node.user_id FROM test_integration.users_test \
              AS end_node WHERE (end_node.user_id = 3))) >= (SELECT count(DISTINCT end_node.user_id) \
              FROM (SELECT end_node.user_id FROM test_integration.users_test AS end_node \
@@ -2243,7 +2246,7 @@ fn a_shortest_path_starts_at_an_end_pinned_by_its_identity() {
          WHERE a.city = 'Paris' RETURN count(*) AS c",
         &[
             "WHERE start_node.user_id IS NOT NULL AND (start_node.user_id = 5)",
-            "ON rel.followed_id = f.node",
+            "ON rel.followed_id = vlp_v1_frontier.node",
             "JOIN test_integration.users_test AS v2 ON v1.start_id = v2.user_id",
         ],
     );
@@ -2344,7 +2347,7 @@ fn a_shortest_path_follows_relationships_its_property_map_allows() {
     has(
         "MATCH p = shortestPath((a:User {user_id: 1})-[:FOLLOWS*1.. {follow_date: '2024-01-01'}]->(b:User)) \
          RETURN count(*) AS c",
-        &["WHERE f.new = 1 AND (rel.follow_date = '2024-01-01') AND (f.start_id, end_node.user_id)"],
+        &["WHERE vlp_v1_frontier.new = 1 AND (rel.follow_date = '2024-01-01') AND (vlp_v1_frontier.start_id, end_node.user_id)"],
     );
     // Walked back by the relationships it allows.
     for f in ["shortestPath", "allShortestPaths"] {
@@ -2788,9 +2791,9 @@ fn a_shortest_path_is_walked_back_through_its_parents() {
          RETURN p",
         &[
             "CAST(0 AS UInt32) AS depth, start_node.user_id AS parent, CAST(1 AS UInt8) AS new",
-            "SELECT f.start_id AS start_id, end_node.user_id AS node, \
-             CAST(f.depth + 1 AS UInt32) AS depth, min(f.node) AS parent, CAST(1 AS UInt8) AS new",
-            "GROUP BY f.start_id, end_node.user_id, f.depth UNION ALL \
+            "SELECT vlp_v1_frontier.start_id AS start_id, end_node.user_id AS node, \
+             CAST(vlp_v1_frontier.depth + 1 AS UInt32) AS depth, min(vlp_v1_frontier.node) AS parent, CAST(1 AS UInt8) AS new",
+            "GROUP BY vlp_v1_frontier.start_id, end_node.user_id, vlp_v1_frontier.depth UNION ALL \
              SELECT start_id, node, depth, parent, CAST(0 AS UInt8) AS new",
             // The search's rows are the walk's levels; it starts at the
             // paths' last nodes.
@@ -2843,7 +2846,7 @@ fn all_shortest_paths_are_walked_through_every_parent() {
         q,
         &[
             "CAST(0 AS UInt32) AS depth, [start_node.user_id] AS parents, CAST(1 AS UInt8) AS new",
-            "CAST(f.depth + 1 AS UInt32) AS depth, groupUniqArray(f.node) AS parents, \
+            "CAST(vlp_v1_frontier.depth + 1 AS UInt32) AS depth, groupUniqArray(vlp_v1_frontier.node) AS parents, \
              CAST(1 AS UInt8) AS new",
             "SELECT w.start_id AS start_id, lv.parent AS node, CAST(w.depth - 1 AS UInt32) AS depth",
             "w.parents AS parents, CAST(0 AS UInt8) AS level, CAST(1 AS UInt8) AS frontier \
@@ -2858,7 +2861,13 @@ fn all_shortest_paths_are_walked_through_every_parent() {
         ],
     );
     let got = sql(q);
-    for absent in ["UInt256", "copy", "min(f.node)", "pick", "path_rel_values"] {
+    for absent in [
+        "UInt256",
+        "copy",
+        "min(vlp_v1_frontier.node)",
+        "pick",
+        "path_rel_values",
+    ] {
         assert!(!got.contains(absent), "`{absent}` in\n{got}");
     }
 }
@@ -3143,7 +3152,7 @@ fn an_undirected_shortest_path_searches_and_walks_both_directions() {
     has(
         "MATCH p = shortestPath((a:User {user_id: 1})-[:FOLLOWS*]-(b:User {user_id: 2})) RETURN p",
         &[
-            "JOIN v1_both AS rel ON rel.__cg_start_0 = f.node",
+            "JOIN v1_both AS rel ON rel.__cg_start_0 = vlp_v1_frontier.node",
             "JOIN (SELECT * FROM v1_both WHERE __cg_end_0 IN",
             "ON rel.__cg_start_0 = lv.parent AND rel.__cg_end_0 = w.node",
         ],
@@ -4153,7 +4162,7 @@ graph_schema:
     assert!(
         got.contains(
             "JOIN db.ce1 AS rel ON \
-                      toString(tuple(rel.kk, CAST(rel.vv AS DateTime64(3)))) = f.node"
+                      toString(tuple(rel.kk, CAST(rel.vv AS DateTime64(3)))) = vlp_v1_frontier.node"
         ),
         "the step joins the relationship's casted from key:\n{got}"
     );
@@ -5043,7 +5052,7 @@ fn a_shortest_path_over_several_types_searches_their_union() {
         "concat('Person', ':', toString(e.pid)) AS \"__cg_start_key\", \
          concat('Company', ':', toString(e.cid)) AS \"__cg_end_key\" FROM db.likes_co AS e FINAL",
         "SELECT DISTINCT start_node.__cg_key AS start_id, start_node.__cg_key AS node",
-        "JOIN v1_rels AS rel ON rel.__cg_start_key = f.node \
+        "JOIN v1_rels AS rel ON rel.__cg_start_key = vlp_v1_frontier.node \
          JOIN vlp_v1_nodes AS end_node ON end_node.__cg_key = rel.__cg_end_key",
         // The pairs' ends: the nodes of those identities.
         "vlp_v1_ends AS ( SELECT start_node.__cg_label AS start_label, \
@@ -5068,7 +5077,7 @@ fn a_shortest_path_over_several_types_searches_their_union() {
          WHERE (end_node.__cg_label = 'Post') AND ((end_node.__cg_label, end_node.__cg_id_0) \
          IN (SELECT DISTINCT 'Post' AS \"label\", v2.id AS \"id\" FROM db.posts AS v2 \
          WHERE v2.id = 2))))",
-        "groupUniqArray(f.node) AS parents",
+        "groupUniqArray(vlp_v1_frontier.node) AS parents",
         "arrayConcat([rel.__cg_key], w.path_edges) AS path_edges",
         "arrayConcat([end_node.__cg_value], w.path_node_values) AS path_node_values",
         "JOIN vlp_v1_nodes AS start_node ON start_node.__cg_key = w.start_id",
@@ -5682,7 +5691,7 @@ fn databricks_shortest_path_search() {
         .unwrap(),
     );
     assert!(
-        got.contains("UNION ALL (SELECT DISTINCT f.start_id AS start_id"),
+        got.contains("UNION ALL (SELECT DISTINCT vlp_v1_frontier.start_id AS start_id"),
         "{got}"
     );
     assert!(
@@ -5706,7 +5715,7 @@ fn databricks_shortest_path_search() {
         .unwrap(),
     );
     assert!(!got.contains("path_nodes"), "{got}");
-    assert!(!got.contains("GROUP BY f.start_id"), "{got}");
+    assert!(!got.contains("GROUP BY vlp_v1_frontier.start_id"), "{got}");
     assert!(
         got.contains("SELECT start_id, node AS end_id, depth AS hop_count FROM vlp_v1_bfs"),
         "{got}"
@@ -5727,10 +5736,10 @@ fn databricks_shortest_path_search() {
         .unwrap(),
     );
     assert!(
-        got.contains("concat(f.path_nodes, array(end_node.user_id)) AS path_nodes"),
+        got.contains("concat(vlp_v1_frontier.path_nodes, array(end_node.user_id)) AS path_nodes"),
         "{got}"
     );
-    assert!(!got.contains("GROUP BY f.start_id"), "{got}");
+    assert!(!got.contains("GROUP BY vlp_v1_frontier.start_id"), "{got}");
     assert!(
         got.contains(
             "ROW_NUMBER() OVER (PARTITION BY start_id, node \
@@ -6811,7 +6820,7 @@ fn a_shortest_path_between_composite_ids_keys_nodes_by_their_tuples() {
     );
     for p in [
         "toString(tuple(start_node.bank, start_node.num)) AS start_id",
-        "JOIN db.sent AS rel ON toString(tuple(rel.fb, rel.fnum)) = f.node \
+        "JOIN db.sent AS rel ON toString(tuple(rel.fb, rel.fnum)) = vlp_v2_frontier.node \
          JOIN db.acct AS end_node ON toString(tuple(end_node.bank, end_node.num)) = \
          toString(tuple(rel.tb, rel.tnum))",
         // A row with a NULL end part relates no node (a key's text of NULL
@@ -10498,6 +10507,389 @@ graph_schema:
         sql("MATCH (a)-[r:E]->(b) OPTIONAL MATCH (b)-[s:K]->(c) WHERE s.w > r.w RETURN r.w, s.w");
     assert!(
         got.contains("(w1.p2_v1_w = o3.p2_v1_w OR (w1.p2_v1_w IS NULL AND o3.p2_v1_w IS NULL))"),
+        "{got}"
+    );
+}
+
+/// #1495: a value drawn in a CTE read more than once (rand() /
+/// randomUUID() / the clock draw again on every read) decides the result
+/// across the reads when it is joined back as a join key of the reads.
+#[test]
+fn a_drawn_value_joined_back_across_two_reads_is_refused() {
+    let err = translate_bound_plan(
+        "MATCH (a:User) WITH a, rand() AS r \
+         OPTIONAL MATCH (b:User) WHERE b.user_id = a.user_id AND r < 2 \
+         RETURN count(*), count(b)",
+        &social(),
+        &ReadOptions::default(),
+    )
+    .unwrap_err();
+    // The refusal names the re-read CTE and the call family (the slice
+    // review: no pooling, no canned blame).
+    assert!(
+        err.contains("draws again on every read")
+            && err.contains("is a join key of its reads")
+            && err.contains("WITH with_w1")
+            && err.contains("rand()"),
+        "{err}"
+    );
+    // A literal on the other side does not agree the reads either.
+    let err = translate_bound_plan(
+        "MATCH (a:User) WITH a, rand() AS r \
+         OPTIONAL MATCH (b:User) WHERE b.user_id = a.user_id AND r = 0.5 \
+         RETURN count(*), count(b)",
+        &social(),
+        &ReadOptions::default(),
+    )
+    .unwrap_err();
+    assert!(err.contains("is a join key of its reads"), "{err}");
+}
+
+/// #1495: the same on Databricks, whose drawn spellings are `rand` and
+/// `current_timestamp` (the refusal machinery is dialect-shared).
+#[test]
+fn a_databricks_drive_that_joins_on_a_drawn_value_is_refused() {
+    let err = databricks_sql(
+        "MATCH (a:User) WITH a, rand() AS r \
+         OPTIONAL MATCH (b:User) WHERE b.user_id = a.user_id AND r < 2 \
+         RETURN count(*), count(b)",
+        &social(),
+    )
+    .unwrap_err();
+    assert!(err.contains("is a join key of its reads"), "{err}");
+    // The clock draws its own blame: the refusal names the re-read CTE and
+    // the family, not rand's (the pooled message did).
+    let err = translate_bound_plan(
+        "MATCH (a:User) WITH a, timestamp() AS t \
+         OPTIONAL MATCH (b:User) WHERE b.user_id = a.user_id AND t < 2 \
+         RETURN count(*), count(b)",
+        &social(),
+        &ReadOptions::default(),
+    )
+    .unwrap_err();
+    assert!(
+        err.contains("the clock (now64(3) / current_timestamp() / now())")
+            && err.contains("WITH with_w1")
+            && err.contains("is a join key of its reads")
+            && !err.contains("rand()"),
+        "{err}"
+    );
+}
+
+/// #1495: a drawn call's name inside a quoted literal is a search's text,
+/// not a call — the whole-word scan reads the quotes before the tokens.
+#[test]
+fn a_drawn_name_inside_a_quoted_literal_is_not_a_call() {
+    let got = sql("MATCH (a:User) WHERE a.name = 'r now() rand()' \
+         WITH a \
+         OPTIONAL MATCH (b:User) WHERE b.user_id = a.user_id \
+         RETURN count(*), count(b)");
+    assert!(got.contains("'r now() rand()'"), "{got}");
+}
+
+/// #1495: a drawn call that filters (orders, groups) the rows of a CTE
+/// read more than once keeps a different row set per read (the counts of
+/// the drive and of the final read disagree).
+#[test]
+fn a_drawn_filter_of_a_reread_cte_is_refused() {
+    for q in [
+        "MATCH (a:User) WHERE rand() < 0.5 \
+         OPTIONAL MATCH (b:User) WHERE b.user_id = a.user_id \
+         RETURN count(*), count(b)",
+        "MATCH (a:User) WITH a WHERE rand() < 0.5 \
+         OPTIONAL MATCH (b:User) WHERE b.user_id = a.user_id \
+         RETURN count(*), count(b)",
+    ] {
+        let err = translate_bound_plan(q, &social(), &ReadOptions::default()).unwrap_err();
+        assert!(
+            err.contains("draws again on every read")
+                && err.contains("selects different rows on every read")
+                && err.contains("WITH with_w1"),
+            "{q}: {err}"
+        );
+    }
+}
+
+/// #1495: the drawn-filter refusal is dialect-shared (Databricks).
+#[test]
+fn a_databricks_drawn_filter_of_a_reread_cte_is_refused() {
+    let err = databricks_sql(
+        "MATCH (a:User) WHERE rand() < 0.5 \
+         OPTIONAL MATCH (b:User) WHERE b.user_id = a.user_id \
+         RETURN count(*), count(b)",
+        &social(),
+    )
+    .unwrap_err();
+    assert!(
+        err.contains("selects different rows on every read"),
+        "{err}"
+    );
+}
+
+/// #1495: the clock, drawn and joined back on Databricks, is refused and
+/// blamed by its own family.
+#[test]
+fn a_databricks_drawn_clock_joined_back_is_refused() {
+    let err = databricks_sql(
+        "MATCH (a:User) WITH a, current_timestamp() AS t \
+         OPTIONAL MATCH (b:User) WHERE b.user_id = a.user_id AND t < 2 \
+         RETURN count(*), count(b)",
+        &social(),
+    )
+    .unwrap_err();
+    assert!(
+        err.contains("the clock (now64(3) / current_timestamp() / now())")
+            && err.contains("is a join key of its reads"),
+        "{err}"
+    );
+}
+
+/// #1495: a drawn value that cannot decide across the reads lowers as
+/// before: dropped by the drive, read once, summed or counted, or a
+/// same-day draw whose reads agree.
+#[test]
+fn a_drawn_value_that_cannot_decide_across_reads_lowers_as_before() {
+    // Carried and unread by the drive: the drive drops the column, and
+    // the join is by identity alone.
+    let got = sql("MATCH (a:User) WITH a, rand() AS r \
+         OPTIONAL MATCH (b:User) WHERE b.user_id = a.user_id \
+         RETURN count(*), count(b)");
+    assert!(got.contains(r#"randCanonical() AS "v2""#), "{got}");
+    assert!(!got.contains("w1.v2 = o3.v2"), "{got}");
+    // Read once, by the inner MATCH only (no re-read is left to
+    // disagree): one external draw.
+    let got = sql("MATCH (a:User) WITH a, rand() AS r \
+         MATCH (b:User) WHERE b.user_id = a.user_id \
+         RETURN count(*) AS c, sum(r) AS s");
+    assert!(got.contains(r#"coalesce(sum(w1.v2), 0) AS "s""#), "{got}");
+    // Read again, but its drawn column is only summed over the final
+    // SELECT's own rows: never a join key.
+    has(
+        "MATCH (a:User) WITH a, rand() AS r \
+         OPTIONAL MATCH (b:User) WHERE b.user_id = a.user_id \
+         RETURN count(*) AS c, sum(r) AS s",
+        &[
+            r#"coalesce(sum(w1.v2), 0) AS "s""#,
+            "ON w1.v1__user_id = o3.v1__user_id",
+        ],
+    );
+    // The clock drawn carried (a nested drawn call), unread.
+    let got = sql("MATCH (a:User) WITH a, timestamp() AS t \
+         OPTIONAL MATCH (b:User) WHERE b.user_id = a.user_id \
+         RETURN count(*) AS c, count(t) AS n");
+    assert!(got.contains(r#"toUnixTimestamp(now()) AS "v2""#), "{got}");
+    // randomUUID() maps to the dialect's generator (#1540); carried,
+    // unread — the spelling below is the mapping's own, and the refusal
+    // battery of this PR (after the #1539 rebase) refuses the same drawn
+    // shape once it decides across the reads.
+    let got = sql("MATCH (a:User) WITH a, randomUUID() AS u \
+         OPTIONAL MATCH (b:User) WHERE b.user_id = a.user_id \
+         RETURN count(*) AS c, count(u) AS n");
+    assert!(got.contains(r#"generateUUIDv4() AS "v2""#), "{got}");
+    // A same-day draw whose drawn column IS carried and joined back: the
+    // reads agree within the day, so this is correct as it is.
+    let got = sql("MATCH (a:User) WITH a, date() AS d \
+         OPTIONAL MATCH (b:User) WHERE b.user_id = a.user_id AND d < date('2030-01-01') \
+         RETURN count(*), count(b)");
+    assert!(
+        got.contains(r#"toDate(today()) AS "v2""#) && got.contains("w1.v2 = o3.v2"),
+        "{got}"
+    );
+}
+
+/// #1539 review: the registry is where a drawn call's dialect spelling is
+/// decided, so a spelling change must carry its detector token in the
+/// same change — otherwise the detector silently stops refusing and the
+/// silent-wrong join shape returns (the #1540 class: `randomUUID`
+/// mapping to `generateUUIDv4()` / `uuid()`). Every dialect spelling the
+/// mapping resolves to is probed through the scan itself; an unmapped
+/// drawn call is spelled verbatim (`randomUUID()`, today). The clock's
+/// spellings (`now64(3)` / `now()` / `current_timestamp()`) are authored
+/// inside arg transforms, not mapping names — the battery's clock
+/// refusals (`a_drawn_value_joined_back_across_two_reads_is_refused`,
+/// the Databricks clock pair) pin them behaviorally.
+#[test]
+fn detector_tokens_spell_every_dialect_spelling_of_the_mapped_drawn_calls() {
+    use crate::sql_generator::emitters::clickhouse::function_registry::get_function_mapping;
+    use crate::sql_generator::SqlDialect;
+
+    for (cypher, family) in [("rand", "rand()"), ("randomUUID", "randomUUID()")] {
+        match get_function_mapping(cypher) {
+            None => {
+                // Unmapped: the rendered SQL spells the Cypher name verbatim.
+                assert_eq!(
+                    super::unwind::drawn_call_families(&format!("{cypher}()")),
+                    vec![(0, family)],
+                    "`{cypher}` is unmapped, so the detector must recognize the \
+                     verbatim spelling",
+                );
+            }
+            Some(mapping) => {
+                for (dialect, spelling) in [
+                    (SqlDialect::ClickHouse, mapping.clickhouse_name),
+                    (
+                        SqlDialect::Databricks,
+                        mapping.name_for(SqlDialect::Databricks),
+                    ),
+                ] {
+                    assert_eq!(
+                        super::unwind::drawn_call_families(&format!("{spelling}()")),
+                        vec![(0, family)],
+                        "the detector does not recognize `{spelling}`, the \
+                         {dialect:?} spelling of `{cypher}`: the mapper's spelling \
+                         and the detector's tokens have drifted",
+                    );
+                }
+            }
+        }
+    }
+}
+/// #1545 review: once `randomUUID()` maps to the dialect's generator
+/// (`generateUUIDv4()` / `uuid()`), the rendered CTE text no longer spells
+/// `randomuuid` — the detector's tokens must follow the mapping or the
+/// #1495 refusal silently loses randomUUID coverage (the cross-PR trap on
+/// both branches' reviews).
+#[test]
+fn a_drawn_uuid_joined_back_across_two_reads_is_refused() {
+    let err = translate_bound_plan(
+        "MATCH (a:User) WITH a, randomUUID() AS u \
+         OPTIONAL MATCH (b:User) WHERE b.user_id = a.user_id AND u < 'x' \
+         RETURN count(*), count(b)",
+        &social(),
+        &ReadOptions::default(),
+    )
+    .unwrap_err();
+    assert!(
+        err.contains("randomUUID()")
+            && err.contains("WITH with_w1")
+            && err.contains("is a join key of its reads"),
+        "{err}"
+    );
+    // The drawn-filter shape refuses by its rows too.
+    let err = translate_bound_plan(
+        "MATCH (a:User) WHERE randomUUID() < 'x' \
+         OPTIONAL MATCH (b:User) WHERE b.user_id = a.user_id \
+         RETURN count(*), count(b)",
+        &social(),
+        &ReadOptions::default(),
+    )
+    .unwrap_err();
+    assert!(
+        err.contains("selects different rows on every read"),
+        "{err}"
+    );
+    // Databricks: the same, through the Spark spelling.
+    let err = databricks_sql(
+        "MATCH (a:User) WITH a, randomUUID() AS u \
+         OPTIONAL MATCH (b:User) WHERE b.user_id = a.user_id AND u < 'x' \
+         RETURN count(*), count(b)",
+        &social(),
+    )
+    .unwrap_err();
+    assert!(err.contains("is a join key of its reads"), "{err}");
+}
+
+/// #1515: the repro schema — its edge table is named `f`, the BFS search's
+/// fixed frontier alias.
+fn f_schema() -> GraphSchema {
+    GraphSchemaConfig::from_yaml_str(
+        r"
+name: lower_default_f
+graph_schema:
+  nodes:
+    - label: U
+      database: db
+      table: u
+      node_id: uid
+      property_mappings: { uid: uid, name: name }
+  edges:
+    - type: F
+      database: db
+      table: f
+      from_id: from_id
+      to_id: to_id
+      from_node: U
+      to_node: U
+      property_mappings: {}
+",
+    )
+    .unwrap()
+    .to_graph_schema()
+    .unwrap()
+}
+
+/// #1515: the BFS search's own aliases are not spellings a query's tables
+/// can shadow. The issue's repro: a shortestPath over an edge table named
+/// `f`, where the search's fixed frontier alias `f` collides with the
+/// table's name and ClickHouse refuses (`f.node` cannot be resolved); the
+/// frontier is the search's own namespaced name instead.
+#[test]
+fn an_edge_table_named_f_does_not_shadow_the_bfs_frontier() {
+    let schema = f_schema();
+    let q =
+        "MATCH p = shortestPath((x:U {uid: 1})-[:F*1..5]->(y:U {uid: 2})) RETURN length(p) AS l";
+    let got = squash(
+        &translate_bound_plan(q, &schema, &ReadOptions::default())
+            .unwrap()
+            .sql,
+    );
+    assert!(got.contains("vlp_v1_bfs AS vlp_v1_frontier"), "{got}");
+    assert!(
+        got.contains(" JOIN db.f AS rel ON rel.from_id = vlp_v1_frontier.node"),
+        "{got}"
+    );
+    assert!(!got.contains("vlp_v1_bfs AS f"), "{got}");
+    // A path carried (its parents kept): the frontier rides the same name,
+    // and the step keeps its `min(frontier.node)` GROUP BY.
+    let q = "MATCH p = shortestPath((x:U)-[:F*1..5]->(y:U)) RETURN p";
+    let got = squash(
+        &translate_bound_plan(q, &schema, &ReadOptions::default())
+            .unwrap()
+            .sql,
+    );
+    assert!(got.contains("FROM vlp_v1_bfs AS vlp_v1_frontier"), "{got}");
+    assert!(
+        got.contains(" GROUP BY vlp_v1_frontier.start_id, "),
+        "{got}"
+    );
+    assert!(!got.contains("vlp_v1_bfs AS f"), "{got}");
+    // ... and on Databricks, whose search steps cannot group the same way.
+    let got = squash(&databricks_sql(q, &schema).unwrap());
+    assert!(got.contains("vlp_v1_bfs AS vlp_v1_frontier"), "{got}");
+    assert!(!got.contains("vlp_v1_bfs AS f"), "{got}");
+    let q =
+        "MATCH p = shortestPath((x:U {uid: 1})-[:F*1..5]->(y:U {uid: 2})) RETURN length(p) AS l";
+    let got = squash(&databricks_sql(q, &schema).unwrap());
+    assert!(got.contains("vlp_v1_bfs AS vlp_v1_frontier"), "{got}");
+    assert!(!got.contains("vlp_v1_bfs AS f"), "{got}");
+    // The counted sibling (paths carried into the search): the step sums
+    // and groups by the frontier's own name too.
+    let q = "MATCH p = allShortestPaths((x:U {uid: 1})-[:F*1..5]->(y:U {uid: 2})) \
+             RETURN count(*) AS c";
+    let got = squash(
+        &translate_bound_plan(q, &schema, &ReadOptions::default())
+            .unwrap()
+            .sql,
+    );
+    assert!(got.contains("sum(vlp_v1_frontier.paths)"), "{got}");
+    assert!(got.contains("GROUP BY vlp_v1_frontier.start_id, "), "{got}");
+    assert!(
+        !got.contains(" AS f ") && !got.contains("vlp_v1_bfs AS f"),
+        "{got}"
+    );
+}
+
+/// #1515: the seed and the kept-steps' subqueries of a search whose paths
+/// its own step spells row-wise are the search's own names too — never the
+/// fixed `s` / `reached` a table could shadow.
+#[test]
+fn a_rowwise_bfs_names_its_seed_and_kept_steps() {
+    let q = "MATCH p = shortestPath((x:U)-[:F*1..5]->(y:U)) RETURN p";
+    let got = squash(&databricks_sql(q, &f_schema()).unwrap());
+    assert!(got.contains(") AS vlp_v1_seed UNION ALL"), "{got}");
+    assert!(got.contains(" AS vlp_v1_reached)"), "{got}");
+    assert!(
+        !got.contains(" AS s ") && !got.contains(" AS reached"),
         "{got}"
     );
 }

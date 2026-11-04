@@ -30,13 +30,13 @@ vlp_v1_bfs AS (
     FROM __cg_nodes_Airport AS start_node
     WHERE start_node.code IS NOT NULL
     UNION ALL
-    (SELECT DISTINCT f.start_id AS start_id, end_node.code AS node, CAST(f.depth + 1 AS INT) AS depth, CAST(1 AS INT) AS new
-    FROM vlp_v1_bfs AS f
-    JOIN default.flights AS rel ON rel.Origin = f.node
+    (SELECT DISTINCT vlp_v1_frontier.start_id AS start_id, end_node.code AS node, CAST(vlp_v1_frontier.depth + 1 AS INT) AS depth, CAST(1 AS INT) AS new
+    FROM vlp_v1_bfs AS vlp_v1_frontier
+    JOIN default.flights AS rel ON rel.Origin = vlp_v1_frontier.node
     JOIN __cg_nodes_Airport AS end_node ON end_node.code = rel.Dest
-    WHERE f.new = 1
-      AND f.depth < 5
-      AND (f.start_id, end_node.code) NOT IN (SELECT start_id, node FROM vlp_v1_bfs)
+    WHERE vlp_v1_frontier.new = 1
+      AND vlp_v1_frontier.depth < 5
+      AND (vlp_v1_frontier.start_id, end_node.code) NOT IN (SELECT start_id, node FROM vlp_v1_bfs)
     UNION ALL
     SELECT start_id, node, depth, CAST(0 AS INT) AS new
     FROM vlp_v1_bfs

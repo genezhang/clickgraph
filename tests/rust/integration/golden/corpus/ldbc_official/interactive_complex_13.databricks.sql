@@ -18,25 +18,25 @@ FROM ldbc.Person_knows_Person AS e
 WHERE e.Person1Id <> e.Person2Id
 ), 
 vlp_v2_bfs AS (
-    SELECT s.start_id AS start_id, s.start_id AS node, CAST(0 AS INT) AS depth, slice(array(s.start_id), 1, 0) AS path_nodes, CAST(array() AS ARRAY<STRING>) AS path_edges, CAST(array() AS ARRAY<VARIANT>) AS path_node_values, CAST(array() AS ARRAY<VARIANT>) AS path_rel_values, CAST(1 AS INT) AS new
-    FROM (SELECT DISTINCT start_node.id AS start_id FROM ldbc.Person AS start_node WHERE start_node.id IS NOT NULL AND (start_node.id = 14)) AS s
+    SELECT vlp_v2_seed.start_id AS start_id, vlp_v2_seed.start_id AS node, CAST(0 AS INT) AS depth, slice(array(vlp_v2_seed.start_id), 1, 0) AS path_nodes, CAST(array() AS ARRAY<STRING>) AS path_edges, CAST(array() AS ARRAY<VARIANT>) AS path_node_values, CAST(array() AS ARRAY<VARIANT>) AS path_rel_values, CAST(1 AS INT) AS new
+    FROM (SELECT DISTINCT start_node.id AS start_id FROM ldbc.Person AS start_node WHERE start_node.id IS NOT NULL AND (start_node.id = 14)) AS vlp_v2_seed
     UNION ALL
-    (SELECT f.start_id AS start_id, end_node.id AS node, CAST(f.depth + 1 AS INT) AS depth,
-      concat(f.path_nodes, array(end_node.id)) AS path_nodes,
-      concat(f.path_edges, array(to_json(named_struct('_1', CAST(rel.Person1Id AS STRING), '_2', CAST(rel.Person2Id AS STRING)), map('ignoreNullFields', 'false')))) AS path_edges,
-      concat(f.path_node_values, array(to_variant_object(map('elementId', CAST(concat('Person:', CAST(end_node.id AS STRING), '-') AS VARIANT), 'labels', CAST(array('Person') AS VARIANT), 'properties', CAST(to_variant_object(map_filter(map('birthday', CAST(end_node.birthday AS VARIANT), 'browserUsed', CAST(end_node.browserUsed AS VARIANT), 'creationDate', CAST(end_node.creationDate AS VARIANT), 'email', CAST(end_node.email AS VARIANT), 'firstName', CAST(end_node.firstName AS VARIANT), 'gender', CAST(end_node.gender AS VARIANT), 'id', CAST(end_node.id AS VARIANT), 'lastName', CAST(end_node.lastName AS VARIANT), 'locationIP', CAST(end_node.locationIP AS VARIANT), 'speaks', CAST(end_node.speaks AS VARIANT)), (__k, __v) -> __v IS NOT NULL)) AS VARIANT))))) AS path_node_values,
-      concat(f.path_rel_values, array(to_variant_object(map('elementId', CAST(concat('KNOWS:', CAST(rel.Person1Id AS STRING), '->', CAST(rel.Person2Id AS STRING), '-') AS VARIANT), 'startNodeElementId', CAST(concat('Person:', CAST(rel.Person1Id AS STRING), '-') AS VARIANT), 'endNodeElementId', CAST(concat('Person:', CAST(rel.Person2Id AS STRING), '-') AS VARIANT), 'type', CAST('KNOWS' AS VARIANT), 'properties', CAST(to_variant_object(map_filter(map('creationDate', CAST(rel.creationDate AS VARIANT)), (__k, __v) -> __v IS NOT NULL)) AS VARIANT))))) AS path_rel_values,
+    (SELECT vlp_v2_frontier.start_id AS start_id, end_node.id AS node, CAST(vlp_v2_frontier.depth + 1 AS INT) AS depth,
+      concat(vlp_v2_frontier.path_nodes, array(end_node.id)) AS path_nodes,
+      concat(vlp_v2_frontier.path_edges, array(to_json(named_struct('_1', CAST(rel.Person1Id AS STRING), '_2', CAST(rel.Person2Id AS STRING)), map('ignoreNullFields', 'false')))) AS path_edges,
+      concat(vlp_v2_frontier.path_node_values, array(to_variant_object(map('elementId', CAST(concat('Person:', CAST(end_node.id AS STRING), '-') AS VARIANT), 'labels', CAST(array('Person') AS VARIANT), 'properties', CAST(to_variant_object(map_filter(map('birthday', CAST(end_node.birthday AS VARIANT), 'browserUsed', CAST(end_node.browserUsed AS VARIANT), 'creationDate', CAST(end_node.creationDate AS VARIANT), 'email', CAST(end_node.email AS VARIANT), 'firstName', CAST(end_node.firstName AS VARIANT), 'gender', CAST(end_node.gender AS VARIANT), 'id', CAST(end_node.id AS VARIANT), 'lastName', CAST(end_node.lastName AS VARIANT), 'locationIP', CAST(end_node.locationIP AS VARIANT), 'speaks', CAST(end_node.speaks AS VARIANT)), (__k, __v) -> __v IS NOT NULL)) AS VARIANT))))) AS path_node_values,
+      concat(vlp_v2_frontier.path_rel_values, array(to_variant_object(map('elementId', CAST(concat('KNOWS:', CAST(rel.Person1Id AS STRING), '->', CAST(rel.Person2Id AS STRING), '-') AS VARIANT), 'startNodeElementId', CAST(concat('Person:', CAST(rel.Person1Id AS STRING), '-') AS VARIANT), 'endNodeElementId', CAST(concat('Person:', CAST(rel.Person2Id AS STRING), '-') AS VARIANT), 'type', CAST('KNOWS' AS VARIANT), 'properties', CAST(to_variant_object(map_filter(map('creationDate', CAST(rel.creationDate AS VARIANT)), (__k, __v) -> __v IS NOT NULL)) AS VARIANT))))) AS path_rel_values,
       CAST(1 AS INT) AS new
-    FROM vlp_v2_bfs AS f
-    JOIN v2_both AS rel ON rel.__cg_start_0 = f.node
+    FROM vlp_v2_bfs AS vlp_v2_frontier
+    JOIN v2_both AS rel ON rel.__cg_start_0 = vlp_v2_frontier.node
     JOIN ldbc.Person AS end_node ON end_node.id = rel.__cg_end_0
-    WHERE f.new = 1
-      AND (f.start_id, end_node.id) NOT IN (SELECT start_id, node FROM vlp_v2_bfs)
+    WHERE vlp_v2_frontier.new = 1
+      AND (vlp_v2_frontier.start_id, end_node.id) NOT IN (SELECT start_id, node FROM vlp_v2_bfs)
     UNION ALL
     SELECT start_id, node, depth, slice(array(node), 1, 0) AS path_nodes, CAST(array() AS ARRAY<STRING>) AS path_edges, CAST(array() AS ARRAY<VARIANT>) AS path_node_values, CAST(array() AS ARRAY<VARIANT>) AS path_rel_values, CAST(0 AS INT) AS new FROM (
       SELECT DISTINCT start_id, node, depth FROM vlp_v2_bfs
       WHERE start_id IN (SELECT start_id FROM vlp_v2_bfs WHERE new = 1)
-    ) AS reached)
+    ) AS vlp_v2_reached)
 ), 
 vlp_v2_walk AS (
     SELECT start_id, node AS end_id, depth AS hop_count, path_nodes, path_edges, path_node_values, path_rel_values

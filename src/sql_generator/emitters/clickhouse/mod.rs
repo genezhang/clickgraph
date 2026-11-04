@@ -2,7 +2,7 @@ mod common;
 #[cfg(test)]
 mod edge_uniqueness_tests;
 mod errors;
-mod function_registry;
+pub(crate) mod function_registry; // dropped to the lower tests' spelling tie (#1539)
 mod function_translator;
 pub mod id_gen;
 pub mod pagerank;
