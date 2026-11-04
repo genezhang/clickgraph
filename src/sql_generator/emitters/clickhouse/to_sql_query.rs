@@ -1786,11 +1786,36 @@ fn render_order_by_with_select_aliases(order_by: &OrderByItems, select: &SelectI
 impl ToSql for OrderByItems {
     fn to_sql(&self) -> String {
         let mut sql: String = String::new();
-        if self.0.is_empty() {
+        // Databricks: ORDER BY an aggregate expression such as the
+        // `aggregate_constant`'s `CASE WHEN count(*) >= 0 THEN c ELSE c END`
+        // is rejected (UNSUPPORTED_EXPR_FOR_OPERATOR). The case is a constant
+        // on every group, so ordering by it is a no-op and can be dropped.
+        // ClickHouse keeps it (it accepts the expression). (#1416)
+        let is_databricks = matches!(
+            crate::server::query_context::get_current_dialect(),
+            crate::sql_generator::SqlDialect::Databricks
+        );
+        let items: Vec<&OrderByItem> = self
+            .0
+            .iter()
+            .filter(|item| {
+                if !is_databricks {
+                    return true;
+                }
+                !matches!(
+                    &item.expression,
+                    RenderExpr::Case(rc)
+                        if rc.when_then.len() == 1
+                            && rc.else_expr.as_ref().map(|e| e.as_ref())
+                                == Some(&rc.when_then[0].1)
+                )
+            })
+            .collect();
+        if items.is_empty() {
             return sql;
         }
         sql.push_str("ORDER BY ");
-        for (i, item) in self.0.iter().enumerate() {
+        for (i, item) in items.iter().enumerate() {
             sql.push_str(&item.expression.to_sql());
             sql.push(' ');
             sql.push_str(&item.order.to_sql());
@@ -1801,7 +1826,7 @@ impl ToSql for OrderByItems {
                 crate::sql_generator::function_mapper::current_function_mapper()
                     .order_by_nulls_clause(matches!(item.order, OrderByOrder::Desc)),
             );
-            if i + 1 < self.0.len() {
+            if i + 1 < items.len() {
                 sql.push_str(", ");
             }
         }
@@ -2218,6 +2243,49 @@ impl RenderExpr {
                     return mapper.to_string_float(&arg_sql);
                 }
 
+                // ClickHouse `split(str, delim)`: Cypher split uses a literal
+                // delimiter, but CH's splitByChar requires a single-byte constant
+                // and splitByString returns [str] for an empty delimiter. Cover
+                // empty / multi-byte / non-constant delimiters with a CASE that
+                // splits into code points when the delimiter is empty. (#1418)
+                if fn_name_lower == "split"
+                    && fn_call.args.len() == 2
+                    && matches!(
+                        crate::server::query_context::get_current_dialect(),
+                        crate::sql_generator::SqlDialect::ClickHouse
+                    )
+                {
+                    let str_sql = fn_call.args[0].to_sql();
+                    let delim_sql = fn_call.args[1].to_sql();
+                    // Empty delimiter: split into code points (Neo4j), `['']` for
+                    // an empty string. Multi-byte delimiters and non-ASCII text
+                    // need UTF-8-aware slicing. A constant non-empty delimiter
+                    // keeps the simple `splitByString` form (no wrapper). A
+                    // non-constant delimiter still goes through the wrapper and
+                    // may fail on ClickHouse (Code 44) — documented limitation.
+                    let empty_branch = format!(
+                        "if(lengthUTF8({s}) = 0, [''], arrayMap(i -> substringUTF8({s}, i, 1), range(1, lengthUTF8({s}) + 1)))",
+                        s = str_sql,
+                    );
+                    let rendered = if delim_sql == "''" {
+                        empty_branch
+                    } else if delim_sql.starts_with('\'') {
+                        format!(
+                            "splitByString({delim}, {s})",
+                            delim = delim_sql,
+                            s = str_sql
+                        )
+                    } else {
+                        format!(
+                            "CASE WHEN {delim} = '' THEN {empty} ELSE splitByString({delim}, {s}) END",
+                            delim = delim_sql,
+                            empty = empty_branch,
+                            s = str_sql,
+                        )
+                    };
+                    return rendered;
+                }
+
                 // Check if we have a Neo4j -> ClickHouse mapping
                 match get_function_mapping(&fn_name_lower) {
                     Some(mapping) => {
@@ -2559,6 +2627,17 @@ impl RenderExpr {
                         } else {
                             tri
                         };
+                        // Databricks rejects a bare NULL predicate
+                        // (FILTER_NOT_BOOLEAN); spell Cypher NULL as a boolean
+                        // NULL on Spark. ClickHouse accepts the bare form. (#1414)
+                        if result == CypherTriBool::Null
+                            && matches!(
+                                crate::server::query_context::get_current_dialect(),
+                                crate::sql_generator::SqlDialect::Databricks
+                            )
+                        {
+                            return "CAST(NULL AS BOOLEAN)".to_string();
+                        }
                         return result.sql_str().to_string();
                     }
                 }

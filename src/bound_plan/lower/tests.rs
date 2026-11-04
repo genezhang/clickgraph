@@ -1464,8 +1464,11 @@ fn grouping_and_distinct_over_a_returned_element() {
         "MATCH (:U)-[k:K]->(:U) RETURN DISTINCT k, count(*) AS c",
         &shapes_schema(),
     );
+    // Cypher: DISTINCT over an aggregating RETURN is a no-op (the grouping
+    // already makes the rows distinct); ClickHouse rejects the aggregate in
+    // the DISTINCT key set (ILLEGAL_AGGREGATION). (#1435)
     assert!(
-        sql.starts_with(r#"SELECT DISTINCT v1.a AS "k.from_id""#) && sql.ends_with("'-'), v1.kid"),
+        sql.starts_with(r#"SELECT v1.a AS "k.from_id""#) && sql.ends_with("'-'), v1.kid"),
         "{sql}"
     );
     // A node's identity is among its properties (`node_id` names
@@ -5549,7 +5552,7 @@ fn databricks_size_of_a_list() {
     assert!(got.contains("array_size(split("), "{got}");
     has(
         "MATCH (u:User) RETURN size(split(u.email, '@')) AS n",
-        &["length(splitByChar('@', v0.email_address))"],
+        &["length(splitByString('@'"],
     );
 }
 
@@ -6135,7 +6138,7 @@ fn a_null_list_is_told_by_its_source() {
          split(toString(x), ',') AS t",
         &[
             r#"CASE WHEN w1.v0 > 1 THEN false ELSE true END AS "n""#,
-            r#"splitByChar(',', toString(w1.v0)) AS "t""#,
+            r#"splitByString(',', toString(w1.v0)) AS "t""#,
         ],
     );
     // ORDER BY: NULL last ascending (its condition first); reduce() over
@@ -10889,4 +10892,15 @@ fn a_rowwise_bfs_names_its_seed_and_kept_steps() {
         !got.contains(" AS s ") && !got.contains(" AS reached"),
         "{got}"
     );
+}
+
+/// #1418 review: non-ASCII text split by an empty delimiter slices code
+/// points, not bytes (`substringUTF8`, not `substring`).
+#[test]
+fn split_of_non_ascii_text_by_empty_delimiter_is_code_points() {
+    let got = sql("RETURN split('héllo', '')");
+    assert!(got.contains("substringUTF8('héllo', i, 1)"), "{got}");
+    // An empty string splits to a single empty string, as Neo4j has it.
+    let got = sql("RETURN split('', '')");
+    assert!(got.contains("['']"), "{got}");
 }

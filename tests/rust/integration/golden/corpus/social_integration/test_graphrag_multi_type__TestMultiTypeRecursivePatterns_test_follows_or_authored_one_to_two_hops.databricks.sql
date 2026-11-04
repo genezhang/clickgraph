@@ -77,7 +77,7 @@ vlp_v1_path AS (
     FROM vlp_v1_trails
     WHERE hop_count >= 1
 )
-SELECT DISTINCT 
+SELECT 
       try_element_at(array(v2.__cg_label), 2) AS `node_type`, 
       count(*) AS `cnt`
 FROM vlp_v1_path AS v1
@@ -85,7 +85,7 @@ JOIN test_integration.users_test AS v0 ON v1.start_id = v0.user_id
 JOIN v2_labels AS v2 ON v1.end_label = v2.__cg_label AND v1.end_id = v2.__cg_id_0
 WHERE v0.user_id = 1
 GROUP BY try_element_at(array(v2.__cg_label), 2)
-ORDER BY `node_type` ASC NULLS LAST
+ORDER BY try_element_at(array(v2.__cg_label), 2) ASC NULLS LAST
 
 -- column node_type: Value [("node_type", "node_type")]
 -- column cnt: Value [("cnt", "cnt")]

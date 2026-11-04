@@ -77,7 +77,7 @@ vlp_v1_path AS (
     FROM vlp_v1_trails
     WHERE hop_count >= 2
 )
-SELECT DISTINCT 
+SELECT 
       arrayElementOrNull([v2.__cg_label], 2) AS "node_type", 
       count(*) AS "cnt"
 FROM vlp_v1_path AS v1
