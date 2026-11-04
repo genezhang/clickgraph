@@ -5543,7 +5543,7 @@ fn databricks_size_of_a_list() {
     assert!(got.contains("array_size(split("), "{got}");
     has(
         "MATCH (u:User) RETURN size(split(u.email, '@')) AS n",
-        &["length(CASE WHEN '@' = ''"],
+        &["length(splitByString('@'"],
     );
 }
 
@@ -6129,7 +6129,7 @@ fn a_null_list_is_told_by_its_source() {
          split(toString(x), ',') AS t",
         &[
             r#"CASE WHEN w1.v0 > 1 THEN false ELSE true END AS "n""#,
-            r#"splitByString(',', toString(w1.v0)) END AS "t""#,
+            r#"splitByString(',', toString(w1.v0)) AS "t""#,
         ],
     );
     // ORDER BY: NULL last ascending (its condition first); reduce() over

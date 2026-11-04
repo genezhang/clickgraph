@@ -2257,11 +2257,33 @@ impl RenderExpr {
                 {
                     let str_sql = fn_call.args[0].to_sql();
                     let delim_sql = fn_call.args[1].to_sql();
-                    return format!(
-                        "CASE WHEN {delim} = '' THEN arrayMap(i -> substring({s}, i, 1), range(1, lengthUTF8({s}) + 1)) ELSE splitByString({delim}, {s}) END",
-                        delim = delim_sql,
+                    // Empty delimiter: split into code points (Neo4j), `['']` for
+                    // an empty string. Multi-byte delimiters and non-ASCII text
+                    // need UTF-8-aware slicing. A constant non-empty delimiter
+                    // keeps the simple `splitByString` form (no wrapper). A
+                    // non-constant delimiter still goes through the wrapper and
+                    // may fail on ClickHouse (Code 44) — documented limitation.
+                    let empty_branch = format!(
+                        "if(lengthUTF8({s}) = 0, [''], arrayMap(i -> substringUTF8({s}, i, 1), range(1, lengthUTF8({s}) + 1)))",
                         s = str_sql,
                     );
+                    let rendered = if delim_sql == "''" {
+                        empty_branch
+                    } else if delim_sql.starts_with('\'') {
+                        format!(
+                            "splitByString({delim}, {s})",
+                            delim = delim_sql,
+                            s = str_sql
+                        )
+                    } else {
+                        format!(
+                            "CASE WHEN {delim} = '' THEN {empty} ELSE splitByString({delim}, {s}) END",
+                            delim = delim_sql,
+                            empty = empty_branch,
+                            s = str_sql,
+                        )
+                    };
+                    return rendered;
                 }
 
                 // Check if we have a Neo4j -> ClickHouse mapping
