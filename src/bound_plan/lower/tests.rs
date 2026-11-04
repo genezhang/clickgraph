@@ -1366,7 +1366,7 @@ fn a_returned_element_is_its_columns_under_its_name() {
     // properties (#1334).
     assert!(
         sql.starts_with(
-            &r#"SELECT v1.follower_id AS "r.from_id", v1.followed_id AS "r.to_id", v1.follow_date AS "r.follow_date", concat('FOLLOWS:', concat(EDGE), ':', toString(v1.follower_id), '->', toString(v1.followed_id), '-') AS "r.elementId", v0.age AS "x.age", v0.city AS "x.city", v0.country AS "x.country", v0.email_address AS "x.email", v0.is_active AS "x.is_active", v0.full_name AS "x.name", v0.registration_date AS "x.registration_date", v0.user_id AS "x.user_id", v0.full_name AS "a.name" FROM"#
+            &r#"SELECT v1.follower_id AS "r.fromId", v1.followed_id AS "r.toId", v1.follow_date AS "r.follow_date", concat('FOLLOWS:', concat(EDGE), ':', toString(v1.follower_id), '->', toString(v1.followed_id), '-') AS "r.elementId", v0.age AS "x.age", v0.city AS "x.city", v0.country AS "x.country", v0.email_address AS "x.email", v0.is_active AS "x.is_active", v0.full_name AS "x.name", v0.registration_date AS "x.registration_date", v0.user_id AS "x.user_id", v0.full_name AS "a.name" FROM"#
                 .replace("EDGE", &edge_text("v1.follow_id"))
         ),
         "{sql}"
@@ -1395,7 +1395,7 @@ fn a_returned_element_is_its_columns_under_its_name() {
     let (sql, _) = shaped("MATCH (:T)-[c:C]->(:T) RETURN c", &shapes_schema());
     assert!(
         sql.contains(
-            r#"v1.ft AS "c.from_id_1", v1.fa AS "c.from_id_2", v1.tt AS "c.to_id_1", v1.ta AS "c.to_id_2" FROM"#
+            r#"v1.ft AS "c.fromId_1", v1.fa AS "c.fromId_2", v1.tt AS "c.toId_1", v1.ta AS "c.toId_2" FROM"#
         ),
         "{sql}"
     );
@@ -1413,7 +1413,7 @@ fn a_carried_element_returned_whole_exports_every_property() {
         r#"v0.registration_date AS "p2_v3_registration_date""#,
         r#"v1.follow_date AS "p2_v4_follow_date""#,
         r#"w1.p2_v3_registration_date AS "u.registration_date""#,
-        r#"w1.v4__follower_id AS "r.from_id""#,
+        r#"w1.v4__follower_id AS "r.fromId""#,
         r#"w1.p2_v4_follow_date AS "r.follow_date""#,
     ] {
         assert!(sql.contains(col), "missing {col} in {sql}");
@@ -1456,7 +1456,7 @@ fn grouping_and_distinct_over_a_returned_element() {
     // plain DISTINCT.
     assert!(
         sql.starts_with(
-            r#"SELECT DISTINCT v1.a AS "k.from_id", v1.b AS "k.to_id", v1.weight AS "k.w", concat('K:'"#
+            r#"SELECT DISTINCT v1.a AS "k.fromId", v1.b AS "k.toId", v1.weight AS "k.w", concat('K:'"#
         ) && sql.contains(r#"AS "k.elementId", v1.weight AS "w" FROM"#),
         "{sql}"
     );
@@ -1469,6 +1469,7 @@ fn grouping_and_distinct_over_a_returned_element() {
     // the DISTINCT key set (ILLEGAL_AGGREGATION). (#1435)
     assert!(
         sql.starts_with(r#"SELECT v1.a AS "k.from_id""#) && sql.ends_with("'-'), v1.kid"),
+        sql.starts_with(r#"SELECT DISTINCT v1.a AS "k.fromId""#) && sql.ends_with("'-'), v1.kid"),
         "{sql}"
     );
     // A node's identity is among its properties (`node_id` names
@@ -5894,7 +5895,7 @@ fn a_union_of_elements() {
     );
     assert_eq!(
         shape[0].columns[0],
-        ("from_id_1".to_string(), "c.from_id_1".to_string())
+        ("#fromId_1".to_string(), "c.fromId_1".to_string())
     );
 }
 
@@ -5945,7 +5946,7 @@ fn a_union_keeps_elements_apart_by_identity() {
         sql.contains(r#"'-') AS "__cg_w1_c3", 1 AS "__cg_w1_c4", v1.kid AS "__cg_w1_k0" FROM"#)
             && sql.contains(r#"w2.__cg_w2_k0 AS "__cg_k0" FROM with_w2 AS w2"#)
             // Grouped by every column's key and the identity.
-            && sql.contains(r#"SELECT any(w3.__cg_c0) AS "k.from_id","#)
+            && sql.contains(r#"SELECT any(w3.__cg_c0) AS "k.fromId","#)
             && sql.contains(r#"GROUP BY tuple(multiIf(replaceRegexpOne(dynamicType(CAST(w3.__cg_c0, "#)
             && sql.ends_with(r#"toString(w3.__cg_c4))), w3.__cg_k0"#),
         "{sql}"
@@ -8807,8 +8808,8 @@ graph_schema:
         // The ends of its relationship are texts.
         let (sql, _) = shaped("MATCH (a:P)-[r:E]->(b:P) RETURN r", &schema);
         assert!(
-            sql.contains(r#"toString(v1.fk) AS "r.from_id""#)
-                && sql.contains(r#"toString(v1.tk) AS "r.to_id""#),
+            sql.contains(r#"toString(v1.fk) AS "r.fromId""#)
+                && sql.contains(r#"toString(v1.tk) AS "r.toId""#),
             "{exotic}: {sql}"
         );
         // id(n) is the key, as it was.
@@ -8831,7 +8832,7 @@ graph_schema:
         let (sql, _) = shaped("MATCH (a:P) RETURN a", &schema);
         assert!(!sql.contains("a.elementId"), "{plain}: {sql}");
         let (sql, _) = shaped("MATCH (a:P)-[r:E]->(b:P) RETURN r", &schema);
-        assert!(sql.contains(r#"v1.fk AS "r.from_id""#), "{plain}: {sql}");
+        assert!(sql.contains(r#"v1.fk AS "r.fromId""#), "{plain}: {sql}");
         let (_, shape) = shaped("MATCH (a:P) RETURN id(a) AS i", &schema);
         assert!(
             matches!(shape[0].kind, ResultKind::NodeId { .. }),
@@ -8882,9 +8883,9 @@ graph_schema:
     assert!(sql.contains(r#"AS "a.elementId""#), "{sql}");
     let (sql, _) = shaped("MATCH (a:C)-[r:E]->(b:C) RETURN r", &both);
     assert!(
-        sql.contains(r#"v1.fb AS "r.from_id_1""#)
-            && sql.contains(r#"toString(v1.fk) AS "r.from_id_2""#)
-            && sql.contains(r#"toString(v1.tk) AS "r.to_id_2""#),
+        sql.contains(r#"v1.fb AS "r.fromId_1""#)
+            && sql.contains(r#"toString(v1.fk) AS "r.fromId_2""#)
+            && sql.contains(r#"toString(v1.tk) AS "r.toId_2""#),
         "{sql}"
     );
     // ... NULL where an OPTIONAL MATCH found no node (a NULL part of a
@@ -8904,8 +8905,8 @@ graph_schema:
     let (sql, _) = shaped("MATCH (a:C)-[r:E]->(b:C) RETURN r", &plain_node);
     assert!(
         !sql.contains("a.elementId")
-            && sql.contains(r#"toString(v1.fk) AS "r.from_id_2""#)
-            && sql.contains(r#"v1.tk AS "r.to_id_2""#),
+            && sql.contains(r#"toString(v1.fk) AS "r.fromId_2""#)
+            && sql.contains(r#"v1.tk AS "r.toId_2""#),
         "{sql}"
     );
     let exotic_node = schema(
@@ -8914,8 +8915,8 @@ graph_schema:
     );
     let (sql, _) = shaped("MATCH (a:C)-[r:E]->(b:C) RETURN r", &exotic_node);
     assert!(
-        sql.contains(r#"toString(v1.fk) AS "r.from_id_2""#)
-            && sql.contains(r#"toString(v1.tk) AS "r.to_id_2""#),
+        sql.contains(r#"toString(v1.fk) AS "r.fromId_2""#)
+            && sql.contains(r#"toString(v1.tk) AS "r.toId_2""#),
         "{sql}"
     );
     // The node's types unknown (a node embedded in an edge table's are), or
@@ -8927,7 +8928,7 @@ graph_schema:
     );
     let (sql, _) = shaped("MATCH (a:C)-[r:E]->(b:C) RETURN r", &part_known);
     assert!(
-        !sql.contains("toString(v1.fk)") && sql.contains(r#"v1.fk AS "r.from_id_2""#),
+        !sql.contains("toString(v1.fk)") && sql.contains(r#"v1.fk AS "r.fromId_2""#),
         "{sql}"
     );
     let unknown_node = schema(
@@ -8936,7 +8937,7 @@ graph_schema:
     );
     let (sql, _) = shaped("MATCH (a:C)-[r:E]->(b:C) RETURN r", &unknown_node);
     assert!(
-        !sql.contains("toString(v1.fk)") && sql.contains(r#"v1.fk AS "r.from_id_2""#),
+        !sql.contains("toString(v1.fk)") && sql.contains(r#"v1.fk AS "r.fromId_2""#),
         "{sql}"
     );
     // Databricks spells the text in its own function.
@@ -8947,7 +8948,7 @@ graph_schema:
     );
     let got = squash(&databricks_sql("MATCH (a:C)-[r:E]->(b:C) RETURN r", &both).unwrap());
     assert!(
-        got.contains("AS `r.from_id_2`") && !got.contains("toString("),
+        got.contains("AS `r.fromId_2`") && !got.contains("toString("),
         "{got}"
     );
 }
@@ -10120,7 +10121,7 @@ graph_schema:
     has(
         "MATCH (a:U)-[r:P]->(b:U) RETURN r",
         &[&format!(
-            r#"v1.b AS "r.to_id", v1.w AS "r.w", concat('P:', {edge}, toString(v1.a), '->', toString(v1.b), '-') AS "r.elementId" FROM"#
+            r#"v1.b AS "r.toId", v1.w AS "r.w", concat('P:', {edge}, toString(v1.a), '->', toString(v1.b), '-') AS "r.elementId" FROM"#
         )],
     );
     has(
@@ -10149,9 +10150,7 @@ graph_schema:
     let day = r#"replaceRegexpOne(toString(v1.at), ' 00:00:00(\\.0+)?$', '')"#;
     has(
         "MATCH (a:D)-[r:DU]->(b:U) RETURN r",
-        &[&format!(
-            r#"SELECT {day} AS "r.from_id", v1.u AS "r.to_id""#
-        )],
+        &[&format!(r#"SELECT {day} AS "r.fromId", v1.u AS "r.toId""#)],
     );
     has(
         "MATCH p = (a:D)-[r:DU]->(b:U) RETURN p",
@@ -10170,7 +10169,7 @@ graph_schema:
     has(
         "MATCH (a:T)-[r:TT]->(b:T) RETURN r",
         &[
-            r#"SELECT CAST(v1.at AS Nullable(DateTime('Asia/Tokyo'))) AS "r.from_id", v1.bt AS "r.to_id""#,
+            r#"SELECT CAST(v1.at AS Nullable(DateTime('Asia/Tokyo'))) AS "r.fromId", v1.bt AS "r.toId""#,
         ],
     );
     // Properties named `edge_id` and `elementId` keep their columns; the
@@ -10251,7 +10250,7 @@ graph_schema:
     has(
         "MATCH (a:T)-[r:TM]->(b:T) RETURN r",
         &[
-            r#"SELECT CASE WHEN CAST(v1.at AS Nullable(DateTime('Asia/Tokyo'))) = v1.at THEN toString(CAST(v1.at AS Nullable(DateTime('Asia/Tokyo')))) ELSE toString(v1.at) END AS "r.from_id""#,
+            r#"SELECT CASE WHEN CAST(v1.at AS Nullable(DateTime('Asia/Tokyo'))) = v1.at THEN toString(CAST(v1.at AS Nullable(DateTime('Asia/Tokyo')))) ELSE toString(v1.at) END AS "r.fromId""#,
         ],
     );
     // Spark spells the escapes with `replace`.
