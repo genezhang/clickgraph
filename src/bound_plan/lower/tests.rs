@@ -1468,8 +1468,7 @@ fn grouping_and_distinct_over_a_returned_element() {
     // already makes the rows distinct); ClickHouse rejects the aggregate in
     // the DISTINCT key set (ILLEGAL_AGGREGATION). (#1435)
     assert!(
-        sql.starts_with(r#"SELECT v1.a AS "k.from_id""#) && sql.ends_with("'-'), v1.kid"),
-        sql.starts_with(r#"SELECT DISTINCT v1.a AS "k.fromId""#) && sql.ends_with("'-'), v1.kid"),
+        sql.starts_with(r#"SELECT v1.a AS "k.fromId""#) && sql.ends_with("'-'), v1.kid"),
         "{sql}"
     );
     // A node's identity is among its properties (`node_id` names
