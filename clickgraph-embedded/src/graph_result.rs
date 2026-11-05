@@ -485,10 +485,10 @@ graph_schema:
             .to_graph_schema()
             .unwrap();
         let keys = [
-            "from_id_1",
-            "from_id_2",
-            "to_id_1",
-            "to_id_2",
+            "#fromId_1",
+            "#fromId_2",
+            "#toId_1",
+            "#toId_2",
             "w",
             clickgraph::bound_plan::lower::REL_ELEMENT_ID_KEY,
         ];
@@ -508,7 +508,7 @@ graph_schema:
         }];
         let row = |fid: u32| {
             serde_json::json!({
-                "r.from_id_1": "t", "r.from_id_2": 6, "r.to_id_1": "t", "r.to_id_2": 7,
+                "r.fromId_1": "t", "r.fromId_2": 6, "r.toId_1": "t", "r.toId_2": 7,
                 "r.elementId": format!("F:{fid}:t|6->t|7-"), "r.w": 1
             })
         };
