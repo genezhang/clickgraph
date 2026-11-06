@@ -3572,5 +3572,25 @@ graph_schema:
             &[("#fromId", Value::from(6)), ("#toId", Value::from(7))],
         );
         assert_eq!(n.element_id, "N:6->7-");
+        // #1521: properties named like the end columns (`from_id`, `to_id`,
+        // and a numbered `from_id_1`) stay properties: they neither spell
+        // the ends nor are dropped as end columns.
+        let c = rel(
+            "N",
+            &[
+                ("#fromId", Value::from(6)),
+                ("#toId", Value::from(7)),
+                ("from_id", Value::from("pf")),
+                ("to_id", Value::from("pt")),
+                ("from_id_1", Value::from("p1")),
+            ],
+        );
+        assert_eq!(c.element_id, "N:6->7-");
+        assert_eq!(c.start_node_element_id, "U:6-");
+        assert_eq!(c.end_node_element_id, "U:7-");
+        assert_eq!(c.properties.len(), 3);
+        assert_eq!(c.properties.get("from_id"), Some(&Value::from("pf")));
+        assert_eq!(c.properties.get("to_id"), Some(&Value::from("pt")));
+        assert_eq!(c.properties.get("from_id_1"), Some(&Value::from("p1")));
     }
 }

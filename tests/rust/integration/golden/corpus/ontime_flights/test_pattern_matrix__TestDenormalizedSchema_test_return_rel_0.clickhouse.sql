@@ -1,6 +1,6 @@
 SELECT 
-      v1.Origin AS "r.fromId", 
-      v1.Dest AS "r.toId", 
+      v1.Origin AS "r.from_id", 
+      v1.Dest AS "r.to_id", 
       v1.arr_time AS "r.arrival_time", 
       v1.airline AS "r.carrier", 
       v1.dep_time AS "r.departure_time", 
@@ -11,4 +11,4 @@ SELECT
 FROM default.flights AS v1
 WHERE (v1.Origin IS NOT NULL AND v1.Dest IS NOT NULL)
 LIMIT 5
--- column r: Rel { rel_type: "FLIGHT", from_label: "Airport", to_label: "Airport" } [("#fromId", "r.fromId"), ("#toId", "r.toId"), ("arrival_time", "r.arrival_time"), ("carrier", "r.carrier"), ("departure_time", "r.departure_time"), ("distance", "r.distance"), ("flight_id", "r.flight_id"), ("flight_num", "r.flight_num"), ("#elementId", "r.elementId")]
+-- column r: Rel { rel_type: "FLIGHT", from_label: "Airport", to_label: "Airport" } [("#fromId", "r.from_id"), ("#toId", "r.to_id"), ("arrival_time", "r.arrival_time"), ("carrier", "r.carrier"), ("departure_time", "r.departure_time"), ("distance", "r.distance"), ("flight_id", "r.flight_id"), ("flight_num", "r.flight_num"), ("#elementId", "r.elementId")]

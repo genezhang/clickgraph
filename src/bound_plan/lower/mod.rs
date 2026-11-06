@@ -239,6 +239,23 @@ pub const NODE_ELEMENT_ID_KEY: &str = REL_ELEMENT_ID_KEY;
 pub const REL_FROM_ID_KEY: &str = "#fromId";
 pub const REL_TO_ID_KEY: &str = "#toId";
 
+/// The SQL column name of a result column keyed `key` (without the
+/// variable's prefix). A key no property has names its column without its
+/// `#`; a relationship's end keys keep the columns' documented names
+/// (`from_id`, `to_id`, composite `from_id_1`, …), which the keys, not the
+/// names, tell apart from a property's.
+fn column_alias(key: &str) -> String {
+    let bare = key.trim_start_matches('#');
+    for (internal, alias) in [(REL_FROM_ID_KEY, "from_id"), (REL_TO_ID_KEY, "to_id")] {
+        if let Some(rest) = key.strip_prefix(internal) {
+            if rest.is_empty() || rest.starts_with('_') {
+                return format!("{alias}{rest}");
+            }
+        }
+    }
+    bare.to_string()
+}
+
 /// Lower a bound statement to a render plan.
 pub fn lower_statement(
     stmt: &BoundStatement,
@@ -7713,8 +7730,7 @@ impl<'s> Lowerer<'s> {
             if aggregating {
                 body.group_by.push(e.clone());
             }
-            // A key no property has names its column without its `#`.
-            let column = body.column(e, &format!("{name}.{}", key.trim_start_matches('#')));
+            let column = body.column(e, &format!("{name}.{}", column_alias(&key)));
             named.push((key, column));
         }
         if aggregating {
