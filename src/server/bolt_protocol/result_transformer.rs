@@ -32,6 +32,7 @@
 //! }
 //! ```
 
+use crate::bound_plan::lower::{REL_FROM_ID_KEY, REL_TO_ID_KEY};
 use crate::{
     graph_catalog::{
         element_id::{
@@ -1019,24 +1020,24 @@ pub fn transform_to_relationship(
     properties.remove("end_type");
 
     let (from_fallback_a, from_fallback_b) = if projection_reversed {
-        ("end_id", crate::bound_plan::lower::REL_TO_ID_KEY)
+        ("end_id", REL_TO_ID_KEY)
     } else {
-        ("start_id", crate::bound_plan::lower::REL_FROM_ID_KEY)
+        ("start_id", REL_FROM_ID_KEY)
     };
     let (to_fallback_a, to_fallback_b) = if projection_reversed {
-        ("start_id", crate::bound_plan::lower::REL_FROM_ID_KEY)
+        ("start_id", REL_FROM_ID_KEY)
     } else {
-        ("end_id", crate::bound_plan::lower::REL_TO_ID_KEY)
+        ("end_id", REL_TO_ID_KEY)
     };
     let from_composite_prefix = if projection_reversed {
-        crate::bound_plan::lower::REL_TO_ID_KEY.to_string() + "_"
+        REL_TO_ID_KEY.to_string() + "_"
     } else {
-        crate::bound_plan::lower::REL_FROM_ID_KEY.to_string() + "_"
+        REL_FROM_ID_KEY.to_string() + "_"
     };
     let to_composite_prefix = if projection_reversed {
-        crate::bound_plan::lower::REL_FROM_ID_KEY.to_string() + "_"
+        REL_FROM_ID_KEY.to_string() + "_"
     } else {
-        crate::bound_plan::lower::REL_TO_ID_KEY.to_string() + "_"
+        REL_TO_ID_KEY.to_string() + "_"
     };
 
     // Extract from_id values using relationship's FK columns (e.g., follower_id, followed_id)
@@ -1106,8 +1107,8 @@ pub fn transform_to_relationship(
     };
 
     // Remove internal ID keys from properties (they're FK columns, not user properties)
-    properties.remove(crate::bound_plan::lower::REL_FROM_ID_KEY);
-    properties.remove(crate::bound_plan::lower::REL_TO_ID_KEY);
+    properties.remove(REL_FROM_ID_KEY);
+    properties.remove(REL_TO_ID_KEY);
     properties.remove("start_id");
     properties.remove("end_id");
     // Remove relationship FK columns and composite variants
@@ -1121,8 +1122,8 @@ pub fn transform_to_relationship(
     let composite_id_keys: Vec<String> = properties
         .keys()
         .filter(|k| {
-            k.starts_with(&format!("{}_", crate::bound_plan::lower::REL_FROM_ID_KEY))
-                || k.starts_with(&format!("{}_", crate::bound_plan::lower::REL_TO_ID_KEY))
+            k.starts_with(&format!("{}_", REL_FROM_ID_KEY))
+                || k.starts_with(&format!("{}_", REL_TO_ID_KEY))
         })
         .cloned()
         .collect();
@@ -2382,14 +2383,14 @@ fn find_relationship_in_row_with_type(
     let rel_id = generate_id_from_element_id(&rel_element_id);
 
     // Remove internal from_id/to_id keys from properties (FK columns, not user properties)
-    properties.remove(crate::bound_plan::lower::REL_FROM_ID_KEY);
-    properties.remove(crate::bound_plan::lower::REL_TO_ID_KEY);
+    properties.remove(REL_FROM_ID_KEY);
+    properties.remove(REL_TO_ID_KEY);
     // Remove composite variants
     let composite_keys: Vec<String> = properties
         .keys()
         .filter(|k| {
-            (k.starts_with(&format!("{}_", crate::bound_plan::lower::REL_FROM_ID_KEY))
-                || k.starts_with(&format!("{}_", crate::bound_plan::lower::REL_TO_ID_KEY)))
+            (k.starts_with(&format!("{}_", REL_FROM_ID_KEY))
+                || k.starts_with(&format!("{}_", REL_TO_ID_KEY)))
                 && k.rsplit('_')
                     .next()
                     .is_some_and(|s| s.parse::<usize>().is_ok())
@@ -2776,16 +2777,13 @@ mod tests {
             closed_properties: false,
             database: "brahmand".to_string(),
             table_name: "interactions".to_string(),
-            column_names: vec![
-                crate::bound_plan::lower::REL_FROM_ID_KEY.to_string(),
-                crate::bound_plan::lower::REL_TO_ID_KEY.to_string(),
-            ],
+            column_names: vec![REL_FROM_ID_KEY.to_string(), REL_TO_ID_KEY.to_string()],
             from_node: "$any".to_string(),
             to_node: "$any".to_string(),
             from_node_table: "$any".to_string(),
             to_node_table: "$any".to_string(),
-            from_id: Identifier::from(crate::bound_plan::lower::REL_FROM_ID_KEY),
-            to_id: Identifier::from(crate::bound_plan::lower::REL_TO_ID_KEY),
+            from_id: Identifier::from(REL_FROM_ID_KEY),
+            to_id: Identifier::from(REL_TO_ID_KEY),
             from_node_id_dtype: SchemaType::Integer,
             to_node_id_dtype: SchemaType::Integer,
             property_mappings: HashMap::new(),
