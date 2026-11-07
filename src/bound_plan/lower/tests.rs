@@ -1346,11 +1346,37 @@ graph_schema:
   edges:
     - { type: C, database: db, table: c, from_id: [ft, fa], to_id: [tt, ta], from_node: T, to_node: T, property_mappings: {} }
     - { type: K, database: db, table: k, from_id: a, to_id: b, edge_id: kid, from_node: U, to_node: U, property_mappings: { w: weight } }
+    - { type: P, database: db, table: p, from_id: a, to_id: b, from_node: U, to_node: U, property_mappings: { from_id: pf, to_id: pt } }
 "#,
     )
     .unwrap()
     .to_graph_schema()
     .unwrap()
+}
+
+/// #1521: a relationship property named `from_id` / `to_id` does not collide
+/// with the structural end columns. The ends keep their documented columns
+/// (`r.from_id`, `r.to_id`) and are told apart by internal keys no property
+/// has (`#fromId`, `#toId`); the properties keep their own keys, their
+/// columns renamed where they would share a name.
+#[test]
+fn a_property_named_like_an_end_column_is_not_the_end_column() {
+    let (sql, shape) = shaped("MATCH (:U)-[r:P]->(:U) RETURN r", &shapes_schema());
+    assert!(
+        sql.starts_with(
+            r#"SELECT v1.a AS "r.from_id", v1.b AS "r.to_id", v1.pf AS "r.from_id_2", v1.pt AS "r.to_id_2" FROM"#
+        ),
+        "{sql}"
+    );
+    assert_eq!(
+        shape[0].columns,
+        vec![
+            ("#fromId".to_string(), "r.from_id".to_string()),
+            ("#toId".to_string(), "r.to_id".to_string()),
+            ("from_id".to_string(), "r.from_id_2".to_string()),
+            ("to_id".to_string(), "r.to_id_2".to_string()),
+        ]
+    );
 }
 
 /// A returned node or relationship is its columns, named `<item>.<…>` as on
@@ -5894,7 +5920,7 @@ fn a_union_of_elements() {
     );
     assert_eq!(
         shape[0].columns[0],
-        ("from_id_1".to_string(), "c.from_id_1".to_string())
+        ("#fromId_1".to_string(), "c.from_id_1".to_string())
     );
 }
 
