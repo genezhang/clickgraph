@@ -2962,7 +2962,9 @@ impl<'s> Lowerer<'s> {
             .collect();
         for (arm, (label, ns)) in arms.iter().enumerate() {
             let mut items = vec![select(
-                RenderExpr::Literal(Literal::String(label.clone())),
+                RenderExpr::Literal(Literal::String(
+                    crate::utils::sql_literal::value_as_cypher_text(label),
+                )),
                 LABEL_COLUMN,
             )];
             // Each arm's id as its label's is compared (I1).
@@ -3129,7 +3131,9 @@ impl<'s> Lowerer<'s> {
             let column = self.physical(v, LABEL_COLUMN)?;
             self.filters.push(RenderExpr::OperatorApplicationExp(eq(
                 column,
-                RenderExpr::Literal(Literal::String(label.to_string())),
+                RenderExpr::Literal(Literal::String(
+                    crate::utils::sql_literal::value_as_cypher_text(label),
+                )),
             )));
         }
         Ok(())
@@ -3662,7 +3666,9 @@ impl<'s> Lowerer<'s> {
                 }
                 _ => self.filters.push(RenderExpr::OperatorApplicationExp(eq(
                     value,
-                    RenderExpr::Literal(Literal::String(labels[0].clone())),
+                    RenderExpr::Literal(Literal::String(
+                        crate::utils::sql_literal::value_as_cypher_text(&labels[0]),
+                    )),
                 ))),
             },
             _ => {
@@ -3813,9 +3819,24 @@ impl<'s> Lowerer<'s> {
             let identity: Vec<&str> = rs.identity_columns();
             let (left, right) = arm.ends();
             let mut items = vec![
-                select(string(&arm.rel_type), REL_TYPE),
-                select(string(&rs.from_node), REL_FROM_LABEL),
-                select(string(&rs.to_node), REL_TO_LABEL),
+                select(
+                    string(&crate::utils::sql_literal::value_as_cypher_text(
+                        &arm.rel_type,
+                    )),
+                    REL_TYPE,
+                ),
+                select(
+                    string(&crate::utils::sql_literal::value_as_cypher_text(
+                        &rs.from_node,
+                    )),
+                    REL_FROM_LABEL,
+                ),
+                select(
+                    string(&crate::utils::sql_literal::value_as_cypher_text(
+                        &rs.to_node,
+                    )),
+                    REL_TO_LABEL,
+                ),
             ];
             // Ids as they are compared (I1): an identity of stored ends as
             // its ends are (an `edge_id`'s is compared with itself only).
@@ -5240,7 +5261,9 @@ impl<'s> Lowerer<'s> {
             };
             let mut items = vec![
                 select(
-                    RenderExpr::Literal(Literal::String(label.clone())),
+                    RenderExpr::Literal(Literal::String(
+                        crate::utils::sql_literal::value_as_cypher_text(label),
+                    )),
                     LABEL_COLUMN,
                 ),
                 select(id, &indexed_column(LABEL_ID, 0)),
@@ -5383,9 +5406,9 @@ impl<'s> Lowerer<'s> {
                 // A walk by keys holds a node's key as its id (S8d2b).
                 (_, _) if self.walks_by_keys(among) => {
                     let label = match self.scans.get(&v) {
-                        Some(Scan::Node { label, .. }) => {
-                            RenderExpr::Literal(Literal::String(label.clone()))
-                        }
+                        Some(Scan::Node { label, .. }) => RenderExpr::Literal(Literal::String(
+                            crate::utils::sql_literal::value_as_cypher_text(label),
+                        )),
                         _ => ids[0].clone(),
                     };
                     let Some(key) = self.walk_key(v)? else {
