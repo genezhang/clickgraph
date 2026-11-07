@@ -1121,8 +1121,8 @@ pub fn transform_to_relationship(
     let composite_id_keys: Vec<String> = properties
         .keys()
         .filter(|k| {
-            k.starts_with(crate::bound_plan::lower::REL_FROM_ID_KEY) && k.contains("_")
-                || k.starts_with(crate::bound_plan::lower::REL_TO_ID_KEY) && k.contains("_")
+            k.starts_with(&format!("{}_", crate::bound_plan::lower::REL_FROM_ID_KEY))
+                || k.starts_with(&format!("{}_", crate::bound_plan::lower::REL_TO_ID_KEY))
         })
         .cloned()
         .collect();
@@ -2388,7 +2388,8 @@ fn find_relationship_in_row_with_type(
     let composite_keys: Vec<String> = properties
         .keys()
         .filter(|k| {
-            (k.starts_with("from_id_") || k.starts_with("to_id_"))
+            (k.starts_with(&format!("{}_", crate::bound_plan::lower::REL_FROM_ID_KEY))
+                || k.starts_with(&format!("{}_", crate::bound_plan::lower::REL_TO_ID_KEY)))
                 && k.rsplit('_')
                     .next()
                     .is_some_and(|s| s.parse::<usize>().is_ok())
