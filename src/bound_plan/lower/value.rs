@@ -167,14 +167,6 @@ pub(super) fn string(s: &str) -> String {
     )))
 }
 
-/// A name (label, type, element id) as a Cypher literal: holds its Cypher
-/// text, so a backslash in it is read as itself, not as an escape.
-pub(super) fn name_literal(s: &str) -> RenderExpr {
-    RenderExpr::Literal(Literal::String(
-        crate::utils::sql_literal::value_as_cypher_text(s),
-    ))
-}
-
 /// An identity of one or more columns (SQL) as a text: the column's, or
 /// their tuple's ([`GraphValues::tuple_text`]), as every key of a node or
 /// relationship spells it.
