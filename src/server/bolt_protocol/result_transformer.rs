@@ -32,6 +32,7 @@
 //! }
 //! ```
 
+use crate::bound_plan::lower::{REL_FROM_ID_KEY, REL_TO_ID_KEY};
 use crate::{
     graph_catalog::{
         element_id::{
@@ -57,10 +58,11 @@ pub struct ReturnItemMetadata {
     pub item_type: ReturnItemType,
     /// The result columns holding the item, as (key, column), when the
     /// translation knows them exactly (the bound-plan path): a value's key is
-    /// its name, an entity's keys are `from_id` / `to_id` and its property
-    /// names. `None`: the legacy convention, where a value is the column
-    /// `field_name` and an entity is every column prefixed `field_name.`
-    /// (which also collects another item named `n.name_2` or `n.age + 1`).
+    /// its name, an entity's keys are `#fromId` / `#toId` (the internal ends,
+    /// which no property name can equal) and its property names. `None`: the
+    /// legacy convention, where a value is the column `field_name` and an
+    /// entity is every column prefixed `field_name.` (which also collects
+    /// another item named `n.name_2` or `n.age + 1`).
     pub columns: Option<Vec<(String, String)>>,
 }
 
@@ -1019,24 +1021,24 @@ pub fn transform_to_relationship(
     properties.remove("end_type");
 
     let (from_fallback_a, from_fallback_b) = if projection_reversed {
-        ("end_id", "to_id")
+        ("end_id", REL_TO_ID_KEY)
     } else {
-        ("start_id", "from_id")
+        ("start_id", REL_FROM_ID_KEY)
     };
     let (to_fallback_a, to_fallback_b) = if projection_reversed {
-        ("start_id", "from_id")
+        ("start_id", REL_FROM_ID_KEY)
     } else {
-        ("end_id", "to_id")
+        ("end_id", REL_TO_ID_KEY)
     };
     let from_composite_prefix = if projection_reversed {
-        "to_id_"
+        REL_TO_ID_KEY.to_string() + "_"
     } else {
-        "from_id_"
+        REL_FROM_ID_KEY.to_string() + "_"
     };
     let to_composite_prefix = if projection_reversed {
-        "from_id_"
+        REL_FROM_ID_KEY.to_string() + "_"
     } else {
-        "to_id_"
+        REL_TO_ID_KEY.to_string() + "_"
     };
 
     // Extract from_id values using relationship's FK columns (e.g., follower_id, followed_id)
@@ -1106,8 +1108,8 @@ pub fn transform_to_relationship(
     };
 
     // Remove internal ID keys from properties (they're FK columns, not user properties)
-    properties.remove("from_id");
-    properties.remove("to_id");
+    properties.remove(REL_FROM_ID_KEY);
+    properties.remove(REL_TO_ID_KEY);
     properties.remove("start_id");
     properties.remove("end_id");
     // Remove relationship FK columns and composite variants
@@ -1120,7 +1122,10 @@ pub fn transform_to_relationship(
     // Remove any composite ID variants (from_id_1, from_id_2, to_id_1, to_id_2, ...)
     let composite_id_keys: Vec<String> = properties
         .keys()
-        .filter(|k| k.starts_with("from_id_") || k.starts_with("to_id_"))
+        .filter(|k| {
+            k.starts_with(&format!("{}_", REL_FROM_ID_KEY))
+                || k.starts_with(&format!("{}_", REL_TO_ID_KEY))
+        })
         .cloned()
         .collect();
     for key in composite_id_keys {
@@ -2379,13 +2384,14 @@ fn find_relationship_in_row_with_type(
     let rel_id = generate_id_from_element_id(&rel_element_id);
 
     // Remove internal from_id/to_id keys from properties (FK columns, not user properties)
-    properties.remove("from_id");
-    properties.remove("to_id");
+    properties.remove(REL_FROM_ID_KEY);
+    properties.remove(REL_TO_ID_KEY);
     // Remove composite variants
     let composite_keys: Vec<String> = properties
         .keys()
         .filter(|k| {
-            (k.starts_with("from_id_") || k.starts_with("to_id_"))
+            (k.starts_with(&format!("{}_", REL_FROM_ID_KEY))
+                || k.starts_with(&format!("{}_", REL_TO_ID_KEY)))
                 && k.rsplit('_')
                     .next()
                     .is_some_and(|s| s.parse::<usize>().is_ok())
@@ -2772,13 +2778,13 @@ mod tests {
             closed_properties: false,
             database: "brahmand".to_string(),
             table_name: "interactions".to_string(),
-            column_names: vec!["from_id".to_string(), "to_id".to_string()],
+            column_names: vec![REL_FROM_ID_KEY.to_string(), REL_TO_ID_KEY.to_string()],
             from_node: "$any".to_string(),
             to_node: "$any".to_string(),
             from_node_table: "$any".to_string(),
             to_node_table: "$any".to_string(),
-            from_id: Identifier::from("from_id"),
-            to_id: Identifier::from("to_id"),
+            from_id: Identifier::from(REL_FROM_ID_KEY),
+            to_id: Identifier::from(REL_TO_ID_KEY),
             from_node_id_dtype: SchemaType::Integer,
             to_node_id_dtype: SchemaType::Integer,
             property_mappings: HashMap::new(),
@@ -3045,10 +3051,10 @@ graph_schema:
         assert!(transform_to_node(&row, "c", &["Acct".to_string()], &schema).is_err());
 
         let mut row: HashMap<String, Value> = HashMap::new();
-        row.insert("r.from_id_1".to_string(), Value::from("b|1"));
-        row.insert("r.from_id_2".to_string(), Value::from(7));
-        row.insert("r.to_id_1".to_string(), Value::from("c:d"));
-        row.insert("r.to_id_2".to_string(), Value::from(8));
+        row.insert("r.#fromId_1".to_string(), Value::from("b|1"));
+        row.insert("r.#fromId_2".to_string(), Value::from(7));
+        row.insert("r.#toId_1".to_string(), Value::from("c:d"));
+        row.insert("r.#toId_2".to_string(), Value::from(8));
         let r = transform_to_relationship(
             &row,
             "r",
@@ -3542,8 +3548,8 @@ graph_schema:
             rel(
                 "F",
                 &[
-                    ("from_id", Value::from(6)),
-                    ("to_id", Value::from(7)),
+                    ("#fromId", Value::from(6)),
+                    ("#toId", Value::from(7)),
                     ("w", Value::from(1)),
                     ("edge_id", Value::from(fid)),
                     ("elementId", Value::from("p")),
@@ -3563,8 +3569,28 @@ graph_schema:
         // Without the SQL's: from its type and ends.
         let n = rel(
             "N",
-            &[("from_id", Value::from(6)), ("to_id", Value::from(7))],
+            &[("#fromId", Value::from(6)), ("#toId", Value::from(7))],
         );
         assert_eq!(n.element_id, "N:6->7-");
+        // #1521: properties named like the end columns (`from_id`, `to_id`,
+        // and a numbered `from_id_1`) stay properties: they neither spell
+        // the ends nor are dropped as end columns.
+        let c = rel(
+            "N",
+            &[
+                ("#fromId", Value::from(6)),
+                ("#toId", Value::from(7)),
+                ("from_id", Value::from("pf")),
+                ("to_id", Value::from("pt")),
+                ("from_id_1", Value::from("p1")),
+            ],
+        );
+        assert_eq!(c.element_id, "N:6->7-");
+        assert_eq!(c.start_node_element_id, "U:6-");
+        assert_eq!(c.end_node_element_id, "U:7-");
+        assert_eq!(c.properties.len(), 3);
+        assert_eq!(c.properties.get("from_id"), Some(&Value::from("pf")));
+        assert_eq!(c.properties.get("to_id"), Some(&Value::from("pt")));
+        assert_eq!(c.properties.get("from_id_1"), Some(&Value::from("p1")));
     }
 }

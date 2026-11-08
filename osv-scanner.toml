@@ -28,3 +28,7 @@ reason = "rustls-pemfile is unmaintained but a functional transitive of reqwest 
 [[IgnoredVulns]]
 id = "RUSTSEC-2024-0449"
 reason = "unsafe-libyaml is unmaintained (archived upstream), pulled only by serde_yaml 0.9, which parses operator-supplied schema YAML; not a security vulnerability. Ignore until serde_yaml is replaced (35 call sites: a separate change)."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0441"
+reason = "pin-utils 0.1.0 is unmaintained, pulled in by futures-util 0.3.x and hyper 1.x (axum, tower, the clickhouse client); a small pinning helper, not a security vulnerability, and no replacement release exists. Ignore until they drop it (same suppression as deny.toml)."
