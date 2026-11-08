@@ -58,10 +58,11 @@ pub struct ReturnItemMetadata {
     pub item_type: ReturnItemType,
     /// The result columns holding the item, as (key, column), when the
     /// translation knows them exactly (the bound-plan path): a value's key is
-    /// its name, an entity's keys are `from_id` / `to_id` and its property
-    /// names. `None`: the legacy convention, where a value is the column
-    /// `field_name` and an entity is every column prefixed `field_name.`
-    /// (which also collects another item named `n.name_2` or `n.age + 1`).
+    /// its name, an entity's keys are `#fromId` / `#toId` (the internal ends,
+    /// which no property name can equal) and its property names. `None`: the
+    /// legacy convention, where a value is the column `field_name` and an
+    /// entity is every column prefixed `field_name.` (which also collects
+    /// another item named `n.name_2` or `n.age + 1`).
     pub columns: Option<Vec<(String, String)>>,
 }
 
