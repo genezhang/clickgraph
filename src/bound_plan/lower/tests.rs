@@ -1379,6 +1379,75 @@ fn a_property_named_like_an_end_column_is_not_the_end_column() {
     );
 }
 
+/// Names holding a backslash: the labels `P\nQ` and `Plain`, and the types
+/// `K\nL` (a backslash and an `n`, as the YAML's single quotes keep them) and
+/// `E`.
+fn backslash_schema() -> GraphSchema {
+    GraphSchemaConfig::from_yaml_str(
+        r#"
+name: lower_backslash
+graph_schema:
+  nodes:
+    - { label: 'P\nQ', database: db, table: p, node_id: id, property_mappings: { id: id } }
+    - { label: Plain, database: db, table: q, node_id: id, property_mappings: { id: id } }
+  edges:
+    - { type: 'K\nL', database: db, table: k, from_id: a, to_id: b, from_node: 'P\nQ', to_node: Plain, property_mappings: {} }
+    - { type: E, database: db, table: e, from_id: a, to_id: b, from_node: Plain, to_node: Plain, property_mappings: {} }
+"#,
+    )
+    .unwrap()
+    .to_graph_schema()
+    .unwrap()
+}
+
+/// #1513: a label or type holding a backslash is put into SQL as the text it
+/// is (`'P\\nQ'` is a backslash and an `n`), by the column that holds it and
+/// by every comparison with that column alike. A site that spelled it as
+/// Cypher text (`'P\nQ'`: a newline) or twice over (`'P\\\\nQ'`) made the
+/// producer and its consumers disagree: the join of a relationship union to
+/// its end nodes found nothing.
+#[test]
+fn a_name_with_a_backslash_is_spelled_alike_by_its_columns_and_comparisons() {
+    let schema = backslash_schema();
+    for q in [
+        "MATCH (a)-[r]->(b) RETURN a, r, b",
+        "MATCH (a)-[r]->(b) RETURN type(r), labels(a), label(b)",
+        r#"MATCH (a)-[r]->(b) WHERE type(r) = 'K\\nL' AND a:`P\\nQ` RETURN count(*)"#,
+        "MATCH (a)-[r]->(b:Plain) RETURN r",
+        "MATCH p = (a)-[*1..2]->(b) RETURN p",
+    ] {
+        let sql = translate_bound_plan(q, &schema, &ReadOptions::default())
+            .unwrap_or_else(|e| panic!("{q}: {e}"))
+            .sql;
+        // Only the doubled backslash is left once the escaped ones are gone:
+        // no `\n` (a newline) and no four-backslash spelling.
+        assert!(!sql.replace(r"\\", "").contains(r"\n"), "{q}: {sql}");
+        assert!(!sql.contains(r"\\\\"), "{q}: {sql}");
+    }
+    let sql = sql_of("MATCH (a)-[r]->(b) RETURN a, r, b", &schema);
+    for spelled in [
+        r#"'P\\nQ' AS "__cg_label""#,
+        r#"'K\\nL' AS "__cg_type""#,
+        r#"'P\\nQ' AS "__cg_from_label""#,
+        r#"'P\\nQ' AS "__cg_start_label""#,
+    ] {
+        assert!(sql.contains(spelled), "{spelled} is missing: {sql}");
+    }
+    // The comparisons name the same text the column holds.
+    let sql = sql_of(
+        r#"MATCH (a)-[r]->(b) WHERE type(r) = 'K\\nL' AND a:`P\\nQ` RETURN count(*)"#,
+        &schema,
+    );
+    assert!(sql.contains(r"'K\\nL'"), "{sql}");
+    assert!(sql.contains(r"'P\\nQ'"), "{sql}");
+}
+
+fn sql_of(q: &str, schema: &GraphSchema) -> String {
+    translate_bound_plan(q, schema, &ReadOptions::default())
+        .unwrap_or_else(|e| panic!("{q}: {e}"))
+        .sql
+}
+
 /// A returned node or relationship is its columns, named `<item>.<…>` as on
 /// the legacy pipeline: a relationship's stored endpoint columns (whatever
 /// the pattern's direction), then every property by name.

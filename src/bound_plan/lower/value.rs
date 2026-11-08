@@ -162,7 +162,9 @@ fn sql(e: &RenderExpr) -> String {
 }
 
 pub(super) fn string(s: &str) -> String {
-    sql(&RenderExpr::Literal(Literal::String(s.to_string())))
+    sql(&RenderExpr::Literal(Literal::String(
+        crate::utils::sql_literal::value_as_cypher_text(s),
+    )))
 }
 
 /// An identity of one or more columns (SQL) as a text: the column's, or
@@ -337,7 +339,7 @@ fn labeled_node_object(
 /// The SQL string literal of the text `text` (`string` reads a Cypher
 /// literal's body, in which a backslash escapes).
 fn text_literal(text: &str) -> String {
-    string(&text.replace('\\', "\\\\"))
+    string(text)
 }
 
 /// An `edge_id`'s parts (SQL) as its text in a relationship's element id
