@@ -376,7 +376,7 @@ impl Lowerer<'_> {
                             operands: vec![
                                 self.physical(v, super::REL_TYPE)?,
                                 RenderExpr::Literal(Literal::String(
-                                    crate::utils::sql_literal::value_as_cypher_text(&label),
+                                    crate::utils::sql_literal::value_as_cypher_text(label),
                                 )),
                             ],
                         }));
@@ -2369,7 +2369,7 @@ impl Lowerer<'_> {
                     ("label", Elem::Node(label)) => self.elem_unless_null(
                         &t,
                         &elem,
-                        Literal::String(crate::utils::sql_literal::value_as_cypher_text(&label)),
+                        Literal::String(crate::utils::sql_literal::value_as_cypher_text(label)),
                     ),
                     _ => unsupported(format!("{}() of a node or relationship of a list", f.name)),
                 };
@@ -2466,7 +2466,7 @@ impl Lowerer<'_> {
                 ("label", Some(Scan::Node { label, .. })) => self.unless_null(
                     &[v],
                     RenderExpr::Literal(Literal::String(
-                        crate::utils::sql_literal::value_as_cypher_text(&label),
+                        crate::utils::sql_literal::value_as_cypher_text(label),
                     )),
                 ),
                 _ => unsupported(format!("{}() of a node or relationship", f.name)),
