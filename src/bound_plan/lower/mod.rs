@@ -1115,7 +1115,9 @@ impl Lowerer<'_> {
         let is = |c: &str, value: &str| -> Result<RenderExpr, LowerError> {
             Ok(RenderExpr::OperatorApplicationExp(eq(
                 self.physical(v, c)?,
-                RenderExpr::Literal(Literal::String(value.to_string())),
+                RenderExpr::Literal(Literal::String(
+                    crate::utils::sql_literal::value_as_cypher_text(value),
+                )),
             )))
         };
         Ok(and_all(vec![
@@ -3852,24 +3854,9 @@ impl<'s> Lowerer<'s> {
             let identity: Vec<&str> = rs.identity_columns();
             let (left, right) = arm.ends();
             let mut items = vec![
-                select(
-                    string(&crate::utils::sql_literal::value_as_cypher_text(
-                        &arm.rel_type,
-                    )),
-                    REL_TYPE,
-                ),
-                select(
-                    string(&crate::utils::sql_literal::value_as_cypher_text(
-                        &rs.from_node,
-                    )),
-                    REL_FROM_LABEL,
-                ),
-                select(
-                    string(&crate::utils::sql_literal::value_as_cypher_text(
-                        &rs.to_node,
-                    )),
-                    REL_TO_LABEL,
-                ),
+                select(string(&arm.rel_type), REL_TYPE),
+                select(string(&rs.from_node), REL_FROM_LABEL),
+                select(string(&rs.to_node), REL_TO_LABEL),
             ];
             // Ids as they are compared (I1): an identity of stored ends as
             // its ends are (an `edge_id`'s is compared with itself only).
@@ -6197,7 +6184,9 @@ impl<'s> Lowerer<'s> {
                         .map(|l| {
                             RenderExpr::OperatorApplicationExp(eq(
                                 column.clone(),
-                                RenderExpr::Literal(Literal::String(l)),
+                                RenderExpr::Literal(Literal::String(
+                                    crate::utils::sql_literal::value_as_cypher_text(&l),
+                                )),
                             ))
                         })
                         .collect();
@@ -6223,7 +6212,9 @@ impl<'s> Lowerer<'s> {
                         .map(|t| {
                             RenderExpr::OperatorApplicationExp(eq(
                                 column.clone(),
-                                RenderExpr::Literal(Literal::String(t)),
+                                RenderExpr::Literal(Literal::String(
+                                    crate::utils::sql_literal::value_as_cypher_text(&t),
+                                )),
                             ))
                         })
                         .collect();
