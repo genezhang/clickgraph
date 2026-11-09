@@ -171,7 +171,7 @@ mod portable_sql_tests {
         let sql = "SELECT a.x\nFROM t AS a\nLEFT JOIN u AS b ON b.k = a.k\n";
         assert_eq!(
             portable_sql(sql, SqlDialect::ClickHouse),
-            "SELECT a.x\nFROM t AS a\nLEFT JOIN u AS b ON b.k = a.k\nSETTINGS join_use_nulls = 1"
+            "SELECT a.x\nFROM t AS a\nLEFT JOIN u AS b ON b.k = a.k\nSETTINGS join_use_nulls = 1, output_format_json_quote_64bit_integers = 0"
         );
     }
 
