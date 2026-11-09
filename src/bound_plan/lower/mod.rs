@@ -7133,10 +7133,26 @@ impl<'s> Lowerer<'s> {
                 continue;
             }
             let e = match self.node_id_item(&k.expr) {
-                // As an `id(n)` item: by the node's key (S11e).
+                // As an `id(n)` item: by its key (S11e).
                 Some((v, _)) => self.identity_value(v)?,
                 // (A list held where its NULL is known: `null_list.rs`.)
                 None => self.held_list(&k.expr, items)?,
+            };
+            // ClickHouse cannot ORDER BY a mixed-type list (Code 44) or, on
+            // 25.8, any list (Code 386). Cypher orders element by element, so
+            // use the dialect's sortable key (`CypherUnion::distinct_key`, as
+            // GROUP BY does) when the item is a list or map. (#1491)
+            let e = if self.options.dialect.is_clickhouse()
+                && matches!(
+                    self.kind(&k.expr),
+                    unwind::Kind::List(_) | unwind::Kind::Map(_)
+                ) {
+                match current_function_mapper().cypher_union() {
+                    Some(u) => RenderExpr::Raw((u.distinct_key)(&render_expr_to_sql_plain(&e))),
+                    None => e,
+                }
+            } else {
+                e
             };
             // A key reading an item of a DISTINCT's group: any one of the
             // group's, one value by DISTINCT (not a grouping key).

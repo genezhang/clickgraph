@@ -46,6 +46,11 @@ pub enum SqlDialect {
 }
 
 impl SqlDialect {
+    /// Whether this is the ClickHouse dialect.
+    pub fn is_clickhouse(&self) -> bool {
+        matches!(self, SqlDialect::ClickHouse)
+    }
+
     /// String identifier for the dialect (lowercase).
     pub fn as_str(&self) -> &'static str {
         match self {
