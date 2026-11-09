@@ -294,7 +294,34 @@ impl<'s> Lowerer<'s> {
                         }
                     }
                 }
-                false => mapper.any_non_null(&value),
+                false => {
+                    // Array/Map/Tuple/Dynamic cannot be inside Nullable on
+                    // ClickHouse 25.8, so use `anyIf` for them. (#1490)
+                    let is_complex = self
+                        .schema
+                        .node_schema_opt(&relation.label)
+                        .and_then(|ns| {
+                            // find the column name for property p
+                            ns.property_mappings.get(p.as_str()).and_then(|pv| {
+                                // PropertyValue::Column(name)
+                                match pv {
+                                    crate::graph_catalog::expression_parser::PropertyValue::Column(col) => {
+                                        ns.column_types.get(col).map(|kt| {
+                                            let raw = kt.raw.to_lowercase();
+                                            raw.starts_with("array")
+                                                || raw.starts_with("map")
+                                                || raw.starts_with("tuple")
+                                                || raw.starts_with("dynamic")
+                                                || raw.starts_with("variant")
+                                        })
+                                    }
+                                    _ => None,
+                                }
+                            })
+                        })
+                        .unwrap_or(false);
+                    mapper.any_non_null(&value, is_complex)
+                }
             };
             items.push(select(RenderExpr::Raw(value), p));
         }

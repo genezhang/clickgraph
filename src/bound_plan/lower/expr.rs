@@ -2193,7 +2193,7 @@ impl Lowerer<'_> {
         // the group's key, determines it), all of it one aggregate.
         Ok(match self.grouped_paths.contains(&p) {
             true => RenderExpr::Raw(
-                current_function_mapper().any_non_null(&render_expr_to_sql_plain(&length)),
+                current_function_mapper().any_non_null(&render_expr_to_sql_plain(&length), false),
             ),
             false => length,
         })
