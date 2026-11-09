@@ -50,7 +50,7 @@ with_w3 AS (
 SELECT 
       v0.__cg_label AS "v0____cg_label", 
       v0.__cg_id_0 AS "v0____cg_id_0", 
-      CAST(coalesce(v0.p2_v0_id__cg0, v0.p2_v0_id__cg1), if(replaceRegexpOne(replaceRegexpOne(replaceRegexpAll(toTypeName(v0.p2_v0_id__cg0), 'Nullable\\(|LowCardinality\\(|\\)', ''), '^U?Int\\d+$', 'Int'), '^(String|FixedString\\(\\d+)$', 'String') = replaceRegexpOne(replaceRegexpOne(replaceRegexpAll(toTypeName(v0.p2_v0_id__cg1), 'Nullable\\(|LowCardinality\\(|\\)', ''), '^U?Int\\d+$', 'Int'), '^(String|FixedString\\(\\d+)$', 'String') AND toTypeName(coalesce(v0.p2_v0_id__cg0, v0.p2_v0_id__cg1)) NOT LIKE 'Variant(%', toTypeName(coalesce(v0.p2_v0_id__cg0, v0.p2_v0_id__cg1)), 'ClickGraph_property_has_different_types_on_different_labels_or_types')) AS "p2_v0_id", 
+      CAST(coalesce(v0.p2_v0_id__cg0, v0.p2_v0_id__cg1), if(replaceRegexpOne(replaceRegexpOne(replaceRegexpAll(toTypeName(v0.p2_v0_id__cg0), 'Nullable\\(|LowCardinality\\(|\\)', ''), '^U?Int\\d+$', 'Int'), '^(String|FixedString\\(\\d+)$', 'String') = replaceRegexpOne(replaceRegexpOne(replaceRegexpAll(toTypeName(v0.p2_v0_id__cg1), 'Nullable\\(|LowCardinality\\(|\\)', ''), '^U?Int\\d+$', 'Int'), '^(String|FixedString\\(\\d+)$', 'String'), toTypeName(coalesce(v0.p2_v0_id__cg0, v0.p2_v0_id__cg1)), 'ClickGraph_property_has_different_types_on_different_labels_or_types')) AS "p2_v0_id", 
       v2.id AS "v2__id", 
       v2.content AS "p2_v2_content", 
       v2.creationDate AS "p2_v2_creationDate", 
@@ -64,7 +64,7 @@ JOIN v1_rels AS v1 ON v1.__cg_start_label = v0.__cg_label AND v1.__cg_start_0 = 
 JOIN ldbc.Comment AS v2 ON v1.__cg_end_0 = v2.id
 JOIN ldbc.Comment_hasCreator_Person AS v3 ON v3.CommentId = v2.id
 JOIN ldbc.Person AS v4 ON v3.PersonId = v4.id
-WHERE CAST(coalesce(v0.p2_v0_id__cg0, v0.p2_v0_id__cg1), if(replaceRegexpOne(replaceRegexpOne(replaceRegexpAll(toTypeName(v0.p2_v0_id__cg0), 'Nullable\\(|LowCardinality\\(|\\)', ''), '^U?Int\\d+$', 'Int'), '^(String|FixedString\\(\\d+)$', 'String') = replaceRegexpOne(replaceRegexpOne(replaceRegexpAll(toTypeName(v0.p2_v0_id__cg1), 'Nullable\\(|LowCardinality\\(|\\)', ''), '^U?Int\\d+$', 'Int'), '^(String|FixedString\\(\\d+)$', 'String') AND toTypeName(coalesce(v0.p2_v0_id__cg0, v0.p2_v0_id__cg1)) NOT LIKE 'Variant(%', toTypeName(coalesce(v0.p2_v0_id__cg0, v0.p2_v0_id__cg1)), 'ClickGraph_property_has_different_types_on_different_labels_or_types')) = 3
+WHERE CAST(coalesce(v0.p2_v0_id__cg0, v0.p2_v0_id__cg1), if(replaceRegexpOne(replaceRegexpOne(replaceRegexpAll(toTypeName(v0.p2_v0_id__cg0), 'Nullable\\(|LowCardinality\\(|\\)', ''), '^U?Int\\d+$', 'Int'), '^(String|FixedString\\(\\d+)$', 'String') = replaceRegexpOne(replaceRegexpOne(replaceRegexpAll(toTypeName(v0.p2_v0_id__cg1), 'Nullable\\(|LowCardinality\\(|\\)', ''), '^U?Int\\d+$', 'Int'), '^(String|FixedString\\(\\d+)$', 'String'), toTypeName(coalesce(v0.p2_v0_id__cg0, v0.p2_v0_id__cg1)), 'ClickGraph_property_has_different_types_on_different_labels_or_types')) = 3
 ), 
 optional_d4 AS (
 SELECT DISTINCT 
