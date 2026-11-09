@@ -258,7 +258,7 @@ impl FunctionMapper for ClickhouseFunctionMapper {
             )
         };
         let value = format!("coalesce({})", columns.join(", "));
-        let mut same: Vec<String> = columns[1..]
+        let same: Vec<String> = columns[1..]
             .iter()
             .map(|c| format!("{} = {}", class(&columns[0]), class(c)))
             .collect();
