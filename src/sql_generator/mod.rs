@@ -133,7 +133,13 @@ impl SqlDialect {
 ///
 /// Single source of truth: the server connection pool, the chdb executor and
 /// [`portable_sql`] all apply this list.
-pub const SEMANTIC_SESSION_SETTINGS: &[(&str, &str)] = &[("join_use_nulls", "1")];
+pub const SEMANTIC_SESSION_SETTINGS: &[(&str, &str)] = &[
+    ("join_use_nulls", "1"),
+    // chdb quotes 64-bit integers in JSON by default, so a Float64 whole
+    // number (2.0) comes back as an integer (2). Quoting off keeps the
+    // float type on the wire. (#1436)
+    ("output_format_json_quote_64bit_integers", "0"),
+];
 
 /// SQL that is correct on any session of `dialect`: for ClickHouse, appends a
 /// `SETTINGS` clause carrying [`SEMANTIC_SESSION_SETTINGS`], so SQL-only output
