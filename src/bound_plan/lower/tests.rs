@@ -3307,8 +3307,7 @@ fn a_property_no_label_declares_follows_the_undeclared_property_rule() {
         &[
             "count(CAST(coalesce(v0.p2_v0_nickname__cg0, v0.p2_v0_nickname__cg1), \
              if(replaceRegexpOne(replaceRegexpOne(replaceRegexpAll(toTypeName(v0.p2_v0_nickname__cg0), ",
-            "toTypeName(coalesce(v0.p2_v0_nickname__cg0, v0.p2_v0_nickname__cg1)) NOT LIKE 'Variant(%', \
-             toTypeName(coalesce(v0.p2_v0_nickname__cg0, v0.p2_v0_nickname__cg1)), \
+            "toTypeName(coalesce(v0.p2_v0_nickname__cg0, v0.p2_v0_nickname__cg1)), \
              'ClickGraph_property_has_different_types_on_different_labels_or_types')))",
         ],
     );
