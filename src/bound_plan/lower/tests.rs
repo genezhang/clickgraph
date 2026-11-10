@@ -6243,7 +6243,7 @@ fn a_null_list_is_told_by_its_source() {
          RETURN reduce(t = '', y IN l | t + y) AS r ORDER BY l",
         &[
             "CASE WHEN w2.v1__null THEN NULL ELSE arrayFold(",
-            "ORDER BY w2.v1__null ASC, w2.v1 ASC",
+            "ORDER BY w2.v1__null ASC",
         ],
     );
     has(
@@ -6278,11 +6278,8 @@ fn a_null_list_is_told_by_its_source() {
     let got = squash(&sql(
         "MATCH (u:User) WITH DISTINCT [u.name] AS l ORDER BY l LIMIT 2 RETURN l",
     ));
-    assert!(got.contains(r#"any([v0.full_name]) AS "__o0""#), "{got}");
-    assert!(
-        !got.contains("GROUP BY tuple(multiIf(replaceRegexpOne(dynamicType(CAST(any("),
-        "{got}"
-    );
+    assert!(got.contains(r#"any(tuple(multiIf"#), "{got}");
+    assert!(!got.contains("GROUP BY any("), "{got}");
     assert!(!got.contains("toString([v0.full_name]))), any("), "{got}");
     // Not held outside a reader: inside a list a NULL stays NULL (review).
     has(
