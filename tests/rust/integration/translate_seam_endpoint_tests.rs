@@ -187,7 +187,9 @@ async fn query_sql_endpoint_returns_the_sql_query_endpoint_runs() {
         let b = query_endpoint_sql_only(q).await;
         assert_eq!(a, b, "/query/sql and /query sql_only disagree for {q}");
         assert!(
-            a.trim_end().ends_with("SETTINGS join_use_nulls = 1, output_format_json_quote_64bit_integers = 0"),
+            a.trim_end().ends_with(
+                "SETTINGS join_use_nulls = 1, output_format_json_quote_64bit_integers = 0"
+            ),
             "#1314: SQL handed out must carry join_use_nulls: {a}"
         );
     }
