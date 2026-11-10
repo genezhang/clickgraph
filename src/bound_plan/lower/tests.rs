@@ -5442,7 +5442,7 @@ fn an_unwind_of_what_is_not_a_list() {
     );
     has(
         "MATCH (a:User) UNWIND a.name AS x RETURN x",
-        &["ARRAY JOIN arrayConcat(v0.full_name) AS __cg_element"],
+        &["ARRAY JOIN if(isArray(v0.full_name), v0.full_name, if(isNull(v0.full_name), [], [v0.full_name])) AS __cg_element"],
     );
     let schema = GraphSchemaConfig::from_yaml_str(
         r#"
