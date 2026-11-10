@@ -64,13 +64,16 @@ impl FunctionMapper for ClickhouseFunctionMapper {
         "any"
     }
 
-    fn any_non_null(&self, value: &str) -> String {
-        // `any` skips the NULLs of a `Nullable` column but not a `Variant`'s
-        // NULL: `NULL UNION ALL` an `Array` column is a `Variant`, and `any`
-        // could pick the arm without the property (#1426). `-OrNull`: a
-        // group of NULLs only is NULL, not the type's default (`anyIf` of a
-        // `Nullable(Tuple)` would be `(0, '')`).
-        format!("anyIfOrNull({value}, NOT isNull({value}))")
+    fn any_non_null(&self, value: &str, is_complex: bool) -> String {
+        if is_complex {
+            // Array/Map/Tuple/Dynamic cannot be inside Nullable on 25.8;
+            // `anyIf` returns the type's default for an all-NULL group.
+            format!("anyIf({value}, NOT isNull({value}))")
+        } else {
+            // `any` skips the NULLs of a `Nullable` column but not a
+            // `Variant`'s NULL (#1426). `-OrNull`: NULL for all-NULL.
+            format!("anyIfOrNull({value}, NOT isNull({value}))")
+        }
     }
 
     fn one_value(&self, value: &str, message: &str) -> Option<String> {
@@ -83,7 +86,7 @@ impl FunctionMapper for ClickhouseFunctionMapper {
         let message = message.replace('\\', "\\\\").replace('\'', "\\'");
         Some(format!(
             "arrayElement([{}], 1 + throwIf(uniqUpToIf(1)(cityHash64({key}), NOT isNull({value})) > 1, '{message}'))",
-            self.any_non_null(value)
+            self.any_non_null(value, false)
         ))
     }
 
