@@ -31,4 +31,4 @@ reason = "unsafe-libyaml is unmaintained (archived upstream), pulled only by ser
 
 [[IgnoredVulns]]
 id = "RUSTSEC-2026-0441"
-reason = "pin-utils 0.1.0 is unmaintained, pulled in by futures-util 0.3.x and hyper 1.x (axum, tower, the clickhouse client); a small pinning helper, not a security vulnerability, and no replacement release exists. Ignore until they drop it (same suppression as deny.toml)."
+reason = "pin-utils 0.1.0 is unmaintained: a small helper crate pulled transitively by futures/async combinators; no runtime vulnerability, compile-time only. Retires with the futures crate upgrade."

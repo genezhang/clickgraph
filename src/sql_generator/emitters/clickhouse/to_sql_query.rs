@@ -2286,6 +2286,15 @@ impl RenderExpr {
                     return rendered;
                 }
 
+                // #1487: datetime()/localdatetime() with no args return the
+                // current timestamp; the registry's arg_transform can't express
+                // a whole-function swap, so handle it here.
+                if (fn_name_lower == "datetime" || fn_name_lower == "localdatetime")
+                    && fn_call.args.is_empty()
+                {
+                    return "now64(3)".to_string();
+                }
+
                 // Check if we have a Neo4j -> ClickHouse mapping
                 match get_function_mapping(&fn_name_lower) {
                     Some(mapping) => {

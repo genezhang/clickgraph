@@ -159,7 +159,7 @@ pub fn function_return_kind(fn_lower: &str) -> FnReturnKind {
 
         // ---- Temporal constructors ----
         "date" => Date,
-        "datetime" | "localdatetime" | "localtime" => DateTime,
+        "datetime" | "localdatetime" | "localtime" | "time" => DateTime,
 
         // ---- List-returning ----
         "split" | "tail" | "range" | "collect" | "keys" | "labels" => List,
@@ -1027,13 +1027,31 @@ lazy_static::lazy_static! {
         // localdatetime() -> now() or parseDateTime64BestEffort()
         m.insert("localdatetime", FunctionMapping {
             neo4j_name: "localdatetime",
-            clickhouse_name: "now64",
+            clickhouse_name: "parseDateTime64BestEffort",
             databricks_name: None,
             arg_transform: Some(|args| {
                 if args.is_empty() {
-                    vec!["3".to_string()] // millisecond precision
+                    // localdatetime() returns the current timestamp
+                    vec!["now64(3)".to_string(), "3".to_string()]
                 } else {
-                    vec![format!("parseDateTime64BestEffort({}, 3)", args[0])]
+                    // localdatetime(string) or localdatetime({map}): string form
+                    // parses; map form fails loudly (Code 43) until the
+                    // component form (makeDateTime64) is implemented. (#1487)
+                    vec![args[0].clone(), "3".to_string()]
+                }
+            }),
+        });
+
+        // time() -> toTime(now()) - time without timezone (#1487)
+        m.insert("time", FunctionMapping {
+            neo4j_name: "time",
+            clickhouse_name: "toTime",
+            databricks_name: None,
+            arg_transform: Some(|args| {
+                if args.is_empty() {
+                    vec!["now()".to_string()]
+                } else {
+                    vec![format!("parseDateTime64BestEffort(concat('1970-01-01T', {}), 3)", args[0])]
                 }
             }),
         });
