@@ -833,7 +833,9 @@ graph_schema:
             .query_to_sql(cypher)
             .unwrap();
         assert!(
-            ch_sql.trim_end().ends_with("SETTINGS join_use_nulls = 1"),
+            ch_sql.trim_end().ends_with(
+                "SETTINGS join_use_nulls = 1, output_format_json_quote_64bit_integers = 0"
+            ),
             "{ch_sql}"
         );
         let dx = Database::sql_only_with_dialect(schema.path(), SqlDialect::Databricks).unwrap();
