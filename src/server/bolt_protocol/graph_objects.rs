@@ -584,6 +584,18 @@ fn encode_json_value_into(value: &Value, result: &mut Vec<u8>, depth: usize) {
                 // loses its low digits. The string of its digits is exact
                 // (`integers_exact_in_bolt`, #1516).
                 result.extend_from_slice(&encode_string(&n.to_string()));
+            } else if !n.to_string().contains('.')
+                && !n.to_string().contains('e')
+                && !n.to_string().contains('E')
+            {
+                // A 128/256-bit integer: no Bolt Integer holds it and a Float
+                // loses its low digits. The string of its digits is exact.
+                // (`integers_exact_in_bolt`, #1536.)
+                result.extend_from_slice(&encode_string(&n.to_string()));
+            } else if n.to_string().len() > 17 {
+                // A wide Decimal with more precision than a double holds:
+                // keep the exact textual form. (#1536)
+                result.extend_from_slice(&encode_string(&n.to_string()));
             } else if let Some(f) = n.as_f64() {
                 // FLOAT_64: 0xC1 + 8 bytes (big-endian)
                 result.push(0xC1);

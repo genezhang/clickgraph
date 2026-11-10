@@ -133,7 +133,13 @@ impl SqlDialect {
 ///
 /// Single source of truth: the server connection pool, the chdb executor and
 /// [`portable_sql`] all apply this list.
-pub const SEMANTIC_SESSION_SETTINGS: &[(&str, &str)] = &[("join_use_nulls", "1")];
+pub const SEMANTIC_SESSION_SETTINGS: &[(&str, &str)] = &[
+    ("join_use_nulls", "1"),
+    // chdb quotes 64-bit integers in JSON by default, so a Float64 whole
+    // number (2.0) comes back as an integer (2). Quoting off keeps the
+    // float type on the wire. (#1436)
+    ("output_format_json_quote_64bit_integers", "0"),
+];
 
 /// SQL that is correct on any session of `dialect`: for ClickHouse, appends a
 /// `SETTINGS` clause carrying [`SEMANTIC_SESSION_SETTINGS`], so SQL-only output
@@ -165,7 +171,7 @@ mod portable_sql_tests {
         let sql = "SELECT a.x\nFROM t AS a\nLEFT JOIN u AS b ON b.k = a.k\n";
         assert_eq!(
             portable_sql(sql, SqlDialect::ClickHouse),
-            "SELECT a.x\nFROM t AS a\nLEFT JOIN u AS b ON b.k = a.k\nSETTINGS join_use_nulls = 1"
+            "SELECT a.x\nFROM t AS a\nLEFT JOIN u AS b ON b.k = a.k\nSETTINGS join_use_nulls = 1, output_format_json_quote_64bit_integers = 0"
         );
     }
 
