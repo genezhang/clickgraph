@@ -64,6 +64,31 @@ struct ReturnPlan {
     guarded: Vec<Guard>,
 }
 
+/// Whether `cypher` (a statement without its prelude) has an updating clause
+/// (CREATE / SET / REMOVE / DELETE) in any of its UNION arms. Reads only the
+/// clause-list parser; a statement it does not read is not a write. Used by
+/// the embedded dispatcher so a write in a later UNION arm (or one carrying a
+/// COUNT { } the legacy parser cannot read) reaches the write path.
+pub fn is_write_statement(cypher: &str) -> bool {
+    let Ok((_, stmt)) = crate::open_cypher_parser::clause_list::parse_clause_statement(cypher)
+    else {
+        return false;
+    };
+    let arms: Vec<&crate::open_cypher_parser::clause_list::ClauseQuery<'_>> =
+        std::iter::once(&stmt.first)
+            .chain(stmt.unions.iter().map(|(_, q)| q))
+            .collect();
+    arms.iter().flat_map(|q| &q.clauses).any(|c| {
+        matches!(
+            c,
+            crate::open_cypher_parser::clause_list::Clause::Create(_)
+                | crate::open_cypher_parser::clause_list::Clause::Set(_)
+                | crate::open_cypher_parser::clause_list::Clause::Remove(_)
+                | crate::open_cypher_parser::clause_list::Clause::Delete(_)
+        )
+    })
+}
+
 /// Plan the write statement `cypher` (comments stripped).
 pub fn plan_write(cypher: &str, schema: &GraphSchema) -> Result<WritePlan, WritePlanError> {
     let (rest, stmt) = crate::open_cypher_parser::clause_list::parse_clause_statement(cypher)

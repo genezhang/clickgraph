@@ -1317,7 +1317,7 @@ impl<'db> Connection<'db> {
         // in any arm enters the write pipeline, which executes it or refuses
         // it clearly (a write in a UNION: "an updating clause in a UNION");
         // the read path would answer "ClickGraph is read-only".
-        if prepared.targets.is_write() {
+        if clickgraph::bound_plan::write::is_write_statement(text) {
             return self.handle_write_async(text).await;
         }
         self.query_with_executor_async(text, &self.executor).await
