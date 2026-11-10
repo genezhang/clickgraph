@@ -457,7 +457,8 @@ impl FunctionMapper for DatabricksFunctionMapper {
         format!("array_size({list})")
     }
 
-    fn any_non_null(&self, value: &str) -> String {
+    fn any_non_null(&self, value: &str, is_complex: bool) -> String {
+        let _ = is_complex;
         format!("any_value({value}, true)")
     }
 
@@ -472,7 +473,7 @@ impl FunctionMapper for DatabricksFunctionMapper {
         let message = message.replace('\\', "\\\\").replace('\'', "\\'");
         Some(format!(
             "CASE WHEN min({key}) <> max({key}) THEN raise_error('{message}') ELSE {} END",
-            self.any_non_null(value)
+            self.any_non_null(value, false)
         ))
     }
 
