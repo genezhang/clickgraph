@@ -174,6 +174,11 @@ impl FunctionMapper for DatabricksFunctionMapper {
         format!("({a} <=> {b})")
     }
 
+    fn to_string_datetime(&self, expr: &str) -> String {
+        // #1068: the same Neo4j target; Spark's `string()` spells a space.
+        format!("replace(string({expr}), ' ', 'T')")
+    }
+
     fn logical_xor(&self, a: &str, b: &str) -> String {
         // Spark has no boolean XOR; of two booleans it is `<>`, which is
         // NULL with a NULL operand. Each side is cast to BOOLEAN, so a

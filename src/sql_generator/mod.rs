@@ -126,14 +126,29 @@ impl SqlDialect {
     }
 }
 
-/// ClickHouse session settings that generated SQL depends on for **result
-/// correctness** (not limits or formats). `join_use_nulls = 1` makes the
-/// unmatched side of a LEFT JOIN NULL instead of the type default (`''`, `0`),
-/// which OPTIONAL MATCH, `IS NULL`, `count(x)` and `coalesce` rely on.
+/// ClickHouse session settings that the SQL's results depend on. `join_use_nulls = 1`
+/// makes the unmatched side of a LEFT JOIN NULL instead of the type default (`''`,
+/// `0`), which OPTIONAL MATCH, `IS NULL`, `count(x)` and `coalesce` rely on.
+/// `date_time_output_format = 'iso'` renders DateTime values as ISO-8601 on
+/// every output path (the `T` between date and time, #1068): a serialization
+/// setting, but result-visible.
 ///
 /// Single source of truth: the server connection pool, the chdb executor and
 /// [`portable_sql`] all apply this list.
-pub const SEMANTIC_SESSION_SETTINGS: &[(&str, &str)] = &[("join_use_nulls", "1")];
+pub const SEMANTIC_SESSION_SETTINGS: &[(&str, &str)] =
+    &[("join_use_nulls", "1"), ("date_time_output_format", "iso")];
+
+/// A setting's value spelled for a SQL `SETTINGS`/`SET` clause: string values
+/// need quotes (`date_time_output_format = 'iso'` — unquoted is a syntax
+/// error), numbers don't (`join_use_nulls = 1`). Client option values stay
+/// raw (`?name=value`).
+pub fn setting_sql(k: &str, v: &str) -> String {
+    if v.chars().all(|c| c.is_ascii_digit()) {
+        format!("{k} = {v}")
+    } else {
+        format!("{k} = '{v}'")
+    }
+}
 
 /// SQL that is correct on any session of `dialect`: for ClickHouse, appends a
 /// `SETTINGS` clause carrying [`SEMANTIC_SESSION_SETTINGS`], so SQL-only output
@@ -147,7 +162,7 @@ pub fn portable_sql(sql: &str, dialect: SqlDialect) -> String {
         SqlDialect::ClickHouse => {
             let settings = SEMANTIC_SESSION_SETTINGS
                 .iter()
-                .map(|(k, v)| format!("{} = {}", k, v))
+                .map(|(k, v)| setting_sql(k, v))
                 .collect::<Vec<_>>()
                 .join(", ");
             format!("{}\nSETTINGS {}", sql.trim_end(), settings)
@@ -165,7 +180,16 @@ mod portable_sql_tests {
         let sql = "SELECT a.x\nFROM t AS a\nLEFT JOIN u AS b ON b.k = a.k\n";
         assert_eq!(
             portable_sql(sql, SqlDialect::ClickHouse),
-            "SELECT a.x\nFROM t AS a\nLEFT JOIN u AS b ON b.k = a.k\nSETTINGS join_use_nulls = 1"
+            "SELECT a.x\nFROM t AS a\nLEFT JOIN u AS b ON b.k = a.k\nSETTINGS join_use_nulls = 1, date_time_output_format = 'iso'"
+        );
+    }
+
+    #[test]
+    fn clickhouse_sql_carries_iso_datetime_output_1068() {
+        let sql = portable_sql("SELECT 1", SqlDialect::ClickHouse);
+        assert!(
+            sql.contains("date_time_output_format = 'iso'"),
+            "portable ClickHouse SQL should render datetimes ISO-8601 (#1068); got: {sql}"
         );
     }
 

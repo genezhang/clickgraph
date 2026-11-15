@@ -164,7 +164,10 @@ impl ChdbExecutor {
         // (required by OPTIONAL MATCH semantics).
         for (name, value) in crate::sql_generator::SEMANTIC_SESSION_SETTINGS {
             session
-                .execute(&format!("SET {} = {}", name, value), None)
+                .execute(
+                    &format!("SET {}", crate::sql_generator::setting_sql(name, value)),
+                    None,
+                )
                 .map_err(|e| ExecutorError::QueryFailed(format!("chdb SET failed: {}", e)))?;
         }
 
