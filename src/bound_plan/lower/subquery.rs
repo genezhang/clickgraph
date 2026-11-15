@@ -697,9 +697,11 @@ impl<'s> Lowerer<'s> {
                     // first column.
                     (Some(Scan::Labels { .. }), Some(id)) => id,
                     (Some(Scan::Node { label, .. }), Some(id)) => {
-                        std::iter::once(RenderExpr::Literal(Literal::String(label.clone())))
-                            .chain(id)
-                            .collect()
+                        std::iter::once(RenderExpr::Literal(Literal::String(
+                            crate::utils::sql_literal::value_as_cypher_text(label),
+                        )))
+                        .chain(id)
+                        .collect()
                     }
                     _ => return Ok(None),
                 }
