@@ -275,9 +275,7 @@ impl FunctionMapper for ClickhouseFunctionMapper {
             one_row: "system.one",
             // An identity of arrays that refuses a map, which `ARRAY JOIN`
             // reads as a list of its entries.
-            list_only: |list| {
-                format!("if(isArray({list}), {list}, if(isNull({list}), [], [{list}]))")
-            },
+            list_only: |list| format!("arrayConcat({list})"),
             row_number: |keys| format!("row_number() OVER (ORDER BY {keys})"),
             any_row_number: "row_number() OVER ()",
             is_null: |v| format!("isNull({v})"),
