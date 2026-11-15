@@ -492,6 +492,15 @@ impl KeyPartType {
         Some(KeyPartType::parse(inner))
     }
 
+    /// Whether this is an `Array`, `Map`, `Tuple`, `Dynamic` or `Variant`
+    /// column: a type ClickHouse 25.8 cannot put inside `Nullable` (#1490).
+    pub fn is_complex(&self) -> bool {
+        let raw = self.raw.to_ascii_lowercase();
+        ["array(", "map(", "tuple(", "dynamic", "variant("]
+            .iter()
+            .any(|p| raw.starts_with(p))
+    }
+
     /// Whether this is an integer of more than 64 bits (`Int128`, `UInt256`).
     pub fn is_wider_than_64_bits(&self) -> bool {
         let raw = self.raw.to_ascii_lowercase();
@@ -862,6 +871,31 @@ mod tests {
             None
         );
         assert_eq!(KeyPartType::parse("String").array_element(), None);
+    }
+
+    /// #1490: the types ClickHouse 25.8 cannot put inside `Nullable`.
+    #[test]
+    fn a_complex_column_is_an_array_map_tuple_dynamic_or_variant() {
+        for ty in [
+            "Array(String)",
+            "Map(String, UInt8)",
+            "Tuple(UInt8, String)",
+            "Dynamic",
+            "Dynamic(max_types=8)",
+            "Variant(Array(Int64), String)",
+        ] {
+            assert!(KeyPartType::parse(ty).is_complex(), "{ty}");
+        }
+        for ty in [
+            "String",
+            "Nullable(Int64)",
+            "LowCardinality(String)",
+            "DateTime64(3)",
+            "Bool",
+            "UUID",
+        ] {
+            assert!(!KeyPartType::parse(ty).is_complex(), "{ty}");
+        }
     }
 
     /// A space before a parenthesis is ClickHouse's same type.

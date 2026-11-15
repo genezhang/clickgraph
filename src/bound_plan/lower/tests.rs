@@ -289,6 +289,65 @@ fn an_end_paired_with_its_id_columns_in_another_order_is_refused() {
     }
 }
 
+/// #1490: an embedded node's property read from an `Array` / `Map` / `Tuple` /
+/// `Dynamic` column is `anyIf` (ClickHouse 25.8 cannot put one inside
+/// `Nullable`, which `anyIfOrNull` returns); a scalar column stays
+/// `anyIfOrNull` (NULL for a group of NULLs only). The column types come from
+/// the node's `column_types` (T1), of every table that holds the property.
+#[test]
+fn an_embedded_nodes_complex_property_is_read_with_any_if_1490() {
+    let schema = GraphSchemaConfig::from_yaml_str(
+        r#"
+name: t
+graph_schema:
+  nodes:
+    - label: Airport
+      database: db
+      table: fl
+      node_id: code
+      property_mappings: {}
+      from_node_properties: { code: org, city: org_city, tags: org_tags }
+      to_node_properties: { code: dst, city: dst_city, tags: dst_tags }
+      column_types: { org: String, dst: String, org_city: String, dst_city: String, org_tags: "Array(String)", dst_tags: "Array(String)" }
+  edges:
+    - type: FLIGHT
+      database: db
+      table: fl
+      from_id: org
+      to_id: dst
+      from_node: Airport
+      to_node: Airport
+      edge_id: fid
+      property_mappings: {}
+"#,
+    )
+    .unwrap()
+    .to_graph_schema()
+    .unwrap();
+    let got = squash(
+        &translate_bound_plan(
+            "MATCH (a:Airport) RETURN a.code, a.city, a.tags",
+            &schema,
+            &ReadOptions::default(),
+        )
+        .unwrap()
+        .sql,
+    );
+    assert!(
+        got.contains("anyIf(CAST(coalesce(e.tags__cg0, e.tags__cg1), "),
+        "{got}"
+    );
+    assert!(
+        !got.contains("anyIfOrNull(CAST(coalesce(e.tags__cg0"),
+        "{got}"
+    );
+    // A scalar column is as before.
+    assert!(
+        got.contains("anyIfOrNull(CAST(coalesce(e.city__cg0, e.city__cg1), "),
+        "{got}"
+    );
+}
+
 /// S8b: labels embedded in edge tables (one, and one over two tables), an
 /// own-table label at an embedding edge's end, and a "foreign" denormalized
 /// label (its own table; edges carry its id).

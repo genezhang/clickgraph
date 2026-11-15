@@ -64,13 +64,16 @@ impl FunctionMapper for ClickhouseFunctionMapper {
         "any"
     }
 
-    fn any_non_null(&self, value: &str) -> String {
-        // `any` skips the NULLs of a `Nullable` column but not a `Variant`'s
-        // NULL: `NULL UNION ALL` an `Array` column is a `Variant`, and `any`
-        // could pick the arm without the property (#1426). `-OrNull`: a
-        // group of NULLs only is NULL, not the type's default (`anyIf` of a
-        // `Nullable(Tuple)` would be `(0, '')`).
-        format!("anyIfOrNull({value}, NOT isNull({value}))")
+    fn any_non_null(&self, value: &str, is_complex: bool) -> String {
+        if is_complex {
+            // Array/Map/Tuple/Dynamic cannot be inside Nullable on 25.8;
+            // `anyIf` returns the type's default for an all-NULL group.
+            format!("anyIf({value}, NOT isNull({value}))")
+        } else {
+            // `any` skips the NULLs of a `Nullable` column but not a
+            // `Variant`'s NULL (#1426). `-OrNull`: NULL for all-NULL.
+            format!("anyIfOrNull({value}, NOT isNull({value}))")
+        }
     }
 
     fn one_value(&self, value: &str, message: &str) -> Option<String> {
@@ -83,7 +86,7 @@ impl FunctionMapper for ClickhouseFunctionMapper {
         let message = message.replace('\\', "\\\\").replace('\'', "\\'");
         Some(format!(
             "arrayElement([{}], 1 + throwIf(uniqUpToIf(1)(cityHash64({key}), NOT isNull({value})) > 1, '{message}'))",
-            self.any_non_null(value)
+            self.any_non_null(value, false)
         ))
     }
 
@@ -583,6 +586,16 @@ mod tests {
             !guard.contains("NOT LIKE 'Variant(%' OR (toTypeName(a) LIKE"),
             "{guard}"
         );
+    }
+
+    /// #1490: a complex value (`Array` / `Map` / `Tuple` / `Dynamic`) cannot be
+    /// inside `Nullable` on ClickHouse 25.8, so its aggregate is `anyIf`;
+    /// every other is `anyIfOrNull`, which is NULL for a group of NULLs only.
+    #[test]
+    fn any_non_null_is_any_if_for_a_complex_value_1490() {
+        let m = ClickhouseFunctionMapper;
+        assert_eq!(m.any_non_null("v", true), "anyIf(v, NOT isNull(v))");
+        assert_eq!(m.any_non_null("v", false), "anyIfOrNull(v, NOT isNull(v))");
     }
 
     #[test]
