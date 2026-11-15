@@ -5366,6 +5366,23 @@ fn an_unwind_repeats_each_row_per_element() {
     );
 }
 
+/// #1487: `datetime()` and `localdatetime()` are the current timestamp, and
+/// `localdatetime('…')` parses its string (ClickHouse refused each: Code 43).
+#[test]
+fn datetime_constructors_lower_to_now_or_a_parse_1487() {
+    has(
+        "RETURN datetime() AS a, localdatetime() AS b, \
+         localdatetime('2024-03-15T10:30:00') AS c",
+        &[
+            r#"now64(3) AS "a""#,
+            r#"now64(3) AS "b""#,
+            r#"parseDateTime64BestEffort('2024-03-15T10:30:00', 3) AS "c""#,
+        ],
+    );
+    let got = sql("RETURN localdatetime('2024-03-15T10:30:00') AS c");
+    assert!(!got.contains("now64(parseDateTime64BestEffort"), "{got}");
+}
+
 /// S7c: rows in an order keep it, each row's elements after it in list
 /// order: the rows are numbered first.
 #[test]

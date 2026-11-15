@@ -1030,12 +1030,14 @@ lazy_static::lazy_static! {
             neo4j_name: "localdatetime",
             clickhouse_name: "parseDateTime64BestEffort",
             databricks_name: None,
+            // The no-argument form does not come here (`to_sql_query.rs` returns
+            // `now64(3)` for it: a mapping cannot swap the function itself).
             arg_transform: Some(|args| {
-                if args.is_empty() {
-                    vec!["now64(3)".to_string(), "3".to_string()]
-                } else {
-                    vec![args[0].clone(), "3".to_string()]
-                }
+                args.iter()
+                    .take(1)
+                    .cloned()
+                    .chain(["3".to_string()])
+                    .collect()
             }),
         });
 
