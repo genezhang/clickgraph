@@ -7141,12 +7141,17 @@ impl<'s> Lowerer<'s> {
             // ClickHouse cannot ORDER BY a mixed-type list (Code 44) or, on
             // 25.8, any list (Code 386). Cypher orders element by element, so
             // use the dialect's sortable key (`CypherUnion::distinct_key`, as
-            // GROUP BY does) when the item is a list or map. (#1491)
+            // GROUP BY does) only when the list's elements are not of one
+            // comparable type — a single-type list keeps the native ORDER BY,
+            // which preserves numeric/chronological order instead of the text
+            // order that `distinct_key` (a text key) would impose. (#1491)
+            let is_mixed_list = matches!(
+                self.kind(&k.expr),
+                unwind::Kind::List(inner) if matches!(*inner, unwind::Kind::Unknown)
+            ) || matches!(self.kind(&k.expr), unwind::Kind::Map(_));
             let e = if self.options.dialect.is_clickhouse()
-                && matches!(
-                    self.kind(&k.expr),
-                    unwind::Kind::List(_) | unwind::Kind::Map(_)
-                ) {
+                && is_mixed_list
+            {
                 match current_function_mapper().cypher_union() {
                     Some(u) => RenderExpr::Raw((u.distinct_key)(&render_expr_to_sql_plain(&e))),
                     None => e,
