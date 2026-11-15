@@ -8563,6 +8563,31 @@ fn a_collect_of_lists_or_null_and_a_list_grouping_key() {
     );
 }
 
+/// #1482: a grouped list or map is keyed by its elements' own types, not by
+/// its text alone: `[date(…)]` and `['…']` (both print `'…'`) are two
+/// groups, `{a: date(…)}` and `{a: '…'}` too. A list's key carries its
+/// element types (`';c:'` + the `Array` type), a map's each value's.
+#[test]
+fn a_grouped_list_or_map_is_keyed_by_its_elements_types_1482() {
+    let list = squash(&sql(
+        "MATCH (u:User) WITH [u.name] AS l, count(*) AS c RETURN l, c",
+    ));
+    assert!(list.contains("concat('c:', "), "{list}");
+    assert!(
+        list.contains("dynamicType(CAST([v0.full_name], 'Dynamic'))"),
+        "{list}"
+    );
+    // The map's value types, as `mapValues` sees them.
+    let map = squash(&sql(
+        "MATCH (u:User) WITH {a: u.name} AS m, count(*) AS c RETURN m, c",
+    ));
+    assert!(map.contains("concat('m:', arrayStringConcat("), "{map}");
+    assert!(
+        map.contains("arrayMap(x -> dynamicType(CAST(x, 'Dynamic')), CAST(mapValues("),
+        "{map}"
+    );
+}
+
 /// S11o6: `ORDER BY id(o)` of a node of several labels (the Neo4j
 /// Browser's node expand) sorts by its label, then its key: its identity
 /// (two labels' keys may be equal: no one number).
