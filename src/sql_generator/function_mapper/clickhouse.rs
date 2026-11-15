@@ -542,6 +542,49 @@ mod tests {
         }
     }
 
+    /// #1430: the one-type guard keeps its two checks. The class comparison
+    /// treats every integer width as one class, so `Int64` and `UInt64` pass
+    /// it, and their `coalesce` is a `Variant` of two values: that is refused
+    /// (`NOT LIKE 'Variant(%'`), unless every column is itself a complex type
+    /// (`Array` / `Map` / `Tuple` / `Dynamic` / `Variant`), whose `coalesce`
+    /// is a `Variant` that reads correctly. One scalar column among them
+    /// leaves the check in force.
+    #[test]
+    fn one_type_guard_refuses_a_variant_unless_every_column_is_complex_1430() {
+        let guard = ClickhouseFunctionMapper
+            .one_type_guard(&["a".to_string(), "b".to_string()])
+            .expect("ClickHouse guards a property of several columns");
+        // The class comparison is there, as before.
+        assert!(guard.contains("'^U?Int\\\\d+$', 'Int'"), "{guard}");
+        // The Variant check, exempt only where both columns are complex.
+        let complex = |c: &str| {
+            format!(
+                "(toTypeName({c}) LIKE 'Array(%' OR toTypeName({c}) LIKE 'Map(%' \
+                 OR toTypeName({c}) LIKE 'Tuple(%' OR toTypeName({c}) LIKE 'Dynamic(%' \
+                 OR toTypeName({c}) LIKE 'Variant(%')"
+            )
+        };
+        let check = format!(
+            "(toTypeName(coalesce(a, b)) NOT LIKE 'Variant(%' OR ({} AND {}))",
+            complex("a"),
+            complex("b")
+        );
+        assert!(guard.contains(&check), "{guard}");
+        // A mismatch is the nonexistent type, an error at analysis.
+        assert!(
+            guard.ends_with(
+                "toTypeName(coalesce(a, b)), \
+                 'ClickGraph_property_has_different_types_on_different_labels_or_types'))"
+            ),
+            "{guard}"
+        );
+        // A scalar column is not exempt: no `Array` pattern stands alone.
+        assert!(
+            !guard.contains("NOT LIKE 'Variant(%' OR (toTypeName(a) LIKE"),
+            "{guard}"
+        );
+    }
+
     #[test]
     fn cast_bool_uses_nullable_bool_for_null_safety() {
         // #1057: Nullable(Bool), not bare Bool — CAST(NULL>2 AS Bool) throws
