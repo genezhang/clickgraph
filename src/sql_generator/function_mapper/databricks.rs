@@ -457,8 +457,7 @@ impl FunctionMapper for DatabricksFunctionMapper {
         format!("array_size({list})")
     }
 
-    fn any_non_null(&self, value: &str, is_complex: bool) -> String {
-        let _ = is_complex;
+    fn any_non_null(&self, value: &str, _is_complex: bool) -> String {
         format!("any_value({value}, true)")
     }
 

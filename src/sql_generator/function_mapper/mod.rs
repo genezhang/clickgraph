@@ -52,12 +52,11 @@ pub(crate) trait FunctionMapper: Send + Sync {
 
     /// An aggregate of any of the values `{0}` that are not NULL (NULL when
     /// all are): CH `any` skips a `Nullable`'s NULLs but not a `Variant`'s;
-    /// Spark's `any_value` needs its `ignoreNulls` argument.
-    fn any_non_null(&self, value: &str, is_complex: bool) -> String {
-        // Complex types (Array/Map/Tuple/Dynamic) cannot be inside Nullable
-        // on ClickHouse 25.8, so use `anyIf` for them; scalars keep
-        // `anyIfOrNull` (NULL for an all-NULL group). (#1490)
-        let _ = is_complex;
+    /// Spark's `any_value` needs its `ignoreNulls` argument. `is_complex`: the
+    /// value is an `Array` / `Map` / `Tuple` / `Dynamic`, which ClickHouse 25.8
+    /// cannot put inside `Nullable` (`anyIfOrNull` returns one, #1490); only
+    /// ClickHouse acts on it.
+    fn any_non_null(&self, value: &str, _is_complex: bool) -> String {
         format!("{}({value})", self.any())
     }
 

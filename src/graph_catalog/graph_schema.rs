@@ -1064,6 +1064,16 @@ impl GraphSchema {
             .collect();
         let name = format!("__cg_nodes_{label}");
         let first = defs[0];
+        // The columns' types of every definition's table (a column named alike
+        // in two of them: the first's), for `NodeRelation::column_types`.
+        let mut column_types = std::collections::HashMap::new();
+        for def in defs.iter() {
+            for (column, ty) in &def.column_types {
+                column_types
+                    .entry(column.clone())
+                    .or_insert_with(|| ty.clone());
+            }
+        }
         let node = NodeSchema {
             column_types: Default::default(),
             database: String::new(),
@@ -1104,7 +1114,7 @@ impl GraphSchema {
                 id,
                 properties,
                 sources,
-                column_types: first.column_types.clone(),
+                column_types,
             },
             node,
         ))

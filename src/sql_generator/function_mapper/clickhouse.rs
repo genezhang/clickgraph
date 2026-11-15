@@ -530,6 +530,16 @@ mod tests {
         }
     }
 
+    /// #1490: a complex value (`Array` / `Map` / `Tuple` / `Dynamic`) cannot be
+    /// inside `Nullable` on ClickHouse 25.8, so its aggregate is `anyIf`;
+    /// every other is `anyIfOrNull`, which is NULL for a group of NULLs only.
+    #[test]
+    fn any_non_null_is_any_if_for_a_complex_value_1490() {
+        let m = ClickhouseFunctionMapper;
+        assert_eq!(m.any_non_null("v", true), "anyIf(v, NOT isNull(v))");
+        assert_eq!(m.any_non_null("v", false), "anyIfOrNull(v, NOT isNull(v))");
+    }
+
     #[test]
     fn cast_bool_uses_nullable_bool_for_null_safety() {
         // #1057: Nullable(Bool), not bare Bool — CAST(NULL>2 AS Bool) throws
