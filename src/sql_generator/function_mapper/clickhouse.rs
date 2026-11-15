@@ -64,13 +64,16 @@ impl FunctionMapper for ClickhouseFunctionMapper {
         "any"
     }
 
-    fn any_non_null(&self, value: &str) -> String {
-        // `any` skips the NULLs of a `Nullable` column but not a `Variant`'s
-        // NULL: `NULL UNION ALL` an `Array` column is a `Variant`, and `any`
-        // could pick the arm without the property (#1426). `-OrNull`: a
-        // group of NULLs only is NULL, not the type's default (`anyIf` of a
-        // `Nullable(Tuple)` would be `(0, '')`).
-        format!("anyIfOrNull({value}, NOT isNull({value}))")
+    fn any_non_null(&self, value: &str, is_complex: bool) -> String {
+        if is_complex {
+            // Array/Map/Tuple/Dynamic cannot be inside Nullable on 25.8;
+            // `anyIf` returns the type's default for an all-NULL group.
+            format!("anyIf({value}, NOT isNull({value}))")
+        } else {
+            // `any` skips the NULLs of a `Nullable` column but not a
+            // `Variant`'s NULL (#1426). `-OrNull`: NULL for all-NULL.
+            format!("anyIfOrNull({value}, NOT isNull({value}))")
+        }
     }
 
     fn one_value(&self, value: &str, message: &str) -> Option<String> {
@@ -83,7 +86,7 @@ impl FunctionMapper for ClickhouseFunctionMapper {
         let message = message.replace('\\', "\\\\").replace('\'', "\\'");
         Some(format!(
             "arrayElement([{}], 1 + throwIf(uniqUpToIf(1)(cityHash64({key}), NOT isNull({value})) > 1, '{message}'))",
-            self.any_non_null(value)
+            self.any_non_null(value, false)
         ))
     }
 
@@ -268,14 +271,29 @@ impl FunctionMapper for ClickhouseFunctionMapper {
             .iter()
             .map(|c| format!("{} = {}", class(&columns[0]), class(c)))
             .collect();
-        same.push(format!("toTypeName({value}) NOT LIKE 'Variant(%'"));
+        // Keep the Variant check for mixes such as Int64 vs UInt64, but skip it
+        // when every column is itself a complex (Array/Map/Tuple/Dynamic) type,
+        // whose coalesce is also a Variant but reads correctly. (#1554)
+        let complex_pred = columns
+            .iter()
+            .map(|c| {
+                format!(
+                    "(toTypeName({c}) LIKE 'Array(%' OR toTypeName({c}) LIKE 'Map(%' \
+                     OR toTypeName({c}) LIKE 'Tuple(%' OR toTypeName({c}) LIKE 'Dynamic(%' \
+                     OR toTypeName({c}) LIKE 'Variant(%')"
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(" AND ");
+        same.push(format!(
+            "(toTypeName({value}) NOT LIKE 'Variant(%' OR ({complex_pred}))"
+        ));
         Some(format!(
             "CAST({value}, if({}, toTypeName({value}), \
              'ClickGraph_property_has_different_types_on_different_labels_or_types'))",
             same.join(" AND ")
         ))
     }
-
     fn unwind(&self) -> Option<super::Unwind> {
         Some(super::Unwind {
             one_row: "system.one",
@@ -531,6 +549,59 @@ mod tests {
         ] {
             assert!(key.contains(&part), "missing `{part}` in\n{key}");
         }
+    }
+
+    /// #1430: the one-type guard keeps its two checks. The class comparison
+    /// treats every integer width as one class, so `Int64` and `UInt64` pass
+    /// it, and their `coalesce` is a `Variant` of two values: that is refused
+    /// (`NOT LIKE 'Variant(%'`), unless every column is itself a complex type
+    /// (`Array` / `Map` / `Tuple` / `Dynamic` / `Variant`), whose `coalesce`
+    /// is a `Variant` that reads correctly. One scalar column among them
+    /// leaves the check in force.
+    #[test]
+    fn one_type_guard_refuses_a_variant_unless_every_column_is_complex_1430() {
+        let guard = ClickhouseFunctionMapper
+            .one_type_guard(&["a".to_string(), "b".to_string()])
+            .expect("ClickHouse guards a property of several columns");
+        // The class comparison is there, as before.
+        assert!(guard.contains("'^U?Int\\\\d+$', 'Int'"), "{guard}");
+        // The Variant check, exempt only where both columns are complex.
+        let complex = |c: &str| {
+            format!(
+                "(toTypeName({c}) LIKE 'Array(%' OR toTypeName({c}) LIKE 'Map(%' \
+                 OR toTypeName({c}) LIKE 'Tuple(%' OR toTypeName({c}) LIKE 'Dynamic(%' \
+                 OR toTypeName({c}) LIKE 'Variant(%')"
+            )
+        };
+        let check = format!(
+            "(toTypeName(coalesce(a, b)) NOT LIKE 'Variant(%' OR ({} AND {}))",
+            complex("a"),
+            complex("b")
+        );
+        assert!(guard.contains(&check), "{guard}");
+        // A mismatch is the nonexistent type, an error at analysis.
+        assert!(
+            guard.ends_with(
+                "toTypeName(coalesce(a, b)), \
+                 'ClickGraph_property_has_different_types_on_different_labels_or_types'))"
+            ),
+            "{guard}"
+        );
+        // A scalar column is not exempt: no `Array` pattern stands alone.
+        assert!(
+            !guard.contains("NOT LIKE 'Variant(%' OR (toTypeName(a) LIKE"),
+            "{guard}"
+        );
+    }
+
+    /// #1490: a complex value (`Array` / `Map` / `Tuple` / `Dynamic`) cannot be
+    /// inside `Nullable` on ClickHouse 25.8, so its aggregate is `anyIf`;
+    /// every other is `anyIfOrNull`, which is NULL for a group of NULLs only.
+    #[test]
+    fn any_non_null_is_any_if_for_a_complex_value_1490() {
+        let m = ClickhouseFunctionMapper;
+        assert_eq!(m.any_non_null("v", true), "anyIf(v, NOT isNull(v))");
+        assert_eq!(m.any_non_null("v", false), "anyIfOrNull(v, NOT isNull(v))");
     }
 
     #[test]

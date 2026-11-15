@@ -2301,6 +2301,15 @@ impl RenderExpr {
                     return rendered;
                 }
 
+                // #1487: datetime()/localdatetime() with no args return the
+                // current timestamp; the registry's arg_transform can't express
+                // a whole-function swap, so handle it here.
+                if (fn_name_lower == "datetime" || fn_name_lower == "localdatetime")
+                    && fn_call.args.is_empty()
+                {
+                    return "now64(3)".to_string();
+                }
+
                 // Check if we have a Neo4j -> ClickHouse mapping
                 match get_function_mapping(&fn_name_lower) {
                     Some(mapping) => {
@@ -3929,6 +3938,36 @@ mod tests {
             args: vec![inner],
         });
         assert_eq!(expr.to_sql_without_table_alias(), "not(has(tags, 'a'))");
+    }
+
+    // ---- #1487: datetime() / localdatetime() constructors ----
+
+    fn temporal_call(name: &str, arg: Option<&str>) -> RenderExpr {
+        RenderExpr::ScalarFnCall(ScalarFnCall {
+            name: name.to_string(),
+            args: arg
+                .map(|a| RenderExpr::Literal(Literal::String(a.to_string())))
+                .into_iter()
+                .collect(),
+        })
+    }
+
+    /// With no argument both are the current timestamp (`now64(3)`); with a
+    /// string, it is parsed. `now64` takes a precision, never a value
+    /// (`now64(parseDateTime64BestEffort(..))` was Code 43), and
+    /// `parseDateTime64BestEffort` takes a string, never `now64(3)`.
+    #[test]
+    fn test_datetime_constructors_no_arg_and_string_1487() {
+        assert_eq!(temporal_call("datetime", None).to_sql(), "now64(3)");
+        assert_eq!(temporal_call("localdatetime", None).to_sql(), "now64(3)");
+        assert_eq!(
+            temporal_call("localdatetime", Some("2024-03-15T10:30:00")).to_sql(),
+            "parseDateTime64BestEffort('2024-03-15T10:30:00', 3)"
+        );
+        assert_eq!(
+            temporal_call("datetime", Some("2024-03-15T10:30:00")).to_sql(),
+            "parseDateTime64BestEffort('2024-03-15T10:30:00', 3)"
+        );
     }
 
     // ---- #1068: toString of a datetime spells the ISO-8601 T separator ----

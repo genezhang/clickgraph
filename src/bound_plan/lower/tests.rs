@@ -289,6 +289,65 @@ fn an_end_paired_with_its_id_columns_in_another_order_is_refused() {
     }
 }
 
+/// #1490: an embedded node's property read from an `Array` / `Map` / `Tuple` /
+/// `Dynamic` column is `anyIf` (ClickHouse 25.8 cannot put one inside
+/// `Nullable`, which `anyIfOrNull` returns); a scalar column stays
+/// `anyIfOrNull` (NULL for a group of NULLs only). The column types come from
+/// the node's `column_types` (T1), of every table that holds the property.
+#[test]
+fn an_embedded_nodes_complex_property_is_read_with_any_if_1490() {
+    let schema = GraphSchemaConfig::from_yaml_str(
+        r#"
+name: t
+graph_schema:
+  nodes:
+    - label: Airport
+      database: db
+      table: fl
+      node_id: code
+      property_mappings: {}
+      from_node_properties: { code: org, city: org_city, tags: org_tags }
+      to_node_properties: { code: dst, city: dst_city, tags: dst_tags }
+      column_types: { org: String, dst: String, org_city: String, dst_city: String, org_tags: "Array(String)", dst_tags: "Array(String)" }
+  edges:
+    - type: FLIGHT
+      database: db
+      table: fl
+      from_id: org
+      to_id: dst
+      from_node: Airport
+      to_node: Airport
+      edge_id: fid
+      property_mappings: {}
+"#,
+    )
+    .unwrap()
+    .to_graph_schema()
+    .unwrap();
+    let got = squash(
+        &translate_bound_plan(
+            "MATCH (a:Airport) RETURN a.code, a.city, a.tags",
+            &schema,
+            &ReadOptions::default(),
+        )
+        .unwrap()
+        .sql,
+    );
+    assert!(
+        got.contains("anyIf(CAST(coalesce(e.tags__cg0, e.tags__cg1), "),
+        "{got}"
+    );
+    assert!(
+        !got.contains("anyIfOrNull(CAST(coalesce(e.tags__cg0"),
+        "{got}"
+    );
+    // A scalar column is as before.
+    assert!(
+        got.contains("anyIfOrNull(CAST(coalesce(e.city__cg0, e.city__cg1), "),
+        "{got}"
+    );
+}
+
 /// S8b: labels embedded in edge tables (one, and one over two tables), an
 /// own-table label at an embedding edge's end, and a "foreign" denormalized
 /// label (its own table; edges carry its id).
@@ -3307,8 +3366,11 @@ fn a_property_no_label_declares_follows_the_undeclared_property_rule() {
         &[
             "count(CAST(coalesce(v0.p2_v0_nickname__cg0, v0.p2_v0_nickname__cg1), \
              if(replaceRegexpOne(replaceRegexpOne(replaceRegexpAll(toTypeName(v0.p2_v0_nickname__cg0), ",
-            "toTypeName(coalesce(v0.p2_v0_nickname__cg0, v0.p2_v0_nickname__cg1)) NOT LIKE 'Variant(%', \
-             toTypeName(coalesce(v0.p2_v0_nickname__cg0, v0.p2_v0_nickname__cg1)), \
+            // The Variant check (`Int64` and `UInt64` are one class but a
+            // `Variant` of two values), exempt only for complex columns.
+            "(toTypeName(coalesce(v0.p2_v0_nickname__cg0, v0.p2_v0_nickname__cg1)) NOT LIKE 'Variant(%' OR \
+             ((toTypeName(v0.p2_v0_nickname__cg0) LIKE 'Array(%'",
+            "toTypeName(coalesce(v0.p2_v0_nickname__cg0, v0.p2_v0_nickname__cg1)), \
              'ClickGraph_property_has_different_types_on_different_labels_or_types')))",
         ],
     );
@@ -5364,6 +5426,169 @@ fn an_unwind_repeats_each_row_per_element() {
         "UNWIND [1, 2] AS i MATCH (a:User {user_id: i}) RETURN a.name",
         &["FROM with_w1 AS w1 CROSS JOIN test_integration.users_test AS v1 WHERE v1.user_id = w1.v0"],
     );
+}
+
+/// #1487: `datetime()` and `localdatetime()` are the current timestamp, and
+/// `localdatetime('…')` parses its string (ClickHouse refused each: Code 43).
+#[test]
+fn datetime_constructors_lower_to_now_or_a_parse_1487() {
+    has(
+        "RETURN datetime() AS a, localdatetime() AS b, \
+         localdatetime('2024-03-15T10:30:00') AS c",
+        &[
+            r#"now64(3) AS "a""#,
+            r#"now64(3) AS "b""#,
+            r#"parseDateTime64BestEffort('2024-03-15T10:30:00', 3) AS "c""#,
+        ],
+    );
+    let got = sql("RETURN localdatetime('2024-03-15T10:30:00') AS c");
+    assert!(!got.contains("now64(parseDateTime64BestEffort"), "{got}");
+}
+
+#[test]
+fn an_undeclared_scalar_property_unwinds_as_a_one_element_list_1419() {
+    // #1419: an undeclared property (no `property_types`) whose column is a
+    // known scalar must not be read as a list (arrayConcat fails on a scalar).
+    // It is wrapped in a one-element list instead, matching Neo4j's "UNWIND of
+    // a non-list value gives one row of itself". The column type is supplied
+    // via `column_types` (T1), since unit tests have no live database.
+    let schema = GraphSchemaConfig::from_yaml_str(
+        r#"
+name: t
+graph_schema:
+  nodes:
+    - label: User
+      database: db
+      table: users
+      node_id: user_id
+      property_mappings: { user_id: user_id, name: full_name }
+      column_types: { user_id: UInt64, full_name: String }
+  edges: []
+"#,
+    )
+    .unwrap()
+    .to_graph_schema()
+    .unwrap();
+    let got = translate_bound_plan(
+        "MATCH (u:User) UNWIND u.name AS x RETURN x",
+        &schema,
+        &ReadOptions::default(),
+    )
+    .unwrap()
+    .sql;
+    assert!(
+        got.contains("if(isNull(v0.full_name), [], [v0.full_name])"),
+        "expected value_list wrap, got: {got}"
+    );
+    assert!(
+        !got.contains("arrayConcat"),
+        "must not use arrayConcat, got: {got}"
+    );
+}
+
+/// #1419: `UNWIND` of an undeclared property spreads a column that can hold
+/// a list (`Array`, `SimpleAggregateFunction(…, Array(…))`, `Dynamic`,
+/// `Variant`) as it did, and wraps only a column known to be a plain value.
+/// A wrapped list would be one row holding the list, not its elements.
+#[test]
+fn an_unwind_wraps_only_a_column_known_to_be_a_plain_value_1419() {
+    // `UNWIND t.v` over one label whose `v` is a column of type `ty`.
+    let unwind_of = |ty: &str| {
+        let yaml = format!(
+            r#"
+name: t
+graph_schema:
+  nodes:
+    - label: T
+      database: db
+      table: t
+      node_id: id
+      property_mappings: {{ id: id, v: v }}
+      column_types: {{ id: UInt64, v: "{ty}" }}
+  edges: []
+"#
+        );
+        let schema = GraphSchemaConfig::from_yaml_str(&yaml)
+            .unwrap()
+            .to_graph_schema()
+            .unwrap();
+        squash(
+            &translate_bound_plan(
+                "MATCH (t:T) UNWIND t.v AS x RETURN x",
+                &schema,
+                &ReadOptions::default(),
+            )
+            .unwrap()
+            .sql,
+        )
+    };
+    // A plain value: one row of itself (none for NULL).
+    for ty in [
+        "String",
+        "UInt64",
+        "Nullable(Int32)",
+        "Date",
+        "LowCardinality(String)",
+    ] {
+        let got = unwind_of(ty);
+        assert!(got.contains("if(isNull(v0.v), [], [v0.v])"), "{ty}: {got}");
+        assert!(!got.contains("arrayConcat"), "{ty}: {got}");
+    }
+    // A list: spread element by element.
+    let got = unwind_of("Array(String)");
+    assert!(got.contains("ARRAY JOIN v0.v AS __cg_element"), "{got}");
+    assert!(!got.contains("if(isNull("), "{got}");
+    // A column that can hold a list, not known to be a value: as before.
+    for ty in [
+        "SimpleAggregateFunction(anyLast, Array(Int64))",
+        "Dynamic",
+        "Variant(Array(Int64), String)",
+        "Map(String, Int64)",
+    ] {
+        let got = unwind_of(ty);
+        assert!(got.contains("arrayConcat(v0.v)"), "{ty}: {got}");
+        assert!(!got.contains("[v0.v])"), "{ty}: {got}");
+    }
+}
+
+/// #1419: a property held as a list by one label and as a value by another
+/// is not known to be a value: `UNWIND` spreads it as before.
+#[test]
+fn an_unwind_of_a_property_that_is_a_list_in_one_label_is_not_wrapped_1419() {
+    let schema = GraphSchemaConfig::from_yaml_str(
+        r#"
+name: t
+graph_schema:
+  nodes:
+    - label: A
+      database: db
+      table: a
+      node_id: id
+      property_mappings: { id: id, v: v }
+      column_types: { id: UInt64, v: String }
+    - label: B
+      database: db
+      table: b
+      node_id: id
+      property_mappings: { id: id, v: v }
+      column_types: { id: UInt64, v: "Array(String)" }
+  edges: []
+"#,
+    )
+    .unwrap()
+    .to_graph_schema()
+    .unwrap();
+    let got = squash(
+        &translate_bound_plan(
+            "MATCH (n) UNWIND n.v AS x RETURN x",
+            &schema,
+            &ReadOptions::default(),
+        )
+        .unwrap()
+        .sql,
+    );
+    assert!(got.contains("arrayConcat("), "{got}");
+    assert!(!got.contains("if(isNull("), "{got}");
 }
 
 /// S7c: rows in an order keep it, each row's elements after it in list

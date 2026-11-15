@@ -154,6 +154,7 @@ mod tests {
             id: vec!["code".to_string()],
             properties: vec!["city".to_string(), "code".to_string(), "tz".to_string()],
             sources,
+            column_types: std::collections::HashMap::new(),
         }
     }
 
