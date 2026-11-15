@@ -1104,6 +1104,7 @@ impl GraphSchema {
                 id,
                 properties,
                 sources,
+                column_types: first.column_types.clone(),
             },
             node,
         ))
@@ -1363,6 +1364,10 @@ pub struct NodeRelation {
     /// Every property its sources hold (the id's among them), sorted.
     pub properties: Vec<String>,
     pub sources: Vec<NodeSource>,
+    /// Column types of the underlying table(s), keyed by column name
+    /// (VALUE_TYPES.md T1). Used to tell complex (Array/Map/Tuple/Dynamic)
+    /// properties apart from scalar ones for embedded nodes. (#1490)
+    pub column_types: std::collections::HashMap<String, crate::graph_catalog::schema_types::KeyPartType>,
 }
 
 /// `a` and `b` (either may be absent) as one schema filter.
