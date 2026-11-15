@@ -19,6 +19,7 @@ cg schema show   --schema <file> [--format text|json] # Compact agent-friendly s
 cg schema validate [<file>]                           # Structural validation (no CH needed)
 cg --clickhouse <url> schema validate [<file>] --data [--sample N] [--max-rows M] [--full]  # + one value per embedded node id (sampled)
 cg --check-node-properties query ...                  # fail a read of an embedded node's property whose rows disagree
+cg --datetime-iso8601 query ...                         # DateTime values as ISO-8601 (2024-03-15T10:30:00Z); opt-in, #1068
 cg schema discover --clickhouse <url> --database <db> --out <file>  # LLM-assisted schema gen
 cg schema diff <old.yaml> <new.yaml>                  # Node/relationship diff
 ```

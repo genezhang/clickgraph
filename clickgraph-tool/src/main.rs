@@ -67,6 +67,17 @@ struct Cli {
     )]
     check_node_properties: bool,
 
+    /// Return DateTime values as ISO-8601 (`2024-03-15T10:30:00Z`) and spell
+    /// the `T` in `toString()` of a datetime (#1068); without it datetimes are
+    /// as the database prints them
+    #[arg(
+        long,
+        env = "CG_DATETIME_ISO8601",
+        global = true,
+        value_parser = clap::builder::FalseyValueParser::new()
+    )]
+    datetime_iso8601: bool,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -200,6 +211,7 @@ enum SchemaCommands {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
     clickgraph::server::query_context::set_check_node_properties(cli.check_node_properties);
+    clickgraph::server::query_context::set_datetime_iso8601(cli.datetime_iso8601);
     let cfg = CgConfig::load(
         &cli.schema,
         &cli.clickhouse,

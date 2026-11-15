@@ -304,8 +304,8 @@ impl ConnectionConfig {
     fn standard_options(max_cte_depth: u32, role: Option<&str>) -> Vec<(String, String)> {
         // Result-correctness settings first (shared with chdb and SQL-only
         // output via `portable_sql`), then limits and formats.
-        let mut opts: Vec<(String, String)> = crate::sql_generator::SEMANTIC_SESSION_SETTINGS
-            .iter()
+        let mut opts: Vec<(String, String)> = crate::sql_generator::session_settings()
+            .into_iter()
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect();
         opts.extend([

@@ -146,6 +146,7 @@ pub async fn run_with_config(config: ServerConfig) {
     // identity-mapping default.
     query_context::set_server_neo4j_compat(config.neo4j_compat_mode);
     query_context::set_check_node_properties(config.check_node_properties);
+    query_context::set_datetime_iso8601(config.datetime_iso8601);
 
     // Test that logging is working
     log::debug!("=== SERVER STARTING (debug log test) ===");
