@@ -820,9 +820,10 @@ graph_schema:
         assert!(db_dx.is_ok());
     }
 
-    /// #1314: SQL handed to the caller for running elsewhere must carry the
-    /// settings its results depend on (`join_use_nulls = 1`) for ClickHouse,
-    /// and must stay plain SQL for Databricks/Spark.
+    /// #1314/#1068: SQL handed to the caller for running elsewhere must carry
+    /// the settings its results depend on (`join_use_nulls = 1`, ISO-8601
+    /// datetime output) for ClickHouse, and must stay plain SQL for
+    /// Databricks/Spark.
     #[test]
     fn query_to_sql_carries_semantic_settings_only_for_clickhouse() {
         let schema = write_schema();
@@ -833,7 +834,9 @@ graph_schema:
             .query_to_sql(cypher)
             .unwrap();
         assert!(
-            ch_sql.trim_end().ends_with("SETTINGS join_use_nulls = 1"),
+            ch_sql
+                .trim_end()
+                .ends_with("SETTINGS join_use_nulls = 1, date_time_output_format = 'iso'"),
             "{ch_sql}"
         );
         let dx = Database::sql_only_with_dialect(schema.path(), SqlDialect::Databricks).unwrap();
