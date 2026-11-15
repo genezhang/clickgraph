@@ -258,22 +258,33 @@ impl FunctionMapper for ClickhouseFunctionMapper {
             )
         };
         let value = format!("coalesce({})", columns.join(", "));
-        let same: Vec<String> = columns[1..]
+        let mut same: Vec<String> = columns[1..]
             .iter()
             .map(|c| format!("{} = {}", class(&columns[0]), class(c)))
             .collect();
-        // Array/Map properties held by several sources coalesce to a Variant
-        // (NULL UNION ALL Array(T) is Variant), which the guard above rejected
-        // even when every source's type agrees. The class comparison already
-        // rejects genuinely mixed types; the Variant check only added a
-        // false positive. (#1430)
+        // Keep the Variant check for mixes such as Int64 vs UInt64, but skip it
+        // when every column is itself a complex (Array/Map/Tuple/Dynamic) type,
+        // whose coalesce is also a Variant but reads correctly. (#1554)
+        let complex_pred = columns
+            .iter()
+            .map(|c| {
+                format!(
+                    "(toTypeName({c}) LIKE 'Array(%' OR toTypeName({c}) LIKE 'Map(%' \
+                     OR toTypeName({c}) LIKE 'Tuple(%' OR toTypeName({c}) LIKE 'Dynamic(%' \
+                     OR toTypeName({c}) LIKE 'Variant(%')"
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(" AND ");
+        same.push(format!(
+            "(toTypeName({value}) NOT LIKE 'Variant(%' OR ({complex_pred}))"
+        ));
         Some(format!(
             "CAST({value}, if({}, toTypeName({value}), \
              'ClickGraph_property_has_different_types_on_different_labels_or_types'))",
             same.join(" AND ")
         ))
     }
-
     fn unwind(&self) -> Option<super::Unwind> {
         Some(super::Unwind {
             one_row: "system.one",
