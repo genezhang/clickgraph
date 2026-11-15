@@ -297,22 +297,21 @@ impl<'s> Lowerer<'s> {
                 false => {
                     // Array/Map/Tuple/Dynamic cannot be inside Nullable on
                     // ClickHouse 25.8, so use `anyIf` for them. (#1490)
-                    let is_complex = relation
-                        .column_types
-                        .iter()
-                        .any(|(col, kt)| {
-                            // only consider columns held by this property's sources
-                            relation.sources.iter().any(|s| {
-                                s.columns.iter().any(|(prop, c)| prop.as_str() == p.as_str() && c.as_str() == col.as_str())
-                            }) && {
-                                let raw = kt.raw.to_lowercase();
-                                raw.starts_with("array")
-                                    || raw.starts_with("map")
-                                    || raw.starts_with("tuple")
-                                    || raw.starts_with("dynamic")
-                                    || raw.starts_with("variant")
-                            }
-                        });
+                    let is_complex = relation.column_types.iter().any(|(col, kt)| {
+                        // only consider columns held by this property's sources
+                        relation.sources.iter().any(|s| {
+                            s.columns.iter().any(|(prop, c)| {
+                                prop.as_str() == p.as_str() && c.as_str() == col.as_str()
+                            })
+                        }) && {
+                            let raw = kt.raw.to_lowercase();
+                            raw.starts_with("array")
+                                || raw.starts_with("map")
+                                || raw.starts_with("tuple")
+                                || raw.starts_with("dynamic")
+                                || raw.starts_with("variant")
+                        }
+                    });
                     mapper.any_non_null(&value, is_complex)
                 }
             };

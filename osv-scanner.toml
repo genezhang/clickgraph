@@ -6,10 +6,6 @@
 # `chdb-rust` 2.0.0 slice (its own follow-up, API-compat work), not a pin
 # this branch can take.
 [[IgnoredVulns]]
-id = "GHSA-qwgh-2vcv-g2f7"
-reason = "block-buffer 0.10.4 (Medium 6.3): no fixed version is published; consumers are sha2 (compile-time digests) and the SHA-1 inside tokio-tungstenite 0.21's wire paths. Revisit the row when a fix lands upstream."
-
-[[IgnoredVulns]]
 id = "RUSTSEC-2026-0374"
 reason = "basic-toml 0.1.10 is unmaintained: compile-time-only, pulled by askama_derive (template codegen); no runtime artifact, not a security vulnerability. Retires with askama's own upgrade."
 
@@ -31,4 +27,4 @@ reason = "unsafe-libyaml is unmaintained (archived upstream), pulled only by ser
 
 [[IgnoredVulns]]
 id = "RUSTSEC-2026-0441"
-reason = "pin-utils 0.1.0 is unmaintained: a small helper crate pulled transitively by futures/async combinators; no runtime vulnerability, compile-time only. Retires with the futures crate upgrade."
+reason = "pin-utils 0.1.0 is unmaintained, pulled in by futures-util 0.3.x and hyper 1.x (axum, tower, the clickhouse client); a small pinning helper, not a security vulnerability, and no replacement release exists. Ignore until they drop it (same suppression as deny.toml)."
