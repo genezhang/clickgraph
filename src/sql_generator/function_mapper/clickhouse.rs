@@ -32,7 +32,7 @@ fn distinct_key(v: &str) -> String {
     // which the output prints: padded back to its width.
     format!(
         "tuple(multiIf({ty} = 'None', '', {ty} = 'Bool', 'b', {number}, 'n', \
-         match({ty}, '^(Array|Map|Tuple)'), concat('c:', {ty}), {string}, 's', \
+         startsWith({ty}, 'Map'), concat('m:', arrayStringConcat(arrayMap(x -> dynamicType(CAST(x, 'Dynamic')), CAST(mapValues({v}), 'Array(Dynamic)')), ',')), match({ty}, '^(Array|Tuple)'), concat('c:', {ty}), {string}, 's', \
          {ty} = 'Date32', 'Date', startsWith({ty}, 'DateTime'), \
          concat('DateTime ', if({zone} = '', timezone(), {zone})), \
          startsWith({ty}, 'Time'), 'Time', {ty}), \
