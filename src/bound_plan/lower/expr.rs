@@ -352,7 +352,9 @@ impl Lowerer<'_> {
                                     operator: lx::Operator::Equal,
                                     operands: vec![
                                         column.clone(),
-                                        RenderExpr::Literal(Literal::String(l.clone())),
+                                        RenderExpr::Literal(Literal::String(
+                                            crate::utils::sql_literal::value_as_cypher_text(l),
+                                        )),
                                     ],
                                 })
                             })
@@ -373,7 +375,9 @@ impl Lowerer<'_> {
                             operator: lx::Operator::Equal,
                             operands: vec![
                                 self.physical(v, super::REL_TYPE)?,
-                                RenderExpr::Literal(Literal::String(label.clone())),
+                                RenderExpr::Literal(Literal::String(
+                                    crate::utils::sql_literal::value_as_cypher_text(label),
+                                )),
                             ],
                         }));
                     }
@@ -1268,7 +1272,12 @@ impl Lowerer<'_> {
             if labels.len() > 1 {
                 conds.insert(
                     0,
-                    equal(cols[0].clone(), RenderExpr::Literal(Literal::String(label))),
+                    equal(
+                        cols[0].clone(),
+                        RenderExpr::Literal(Literal::String(
+                            crate::utils::sql_literal::value_as_cypher_text(&label),
+                        )),
+                    ),
                 );
             }
             matches.extend(super::and_all(conds));
@@ -1377,7 +1386,9 @@ impl Lowerer<'_> {
                         operator: O::Equal,
                         operands: vec![
                             RenderExpr::Raw(text.clone()),
-                            RenderExpr::Literal(Literal::String(e.replace('\\', "\\\\"))),
+                            RenderExpr::Literal(Literal::String(
+                                crate::utils::sql_literal::value_as_cypher_text(e),
+                            )),
                         ],
                     })
                 })
@@ -1610,7 +1621,7 @@ impl Lowerer<'_> {
         // A match's tuple: its label, then its identity.
         let probe = |id: &[RenderExpr]| {
             let mut fields = vec![render_expr_to_sql_plain(&RenderExpr::Literal(
-                Literal::String(label.clone()),
+                Literal::String(crate::utils::sql_literal::value_as_cypher_text(&label)),
             ))];
             fields.extend(id.iter().map(render_expr_to_sql_plain));
             (spelling.tuple)(&fields)
@@ -1939,7 +1950,12 @@ impl Lowerer<'_> {
         }
         let label = |v: VarId, labels: &[String]| -> Result<RenderExpr, LowerError> {
             match labels {
-                [one] => self.unless_null(&[v], RenderExpr::Literal(Literal::String(one.clone()))),
+                [one] => self.unless_null(
+                    &[v],
+                    RenderExpr::Literal(Literal::String(
+                        crate::utils::sql_literal::value_as_cypher_text(one),
+                    )),
+                ),
                 _ => self.physical(v, super::LABEL_COLUMN),
             }
         };
@@ -2345,12 +2361,16 @@ impl Lowerer<'_> {
                 return match (f.name.to_ascii_lowercase().as_str(), &elem) {
                     // `labels()` of a NULL element is NULL, and a ClickHouse
                     // array cannot be.
-                    ("type", Elem::Rel { rel_type, .. }) => {
-                        self.elem_unless_null(&t, &elem, Literal::String(rel_type.clone()))
-                    }
-                    ("label", Elem::Node(label)) => {
-                        self.elem_unless_null(&t, &elem, Literal::String(label.clone()))
-                    }
+                    ("type", Elem::Rel { rel_type, .. }) => self.elem_unless_null(
+                        &t,
+                        &elem,
+                        Literal::String(crate::utils::sql_literal::value_as_cypher_text(rel_type)),
+                    ),
+                    ("label", Elem::Node(label)) => self.elem_unless_null(
+                        &t,
+                        &elem,
+                        Literal::String(crate::utils::sql_literal::value_as_cypher_text(label)),
+                    ),
                     _ => unsupported(format!("{}() of a node or relationship of a list", f.name)),
                 };
             }
@@ -2398,9 +2418,12 @@ impl Lowerer<'_> {
                      or in a comparison",
                 ),
                 ("elementid", _) => unsupported("elementId()"),
-                ("type", Some(Scan::Rel { rel_type, .. })) => {
-                    self.unless_null(&[v], RenderExpr::Literal(Literal::String(rel_type.clone())))
-                }
+                ("type", Some(Scan::Rel { rel_type, .. })) => self.unless_null(
+                    &[v],
+                    RenderExpr::Literal(Literal::String(
+                        crate::utils::sql_literal::value_as_cypher_text(rel_type),
+                    )),
+                ),
                 // NULL where an OPTIONAL MATCH left it NULL.
                 ("type", Some(Scan::Rels { .. })) => self.physical(v, super::REL_TYPE),
                 // NULL for an unmatched node, and a ClickHouse array cannot
@@ -2418,7 +2441,9 @@ impl Lowerer<'_> {
                         .filter(|(l, _)| !self.schema.union_labels_of(l).is_empty())
                         .map(|(l, _)| {
                             (
-                                RenderExpr::Literal(Literal::String(l.clone())),
+                                RenderExpr::Literal(Literal::String(
+                                    crate::utils::sql_literal::value_as_cypher_text(l),
+                                )),
                                 self.node_labels(l),
                             )
                         })
@@ -2438,9 +2463,12 @@ impl Lowerer<'_> {
                 // reads it): a node's one label as a string, NULL where an
                 // OPTIONAL MATCH left it NULL (P-4c S11d).
                 ("label", Some(Scan::Labels { .. })) => self.physical(v, super::LABEL_COLUMN),
-                ("label", Some(Scan::Node { label, .. })) => {
-                    self.unless_null(&[v], RenderExpr::Literal(Literal::String(label.clone())))
-                }
+                ("label", Some(Scan::Node { label, .. })) => self.unless_null(
+                    &[v],
+                    RenderExpr::Literal(Literal::String(
+                        crate::utils::sql_literal::value_as_cypher_text(label),
+                    )),
+                ),
                 _ => unsupported(format!("{}() of a node or relationship", f.name)),
             };
         }
@@ -2894,7 +2922,11 @@ impl Lowerer<'_> {
         RenderExpr::List(
             std::iter::once(label)
                 .chain(self.schema.union_labels_of(label))
-                .map(|l| RenderExpr::Literal(Literal::String(l.to_string())))
+                .map(|l| {
+                    RenderExpr::Literal(Literal::String(
+                        crate::utils::sql_literal::value_as_cypher_text(l),
+                    ))
+                })
                 .collect(),
         )
     }

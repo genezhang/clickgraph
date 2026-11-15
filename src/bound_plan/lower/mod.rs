@@ -1037,7 +1037,9 @@ impl Lowerer<'_> {
                         Some((
                             RenderExpr::OperatorApplicationExp(eq(
                                 label.clone(),
-                                RenderExpr::Literal(Literal::String(l.clone())),
+                                RenderExpr::Literal(Literal::String(
+                                    crate::utils::sql_literal::value_as_cypher_text(l),
+                                )),
                             )),
                             back,
                         ))
@@ -1113,7 +1115,9 @@ impl Lowerer<'_> {
         let is = |c: &str, value: &str| -> Result<RenderExpr, LowerError> {
             Ok(RenderExpr::OperatorApplicationExp(eq(
                 self.physical(v, c)?,
-                RenderExpr::Literal(Literal::String(value.to_string())),
+                RenderExpr::Literal(Literal::String(
+                    crate::utils::sql_literal::value_as_cypher_text(value),
+                )),
             )))
         };
         Ok(and_all(vec![
@@ -2987,7 +2991,9 @@ impl<'s> Lowerer<'s> {
             .collect();
         for (arm, (label, ns)) in arms.iter().enumerate() {
             let mut items = vec![select(
-                RenderExpr::Literal(Literal::String(label.clone())),
+                RenderExpr::Literal(Literal::String(
+                    crate::utils::sql_literal::value_as_cypher_text(label),
+                )),
                 LABEL_COLUMN,
             )];
             // Each arm's id as its label's is compared (I1).
@@ -3154,7 +3160,9 @@ impl<'s> Lowerer<'s> {
             let column = self.physical(v, LABEL_COLUMN)?;
             self.filters.push(RenderExpr::OperatorApplicationExp(eq(
                 column,
-                RenderExpr::Literal(Literal::String(label.to_string())),
+                RenderExpr::Literal(Literal::String(
+                    crate::utils::sql_literal::value_as_cypher_text(label),
+                )),
             )));
         }
         Ok(())
@@ -3561,7 +3569,9 @@ impl<'s> Lowerer<'s> {
             })
         };
         let label_value = |l: &EndLabel| match l {
-            EndLabel::Is(one) => RenderExpr::Literal(Literal::String(one.clone())),
+            EndLabel::Is(one) => RenderExpr::Literal(Literal::String(
+                crate::utils::sql_literal::value_as_cypher_text(one),
+            )),
             EndLabel::By { value, .. } => value.clone(),
         };
         let (fv, tv) = (label_value(&fl), label_value(&tl));
@@ -3687,7 +3697,9 @@ impl<'s> Lowerer<'s> {
                 }
                 _ => self.filters.push(RenderExpr::OperatorApplicationExp(eq(
                     value,
-                    RenderExpr::Literal(Literal::String(labels[0].clone())),
+                    RenderExpr::Literal(Literal::String(
+                        crate::utils::sql_literal::value_as_cypher_text(&labels[0]),
+                    )),
                 ))),
             },
             _ => {
@@ -3813,7 +3825,11 @@ impl<'s> Lowerer<'s> {
         let shape = rel_union_shape(arms)?;
         const ROW: &str = "e";
         let g = current_function_mapper().graph_values();
-        let string = |s: &str| RenderExpr::Literal(Literal::String(s.to_string()));
+        let string = |s: &str| {
+            RenderExpr::Literal(Literal::String(
+                crate::utils::sql_literal::value_as_cypher_text(s),
+            ))
+        };
         let definitions: Vec<(&String, Vec<Option<usize>>)> = props
             .iter()
             .map(|p| (p, self.rel_value_definitions(p, arms)))
@@ -5265,7 +5281,9 @@ impl<'s> Lowerer<'s> {
             };
             let mut items = vec![
                 select(
-                    RenderExpr::Literal(Literal::String(label.clone())),
+                    RenderExpr::Literal(Literal::String(
+                        crate::utils::sql_literal::value_as_cypher_text(label),
+                    )),
                     LABEL_COLUMN,
                 ),
                 select(id, &indexed_column(LABEL_ID, 0)),
@@ -5353,7 +5371,9 @@ impl<'s> Lowerer<'s> {
                     .map(|l| {
                         RenderExpr::OperatorApplicationExp(eq(
                             label_column.clone(),
-                            RenderExpr::Literal(Literal::String(l.clone())),
+                            RenderExpr::Literal(Literal::String(
+                                crate::utils::sql_literal::value_as_cypher_text(l),
+                            )),
                         ))
                     })
                     .collect(),
@@ -5408,9 +5428,9 @@ impl<'s> Lowerer<'s> {
                 // A walk by keys holds a node's key as its id (S8d2b).
                 (_, _) if self.walks_by_keys(among) => {
                     let label = match self.scans.get(&v) {
-                        Some(Scan::Node { label, .. }) => {
-                            RenderExpr::Literal(Literal::String(label.clone()))
-                        }
+                        Some(Scan::Node { label, .. }) => RenderExpr::Literal(Literal::String(
+                            crate::utils::sql_literal::value_as_cypher_text(label),
+                        )),
                         _ => ids[0].clone(),
                     };
                     let Some(key) = self.walk_key(v)? else {
@@ -5421,7 +5441,9 @@ impl<'s> Lowerer<'s> {
                 (Some(Scan::Labels { .. }), [label, id]) => (label.clone(), id.clone()),
                 // As the walk's nodes hold it where they mix labels (I2).
                 (Some(Scan::Node { label: l, .. }), [id]) => (
-                    RenderExpr::Literal(Literal::String(l.clone())),
+                    RenderExpr::Literal(Literal::String(
+                        crate::utils::sql_literal::value_as_cypher_text(l),
+                    )),
                     match self.walk_holds_texts(among) {
                         true => self.as_held(l, 0, id.clone()),
                         false => id.clone(),
@@ -6162,7 +6184,9 @@ impl<'s> Lowerer<'s> {
                         .map(|l| {
                             RenderExpr::OperatorApplicationExp(eq(
                                 column.clone(),
-                                RenderExpr::Literal(Literal::String(l)),
+                                RenderExpr::Literal(Literal::String(
+                                    crate::utils::sql_literal::value_as_cypher_text(&l),
+                                )),
                             ))
                         })
                         .collect();
@@ -6188,7 +6212,9 @@ impl<'s> Lowerer<'s> {
                         .map(|t| {
                             RenderExpr::OperatorApplicationExp(eq(
                                 column.clone(),
-                                RenderExpr::Literal(Literal::String(t)),
+                                RenderExpr::Literal(Literal::String(
+                                    crate::utils::sql_literal::value_as_cypher_text(&t),
+                                )),
                             ))
                         })
                         .collect();
@@ -6503,7 +6529,11 @@ impl<'s> Lowerer<'s> {
                 operands: vec![x, y],
             })
         };
-        let string = |s: &str| RenderExpr::Literal(Literal::String(s.to_string()));
+        let string = |s: &str| {
+            RenderExpr::Literal(Literal::String(
+                crate::utils::sql_literal::value_as_cypher_text(s),
+            ))
+        };
         let path = |v: VarId| match self.scans.get(&v) {
             Some(Scan::Path {
                 walked: Walked::One { schema, rel_type },
@@ -6714,7 +6744,11 @@ impl<'s> Lowerer<'s> {
             Some(Scan::Rel {
                 schema, rel_type, ..
             }) => {
-                let string = |s: &str| RenderExpr::Literal(Literal::String(s.to_string()));
+                let string = |s: &str| {
+                    RenderExpr::Literal(Literal::String(
+                        crate::utils::sql_literal::value_as_cypher_text(s),
+                    ))
+                };
                 let mut all = vec![
                     string(rel_type),
                     string(&schema.from_node),
