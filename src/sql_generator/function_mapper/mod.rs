@@ -151,6 +151,13 @@ pub(crate) trait FunctionMapper: Send + Sync {
     /// SQL fragment.
     fn to_string_float(&self, expr: &str) -> String;
 
+    /// `toString()` of a datetime: the ISO-8601 `T` between the date and the
+    /// time (Neo4j `1984-10-11T12:31:14`), where the dialect's stringifier
+    /// spells a space (`1984-10-11 12:31:14`, #1068). `expr` is pre-rendered
+    /// SQL of an arg the classifier proved `RenderType::DateTime` — a `Date`
+    /// (no time-of-day to separate) never reaches this.
+    fn to_string_datetime(&self, expr: &str) -> String;
+
     /// Cast a boolean-typed expression to the dialect's native boolean so it
     /// surfaces on the wire as `true`/`false` rather than `1`/`0` (#1057).
     ///

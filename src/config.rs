@@ -141,6 +141,13 @@ pub struct ServerConfig {
     #[serde(default)]
     pub check_node_properties: bool,
 
+    /// Whether DateTime values come back as ISO-8601 (`2024-03-15T10:30:00Z`,
+    /// the `T` between date and time) and `toString()` of a datetime spells
+    /// the `T` (`CLICKGRAPH_DATETIME_ISO8601`, #1068). Off by default:
+    /// datetimes are as the database prints them.
+    #[serde(default)]
+    pub datetime_iso8601: bool,
+
     /// Where runtime schema registrations survive restarts
     /// (`CLICKGRAPH_SCHEMA_PERSISTENCE`): `off` (default — this feature
     /// writes nothing anywhere, exactly the pre-feature behavior) or
@@ -213,6 +220,7 @@ impl Default for ServerConfig {
             stats_enabled: false,
             stats_ttl_secs: 300,
             check_node_properties: false,
+            datetime_iso8601: false,
             schema_persistence: SchemaPersistenceMode::Off,
             schema_replay_max_rows: 500,
             schema_replay_max_bytes: 67_108_864, // 64 MiB
@@ -249,6 +257,7 @@ impl ServerConfig {
             stats_enabled: parse_env_var("CLICKGRAPH_STATS_ENABLED", "false")?,
             stats_ttl_secs: parse_env_var("CLICKGRAPH_STATS_TTL_SECS", "300")?,
             check_node_properties: parse_env_var("CLICKGRAPH_CHECK_NODE_PROPERTIES", "false")?,
+            datetime_iso8601: parse_env_flag("CLICKGRAPH_DATETIME_ISO8601", false)?,
             schema_persistence: parse_env_var("CLICKGRAPH_SCHEMA_PERSISTENCE", "off")?,
             schema_replay_max_rows: parse_env_var("CLICKGRAPH_SCHEMA_REPLAY_MAX_ROWS", "500")?,
             schema_replay_max_bytes: parse_env_var(
@@ -296,6 +305,7 @@ impl ServerConfig {
             stats_enabled: parse_env_var("CLICKGRAPH_STATS_ENABLED", "false")?,
             stats_ttl_secs: parse_env_var("CLICKGRAPH_STATS_TTL_SECS", "300")?,
             check_node_properties: parse_env_var("CLICKGRAPH_CHECK_NODE_PROPERTIES", "false")?,
+            datetime_iso8601: parse_env_flag("CLICKGRAPH_DATETIME_ISO8601", false)?,
             schema_persistence: parse_env_var("CLICKGRAPH_SCHEMA_PERSISTENCE", "off")?,
             // Replay budgets are operational and env-only, like the metrics
             // and stats knobs.
@@ -359,6 +369,7 @@ impl ServerConfig {
         self.stats_enabled = other.stats_enabled;
         self.stats_ttl_secs = other.stats_ttl_secs;
         self.check_node_properties = other.check_node_properties;
+        self.datetime_iso8601 = other.datetime_iso8601;
         self.schema_persistence = other.schema_persistence;
         self.schema_replay_max_rows = other.schema_replay_max_rows;
         self.schema_replay_max_bytes = other.schema_replay_max_bytes;

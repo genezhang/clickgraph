@@ -2243,6 +2243,24 @@ impl RenderExpr {
                     return mapper.to_string_float(&arg_sql);
                 }
 
+                // #1068: Cypher `toString(<datetime>)` spells the ISO-8601 `T`
+                // between the date and the time (Neo4j `1984-10-11T12:31:14`),
+                // where the dialect's stringifier spells a space. Only a PROVEN
+                // datetime arg is wrapped: a `Date`'s text has no time-of-day
+                // to separate, and an unknown arg stays byte-identical. Only
+                // with ISO-8601 datetime output opted in
+                // (`CLICKGRAPH_DATETIME_ISO8601`): off, `toString` is as it was.
+                if fn_name_lower == "tostring"
+                    && fn_call.args.len() == 1
+                    && crate::server::query_context::datetime_iso8601()
+                    && super::type_inference::infer_render_type(&fn_call.args[0])
+                        == Some(super::type_inference::RenderType::DateTime)
+                {
+                    let arg_sql = fn_call.args[0].to_sql();
+                    let mapper = crate::sql_generator::function_mapper::current_function_mapper();
+                    return mapper.to_string_datetime(&arg_sql);
+                }
+
                 // ClickHouse `split(str, delim)`: Cypher split uses a literal
                 // delimiter, but CH's splitByChar requires a single-byte constant
                 // and splitByString returns [str] for an empty delimiter. Cover
@@ -3953,6 +3971,40 @@ mod tests {
             temporal_call("datetime", Some("2024-03-15T10:30:00")).to_sql(),
             "parseDateTime64BestEffort('2024-03-15T10:30:00', 3)"
         );
+    }
+
+    // ---- #1068: toString of a datetime spells the ISO-8601 T separator ----
+
+    /// With ISO-8601 datetime output opted in, `toString(datetime(..))` spells
+    /// the `T`; a `Date`'s text has no time-of-day, so it is unchanged. Off (the
+    /// default), `toString` is as it was.
+    #[test]
+    fn test_tostring_of_datetime_uses_iso_t_separator_when_opted_in_1068() {
+        let to_string_of = |inner: &str, arg: &str| {
+            RenderExpr::ScalarFnCall(ScalarFnCall {
+                name: "toString".to_string(),
+                args: vec![RenderExpr::ScalarFnCall(ScalarFnCall {
+                    name: inner.to_string(),
+                    args: vec![RenderExpr::Literal(Literal::String(arg.to_string()))],
+                })],
+            })
+        };
+        let dt = to_string_of("datetime", "2024-03-15T10:30:00");
+        let date = to_string_of("date", "2024-03-15");
+        crate::server::query_context::with_datetime_iso8601(true, || {
+            assert_eq!(
+                dt.to_sql(),
+                "replace(toString(parseDateTime64BestEffort('2024-03-15T10:30:00', 3)), ' ', 'T')"
+            );
+            assert_eq!(date.to_sql(), "toString(toDate('2024-03-15'))");
+        });
+        crate::server::query_context::with_datetime_iso8601(false, || {
+            assert_eq!(
+                dt.to_sql(),
+                "toString(parseDateTime64BestEffort('2024-03-15T10:30:00', 3))"
+            );
+            assert_eq!(date.to_sql(), "toString(toDate('2024-03-15'))");
+        });
     }
 
     // ---- #855: three-valued IN / NOT IN when the list holds an explicit null ----

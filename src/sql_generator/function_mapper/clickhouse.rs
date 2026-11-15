@@ -153,6 +153,12 @@ impl FunctionMapper for ClickhouseFunctionMapper {
         format!("isNotDistinctFrom({a}, {b})")
     }
 
+    fn to_string_datetime(&self, expr: &str) -> String {
+        // #1068: swap only the separator, keeping the fraction and the
+        // zone-less (localdatetime) form ClickHouse's toString spells.
+        format!("replace(toString({expr}), ' ', 'T')")
+    }
+
     fn logical_xor(&self, a: &str, b: &str) -> String {
         // `xor` is three-valued: NULL with a NULL operand.
         format!("xor({a}, {b})")
@@ -624,6 +630,18 @@ mod tests {
             m.to_string_float("toFloat64(x)"),
             "if(match(toString(toFloat64(x)), '^-?[0-9]+$'), \
              concat(toString(toFloat64(x)), '.0'), toString(toFloat64(x)))"
+        );
+    }
+
+    #[test]
+    fn to_string_datetime_spells_iso_t_separator() {
+        // #1068: Neo4j toString(datetime) = "2024-03-15T10:30:00"; CH's
+        // toString spells a space. `replace` keeps the fraction and the
+        // zone-less (localdatetime) form, swapping only the separator.
+        let m = ClickhouseFunctionMapper;
+        assert_eq!(
+            m.to_string_datetime("parseDateTime64BestEffort('2024-03-15T10:30:00', 3)"),
+            "replace(toString(parseDateTime64BestEffort('2024-03-15T10:30:00', 3)), ' ', 'T')"
         );
     }
 

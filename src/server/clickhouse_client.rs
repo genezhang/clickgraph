@@ -30,8 +30,8 @@ pub fn try_get_client() -> Option<Client> {
         .with_password(password)
         .with_database(database);
     // Result-correctness settings (join_use_nulls, ...): shared list.
-    for (name, value) in crate::sql_generator::SEMANTIC_SESSION_SETTINGS {
-        client = client.with_option(*name, *value);
+    for (name, value) in crate::sql_generator::session_settings() {
+        client = client.with_option(name, value);
     }
     Some(
         client

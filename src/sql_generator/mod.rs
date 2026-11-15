@@ -131,23 +131,67 @@ impl SqlDialect {
 /// unmatched side of a LEFT JOIN NULL instead of the type default (`''`, `0`),
 /// which OPTIONAL MATCH, `IS NULL`, `count(x)` and `coalesce` rely on.
 ///
-/// Single source of truth: the server connection pool, the chdb executor and
-/// [`portable_sql`] all apply this list.
+/// The server connection pool, the chdb executor and [`portable_sql`] apply
+/// these through [`session_settings`], which adds the opt-in
+/// [`DATETIME_ISO8601_SETTING`] when it is on.
 pub const SEMANTIC_SESSION_SETTINGS: &[(&str, &str)] = &[("join_use_nulls", "1")];
 
+/// The opt-in output-format setting (`CLICKGRAPH_DATETIME_ISO8601`, #1068):
+/// ClickHouse prints DateTime / DateTime64 as ISO-8601 (`2024-03-15T10:30:00Z`).
+/// A serialization setting, so it is applied only when asked for, never as
+/// part of [`SEMANTIC_SESSION_SETTINGS`].
+pub const DATETIME_ISO8601_SETTING: (&str, &str) = ("date_time_output_format", "iso");
+
+/// The settings every ClickHouse session and SQL-only output carries:
+/// [`SEMANTIC_SESSION_SETTINGS`], and [`DATETIME_ISO8601_SETTING`] when
+/// `datetime_iso8601` (`query_context::datetime_iso8601`).
+pub fn session_settings_with(datetime_iso8601: bool) -> Vec<(&'static str, &'static str)> {
+    let mut settings = SEMANTIC_SESSION_SETTINGS.to_vec();
+    if datetime_iso8601 {
+        settings.push(DATETIME_ISO8601_SETTING);
+    }
+    settings
+}
+
+/// [`session_settings_with`] for the process-wide opt-in.
+pub fn session_settings() -> Vec<(&'static str, &'static str)> {
+    session_settings_with(crate::server::query_context::datetime_iso8601())
+}
+
+/// A setting's value spelled for a SQL `SETTINGS`/`SET` clause: string values
+/// need quotes (`date_time_output_format = 'iso'`: unquoted is a syntax
+/// error), numbers don't (`join_use_nulls = 1`). Client option values stay
+/// raw (`?name=value`).
+pub fn setting_sql(k: &str, v: &str) -> String {
+    if v.chars().all(|c| c.is_ascii_digit()) {
+        format!("{k} = {v}")
+    } else {
+        format!("{k} = '{v}'")
+    }
+}
+
 /// SQL that is correct on any session of `dialect`: for ClickHouse, appends a
-/// `SETTINGS` clause carrying [`SEMANTIC_SESSION_SETTINGS`], so SQL-only output
+/// `SETTINGS` clause carrying [`session_settings`], so SQL-only output
 /// that a user runs outside ClickGraph gives the same rows (#1314). Other
 /// dialects already have standard NULL semantics and are returned unchanged.
 ///
 /// Executors must NOT use this: they apply the settings at session level and
 /// the executed SQL stays exactly what the emitter produced.
 pub fn portable_sql(sql: &str, dialect: SqlDialect) -> String {
+    portable_sql_with(
+        sql,
+        dialect,
+        crate::server::query_context::datetime_iso8601(),
+    )
+}
+
+/// [`portable_sql`] with ISO-8601 datetime output on or off.
+pub fn portable_sql_with(sql: &str, dialect: SqlDialect, datetime_iso8601: bool) -> String {
     match dialect {
         SqlDialect::ClickHouse => {
-            let settings = SEMANTIC_SESSION_SETTINGS
+            let settings = session_settings_with(datetime_iso8601)
                 .iter()
-                .map(|(k, v)| format!("{} = {}", k, v))
+                .map(|(k, v)| setting_sql(k, v))
                 .collect::<Vec<_>>()
                 .join(", ");
             format!("{}\nSETTINGS {}", sql.trim_end(), settings)
@@ -169,10 +213,40 @@ mod portable_sql_tests {
         );
     }
 
+    /// #1068: ISO-8601 datetime output is an opt-in. Off, the settings and the
+    /// SQL-only suffix are exactly what they were; on, the output-format
+    /// setting is added to both (quoted, a string value).
+    #[test]
+    fn iso_datetime_output_is_an_opt_in_1068() {
+        assert_eq!(session_settings_with(false), vec![("join_use_nulls", "1")]);
+        assert_eq!(
+            session_settings_with(true),
+            vec![("join_use_nulls", "1"), ("date_time_output_format", "iso")]
+        );
+        assert_eq!(
+            portable_sql_with("SELECT 1", SqlDialect::ClickHouse, false),
+            "SELECT 1\nSETTINGS join_use_nulls = 1"
+        );
+        assert_eq!(
+            portable_sql_with("SELECT 1", SqlDialect::ClickHouse, true),
+            "SELECT 1\nSETTINGS join_use_nulls = 1, date_time_output_format = 'iso'"
+        );
+        // The process-wide opt-in is what `portable_sql` / `session_settings` read.
+        crate::server::query_context::with_datetime_iso8601(true, || {
+            assert_eq!(session_settings().len(), 2);
+            assert!(portable_sql("SELECT 1", SqlDialect::ClickHouse)
+                .ends_with("date_time_output_format = 'iso'"));
+        });
+        crate::server::query_context::with_datetime_iso8601(false, || {
+            assert_eq!(session_settings().len(), 1);
+        });
+    }
+
     #[test]
     fn databricks_sql_is_unchanged() {
         let sql = "SELECT a.x FROM t AS a";
         assert_eq!(portable_sql(sql, SqlDialect::Databricks), sql);
+        assert_eq!(portable_sql_with(sql, SqlDialect::Databricks, true), sql);
     }
 }
 

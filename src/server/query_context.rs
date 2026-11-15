@@ -157,6 +157,53 @@ pub fn check_node_properties() -> bool {
     CHECK_NODE_PROPERTIES.get().copied().unwrap_or(false)
 }
 
+/// Process-wide opt-in (#1068): DateTime values come back as ISO-8601 on
+/// ClickHouse (`2024-03-15T10:30:00Z`, the `T` between date and time, via the
+/// `date_time_output_format = 'iso'` session setting), and `toString()` of a
+/// datetime spells the `T`. Off by default: datetimes are as the database
+/// prints them. Set once at startup from `CLICKGRAPH_DATETIME_ISO8601`
+/// (server) or `cg --datetime-iso8601`; where nothing sets it (embedded) the
+/// environment variable is read at first use.
+static DATETIME_ISO8601: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+
+#[cfg(test)]
+thread_local! {
+    static DATETIME_ISO8601_TEST: std::cell::Cell<Option<bool>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// Enable ISO-8601 datetime output. Idempotent (first write wins); call once
+/// before serving requests.
+pub fn set_datetime_iso8601(enabled: bool) {
+    let _ = DATETIME_ISO8601.set(enabled);
+}
+
+/// Whether ISO-8601 datetime output is on (default false).
+pub fn datetime_iso8601() -> bool {
+    #[cfg(test)]
+    if let Some(on) = DATETIME_ISO8601_TEST.with(|c| c.get()) {
+        return on;
+    }
+    *DATETIME_ISO8601.get_or_init(|| {
+        std::env::var("CLICKGRAPH_DATETIME_ISO8601").is_ok_and(|v| {
+            matches!(
+                v.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+    })
+}
+
+/// Run `f` with ISO-8601 datetime output on or off, on this thread only (the
+/// process-wide flag is set once, so a test cannot flip it).
+#[cfg(test)]
+pub fn with_datetime_iso8601<R>(on: bool, f: impl FnOnce() -> R) -> R {
+    let before = DATETIME_ISO8601_TEST.with(|c| c.replace(Some(on)));
+    let result = f();
+    DATETIME_ISO8601_TEST.with(|c| c.set(before));
+    result
+}
+
 impl QueryContext {
     /// Create a new query context with schema name.
     ///
