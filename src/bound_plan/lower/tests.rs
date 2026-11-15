@@ -6521,6 +6521,41 @@ fn a_null_list_is_told_by_its_source() {
     );
 }
 
+/// #1491: a list of one comparable type keeps ClickHouse's native ORDER BY,
+/// which orders `[3]` before `[12]`; only a list of mixed element types —
+/// which ClickHouse refuses (Code 44/386) — gets the dialect's element-order
+/// key (type rank, then the value in its own type).
+#[test]
+fn a_single_type_list_orders_natively_and_a_mixed_one_by_an_element_key() {
+    let got = squash(&sql(
+        "UNWIND [1, 2] AS x WITH [x * 3] AS l RETURN l ORDER BY l",
+    ));
+    assert!(got.contains("ORDER BY w2.v1 ASC"), "{got}");
+    assert!(!got.contains("arrayMap(x -> tuple(multiIf("), "{got}");
+
+    // The maintained example: a list of a string and a number (their column
+    // types are not declared here, so it is not one comparable type).
+    let got = squash(&sql(
+        "MATCH (u:User) WITH [u.name, u.age] AS l RETURN l ORDER BY l",
+    ));
+    assert!(
+        got.contains("ORDER BY arrayMap(x -> tuple(multiIf("),
+        "{got}"
+    );
+    assert!(got.contains("'Array(Dynamic)')) ASC"), "{got}");
+    // Numbers order numerically inside the key (a float first, then the exact
+    // value), not by the text that put `[12]` before `[3]`.
+    assert!(
+        got.contains("ifNull(toFloat64OrNull(toString(x)), 0)"),
+        "{got}"
+    );
+    assert!(
+        got.contains("ifNull(toDecimal256OrNull(toString(x), 18), 0)"),
+        "{got}"
+    );
+    assert!(!got.contains("ORDER BY w1.v1 ASC"), "{got}");
+}
+
 /// #1423: `x IN` a list expression is three-valued, as for a list of items
 /// (ClickHouse's `x IN l` is false where an element is NULL): NULL where no
 /// element is `x` and one is NULL, or `x` is NULL and the list is not empty.

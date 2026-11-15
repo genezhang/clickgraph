@@ -7138,24 +7138,27 @@ impl<'s> Lowerer<'s> {
                 // (A list held where its NULL is known: `null_list.rs`.)
                 None => self.held_list(&k.expr, items)?,
             };
-            // ClickHouse cannot ORDER BY a mixed-type list (Code 44) or, on
-            // 25.8, any list (Code 386). Cypher orders element by element, so
-            // use the dialect's sortable key (`CypherUnion::distinct_key`, as
-            // GROUP BY does) only when the list's elements are not of one
-            // comparable type — a single-type list keeps the native ORDER BY,
-            // which preserves numeric/chronological order instead of the text
-            // order that `distinct_key` (a text key) would impose. (#1491)
-            let is_mixed_list = matches!(
-                self.kind(&k.expr),
-                unwind::Kind::List(inner) if matches!(*inner, unwind::Kind::Unknown)
-            ) || matches!(self.kind(&k.expr), unwind::Kind::Map(_));
-            let e = if self.options.dialect.is_clickhouse() && is_mixed_list {
-                match current_function_mapper().cypher_union() {
-                    Some(u) => RenderExpr::Raw((u.distinct_key)(&render_expr_to_sql_plain(&e))),
-                    None => e,
+            // ClickHouse cannot ORDER BY a list of mixed element types
+            // (Code 44/386). Cypher orders a list element by element, so use
+            // the dialect's element-order key only there; a list of one
+            // comparable type keeps the native ORDER BY, which orders
+            // numbers numerically and dates chronologically. (#1491)
+            let kind = self.kind(&k.expr);
+            let mixed_key = if self.options.dialect.is_clickhouse() {
+                let lists = current_function_mapper().lists();
+                match &kind {
+                    unwind::Kind::List(inner) if matches!(**inner, unwind::Kind::Unknown) => {
+                        lists.and_then(|l| l.mixed_order)
+                    }
+                    unwind::Kind::Map(_) => lists.and_then(|l| l.mixed_map_order),
+                    _ => None,
                 }
             } else {
-                e
+                None
+            };
+            let e = match mixed_key {
+                Some(key) => RenderExpr::Raw(key(&render_expr_to_sql_plain(&e))),
+                None => e,
             };
             // A key reading an item of a DISTINCT's group: any one of the
             // group's, one value by DISTINCT (not a grouping key).
