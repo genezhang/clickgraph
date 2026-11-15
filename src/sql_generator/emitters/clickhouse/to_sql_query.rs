@@ -2243,23 +2243,6 @@ impl RenderExpr {
                     return mapper.to_string_float(&arg_sql);
                 }
 
-                // #1068: Cypher `toString(<datetime>)` spells the ISO-8601 `T`
-                // between the date and the time (Neo4j `1984-10-11T12:31:14`),
-                // where the dialect's stringifier spells a space. Only a PROVEN
-                // datetime arg is wrapped: a `Date`'s text has no time-of-day
-                // to separate, and an unknown arg stays byte-identical. The
-                // bare value on the wire goes ISO at serialization
-                // (`SEMANTIC_SESSION_SETTINGS`, `date_time_output_format`).
-                if fn_name_lower == "tostring"
-                    && fn_call.args.len() == 1
-                    && super::type_inference::infer_render_type(&fn_call.args[0])
-                        == Some(super::type_inference::RenderType::DateTime)
-                {
-                    let arg_sql = fn_call.args[0].to_sql();
-                    let mapper = crate::sql_generator::function_mapper::current_function_mapper();
-                    return mapper.to_string_datetime(&arg_sql);
-                }
-
                 // ClickHouse `split(str, delim)`: Cypher split uses a literal
                 // delimiter, but CH's splitByChar requires a single-byte constant
                 // and splitByString returns [str] for an empty delimiter. Cover
@@ -3940,40 +3923,6 @@ mod tests {
             args: vec![inner],
         });
         assert_eq!(expr.to_sql_without_table_alias(), "not(has(tags, 'a'))");
-    }
-
-    // ---- #1068: toString of a datetime spells the ISO-8601 T separator ----
-
-    /// `toString(datetime(...))` wraps in `replace(..., ' ', 'T')` (Neo4j
-    /// spells `2024-03-15T10:30:00`, ClickHouse a space). A `Date` arg's text
-    /// has no time-of-day (`1984-10-11`) and a string arg passes through, so
-    /// both stay byte-identical.
-    #[test]
-    fn test_tostring_of_datetime_uses_iso_t_separator_1068() {
-        let dt = RenderExpr::ScalarFnCall(ScalarFnCall {
-            name: "toString".to_string(),
-            args: vec![RenderExpr::ScalarFnCall(ScalarFnCall {
-                name: "datetime".to_string(),
-                args: vec![RenderExpr::Literal(Literal::String(
-                    "2024-03-15T10:30:00".to_string(),
-                ))],
-            })],
-        });
-        assert_eq!(
-            dt.to_sql(),
-            "replace(toString(parseDateTime64BestEffort('2024-03-15T10:30:00', 3)), ' ', 'T')"
-        );
-
-        let date = RenderExpr::ScalarFnCall(ScalarFnCall {
-            name: "toString".to_string(),
-            args: vec![RenderExpr::ScalarFnCall(ScalarFnCall {
-                name: "date".to_string(),
-                args: vec![RenderExpr::Literal(Literal::String(
-                    "2024-03-15".to_string(),
-                ))],
-            })],
-        });
-        assert_eq!(date.to_sql(), "toString(toDate('2024-03-15'))");
     }
 
     // ---- #855: three-valued IN / NOT IN when the list holds an explicit null ----
