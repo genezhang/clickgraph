@@ -5407,6 +5407,111 @@ graph_schema:
     );
 }
 
+/// #1419: `UNWIND` of an undeclared property spreads a column that can hold
+/// a list (`Array`, `SimpleAggregateFunction(…, Array(…))`, `Dynamic`,
+/// `Variant`) as it did, and wraps only a column known to be a plain value.
+/// A wrapped list would be one row holding the list, not its elements.
+#[test]
+fn an_unwind_wraps_only_a_column_known_to_be_a_plain_value_1419() {
+    // `UNWIND t.v` over one label whose `v` is a column of type `ty`.
+    let unwind_of = |ty: &str| {
+        let yaml = format!(
+            r#"
+name: t
+graph_schema:
+  nodes:
+    - label: T
+      database: db
+      table: t
+      node_id: id
+      property_mappings: {{ id: id, v: v }}
+      column_types: {{ id: UInt64, v: "{ty}" }}
+  edges: []
+"#
+        );
+        let schema = GraphSchemaConfig::from_yaml_str(&yaml)
+            .unwrap()
+            .to_graph_schema()
+            .unwrap();
+        squash(
+            &translate_bound_plan(
+                "MATCH (t:T) UNWIND t.v AS x RETURN x",
+                &schema,
+                &ReadOptions::default(),
+            )
+            .unwrap()
+            .sql,
+        )
+    };
+    // A plain value: one row of itself (none for NULL).
+    for ty in [
+        "String",
+        "UInt64",
+        "Nullable(Int32)",
+        "Date",
+        "LowCardinality(String)",
+    ] {
+        let got = unwind_of(ty);
+        assert!(got.contains("if(isNull(v0.v), [], [v0.v])"), "{ty}: {got}");
+        assert!(!got.contains("arrayConcat"), "{ty}: {got}");
+    }
+    // A list: spread element by element.
+    let got = unwind_of("Array(String)");
+    assert!(got.contains("ARRAY JOIN v0.v AS __cg_element"), "{got}");
+    assert!(!got.contains("if(isNull("), "{got}");
+    // A column that can hold a list, not known to be a value: as before.
+    for ty in [
+        "SimpleAggregateFunction(anyLast, Array(Int64))",
+        "Dynamic",
+        "Variant(Array(Int64), String)",
+        "Map(String, Int64)",
+    ] {
+        let got = unwind_of(ty);
+        assert!(got.contains("arrayConcat(v0.v)"), "{ty}: {got}");
+        assert!(!got.contains("[v0.v])"), "{ty}: {got}");
+    }
+}
+
+/// #1419: a property held as a list by one label and as a value by another
+/// is not known to be a value: `UNWIND` spreads it as before.
+#[test]
+fn an_unwind_of_a_property_that_is_a_list_in_one_label_is_not_wrapped_1419() {
+    let schema = GraphSchemaConfig::from_yaml_str(
+        r#"
+name: t
+graph_schema:
+  nodes:
+    - label: A
+      database: db
+      table: a
+      node_id: id
+      property_mappings: { id: id, v: v }
+      column_types: { id: UInt64, v: String }
+    - label: B
+      database: db
+      table: b
+      node_id: id
+      property_mappings: { id: id, v: v }
+      column_types: { id: UInt64, v: "Array(String)" }
+  edges: []
+"#,
+    )
+    .unwrap()
+    .to_graph_schema()
+    .unwrap();
+    let got = squash(
+        &translate_bound_plan(
+            "MATCH (n) UNWIND n.v AS x RETURN x",
+            &schema,
+            &ReadOptions::default(),
+        )
+        .unwrap()
+        .sql,
+    );
+    assert!(got.contains("arrayConcat("), "{got}");
+    assert!(!got.contains("if(isNull("), "{got}");
+}
+
 /// S7c: rows in an order keep it, each row's elements after it in list
 /// order: the rows are numbered first.
 #[test]

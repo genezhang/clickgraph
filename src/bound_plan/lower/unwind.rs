@@ -483,27 +483,53 @@ impl<'s> Lowerer<'s> {
     fn property_kind(&self, v: VarId, p: &str) -> Kind {
         match self.declared_types(v, p).as_slice() {
             [] => Kind::Unknown,
-            ts if ts.iter().all(Option::is_none) => {
-                let list = self.column_list_kind(v, p);
-                if matches!(list, Kind::List(_)) {
-                    return list;
-                }
-                if self.no_column_kinds.get() {
-                    return Kind::Unknown;
-                }
-                let columns = self.property_columns(v, p);
-                if !columns.is_empty()
-                    && columns.iter().all(Option::is_some)
-                    && columns.iter().all(|c| c.unwrap().array_element().is_none())
-                {
-                    return Kind::Scalar;
-                }
-                Kind::Unknown
-            }
             ts if ts.iter().all(|t| t == &Some(&SchemaType::Boolean)) => Kind::Boolean,
             ts if ts.iter().all(Option::is_some) => Kind::Scalar,
             _ => self.column_list_kind(v, p),
         }
+    }
+
+    /// What `UNWIND e` spreads (#1419): `kind(e)`, and, where that is `Unknown`,
+    /// the kind of a property whose column is a plain value in every label /
+    /// type (`plain_column_kind`). Read by `UNWIND` only: a scalar column's
+    /// kind anywhere else is a later slice's (`column_list_kind`).
+    fn unwind_kind(&self, e: &LogicalExpr) -> Kind {
+        match self.kind(e) {
+            Kind::Unknown => self.plain_column_kind(e).unwrap_or(Kind::Unknown),
+            k => k,
+        }
+    }
+
+    /// A property not declared typed (so its kind is read from its columns)
+    /// whose column in every label / type is a value of one plain type (a
+    /// number, text, date, `Bool`...: `column_kind`'s `Scalar` / `Boolean`):
+    /// that kind. `None` for anything `column_kind` does not know to be one
+    /// (an `Array`, and a `Dynamic` / `Variant` / `JSON` / aggregate-function
+    /// column, which can hold one), or when a column type is not known.
+    fn plain_column_kind(&self, e: &LogicalExpr) -> Option<Kind> {
+        if self.no_column_kinds.get() {
+            return None;
+        }
+        let LogicalExpr::PropertyAccessExp(pa) = e else {
+            return None;
+        };
+        let PropertyValue::Column(p) = &pa.column else {
+            return None;
+        };
+        let v = parse_var(&pa.table_alias.0)?;
+        let kinds: Vec<Kind> = self
+            .property_columns(v, p)
+            .into_iter()
+            .map(|t| t.map(column_kind))
+            .collect::<Option<_>>()?;
+        if kinds.is_empty()
+            || !kinds
+                .iter()
+                .all(|k| matches!(k, Kind::Scalar | Kind::Boolean))
+        {
+            return None;
+        }
+        kinds.into_iter().reduce(Kind::either)
     }
 
     /// The kind of `e` with properties' column types left unread: what a
@@ -739,7 +765,7 @@ impl<'s> Lowerer<'s> {
         let Some(spelling) = current_function_mapper().unwind() else {
             return unsupported("UNWIND in this SQL dialect");
         };
-        let kind = self.kind(expr);
+        let kind = self.unwind_kind(expr);
         let before = self.kind_before_column_types(expr).element();
         self.set_kind(var, kind.element(), before);
         // A list of no elements, or NULL: no rows.
