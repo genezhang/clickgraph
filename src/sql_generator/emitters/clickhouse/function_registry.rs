@@ -1024,16 +1024,17 @@ lazy_static::lazy_static! {
         // duration({days: 5}) -> toIntervalDay(5)
         // This requires special handling for map arguments
 
-        // localdatetime() -> now() or parseDateTime64BestEffort()
+        // localdatetime() -> current timestamp or parseDateTime64BestEffort (ms precision).
+        // No-arg form is handled in to_sql_query.rs (returns now64(3)).
         m.insert("localdatetime", FunctionMapping {
             neo4j_name: "localdatetime",
-            clickhouse_name: "now64",
+            clickhouse_name: "parseDateTime64BestEffort",
             databricks_name: None,
             arg_transform: Some(|args| {
                 if args.is_empty() {
-                    vec!["3".to_string()] // millisecond precision
+                    vec!["now64(3)".to_string(), "3".to_string()]
                 } else {
-                    vec![format!("parseDateTime64BestEffort({}, 3)", args[0])]
+                    vec![args[0].clone(), "3".to_string()]
                 }
             }),
         });
