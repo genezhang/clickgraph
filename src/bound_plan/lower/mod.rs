@@ -7149,9 +7149,7 @@ impl<'s> Lowerer<'s> {
                 self.kind(&k.expr),
                 unwind::Kind::List(inner) if matches!(*inner, unwind::Kind::Unknown)
             ) || matches!(self.kind(&k.expr), unwind::Kind::Map(_));
-            let e = if self.options.dialect.is_clickhouse()
-                && is_mixed_list
-            {
+            let e = if self.options.dialect.is_clickhouse() && is_mixed_list {
                 match current_function_mapper().cypher_union() {
                     Some(u) => RenderExpr::Raw((u.distinct_key)(&render_expr_to_sql_plain(&e))),
                     None => e,
