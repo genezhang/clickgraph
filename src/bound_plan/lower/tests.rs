@@ -5366,6 +5366,47 @@ fn an_unwind_repeats_each_row_per_element() {
     );
 }
 
+#[test]
+fn an_undeclared_scalar_property_unwinds_as_a_one_element_list_1419() {
+    // #1419: an undeclared property (no `property_types`) whose column is a
+    // known scalar must not be read as a list (arrayConcat fails on a scalar).
+    // It is wrapped in a one-element list instead, matching Neo4j's "UNWIND of
+    // a non-list value gives one row of itself". The column type is supplied
+    // via `column_types` (T1), since unit tests have no live database.
+    let schema = GraphSchemaConfig::from_yaml_str(
+        r#"
+name: t
+graph_schema:
+  nodes:
+    - label: User
+      database: db
+      table: users
+      node_id: user_id
+      property_mappings: { user_id: user_id, name: full_name }
+      column_types: { user_id: UInt64, full_name: String }
+  edges: []
+"#,
+    )
+    .unwrap()
+    .to_graph_schema()
+    .unwrap();
+    let got = translate_bound_plan(
+        "MATCH (u:User) UNWIND u.name AS x RETURN x",
+        &schema,
+        &ReadOptions::default(),
+    )
+    .unwrap()
+    .sql;
+    assert!(
+        got.contains("if(isNull(v0.full_name), [], [v0.full_name])"),
+        "expected value_list wrap, got: {got}"
+    );
+    assert!(
+        !got.contains("arrayConcat"),
+        "must not use arrayConcat, got: {got}"
+    );
+}
+
 /// S7c: rows in an order keep it, each row's elements after it in list
 /// order: the rows are numbered first.
 #[test]

@@ -483,6 +483,23 @@ impl<'s> Lowerer<'s> {
     fn property_kind(&self, v: VarId, p: &str) -> Kind {
         match self.declared_types(v, p).as_slice() {
             [] => Kind::Unknown,
+            ts if ts.iter().all(Option::is_none) => {
+                let list = self.column_list_kind(v, p);
+                if matches!(list, Kind::List(_)) {
+                    return list;
+                }
+                if self.no_column_kinds.get() {
+                    return Kind::Unknown;
+                }
+                let columns = self.property_columns(v, p);
+                if !columns.is_empty()
+                    && columns.iter().all(Option::is_some)
+                    && columns.iter().all(|c| c.unwrap().array_element().is_none())
+                {
+                    return Kind::Scalar;
+                }
+                Kind::Unknown
+            }
             ts if ts.iter().all(|t| t == &Some(&SchemaType::Boolean)) => Kind::Boolean,
             ts if ts.iter().all(Option::is_some) => Kind::Scalar,
             _ => self.column_list_kind(v, p),
