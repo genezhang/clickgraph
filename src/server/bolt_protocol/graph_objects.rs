@@ -670,6 +670,22 @@ mod tests {
         assert_eq!(encode_json_value(&Value::Number(i64::MAX.into()))[0], 0xCB);
     }
 
+    /// #1536: a Float64 with a long shortest text (`0.30000000000000004` is
+    /// what `avg()` and division commonly produce) stays FLOAT_64. What makes
+    /// a value text is the column's type, not the length of its text.
+    #[test]
+    fn a_long_float_text_stays_float_64_1536() {
+        let value: Value = serde_json::from_str("0.30000000000000004").unwrap();
+        let bytes = encode_json_value(&value);
+        assert_eq!(bytes[0], 0xC1, "{bytes:02X?}");
+        let mut f = [0u8; 8];
+        f.copy_from_slice(&bytes[1..]);
+        assert_eq!(
+            f64::from_be_bytes(f).to_bits(),
+            0.30000000000000004f64.to_bits()
+        );
+    }
+
     #[test]
     fn test_encode_packstream_list() {
         // Empty list -> tiny-list header 0x90, no items.

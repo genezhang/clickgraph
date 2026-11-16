@@ -7606,6 +7606,19 @@ impl<'s> Lowerer<'s> {
                         }
                         _ => (e, false),
                     };
+                    // #1536: ClickHouse writes a 128/256-bit integer as a
+                    // JSON number, which the server reads as a double. The
+                    // final RETURN spells it as text instead, keeping every
+                    // digit; a WITH keeps the number (ORDER BY, arithmetic).
+                    let wide = cte.is_none()
+                        && self.options.dialect.wide_integers_as_text()
+                        && self.wide_integer_item(&it.expr);
+                    let e = match wide {
+                        true => {
+                            RenderExpr::Raw(format!("toString({})", render_expr_to_sql_plain(&e)))
+                        }
+                        false => e,
+                    };
                     let column = body.column(e, &it.name);
                     // (An aggregate is its group's already.)
                     if map_key.is_some() || (null && !it.aggregate) {
@@ -7677,6 +7690,32 @@ impl<'s> Lowerer<'s> {
             }
         }
         Ok((body, exports, shape))
+    }
+
+    /// Whether item `e` reads a property that is a 128/256-bit integer in
+    /// every declaring type (#1536), directly or carried by a WITH.
+    fn wide_integer_item(&self, e: &LogicalExpr) -> bool {
+        let mut e = e;
+        // A WITH's item (`WITH n.big AS x RETURN x`), and a WITH of a WITH.
+        for _ in 0..8 {
+            let LogicalExpr::TableAlias(crate::query_planner::logical_expr::TableAlias(n)) = e
+            else {
+                break;
+            };
+            let Some(source) = parse_var(n).and_then(|v| self.projected.get(&v)) else {
+                return false;
+            };
+            e = source;
+        }
+        let LogicalExpr::PropertyAccessExp(pa) = e else {
+            return false;
+        };
+        match &pa.column {
+            PropertyValue::Column(p) => {
+                parse_var(&pa.table_alias.0).is_some_and(|v| self.wide_integer(v, p))
+            }
+            _ => false,
+        }
     }
 
     /// A node or relationship item of the final RETURN: its columns, named
@@ -7764,6 +7803,14 @@ impl<'s> Lowerer<'s> {
             if aggregating {
                 body.group_by.push(e.clone());
             }
+            // #1536: as for a scalar property item, a 128/256-bit integer
+            // property of a returned element is text, keeping every digit.
+            let e = match self.options.dialect.wide_integers_as_text()
+                && self.wide_integer(src, &key)
+            {
+                true => RenderExpr::Raw(format!("toString({})", render_expr_to_sql_plain(&e))),
+                false => e,
+            };
             let column = body.column(e, &format!("{name}.{}", column_alias(&key)));
             named.push((key, column));
         }
