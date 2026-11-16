@@ -28,11 +28,21 @@ fn distinct_key(v: &str) -> String {
          if(startsWith({ty}, 'DateTime'), CAST({v}, 'Dynamic'), NULL), \
          'DateTime64(6, ''UTC'')'))), '')"
     );
+    // `mapValues` of a raw `Dynamic` map is `[]` for a typed map and
+    // Code 43 for anything that is not one, and `multiIf` analyses
+    // every branch: the Dynamic value goes through `dynamicElement`
+    // (safe on any kind) and the map's own type joins the key, which
+    // separates typed maps whose value list is empty.
+    let map = format!(
+        "concat('m:', {ty}, ':', arrayStringConcat(arrayMap(x -> \
+         dynamicType(CAST(x, 'Dynamic')), CAST(mapValues(dynamicElement(\
+         CAST({v}, 'Dynamic'), 'Map(String, Dynamic)')), 'Array(Dynamic)')), ','))"
+    );
     // `toString` drops a FixedString's trailing zero bytes,
     // which the output prints: padded back to its width.
     format!(
         "tuple(multiIf({ty} = 'None', '', {ty} = 'Bool', 'b', {number}, 'n', \
-         startsWith({ty}, 'Map'), concat('m:', arrayStringConcat(arrayMap(x -> dynamicType(CAST(x, 'Dynamic')), CAST(mapValues({v}), 'Array(Dynamic)')), ',')), match({ty}, '^(Array|Tuple)'), concat('c:', {ty}), {string}, 's', \
+         startsWith({ty}, 'Map'), {map}, match({ty}, '^(Array|Tuple)'), concat('c:', {ty}), {string}, 's', \
          {ty} = 'Date32', 'Date', startsWith({ty}, 'DateTime'), \
          concat('DateTime ', if({zone} = '', timezone(), {zone})), \
          startsWith({ty}, 'Time'), 'Time', {ty}), \

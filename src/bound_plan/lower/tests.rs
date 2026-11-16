@@ -8566,7 +8566,8 @@ fn a_collect_of_lists_or_null_and_a_list_grouping_key() {
 /// #1482: a grouped list or map is keyed by its elements' own types, not by
 /// its text alone: `[date(…)]` and `['…']` (both print `'…'`) are two
 /// groups, `{a: date(…)}` and `{a: '…'}` too. A list's key carries its
-/// element types (`';c:'` + the `Array` type), a map's each value's.
+/// element types (`';c:'` + the `Array` type), a map's its own type
+/// (a typed map's value list is empty) and each value's.
 #[test]
 fn a_grouped_list_or_map_is_keyed_by_its_elements_types_1482() {
     let list = squash(&sql(
@@ -8577,15 +8578,17 @@ fn a_grouped_list_or_map_is_keyed_by_its_elements_types_1482() {
         list.contains("dynamicType(CAST([v0.full_name], 'Dynamic'))"),
         "{list}"
     );
-    // The map's value types, as `mapValues` sees them.
+    // The map's type and its value types, as `mapValues` sees them (the
+    // Dynamic element keeps any other kind a `[]`, so `multiIf` still works).
     let map = squash(&sql(
         "MATCH (u:User) WITH {a: u.name} AS m, count(*) AS c RETURN m, c",
     ));
-    assert!(map.contains("concat('m:', arrayStringConcat("), "{map}");
     assert!(
-        map.contains("arrayMap(x -> dynamicType(CAST(x, 'Dynamic')), CAST(mapValues("),
+        map.contains("concat('m:', replaceRegexpOne(dynamicType(CAST("),
         "{map}"
     );
+    assert!(map.contains("mapValues(dynamicElement(CAST("), "{map}");
+    assert!(map.contains("'Map(String, Dynamic)')"), "{map}");
 }
 
 /// S11o6: `ORDER BY id(o)` of a node of several labels (the Neo4j
