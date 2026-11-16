@@ -601,6 +601,16 @@ impl<'s> Lowerer<'s> {
         }
     }
 
+    /// Whether every declaring type of property `p` of `v` is an integer of
+    /// more than 64 bits (#1536). ClickHouse writes one as a JSON number that
+    /// the server reads as a double, so the final RETURN spells it with
+    /// `toString` to keep every digit.
+    pub(super) fn wide_integer(&self, v: VarId, p: &str) -> bool {
+        let declared: Vec<&KeyPartType> =
+            self.property_columns(v, p).into_iter().flatten().collect();
+        !declared.is_empty() && declared.iter().all(|t| t.is_wider_than_64_bits())
+    }
+
     /// VALUE_TYPES.md T4a (#1396): the CAST target of the elements of list
     /// literal `xs` where the backend has no common type for them
     /// (the dialect's `common_type_where_none`: a `UInt64` and a signed column,

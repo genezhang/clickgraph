@@ -116,6 +116,13 @@ impl SqlDialect {
         }
     }
 
+    /// Whether a returned 128/256-bit integer is spelled as text (#1536):
+    /// ClickHouse writes one as a JSON number, which the server reads as a
+    /// double and loses digits from. No other dialect has a read path here.
+    pub fn wide_integers_as_text(&self) -> bool {
+        matches!(self, SqlDialect::ClickHouse)
+    }
+
     /// Whether this dialect supports the `FINAL` table modifier. `FINAL` is a
     /// ClickHouse MergeTree-family read-time dedup hint; it is invalid SQL on
     /// other backends (notably Databricks/Spark, which has no such storage
@@ -127,14 +134,20 @@ impl SqlDialect {
 }
 
 /// ClickHouse session settings that generated SQL depends on for **result
-/// correctness** (not limits or formats). `join_use_nulls = 1` makes the
-/// unmatched side of a LEFT JOIN NULL instead of the type default (`''`, `0`),
-/// which OPTIONAL MATCH, `IS NULL`, `count(x)` and `coalesce` rely on.
+/// correctness** (not limits). `join_use_nulls = 1` makes the unmatched side
+/// of a LEFT JOIN NULL instead of the type default (`''`, `0`), which
+/// OPTIONAL MATCH, `IS NULL`, `count(x)` and `coalesce` rely on.
+/// `output_format_json_quote_decimals = 1` sends a `Decimal` as its exact
+/// text: a JSON number is read as a double, losing the digits of a wide value
+/// or one of more fractional digits than a double holds (#1536).
 ///
 /// The server connection pool, the chdb executor and [`portable_sql`] apply
 /// these through [`session_settings`], which adds the opt-in
 /// [`DATETIME_ISO8601_SETTING`] when it is on.
-pub const SEMANTIC_SESSION_SETTINGS: &[(&str, &str)] = &[("join_use_nulls", "1")];
+pub const SEMANTIC_SESSION_SETTINGS: &[(&str, &str)] = &[
+    ("join_use_nulls", "1"),
+    ("output_format_json_quote_decimals", "1"),
+];
 
 /// The opt-in output-format setting (`CLICKGRAPH_DATETIME_ISO8601`, #1068):
 /// ClickHouse prints DateTime / DateTime64 as ISO-8601 (`2024-03-15T10:30:00Z`).
@@ -209,7 +222,8 @@ mod portable_sql_tests {
         let sql = "SELECT a.x\nFROM t AS a\nLEFT JOIN u AS b ON b.k = a.k\n";
         assert_eq!(
             portable_sql(sql, SqlDialect::ClickHouse),
-            "SELECT a.x\nFROM t AS a\nLEFT JOIN u AS b ON b.k = a.k\nSETTINGS join_use_nulls = 1"
+            "SELECT a.x\nFROM t AS a\nLEFT JOIN u AS b ON b.k = a.k\n\
+             SETTINGS join_use_nulls = 1, output_format_json_quote_decimals = 1"
         );
     }
 
@@ -218,27 +232,38 @@ mod portable_sql_tests {
     /// setting is added to both (quoted, a string value).
     #[test]
     fn iso_datetime_output_is_an_opt_in_1068() {
-        assert_eq!(session_settings_with(false), vec![("join_use_nulls", "1")]);
+        assert_eq!(
+            session_settings_with(false),
+            vec![
+                ("join_use_nulls", "1"),
+                ("output_format_json_quote_decimals", "1")
+            ]
+        );
         assert_eq!(
             session_settings_with(true),
-            vec![("join_use_nulls", "1"), ("date_time_output_format", "iso")]
+            vec![
+                ("join_use_nulls", "1"),
+                ("output_format_json_quote_decimals", "1"),
+                ("date_time_output_format", "iso")
+            ]
         );
         assert_eq!(
             portable_sql_with("SELECT 1", SqlDialect::ClickHouse, false),
-            "SELECT 1\nSETTINGS join_use_nulls = 1"
+            "SELECT 1\nSETTINGS join_use_nulls = 1, output_format_json_quote_decimals = 1"
         );
         assert_eq!(
             portable_sql_with("SELECT 1", SqlDialect::ClickHouse, true),
-            "SELECT 1\nSETTINGS join_use_nulls = 1, date_time_output_format = 'iso'"
+            "SELECT 1\nSETTINGS join_use_nulls = 1, \
+             output_format_json_quote_decimals = 1, date_time_output_format = 'iso'"
         );
         // The process-wide opt-in is what `portable_sql` / `session_settings` read.
         crate::server::query_context::with_datetime_iso8601(true, || {
-            assert_eq!(session_settings().len(), 2);
+            assert_eq!(session_settings().len(), 3);
             assert!(portable_sql("SELECT 1", SqlDialect::ClickHouse)
                 .ends_with("date_time_output_format = 'iso'"));
         });
         crate::server::query_context::with_datetime_iso8601(false, || {
-            assert_eq!(session_settings().len(), 1);
+            assert_eq!(session_settings().len(), 2);
         });
     }
 
