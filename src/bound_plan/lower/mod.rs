@@ -7133,10 +7133,32 @@ impl<'s> Lowerer<'s> {
                 continue;
             }
             let e = match self.node_id_item(&k.expr) {
-                // As an `id(n)` item: by the node's key (S11e).
+                // As an `id(n)` item: by its key (S11e).
                 Some((v, _)) => self.identity_value(v)?,
                 // (A list held where its NULL is known: `null_list.rs`.)
                 None => self.held_list(&k.expr, items)?,
+            };
+            // ClickHouse cannot ORDER BY a list of mixed element types
+            // (Code 44/386). Cypher orders a list element by element, so use
+            // the dialect's element-order key only there; a list of one
+            // comparable type keeps the native ORDER BY, which orders
+            // numbers numerically and dates chronologically. (#1491)
+            let kind = self.kind(&k.expr);
+            let mixed_key = if self.options.dialect.is_clickhouse() {
+                let lists = current_function_mapper().lists();
+                match &kind {
+                    unwind::Kind::List(inner) if matches!(**inner, unwind::Kind::Unknown) => {
+                        lists.and_then(|l| l.mixed_order)
+                    }
+                    unwind::Kind::Map(_) => lists.and_then(|l| l.mixed_map_order),
+                    _ => None,
+                }
+            } else {
+                None
+            };
+            let e = match mixed_key {
+                Some(key) => RenderExpr::Raw(key(&render_expr_to_sql_plain(&e))),
+                None => e,
             };
             // A key reading an item of a DISTINCT's group: any one of the
             // group's, one value by DISTINCT (not a grouping key).
