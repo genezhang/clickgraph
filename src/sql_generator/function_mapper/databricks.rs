@@ -362,6 +362,9 @@ impl FunctionMapper for DatabricksFunctionMapper {
                      WHEN {l_key} > {r_key} THEN 1 ELSE 0 END)"
                 )
             },
+            // Spark compares a list of mixed types as the one VARIANT it
+            // casts to; no key is needed.
+            mixed_order: None,
             or_empty: Some(|l| format!("coalesce({l}, array())")),
             // `struct(a.x, …)` names its fields after their columns: the
             // fields are named by position to be read by it.

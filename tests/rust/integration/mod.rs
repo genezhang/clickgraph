@@ -11,6 +11,7 @@ mod databricks_introspect_tests;
 mod distinct_key_live_tests;
 mod id_number_endpoint_tests;
 mod metrics_endpoint_tests;
+mod order_key_live_tests;
 mod schema_registry_tests;
 mod sql_generation_handler_comment_tests;
 mod translate_seam_endpoint_tests;

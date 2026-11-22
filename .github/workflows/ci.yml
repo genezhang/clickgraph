@@ -89,6 +89,16 @@ jobs:
         CLICKHOUSE_USER: "test_user"
         CLICKHOUSE_PASSWORD: "test_pass"
 
+    # #1491 review: the order key's unit test sees only its SQL text; the
+    # old 9-decimal key merged doubles closer than 1e-9, which only a real
+    # ClickHouse can show.
+    - name: Order-key live tier (rust)
+      run: cargo test --test integration order_key_live --verbose
+      env:
+        CLICKHOUSE_URL: "http://localhost:8123"
+        CLICKHOUSE_USER: "test_user"
+        CLICKHOUSE_PASSWORD: "test_pass"
+
     - name: Setup test data
       run: |
         chmod +x scripts/test/setup_social_integration_data.sh

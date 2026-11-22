@@ -92,6 +92,54 @@ fn distinct_key(v: &str) -> String {
     )
 }
 
+/// #1491: `ORDER BY` of a list whose elements are not one comparable type.
+/// Neo4j compares lists element by element, each by its type's rank and then
+/// by its value in that type; ClickHouse refuses such a list in `ORDER BY`
+/// (Code 44/386). `Array(Dynamic)` lets one lambda see each element's own
+/// type, and an array of `(rank, value, text)` tuples compares
+/// lexicographically, so `[3]` sorts before `[12]` — a text key puts `[12]`
+/// first.
+fn mixed_list_order_key(list: &str) -> String {
+    format!(
+        "arrayMap(x -> {}, CAST({list}, 'Array(Dynamic)'))",
+        order_element_key("x")
+    )
+}
+
+/// One element's orderable key: Neo4j's type rank (numbers greatest, NULL
+/// last), then the value in its own type (a number numerically, a
+/// string/date lexicographically), then the text as a tie-break.
+///
+/// A list, map or tuple inside the list is ordered by its text (a map has no
+/// order of its own: `ORDER BY` of a map is refused), after its type rank.
+///
+/// A number's value is two components: its `Float64` (which orders values
+/// of any magnitude), then its exact `Decimal256` (which breaks a float tie
+/// without dropping digits: `0.1234567891239` and `0.1234567891231` are
+/// different doubles). Values beyond Decimal256's range leave the second 0
+/// and fall back to the text, which orders digits of one length.
+fn order_element_key(v: &str) -> String {
+    let ty = format!(
+        "replaceRegexpOne(dynamicType(CAST({v}, 'Dynamic')), \
+         '^LowCardinality\\\\((.*)\\\\)$', '\\\\1')"
+    );
+    let number = format!("match({ty}, '^(U?Int[0-9]|Float|BFloat|Decimal)')");
+    let string = format!("match({ty}, '^(String|FixedString|Enum|UUID|IPv)')");
+    let zone = format!("extract({ty}, '''([^'']*)''')");
+    format!(
+        "tuple(multiIf({ty} = 'None', 255, startsWith({ty}, 'Map'), 1, \
+         startsWith({ty}, 'Array') OR startsWith({ty}, 'Tuple'), 4, \
+         startsWith({ty}, 'DateTime'), if({zone} = '', 8, 7), \
+         {ty} = 'Date32' OR {ty} = 'Date', 9, \
+         startsWith({ty}, 'Time'), if({zone} = '', 11, 10), \
+         {string}, 13, {ty} = 'Bool', 14, {number}, 15, 16), \
+         multiIf({number}, ifNull(toFloat64OrNull(toString({v})), 0), \
+         {ty} = 'Bool', toUInt8(toString({v}) = 'true'), 0), \
+         multiIf({number}, ifNull(toDecimal256OrNull(toString({v}), 18), 0), 0), \
+         if({ty} = 'Bool' OR {ty} = 'None', '', toString({v})))"
+    )
+}
+
 pub(crate) struct ClickhouseFunctionMapper;
 
 impl FunctionMapper for ClickhouseFunctionMapper {
@@ -397,6 +445,7 @@ impl FunctionMapper for ClickhouseFunctionMapper {
             collect_all: |v| format!("arrayMap(t -> t.1, groupArray(tuple({v})))"),
             // Every type compares (a `Map`, a `Dynamic` by its type first).
             fixed_order: |l| format!("arraySort({l})"),
+            mixed_order: Some(mixed_list_order_key),
             // An unmatched row's `Array` column is its default, `[]`, also
             // under `join_use_nulls = 1`.
             or_empty: None,
@@ -671,6 +720,28 @@ mod tests {
         let m = ClickhouseFunctionMapper;
         assert_eq!(m.any_non_null("v", true), "anyIf(v, NOT isNull(v))");
         assert_eq!(m.any_non_null("v", false), "anyIfOrNull(v, NOT isNull(v))");
+    }
+
+    /// #1491: the order key of a mixed list ranks by type and orders numbers
+    /// numerically (`[3]` before `[12]`), unlike `distinct_key`, which would
+    /// spell them as text.
+    #[test]
+    fn a_mixed_list_order_key_orders_by_type_then_value() {
+        let Some(lists) = ClickhouseFunctionMapper.lists() else {
+            panic!("ClickHouse lists");
+        };
+        let key = (lists.mixed_order.expect("ClickHouse orders mixed lists"))("[1, 'a']");
+        assert!(key.starts_with("arrayMap(x -> tuple(multiIf("), "{key}");
+        assert!(key.ends_with("CAST([1, 'a'], 'Array(Dynamic)'))"), "{key}");
+        // A number is ordered by its float, then by its exact value (#1491
+        // review: scale 9 merged floats closer than 1e-9).
+        assert!(key.contains("toFloat64OrNull(toString(x))"), "{key}");
+        assert!(key.contains("toDecimal256OrNull(toString(x), 18)"), "{key}");
+        assert!(!key.contains("toDecimal256OrNull(toString(x), 9)"), "{key}");
+        assert!(
+            key.contains("'^(U?Int[0-9]|Float|BFloat|Decimal)'), 15"),
+            "{key}"
+        );
     }
 
     #[test]
