@@ -59,19 +59,12 @@ fn mixed_list_order_key(list: &str) -> String {
     )
 }
 
-/// #1491: a map's order: by size, then key order, then each value (each by
-/// `order_element_key`), as Neo4j orders maps.
-fn mixed_map_order_key(map: &str) -> String {
-    let m = format!("CAST({map}, 'Map(String, Dynamic)')");
-    format!(
-        "tuple(length({m}), arrayMap(k -> tuple(k, {}), arraySort(mapKeys({m}))))",
-        order_element_key(&format!("{m}[k]"))
-    )
-}
-
 /// One element's orderable key: Neo4j's type rank (numbers greatest, NULL
 /// last), then the value in its own type (a number numerically, a
 /// string/date lexicographically), then the text as a tie-break.
+///
+/// A list, map or tuple inside the list is ordered by its text (a map has no
+/// order of its own: `ORDER BY` of a map is refused), after its type rank.
 ///
 /// A number's value is two components: its `Float64` (which orders values
 /// of any magnitude), then its exact `Decimal256` (which breaks a float tie
@@ -406,7 +399,6 @@ impl FunctionMapper for ClickhouseFunctionMapper {
             // Every type compares (a `Map`, a `Dynamic` by its type first).
             fixed_order: |l| format!("arraySort({l})"),
             mixed_order: Some(mixed_list_order_key),
-            mixed_map_order: Some(mixed_map_order_key),
             // An unmatched row's `Array` column is its default, `[]`, also
             // under `join_use_nulls = 1`.
             or_empty: None,
@@ -681,13 +673,6 @@ mod tests {
             key.contains("'^(U?Int[0-9]|Float|BFloat|Decimal)'), 15"),
             "{key}"
         );
-        // A map is ordered by size, then key, then value.
-        let key = (lists.mixed_map_order.expect("ClickHouse orders mixed maps"))("m");
-        assert!(
-            key.starts_with("tuple(length(CAST(m, 'Map(String, Dynamic)')), "),
-            "{key}"
-        );
-        assert!(key.contains("arrayMap(k -> tuple(k, "), "{key}");
     }
 
     #[test]

@@ -6505,6 +6505,11 @@ fn a_null_list_is_told_by_its_source() {
     ));
     assert!(got.contains(r#"any([v0.full_name])"#), "{got}");
     assert!(!got.contains("GROUP BY any("), "{got}");
+    // (As on `main`: the DISTINCT's group is not keyed by the list read back.)
+    assert!(
+        !got.contains("GROUP BY tuple(multiIf(replaceRegexpOne(dynamicType(CAST(any("),
+        "{got}"
+    );
     assert!(!got.contains("toString([v0.full_name]))), any("), "{got}");
     // Not held outside a reader: inside a list a NULL stays NULL (review).
     has(

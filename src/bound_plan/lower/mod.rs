@@ -7145,12 +7145,13 @@ impl<'s> Lowerer<'s> {
             // numbers numerically and dates chronologically. (#1491)
             let kind = self.kind(&k.expr);
             let mixed_key = if self.options.dialect.is_clickhouse() {
-                let lists = current_function_mapper().lists();
+                // (A map, or a list of known maps, was refused above.)
                 match &kind {
                     unwind::Kind::List(inner) if matches!(**inner, unwind::Kind::Unknown) => {
-                        lists.and_then(|l| l.mixed_order)
+                        current_function_mapper()
+                            .lists()
+                            .and_then(|lists| lists.mixed_order)
                     }
-                    unwind::Kind::Map(_) => lists.and_then(|l| l.mixed_map_order),
                     _ => None,
                 }
             } else {

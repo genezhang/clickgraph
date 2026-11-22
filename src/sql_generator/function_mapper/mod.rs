@@ -511,8 +511,6 @@ pub(crate) struct Lists {
     /// (#1491). Its elements order as Neo4j orders values (type rank, then
     /// the value in its own type) — never by their text alone.
     pub mixed_order: Option<fn(&str) -> String>,
-    /// The `ORDER BY` key of the map `{0}` (see [`Self::mixed_order`]).
-    pub mixed_map_order: Option<fn(&str) -> String>,
     /// The list column `{0}` of a LEFT JOIN, empty on a row that joined no
     /// row (a pattern comprehension that matches nothing); `None` when the
     /// column already is.
