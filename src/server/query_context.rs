@@ -204,6 +204,52 @@ pub fn with_datetime_iso8601<R>(on: bool, f: impl FnOnce() -> R) -> R {
     result
 }
 
+/// Process-wide opt-in (#1536): 128/256-bit integers and `Decimal` values
+/// come back as exact text. Off by default: they are JSON numbers, which the
+/// server reads as doubles and loses digits from. Set once at startup from
+/// `CLICKGRAPH_WIDE_NUMBERS_AS_TEXT` (server) or `cg --wide-numbers-as-text`;
+/// where nothing sets it (embedded) the environment variable is read at first
+/// use.
+static WIDE_NUMBERS_AS_TEXT: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+
+#[cfg(test)]
+thread_local! {
+    static WIDE_NUMBERS_AS_TEXT_TEST: std::cell::Cell<Option<bool>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// Enable exact text for wide integers and decimals. Idempotent (first write
+/// wins); call once before serving requests.
+pub fn set_wide_numbers_as_text(enabled: bool) {
+    let _ = WIDE_NUMBERS_AS_TEXT.set(enabled);
+}
+
+/// Whether wide integers and decimals are returned as exact text (default
+/// false).
+pub fn wide_numbers_as_text() -> bool {
+    #[cfg(test)]
+    if let Some(on) = WIDE_NUMBERS_AS_TEXT_TEST.with(|c| c.get()) {
+        return on;
+    }
+    *WIDE_NUMBERS_AS_TEXT.get_or_init(|| {
+        std::env::var("CLICKGRAPH_WIDE_NUMBERS_AS_TEXT").is_ok_and(|v| {
+            matches!(
+                v.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+    })
+}
+
+/// Run `f` with exact wide-number output on or off, on this thread only.
+#[cfg(test)]
+pub fn with_wide_numbers_as_text<R>(on: bool, f: impl FnOnce() -> R) -> R {
+    let before = WIDE_NUMBERS_AS_TEXT_TEST.with(|c| c.replace(Some(on)));
+    let result = f();
+    WIDE_NUMBERS_AS_TEXT_TEST.with(|c| c.set(before));
+    result
+}
+
 impl QueryContext {
     /// Create a new query context with schema name.
     ///

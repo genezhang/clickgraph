@@ -78,6 +78,16 @@ struct Cli {
     )]
     datetime_iso8601: bool,
 
+    /// Return 128/256-bit integers and Decimal values as exact text (#1536);
+    /// without it a wide value is a JSON number and loses digits
+    #[arg(
+        long,
+        env = "CG_WIDE_NUMBERS_AS_TEXT",
+        global = true,
+        value_parser = clap::builder::FalseyValueParser::new()
+    )]
+    wide_numbers_as_text: bool,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -212,6 +222,7 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
     clickgraph::server::query_context::set_check_node_properties(cli.check_node_properties);
     clickgraph::server::query_context::set_datetime_iso8601(cli.datetime_iso8601);
+    clickgraph::server::query_context::set_wide_numbers_as_text(cli.wide_numbers_as_text);
     let cfg = CgConfig::load(
         &cli.schema,
         &cli.clickhouse,

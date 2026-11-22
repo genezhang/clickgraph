@@ -9161,12 +9161,14 @@ graph_schema:
 }
 
 /// #1536: ClickHouse writes a 128/256-bit integer as a JSON number, which
-/// the server reads as a double. The final RETURN spells such a property as
-/// text, keeping every digit; a 64-bit integer and a Decimal (quoted by the
-/// session setting) are returned as they are, and an ORDER BY still reads the
-/// number.
+/// the server reads as a double. With the opt-in exact wide-number output, the
+/// final RETURN spells such a property as text, keeping every digit; a 64-bit
+/// integer and a Decimal (quoted by the session setting) are returned as they
+/// are, and an ORDER BY still reads the number. Off (the default), nothing
+/// changes.
 #[test]
 fn a_wide_integer_property_is_returned_as_text_1536() {
+    use crate::server::query_context::with_wide_numbers_as_text;
     let schema = |ty: &str| {
         crate::graph_catalog::config::GraphSchemaConfig::from_yaml_str(&format!(
             r#"
@@ -9186,25 +9188,64 @@ graph_schema:
         .to_graph_schema()
         .unwrap()
     };
-    for wide in ["Int128", "UInt128", "Int256", "UInt256", "Nullable(Int128)"] {
-        let (sql, _) = shaped("MATCH (u:U) RETURN u.v AS v ORDER BY u.v", &schema(wide));
-        assert!(sql.contains(r#"toString(v0.v) AS "v""#), "{wide}: {sql}");
-        // The order key is the number, not its text.
-        assert!(sql.contains("ORDER BY v0.v"), "{wide}: {sql}");
-        assert!(!sql.contains("ORDER BY toString(v0.v)"), "{wide}: {sql}");
-    }
-    for plain in ["Int64", "UInt64", "Decimal(38, 10)"] {
-        let (sql, _) = shaped("MATCH (u:U) RETURN u.v AS v", &schema(plain));
-        assert!(!sql.contains("toString(v0.v)"), "{plain}: {sql}");
-    }
-    // A node returned whole carries the wide property as text too.
-    let (sql, _) = shaped("MATCH (u:U) RETURN u", &schema("Int128"));
-    assert!(sql.contains(r#"toString(v0.v) AS "u.v""#), "{sql}");
-    assert!(sql.contains(r#"v0.id AS "u.id""#), "{sql}");
-    // A WITH keeps the number; the final RETURN of it is text.
-    let (sql, _) = shaped("MATCH (u:U) WITH u.v AS x RETURN x", &schema("Int128"));
-    assert!(sql.contains("v0.v AS"), "{sql}");
-    assert!(sql.contains(r#"SELECT toString(w1.v1) AS "x""#), "{sql}");
+    // Off by default: the number, as before.
+    let (sql, _) = shaped("MATCH (u:U) RETURN u.v AS v", &schema("Int128"));
+    assert!(!sql.contains("toString(v0.v)"), "{sql}");
+    with_wide_numbers_as_text(true, || {
+        for wide in ["Int128", "UInt128", "Int256", "UInt256", "Nullable(Int128)"] {
+            let (sql, _) = shaped("MATCH (u:U) RETURN u.v AS v ORDER BY u.v", &schema(wide));
+            assert!(sql.contains(r#"toString(v0.v) AS "v""#), "{wide}: {sql}");
+            // The order key is the number, not its text.
+            assert!(sql.contains("ORDER BY v0.v"), "{wide}: {sql}");
+            assert!(!sql.contains("ORDER BY toString(v0.v)"), "{wide}: {sql}");
+        }
+        for plain in ["Int64", "UInt64", "Decimal(38, 10)"] {
+            let (sql, _) = shaped("MATCH (u:U) RETURN u.v AS v", &schema(plain));
+            assert!(!sql.contains("toString(v0.v)"), "{plain}: {sql}");
+        }
+        // A node returned whole carries the wide property as text too.
+        let (sql, _) = shaped("MATCH (u:U) RETURN u", &schema("Int128"));
+        assert!(sql.contains(r#"toString(v0.v) AS "u.v""#), "{sql}");
+        assert!(sql.contains(r#"v0.id AS "u.id""#), "{sql}");
+        // A WITH keeps the number; the final RETURN of it is text.
+        let (sql, _) = shaped("MATCH (u:U) WITH u.v AS x RETURN x", &schema("Int128"));
+        assert!(sql.contains("v0.v AS"), "{sql}");
+        assert!(sql.contains(r#"SELECT toString(w1.v1) AS "x""#), "{sql}");
+        // A UNION column wide in one arm is text in every arm (#1536
+        // review): one column never mixes a string with a number.
+        let both = crate::graph_catalog::config::GraphSchemaConfig::from_yaml_str(
+            r#"
+name: lower_wide_integer_union
+graph_schema:
+  nodes:
+    - label: U
+      database: db
+      table: us
+      node_id: id
+      property_mappings: {id: id, v: v}
+      column_types: {id: UInt64, v: "Int128"}
+    - label: S
+      database: db
+      table: ss
+      node_id: id
+      property_mappings: {id: id, v: v}
+      column_types: {id: UInt64, v: UInt64}
+  edges: []
+"#,
+        )
+        .unwrap()
+        .to_graph_schema()
+        .unwrap();
+        let (sql, _) = shaped(
+            "MATCH (u:U) RETURN u.v AS x UNION ALL MATCH (s:S) RETURN s.v AS x",
+            &both,
+        );
+        assert!(
+            sql.contains(r#"toString(v0.v) AS "__cg_w1_c0""#)
+                && sql.contains(r#"toString(v2.v) AS "__cg_w2_c0""#),
+            "{sql}"
+        );
+    });
 }
 
 /// #1528: composite ids with one such part, an OPTIONAL MATCH that finds no
