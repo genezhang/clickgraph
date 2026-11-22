@@ -60,6 +60,10 @@ struct Arm {
     alias: String,
     keys: Vec<OrderByItem>,
     identity_columns: usize,
+    /// The arm's CTE in `ctes`, and which of its output columns are the exact
+    /// text of a wide integer (#1536).
+    cte: usize,
+    wide: Vec<bool>,
 }
 
 /// Lower the UNION of `arms`, arm `i` returning the bindings
@@ -125,8 +129,17 @@ fn lower_arms(
             mut plan,
             shape,
             identities,
+            wide,
         } = q.lower(arm, &mut ctes)?;
         let shape = in_union_order(shape, &projection.items, columns)?;
+        // The UNION's column order, which the CTEs export.
+        let arm_wide: Vec<bool> = shape
+            .iter()
+            .flat_map(|c| {
+                let wide = c.columns.iter().any(|(_, col)| wide.contains(col));
+                std::iter::repeat_n(wide, c.columns.len())
+            })
+            .collect();
         if let Some(first) = &first {
             // `id()`s of different labels (or of a relationship): each arm
             // returns the element id the server numbers (I5b). A text
@@ -224,10 +237,38 @@ fn lower_arms(
             alias,
             keys,
             identity_columns,
+            cte: ctes.len() - 1,
+            wide: arm_wide,
         });
         first.get_or_insert(shape);
     }
     let shape = first.ok_or_else(|| LowerError::Unsupported("internal: no UNION arm".into()))?;
+    // #1536: a column that is the exact text of a wide integer in one arm is
+    // text in every arm, so one column never holds a string in one row and a
+    // number in another (JSON would read the number as a double). A narrower
+    // integer spells the same digits as text, so the column's values still
+    // compare as they did; a 64-bit integer's text is exact too.
+    let columns_count = shape.iter().map(|c| c.columns.len()).sum::<usize>();
+    let text: Vec<bool> = (0..columns_count)
+        .map(|n| lowered.iter().any(|a| a.wide[n]))
+        .collect();
+    for arm in &lowered {
+        let Some(Cte {
+            content: CteContent::Structured(plan),
+            ..
+        }) = ctes.get_mut(arm.cte)
+        else {
+            return unsupported("internal: a UNION arm's CTE is not a SELECT");
+        };
+        for (n, text) in text.iter().enumerate() {
+            if *text && !arm.wide[n] {
+                let item = &mut plan.select.items[n];
+                let e = std::mem::replace(&mut item.expression, RenderExpr::Literal(Literal::Null));
+                item.expression =
+                    RenderExpr::Raw(format!("toString({})", render_expr_to_sql_plain(&e)));
+            }
+        }
+    }
     let kinds: Vec<&ResultKind> = shape
         .iter()
         .flat_map(|c| c.columns.iter().map(|_| &c.kind))
@@ -328,7 +369,14 @@ fn lower_arms(
             .collect();
     }
     plan.ctes = CteItems(ctes);
-    Ok(Pass::Lowered(Box::new(Lowered { plan, shape })))
+    let wide = shape
+        .iter()
+        .flat_map(|c| c.columns.iter().map(|(_, n)| n))
+        .zip(&text)
+        .filter(|(_, text)| **text)
+        .map(|(n, _)| n.clone())
+        .collect();
+    Ok(Pass::Lowered(Box::new(Lowered { plan, shape, wide })))
 }
 
 /// The columns where `first` and `other` hold nodes of different labels, or

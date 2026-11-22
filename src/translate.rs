@@ -675,6 +675,7 @@ fn bound_plan_or_reason(
             check_node_properties: options
                 .check_node_properties
                 .unwrap_or_else(crate::server::query_context::check_node_properties),
+            wide_numbers_as_text: crate::server::query_context::wide_numbers_as_text(),
             id_lookup: options.id_mapper.clone().map(|mapper| {
                 // The query's schema (the context's: an `Arc`, not a copy).
                 let schema = crate::server::query_context::get_current_schema()

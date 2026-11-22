@@ -144,6 +144,10 @@ pub struct LowerOptions {
     /// dialect-specific, so it has to come in the same way as every other
     /// rendering input.
     pub dialect: crate::sql_generator::SqlDialect,
+    /// Return 128/256-bit integers as exact text (`CLICKGRAPH_WIDE_NUMBERS_AS_TEXT`,
+    /// #1536): supplied by the caller, as [`Self::dialect`] is. Off: the
+    /// numbers are as they were.
+    pub wide_numbers_as_text: bool,
 }
 
 /// What an integer `id()` value names on the server.
@@ -169,6 +173,10 @@ impl std::fmt::Debug for IdLookup {
 pub struct Lowered {
     pub plan: RenderPlan,
     pub shape: Vec<ResultColumn>,
+    /// The SELECT columns returned as exact text for a wide integer (#1536).
+    /// A UNION makes every arm's column at such a position text, so one column
+    /// never mixes a string with a number.
+    pub wide: BTreeSet<String>,
 }
 
 /// One RETURN item of the result (§4.13), in RETURN order.
@@ -346,6 +354,7 @@ fn lower_pass(
     let lowered = Lowered {
         plan,
         shape: arm.shape,
+        wide: arm.wide,
     };
     Ok((lowered, unstable.take()))
 }
@@ -377,6 +386,8 @@ struct LoweredQuery {
     /// returns, by item name: what a DISTINCT keeps it apart by (a
     /// relationship's graph value is not: its `elementId` is its ends').
     identities: Vec<(String, Vec<RenderExpr>)>,
+    /// The SELECT columns returned as exact text for a wide integer (#1536).
+    wide: BTreeSet<String>,
 }
 
 impl Query<'_> {
@@ -397,10 +408,12 @@ impl Query<'_> {
             .borrow_mut()
             .extend(std::mem::take(&mut l.unstable));
         let (plan, shape) = lowered?;
+        let wide = std::mem::take(&mut l.wide_columns);
         Ok(LoweredQuery {
             plan,
             shape,
             identities: l.identities,
+            wide,
         })
     }
 
@@ -441,6 +454,7 @@ impl Query<'_> {
             collect_order: None,
             one_row: true,
             identities: Vec::new(),
+            wide_columns: BTreeSet::new(),
             subqueries: &self.stmt.subqueries,
             projected: projected_items(&self.stmt.plan),
             as_values: self.as_values.clone(),
@@ -1589,6 +1603,9 @@ struct Lowerer<'s> {
     /// The identity of each node, relationship or graph value the final
     /// RETURN returns, by item name ([`LoweredQuery::identities`]).
     identities: Vec<(String, Vec<RenderExpr>)>,
+    /// The final SELECT's columns returned as exact text for a wide integer
+    /// (#1536).
+    wide_columns: BTreeSet<String>,
     /// The statement's subquery expressions (`subquery.rs`).
     subqueries: &'s [Subquery],
     /// The expression each WITH / RETURN item was projected from.
@@ -7687,7 +7704,23 @@ impl<'s> Lowerer<'s> {
                         }
                         _ => (e, false),
                     };
+                    // #1536: ClickHouse writes a 128/256-bit integer as a
+                    // JSON number, which the server reads as a double. The
+                    // final RETURN spells it as text instead, keeping every
+                    // digit; a WITH keeps the number (ORDER BY, arithmetic).
+                    let wide = cte.is_none()
+                        && self.wide_numbers_as_text()
+                        && self.wide_integer_item(&it.expr);
+                    let e = match wide {
+                        true => {
+                            RenderExpr::Raw(format!("toString({})", render_expr_to_sql_plain(&e)))
+                        }
+                        false => e,
+                    };
                     let column = body.column(e, &it.name);
+                    if wide {
+                        self.wide_columns.insert(column.clone());
+                    }
                     // (An aggregate is its group's already.)
                     if map_key.is_some() || (null && !it.aggregate) {
                         body.determined.push(column.clone());
@@ -7758,6 +7791,38 @@ impl<'s> Lowerer<'s> {
             }
         }
         Ok((body, exports, shape))
+    }
+
+    /// Whether the exact wide-number output is on (#1536): the dialect can
+    /// return them as text, and the caller's opt-in asks for it.
+    fn wide_numbers_as_text(&self) -> bool {
+        self.options.dialect.wide_integers_as_text() && self.options.wide_numbers_as_text
+    }
+
+    /// Whether item `e` reads a property that is a 128/256-bit integer in
+    /// every declaring type (#1536), directly or carried by a WITH.
+    fn wide_integer_item(&self, e: &LogicalExpr) -> bool {
+        let mut e = e;
+        // A WITH's item (`WITH n.big AS x RETURN x`), and a WITH of a WITH.
+        for _ in 0..8 {
+            let LogicalExpr::TableAlias(crate::query_planner::logical_expr::TableAlias(n)) = e
+            else {
+                break;
+            };
+            let Some(source) = parse_var(n).and_then(|v| self.projected.get(&v)) else {
+                return false;
+            };
+            e = source;
+        }
+        let LogicalExpr::PropertyAccessExp(pa) = e else {
+            return false;
+        };
+        match &pa.column {
+            PropertyValue::Column(p) => {
+                parse_var(&pa.table_alias.0).is_some_and(|v| self.wide_integer(v, p))
+            }
+            _ => false,
+        }
     }
 
     /// A node or relationship item of the final RETURN: its columns, named
@@ -7845,6 +7910,12 @@ impl<'s> Lowerer<'s> {
             if aggregating {
                 body.group_by.push(e.clone());
             }
+            // #1536: as for a scalar property item, a 128/256-bit integer
+            // property of a returned element is text, keeping every digit.
+            let e = match self.wide_numbers_as_text() && self.wide_integer(src, &key) {
+                true => RenderExpr::Raw(format!("toString({})", render_expr_to_sql_plain(&e))),
+                false => e,
+            };
             let column = body.column(e, &format!("{name}.{}", column_alias(&key)));
             named.push((key, column));
         }
