@@ -24,10 +24,9 @@ fn schema() -> clickgraph::graph_catalog::graph_schema::GraphSchema {
     .unwrap()
 }
 
-/// The rows of `cypher`'s generated SQL, as ClickHouse's JSON output.
-async fn rows(cypher: &str) -> Vec<Value> {
+/// Runs `sql` on the live ClickHouse and returns its (JSON) response text.
+async fn run(sql: String, what: &str) -> String {
     let url = std::env::var("CLICKHOUSE_URL").unwrap();
-    let sql = clickgraph::clickhouse_query_generator::cypher_to_sql(cypher, &schema()).unwrap();
     let response = reqwest::Client::new()
         .post(format!("{url}/?default_format=JSON"))
         .query(&[
@@ -43,9 +42,23 @@ async fn rows(cypher: &str) -> Vec<Value> {
         .unwrap();
     let status = response.status();
     let text = response.text().await.unwrap();
-    assert!(status.is_success(), "{cypher}: {text}");
-    let json: Value = serde_json::from_str(&text).unwrap();
+    assert!(status.is_success(), "{what}: {text}");
+    text
+}
+
+/// The rows of `cypher`'s generated SQL over `schema`, as ClickHouse's JSON.
+async fn rows_over(
+    cypher: &str,
+    schema: &clickgraph::graph_catalog::graph_schema::GraphSchema,
+) -> Vec<Value> {
+    let sql = clickgraph::clickhouse_query_generator::cypher_to_sql(cypher, schema).unwrap();
+    let json: Value = serde_json::from_str(&run(sql, cypher).await).unwrap();
     json["data"].as_array().unwrap().clone()
+}
+
+/// The rows of `cypher`'s generated SQL (reading no table), as JSON.
+async fn rows(cypher: &str) -> Vec<Value> {
+    rows_over(cypher, &schema()).await
 }
 
 #[tokio::test]
@@ -66,5 +79,79 @@ async fn distinct_and_grouping_over_lists_and_maps_run_on_live_clickhouse() {
         ("UNWIND [1, 1, 2] AS x RETURN DISTINCT x", 2),
     ] {
         assert_eq!(rows(cypher).await.len(), want, "{cypher}");
+    }
+}
+
+/// #1482 review: the key carries a container's type so that `[date]` and
+/// `['…']` (one text) are two groups, but the same value held in two storage
+/// types (`Array(Int32)` and `Array(Int64)`, `LowCardinality(String)` and
+/// `String` elements, `Nullable` ones, a `Map` of either width) is one, as
+/// for a scalar. A `UNION` of two such sources must not repeat a row.
+#[tokio::test]
+async fn a_union_of_one_value_in_two_storage_types_is_one_row_on_live_clickhouse() {
+    if std::env::var("CLICKHOUSE_URL").is_err() {
+        println!("skipping: CLICKHOUSE_URL not set (offline suite)");
+        return;
+    }
+    for ddl in [
+        "CREATE DATABASE IF NOT EXISTS dk_live",
+        "DROP TABLE IF EXISTS dk_live.a",
+        "DROP TABLE IF EXISTS dk_live.b",
+        "CREATE TABLE dk_live.a (id UInt64, tags Array(Int32), names Array(String), \
+         mp Map(String, Int32), n Array(Int64), dt Array(Date), f Array(Float32)) \
+         ENGINE = MergeTree ORDER BY id",
+        "CREATE TABLE dk_live.b (id UInt64, tags Array(Int64), \
+         names Array(LowCardinality(String)), mp Map(String, Int64), \
+         nn Array(Nullable(Int64)), s Array(String), f Array(Float64)) \
+         ENGINE = MergeTree ORDER BY id",
+        "INSERT INTO dk_live.a VALUES (1, [1, 2], ['a'], {'k': 1}, [1], ['2020-01-15'], [1.5]), \
+         (2, [3], ['b'], {'k': 2}, [2], ['2021-02-02'], [2.5])",
+        "INSERT INTO dk_live.b VALUES (1, [1, 2], ['a'], {'k': 1}, [1], ['2020-01-15'], [1.5]), \
+         (2, [4], ['c'], {'k': 3}, [NULL], ['2021-03-03'], [3.5])",
+    ] {
+        run(ddl.to_string(), ddl).await;
+    }
+    let schema = GraphSchemaConfig::from_yaml_str(
+        "graph_schema:\n  nodes:\n    - label: A\n      database: dk_live\n      table: a\n      \
+         node_id: id\n      property_mappings: {id: id, tags: tags, names: names, mp: mp, n: n, dt: dt, f: f}\n    \
+         - label: B\n      database: dk_live\n      table: b\n      node_id: id\n      \
+         property_mappings: {id: id, tags: tags, names: names, mp: mp, nn: nn, s: s, f: f}\n  edges: []\n",
+    )
+    .unwrap()
+    .to_graph_schema()
+    .unwrap();
+    for (cypher, want) in [
+        // Array(Int32) / Array(Int64): [1, 2] is held by both.
+        (
+            "MATCH (n:A) RETURN n.tags AS t UNION MATCH (m:B) RETURN m.tags AS t",
+            3,
+        ),
+        // Array(String) / Array(LowCardinality(String)).
+        (
+            "MATCH (n:A) RETURN n.names AS t UNION MATCH (m:B) RETURN m.names AS t",
+            3,
+        ),
+        // Map(String, Int32) / Map(String, Int64).
+        (
+            "MATCH (n:A) RETURN n.mp AS t UNION MATCH (m:B) RETURN m.mp AS t",
+            3,
+        ),
+        // Array(Int64) / Array(Nullable(Int64)): [1] is held by both.
+        (
+            "MATCH (n:A) RETURN n.n AS t UNION MATCH (m:B) RETURN m.nn AS t",
+            3,
+        ),
+        // Array(Float32) / Array(Float64).
+        (
+            "MATCH (n:A) RETURN n.f AS t UNION MATCH (m:B) RETURN m.f AS t",
+            3,
+        ),
+        // What is NOT one value: dates and strings that print the same.
+        (
+            "MATCH (n:A) RETURN n.dt AS t UNION MATCH (m:B) RETURN m.s AS t",
+            4,
+        ),
+    ] {
+        assert_eq!(rows_over(cypher, &schema).await.len(), want, "{cypher}");
     }
 }

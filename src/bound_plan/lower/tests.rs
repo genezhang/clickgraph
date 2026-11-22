@@ -8573,20 +8573,22 @@ fn a_grouped_list_or_map_is_keyed_by_its_elements_types_1482() {
     let list = squash(&sql(
         "MATCH (u:User) WITH [u.name] AS l, count(*) AS c RETURN l, c",
     ));
-    assert!(list.contains("concat('c:', "), "{list}");
+    assert!(list.contains("concat('c:', replaceRegexpAll("), "{list}");
     assert!(
         list.contains("dynamicType(CAST([v0.full_name], 'Dynamic'))"),
         "{list}"
     );
+    // The type is classed as the scalar branch classes a value (one number
+    // class, one string class, no `Nullable` / `LowCardinality`): equal values
+    // of two storage types are one key, a `Date` and a `String` two.
+    assert!(list.contains("'Number')"), "{list}");
+    assert!(list.contains(r"(Nullable|LowCardinality)\\("), "{list}");
     // The map's type and its value types, as `mapValues` sees them (the
     // Dynamic element keeps any other kind a `[]`, so `multiIf` still works).
     let map = squash(&sql(
         "MATCH (u:User) WITH {a: u.name} AS m, count(*) AS c RETURN m, c",
     ));
-    assert!(
-        map.contains("concat('m:', replaceRegexpOne(dynamicType(CAST("),
-        "{map}"
-    );
+    assert!(map.contains("concat('m:', replaceRegexpAll("), "{map}");
     assert!(map.contains("mapValues(dynamicElement(CAST("), "{map}");
     assert!(map.contains("'Map(String, Dynamic)')"), "{map}");
 }
