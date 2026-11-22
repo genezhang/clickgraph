@@ -79,6 +79,109 @@ jobs:
         CLICKHOUSE_PASSWORD: "test_pass"
         CLICKHOUSE_DATABASE: "test_integration"
 
+    # #1482 review: the key's unit test sees only its SQL text, which is how
+    # its map branch reached ClickHouse as Code 43 on a list value. This
+    # live tier runs the generated key for a list and a map.
+    - name: Distinct-key live tier (rust)
+      run: cargo test --test integration distinct_key_live --verbose
+      env:
+        CLICKHOUSE_URL: "http://localhost:8123"
+        CLICKHOUSE_USER: "test_user"
+        CLICKHOUSE_PASSWORD: "test_pass"
+
+    - name: Setup test data
+      run: |
+        chmod +x scripts/test/setup_social_integration_data.sh
+        scripts/test/setup_social_integration_data.sh
+        # Schema-variation data for the smoke subset (P0.7): these back the
+        # fk_edge/polymorphic/composite_id/denormalized_flights schemas in
+        # schemas/test/unified_test_multi_schema.yaml (db_fk_edge, db_polymorphic,
+        # db_composite_id, db_denormalized). Not needed by the 2 regression
+        # tests above, but required for `pytest -m smoke`.
+        chmod +x scripts/setup/setup_fk_edge_data.sh scripts/setup/setup_polymorphic_data.sh scripts/setup/setup_composite_id_data.sh scripts/setup/setup_denormalized_data.sh
+        scripts/setup/setup_fk_edge_data.sh
+        scripts/setup/setup_polymorphic_data.sh
+        scripts/setup/setup_composite_id_data.sh
+        scripts/setup/setup_denormalized_data.sh
+
+    - name: Start ClickGraph server
+      run: |
+        export CLICKHOUSE_URL="http://localhost:8123"
+        export CLICKHOUSE_USER="test_user"
+        export CLICKHOUSE_PASSWORD="test_pass"
+        export CLICKHOUSE_DATABASE="test_integration"
+        export GRAPH_CONFIG_PATH="./schemas/test/unified_test_multi_schema.yaml"
+        ./target/debug/clickgraph --http-port 7475 --bolt-port 7687 > server.log 2>&1 &
+        
+        # Wait for server to be fully ready (health + query execution)
+        for i in {1..30}; do
+          if curl -s http://localhost:7475/health > /dev/null; then
+            if curl -s -X POST http://localhost:7475/query \
+              -H "Content-Type: application/json" \
+              -d '{"query":"RETURN 1"}' > /dev/null; then
+              echo "ClickGraph server is fully ready"
+              exit 0
+            fi
+          fi
+          echo "Waiting for ClickGraph... ($i/30)"
+          sleep 2
+        done
+        echo "ClickGraph server failed to start"
+        cat server.log
+        exit 1
+
+    - name: Install Python test dependencies
+      run: |
+        python3 -m pip install --upgrade pip
+        pip3 install pytest requests clickhouse-connect
+
+    - name: Run critical regression tests
+      run: |
+        pytest tests/integration/test_return_only_regression.py -v
+        pytest tests/integration/test_optional_match_where_regression.py -v
+
+    - name: Run per-variation smoke subset
+      run: |
+        # Explicit file list (not `pytest tests/integration -m smoke`): several
+        # unrelated files under tests/integration/ fail to COLLECT without
+        # extra deps this job doesn't install (neo4j, numpy, clickhouse_driver),
+        # which would abort the whole run before marker filtering ever applies.
+        pytest \
+          tests/integration/test_basic_queries.py \
+          tests/integration/test_optional_match.py \
+          tests/integration/test_with_cte_node_expansion.py \
+          tests/integration/test_variable_length_paths.py \
+          tests/integration/test_graphrag_schema_variations.py \
+          tests/integration/test_smoke_schema_variations.py \
+          -m smoke -v
+
+    - name: Schema-persistence restart-cycle e2e
+      # The e2e owns its own server lifecycle (spawn / SIGKILL / re-spawn),
+      # on its own port: 7475 is published by the compose stack's
+      # `clickgraph-test` container, which this step cannot stop, and the
+      # e2e refuses a port that is already in use. This is the
+      # acceptance run `docs/design/SCHEMA_PERSISTENCE.md` pins: register ->
+      # SIGKILL -> restored -> query returns through the restored schema ->
+      # DELETE stays deleted -> off mode writes nothing.
+      run: |
+        # --noconftest: tests/e2e/conftest.py imports `neo4j` (for the Bolt
+        # suites), which this job does not install; this test needs only
+        # the standard library and a live ClickHouse.
+        pytest --noconftest tests/e2e/test_schema_persistence_e2e.py -v
+      env:
+        CLICKHOUSE_URL: http://localhost:8123
+        CLICKHOUSE_USER: test_user
+        CLICKHOUSE_PASSWORD: test_pass
+        CLICKHOUSE_DATABASE: test_integration
+        CLICKGRAPH_BIN: ./target/debug/clickgraph
+        CLICKGRAPH_E2E_PORT: "17475"
+
+    - name: Cleanup
+      if: always()
+      run: |
+        pkill -f clickgraph || true
+        docker compose -f docker-compose.test.yaml down
+
     # #1491 review: the order key's unit test sees only its SQL text; the
     # old 9-decimal key merged doubles closer than 1e-9, which only a real
     # ClickHouse can show.

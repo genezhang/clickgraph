@@ -3,6 +3,38 @@
 
 use super::FunctionMapper;
 
+/// A `Dynamic` value's container type as the scalar branch of
+/// [`distinct_key`] classes its values (#1482): numbers of any width are one
+/// class, the string-like types another, `Date32` is a `Date`, and a
+/// `Nullable` / `LowCardinality` wrapper does not count. Equal values of
+/// `Array(Int32)` and `Array(Int64)`, `Array(String)` and
+/// `Array(LowCardinality(String))`, or `Map(String, Int32)` and
+/// `Map(String, Int64)` therefore stay one group (a `UNION` of two sources
+/// with different storage types), while a `Date` and a `String` stay two.
+///
+/// A wrapper is removed with its parenthesis (stripping only the prefix
+/// leaves a stray `)` and misses `Array(Nullable(Int32))` against
+/// `Array(UInt64)`); it runs twice for `LowCardinality(Nullable(T))`.
+fn container_type(ty: &str) -> String {
+    let replace = |t: String, pattern: &str, with: &str| {
+        format!("replaceRegexpAll({t}, '{pattern}', '{with}')")
+    };
+    let wrapper = r"(Nullable|LowCardinality)\\(([A-Za-z0-9]+(?:\\([^()]*\\))?)\\)";
+    let t = replace(
+        ty.to_string(),
+        r"Decimal[0-9]*\\([0-9, ]*\\)|U?Int[0-9]+|BFloat16|Float[0-9]+",
+        "Number",
+    );
+    let t = replace(
+        t,
+        r"FixedString\\([0-9]+\\)|Enum(8|16)?\\([^)]*\\)|UUID|IPv[46]",
+        "String",
+    );
+    let t = replace(t, "Date32", "Date");
+    let t = replace(t, wrapper, r"\\2");
+    replace(t, wrapper, r"\\2")
+}
+
 /// The ClickHouse `CypherUnion::distinct_key`: the value's kind and text.
 fn distinct_key(v: &str) -> String {
     // A `LowCardinality` value is its inner type's (`Float64`
@@ -28,11 +60,26 @@ fn distinct_key(v: &str) -> String {
          if(startsWith({ty}, 'DateTime'), CAST({v}, 'Dynamic'), NULL), \
          'DateTime64(6, ''UTC'')'))), '')"
     );
+    // `mapValues` of a raw `Dynamic` map is `[]` for a typed map and
+    // Code 43 for anything that is not one, and `multiIf` analyses
+    // every branch: the Dynamic value goes through `dynamicElement`
+    // (safe on any kind) and the map's own type joins the key, which
+    // separates typed maps whose value list is empty.
+    // The container's type and each value's are classed by
+    // [`container_type`]: the same value of two storage types is one key.
+    let container = container_type(&ty);
+    let value_type = container_type("dynamicType(CAST(x, 'Dynamic'))");
+    let map = format!(
+        "concat('m:', {container}, ':', arrayStringConcat(arrayMap(x -> \
+         {value_type}, CAST(mapValues(dynamicElement(\
+         CAST({v}, 'Dynamic'), 'Map(String, Dynamic)')), 'Array(Dynamic)')), ','))"
+    );
     // `toString` drops a FixedString's trailing zero bytes,
     // which the output prints: padded back to its width.
     format!(
         "tuple(multiIf({ty} = 'None', '', {ty} = 'Bool', 'b', {number}, 'n', \
-         match({ty}, '^(Array|Map|Tuple)'), 'c', {string}, 's', \
+         startsWith({ty}, 'Map'), {map}, \
+         match({ty}, '^(Array|Tuple)'), concat('c:', {container}), {string}, 's', \
          {ty} = 'Date32', 'Date', startsWith({ty}, 'DateTime'), \
          concat('DateTime ', if({zone} = '', timezone(), {zone})), \
          startsWith({ty}, 'Time'), 'Time', {ty}), \
@@ -557,6 +604,28 @@ impl FunctionMapper for ClickhouseFunctionMapper {
 
 #[cfg(test)]
 mod tests {
+    /// #1482: a container's type is classed in the `DISTINCT` key, not spelled:
+    /// the key of `Array(Int32)` and `Array(Int64)` (or `Nullable` and
+    /// `LowCardinality` elements, a `Map` of either width) is one, which a
+    /// `UNION` of two storage types relies on. The class is used for the list /
+    /// tuple branch, the map's own type and each map value's type.
+    #[test]
+    fn a_containers_type_in_the_distinct_key_is_classed_not_spelled_1482() {
+        let key = super::distinct_key("v");
+        assert_eq!(key.matches("'Number')").count(), 3, "{key}");
+        assert_eq!(key.matches("'String')").count(), 3, "{key}");
+        assert!(key.contains("'Date')"), "{key}");
+        // A wrapper goes with its parenthesis (a stray `)` would miss
+        // `Array(Nullable(Int32))` against `Array(UInt64)`), twice.
+        assert_eq!(
+            key.matches(r"(Nullable|LowCardinality)\\(([A-Za-z0-9]+(?:\\([^()]*\\))?)\\)")
+                .count(),
+            6,
+            "{key}"
+        );
+        assert!(key.contains("concat('c:', replaceRegexpAll("), "{key}");
+        assert!(key.contains("concat('m:', replaceRegexpAll("), "{key}");
+    }
     use super::ClickhouseFunctionMapper;
     use super::FunctionMapper;
 
