@@ -28,3 +28,11 @@ reason = "unsafe-libyaml is unmaintained (archived upstream), pulled only by ser
 [[IgnoredVulns]]
 id = "RUSTSEC-2026-0441"
 reason = "pin-utils 0.1.0 is unmaintained, pulled in by futures-util 0.3.x and hyper 1.x (axum, tower, the clickhouse client); a small pinning helper, not a security vulnerability, and no replacement release exists. Ignore until they drop it (same suppression as deny.toml)."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0543"
+reason = "chrono is flagged unmaintained (all versions, no safe upgrade); a direct dependency used across the server, executor and schema code (timestamps, Bolt temporals), not a security vulnerability. Ignore until a replacement is chosen (a separate change, checked against every temporal path); same rationale as `deny.toml`."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0542"
+reason = "humantime 2.3.0 is unmaintained, a dev-dependency only (cucumber, for the clickgraph-tck harness): never in a runtime artifact, not a security vulnerability. Retires with cucumber's own upgrade."
