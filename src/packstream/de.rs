@@ -280,9 +280,10 @@ impl<'de> Deserializer<'de> {
     ) -> Result<V::Value, Error> {
         let bytes = Self::take_slice(len, bytes);
         if v.visit_bytes_as_bytes() {
-            visitor.visit_borrowed_bytes(unsafe {
-                std::slice::from_raw_parts(bytes.as_ptr(), bytes.len())
-            })
+            // Hand out a transient borrow: the local `Bytes` handle owns the
+            // allocation only until this function returns, so it must not be
+            // offered as a `'de` borrow.
+            visitor.visit_bytes(&bytes)
         } else {
             visitor.visit_seq(SeqDeserializer::new(bytes.into_iter()))
         }
@@ -295,9 +296,10 @@ impl<'de> Deserializer<'de> {
     ) -> Result<V::Value, Error> {
         let bytes = Self::take_slice(len, bytes);
         match std::str::from_utf8(&bytes) {
-            Ok(s) => visitor.visit_borrowed_str(unsafe {
-                std::str::from_utf8_unchecked(std::slice::from_raw_parts(s.as_ptr(), s.len()))
-            }),
+            // Transient borrow: the bytes live in the local handle, which is
+            // dropped when this function returns, so this cannot be a `'de`
+            // borrow.
+            Ok(s) => visitor.visit_str(s),
             Err(e) => Err(Error::InvalidUtf8(e)),
         }
     }
@@ -516,6 +518,14 @@ impl Visitation {
     }
 }
 
+/// A raw pointer to the `Bytes` that `ItemsParser<'a>` is consuming.
+///
+/// `get` hands out `'de`-lived mutable references even though it only borrows
+/// `self`, which safe code cannot express: `SeqAccess<'de>` must return data
+/// borrowed for `'de`, while the `&mut self` borrow of the parser is shorter.
+/// The pointer is valid for `'de` because the original input handle owns the
+/// allocation for that lifetime. The parser calls `get` once per item and
+/// drops each reference before the next call, so no two are ever live at once.
 struct SharedBytes<'a> {
     bytes: *mut Bytes,
     _lifetime: PhantomData<&'a mut ()>,
@@ -524,6 +534,9 @@ struct SharedBytes<'a> {
 #[cfg(all(test, debug_assertions))]
 impl fmt::Debug for SharedBytes<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // SAFETY: by the `SharedBytes` contract, no mutable reference from
+        // `get` is live while the parser is formatted, and the pointer is
+        // valid for the parser's lifetime.
         crate::packstream::Dbg(unsafe { &*self.bytes }).fmt(f)
     }
 }
@@ -544,6 +557,10 @@ impl<'a> SharedBytes<'a> {
     }
 
     fn get<'x>(&mut self) -> &'x mut Bytes {
+        // SAFETY: `SharedBytes` is only used by `ItemsParser`, which calls
+        // `get` for one item at a time and drops that reference before the
+        // next call. The pointer is valid for `'de` because the input handle
+        // owns the `Bytes` allocation for that lifetime.
         unsafe { &mut *self.bytes }
     }
 }

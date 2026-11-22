@@ -1141,7 +1141,10 @@ fn rewrite_cte_name_structural(sql: &str, old: &str, new: &str) -> String {
             // Copy verbatim until the closing quote (handle '' escape).
             if !b.is_ascii() {
                 // multi-byte char: copy it whole (a per-byte `as char` would mangle it)
-                let ch = sql[i..].chars().next().unwrap();
+                let ch = sql[i..]
+                    .chars()
+                    .next()
+                    .expect("a non-empty suffix has a first char");
                 out.push(ch);
                 i += ch.len_utf8();
                 continue;
@@ -1150,7 +1153,10 @@ fn rewrite_cte_name_structural(sql: &str, old: &str, new: &str) -> String {
             // A backslash escapes the next byte (`\'` is a quote).
             if b == b'\\' && i + 1 < sql.len() {
                 // sql is indexed by bytes here; copy the escaped char whole
-                let ch = sql[i + 1..].chars().next().unwrap();
+                let ch = sql[i + 1..]
+                    .chars()
+                    .next()
+                    .expect("the escaped character follows the backslash");
                 out.push(ch);
                 i += 1 + ch.len_utf8();
                 continue;
@@ -2543,7 +2549,10 @@ impl RenderExpr {
                                     }
                                 }
                                 if unique_id_cols.len() == 1 {
-                                    unique_id_cols.into_iter().next().unwrap()
+                                    unique_id_cols
+                                        .into_iter()
+                                        .next()
+                                        .expect("exactly one unique id column")
                                 } else if unique_id_cols.is_empty() {
                                     log::error!(
                                         "Node wildcard null check for alias '{}': no node schemas found with single-column ID. Defaulting to 'id'.",

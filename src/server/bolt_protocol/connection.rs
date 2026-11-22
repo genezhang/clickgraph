@@ -156,7 +156,10 @@ where
 
         // Update context with negotiated version
         {
-            let mut context = self.context.lock().unwrap();
+            let mut context = self
+                .context
+                .lock()
+                .expect("connection context mutex is not poisoned");
             context.set_version(negotiated_version);
         }
 
@@ -194,7 +197,10 @@ where
 
             // Check if we should close the connection
             {
-                let context = self.context.lock().unwrap();
+                let context = self
+                    .context
+                    .lock()
+                    .expect("connection context mutex is not poisoned");
                 if matches!(context.state, ConnectionState::Failed) {
                     log::info!("Closing Bolt connection due to failed state");
                     break;

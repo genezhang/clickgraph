@@ -38,6 +38,19 @@ cargo fmt --all
 cargo clippy --all-targets
 ```
 
+### Rust Style
+
+Follow the [Google Rust Style Guide](https://google.github.io/styleguide/rustguide.html)
+for new and modified code. These are review conventions, not CI-enforced
+rules, and existing code is not expected to be rewritten just to match them:
+
+- Don't add glob imports. The guide's exceptions (`pub use` re-exports and
+  third-party preludes) are fine.
+- Give every `unsafe` block a `SAFETY:` comment that explains why it is sound.
+  `undocumented_unsafe_blocks` in `Cargo.toml` enforces this one.
+- In production code, prefer `expect("reason")` over `unwrap()` when a panic
+  signals a broken invariant.
+
 ### Running the Server
 
 ```bash

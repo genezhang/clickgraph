@@ -676,16 +676,16 @@ pub fn format_row(
                 let col = &col_names[idx];
                 let val = &values[idx];
 
-                if !col.contains('.') {
-                    format_value(val)
-                } else {
-                    let prop = &col[col.find('.').unwrap() + 1..];
+                if let Some(dot) = col.find('.') {
+                    let prop = &col[dot + 1..];
                     if prop == "_tck_id" || prop == "*" {
                         let label = var_labels.get(prefix.as_str()).map(|s| s.as_str());
                         format_node_from_cols(&[], label)
                     } else {
                         format_value(val)
                     }
+                } else {
+                    format_value(val)
                 }
             } else {
                 let prop_vals: Vec<(String, Value)> = idxs

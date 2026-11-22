@@ -154,3 +154,8 @@ required-features = ["databricks"]
 name = "deltagraph_bolt_e2e"
 path = "tests/rust/bin/deltagraph_bolt_e2e.rs"
 required-features = ["databricks"]
+
+# Google Rust style guide rules that have a lint. CI runs clippy with
+# `-D warnings`, so these fail the build.
+[lints.clippy]
+undocumented_unsafe_blocks = "warn"

@@ -484,6 +484,7 @@ impl std::str::FromStr for SchemaPersistenceMode {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
 
     #[test]
     fn test_default_config() {
@@ -495,10 +496,13 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn otlp_include_query_accepts_numeric_and_wordy_flags() {
         // Read at startup, so an unparseable value must not be a reason to
         // refuse to boot.
         for truthy in ["1", "true", "TRUE", "yes", "on"] {
+            // SAFETY: `#[serial]` keeps this test from overlapping another
+            // test that mutates the process environment.
             unsafe { env::set_var("CLICKGRAPH_OTLP_INCLUDE_QUERY", truthy) };
             assert!(
                 ServerConfig::from_env().expect("starts").otlp_include_query,
@@ -506,17 +510,20 @@ mod tests {
             );
         }
         for falsy in ["0", "false", "no", "off", ""] {
+            // SAFETY: still inside the serialized test.
             unsafe { env::set_var("CLICKGRAPH_OTLP_INCLUDE_QUERY", falsy) };
             assert!(
                 !ServerConfig::from_env().expect("starts").otlp_include_query,
                 "{falsy:?} should disable"
             );
         }
+        // SAFETY: still inside the serialized test.
         unsafe { env::set_var("CLICKGRAPH_OTLP_INCLUDE_QUERY", "maybe") };
         assert!(
             ServerConfig::from_env().is_err(),
             "nonsense is reported rather than silently ignored"
         );
+        // SAFETY: still serialized; the test restores the variable.
         unsafe { env::remove_var("CLICKGRAPH_OTLP_INCLUDE_QUERY") };
     }
 

@@ -183,7 +183,7 @@ pub fn format_json(schema: &GraphSchema) -> Value {
 
 fn node_set_str(nodes: &BTreeSet<&str>) -> String {
     if nodes.len() == 1 {
-        format!(":{}", nodes.iter().next().unwrap())
+        format!(":{}", nodes.iter().next().expect("exactly one node label"))
     } else {
         let labels: Vec<&str> = nodes.iter().copied().collect();
         format!(":{}", labels.join("|:"))

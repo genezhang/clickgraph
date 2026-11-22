@@ -938,21 +938,14 @@ mod databricks_base_url_validation_tests {
 /// `None` on any failure); `initialize_global_schema` is the real
 /// loader so error surfacing happens there.
 ///
-/// Each test sets / unsets `GRAPH_CONFIG_PATH` and serializes via a
-/// mutex — env vars are global to the process and concurrent tests
-/// would race.
+/// Each test sets / unsets `GRAPH_CONFIG_PATH` and is `#[serial]`, so
+/// their env mutations cannot overlap.
 #[cfg(all(test, feature = "databricks"))]
 mod yaml_catalog_for_server_tests {
     use super::read_yaml_catalog_for_server;
+    use serial_test::serial;
     use std::io::Write;
-    use std::sync::Mutex;
     use tempfile::NamedTempFile;
-
-    // Serialize env-var manipulation across the tests in this module.
-    // `read_yaml_catalog_for_server` reads `GRAPH_CONFIG_PATH` from the
-    // process env, so concurrent tests would interleave each other's
-    // writes and produce flaky results.
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     fn write_yaml(content: &str) -> NamedTempFile {
         let mut f = NamedTempFile::new().expect("tempfile");
@@ -962,8 +955,8 @@ mod yaml_catalog_for_server_tests {
     }
 
     #[test]
+    #[serial]
     fn returns_catalog_when_yaml_has_field() {
-        let _guard = ENV_LOCK.lock().unwrap();
         let f = write_yaml(
             r#"
 name: server_test
@@ -978,15 +971,19 @@ graph_schema:
         user_id: user_id
 "#,
         );
+        // SAFETY: `#[serial]` keeps this test from overlapping another test
+        // that mutates the process environment.
         unsafe { std::env::set_var("GRAPH_CONFIG_PATH", f.path()) };
         let got = read_yaml_catalog_for_server();
+        // SAFETY: still inside the serialized test; the variable is removed
+        // before the test returns.
         unsafe { std::env::remove_var("GRAPH_CONFIG_PATH") };
         assert_eq!(got.as_deref(), Some("server_yaml_cat"));
     }
 
     #[test]
+    #[serial]
     fn returns_none_when_yaml_omits_catalog() {
-        let _guard = ENV_LOCK.lock().unwrap();
         let f = write_yaml(
             r#"
 name: server_test
@@ -1000,29 +997,39 @@ graph_schema:
         user_id: user_id
 "#,
         );
+        // SAFETY: `#[serial]` keeps this test from overlapping another test
+        // that mutates the process environment.
         unsafe { std::env::set_var("GRAPH_CONFIG_PATH", f.path()) };
         let got = read_yaml_catalog_for_server();
+        // SAFETY: still inside the serialized test; the variable is removed
+        // before the test returns.
         unsafe { std::env::remove_var("GRAPH_CONFIG_PATH") };
         assert_eq!(got, None);
     }
 
     #[test]
+    #[serial]
     fn returns_none_when_env_var_unset() {
-        let _guard = ENV_LOCK.lock().unwrap();
         // Make sure no inherited value leaks in.
+        // SAFETY: `#[serial]` keeps this test from overlapping another test
+        // that mutates the process environment.
         unsafe { std::env::remove_var("GRAPH_CONFIG_PATH") };
         assert_eq!(read_yaml_catalog_for_server(), None);
     }
 
     #[test]
+    #[serial]
     fn returns_none_on_malformed_yaml() {
         // Best-effort: malformed YAML must not crash or panic. The real
         // parse error is surfaced later by `initialize_global_schema`
         // (the authoritative loader), so silent fallback here is safe.
-        let _guard = ENV_LOCK.lock().unwrap();
         let f = write_yaml("this is :::: not valid yaml ::::");
+        // SAFETY: `#[serial]` keeps this test from overlapping another test
+        // that mutates the process environment.
         unsafe { std::env::set_var("GRAPH_CONFIG_PATH", f.path()) };
         let got = read_yaml_catalog_for_server();
+        // SAFETY: still inside the serialized test; the variable is removed
+        // before the test returns.
         unsafe { std::env::remove_var("GRAPH_CONFIG_PATH") };
         assert_eq!(got, None);
     }

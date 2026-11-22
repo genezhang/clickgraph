@@ -543,7 +543,9 @@ async fn query_handler_body(
         let databases: Vec<serde_json::Value> = match databases_result {
             Ok(db_list) => db_list
                 .into_iter()
-                .map(|db| serde_json::to_value(db).unwrap())
+                .map(|db| {
+                    serde_json::to_value(db).expect("a database description serializes to JSON")
+                })
                 .collect(),
             Err(e) => {
                 log::error!("Failed to execute SHOW DATABASES: {}", e);
@@ -2868,7 +2870,9 @@ pub async fn introspect_handler(
     }
 
     let resp = introspect_for_backend(&app_state, &payload.database).await?;
-    Ok(Json(serde_json::to_value(resp).unwrap()))
+    Ok(Json(
+        serde_json::to_value(resp).expect("an introspection response serializes to JSON"),
+    ))
 }
 
 #[derive(Deserialize)]
@@ -2898,7 +2902,10 @@ pub async fn discover_prompt_handler(
     let resp = introspect_for_backend(&app_state, &payload.database).await?;
     let prompt_response =
         crate::graph_catalog::llm_prompt::format_discovery_prompt(&resp.database, &resp.tables);
-    Ok(Json(serde_json::to_value(prompt_response).unwrap()))
+    Ok(Json(
+        serde_json::to_value(prompt_response)
+            .expect("a discovery prompt response serializes to JSON"),
+    ))
 }
 
 #[derive(Deserialize)]

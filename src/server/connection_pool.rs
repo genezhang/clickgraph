@@ -390,9 +390,12 @@ mod tests {
     use serial_test::serial;
 
     #[tokio::test]
+    #[serial]
     #[ignore] // Requires ClickHouse connection
     async fn test_role_pool_isolation() {
         // Set up environment
+        // SAFETY: this test is serialized with the other env-mutating tests,
+        // so no other test mutates the process environment concurrently.
         unsafe {
             env::set_var("CLICKHOUSE_URL", "http://localhost:8123");
             env::set_var("CLICKHOUSE_USER", "test_user");
@@ -420,6 +423,8 @@ mod tests {
     #[tokio::test]
     #[serial]
     async fn test_single_node_config() {
+        // SAFETY: `#[serial]` serializes process-wide environment mutation
+        // across the tests that opt in.
         unsafe {
             env::set_var("CLICKHOUSE_URL", "http://localhost:8123");
             env::set_var("CLICKHOUSE_USER", "test_user");
@@ -436,6 +441,8 @@ mod tests {
     #[tokio::test]
     #[serial]
     async fn test_cluster_config_env() {
+        // SAFETY: `#[serial]` serializes process-wide environment mutation
+        // across the tests that opt in.
         unsafe {
             env::set_var("CLICKHOUSE_URL", "http://localhost:8123");
             env::set_var("CLICKHOUSE_USER", "test_user");
@@ -449,6 +456,8 @@ mod tests {
         assert_eq!(config.urls.len(), 1);
 
         // Clean up
+        // SAFETY: still inside the `#[serial]` test, so no other test mutates
+        // the environment concurrently.
         unsafe {
             env::remove_var("CLICKHOUSE_CLUSTER");
         }
@@ -492,6 +501,8 @@ mod tests {
     #[tokio::test]
     #[serial]
     async fn test_round_robin_distribution() {
+        // SAFETY: `#[serial]` serializes process-wide environment mutation
+        // across the tests that opt in.
         unsafe {
             env::set_var("CLICKHOUSE_URL", "http://localhost:8123");
             env::set_var("CLICKHOUSE_USER", "test_user");

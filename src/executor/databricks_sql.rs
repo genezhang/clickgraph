@@ -240,7 +240,12 @@ impl DatabricksSqlExecutor {
         let Some(oauth) = self.config.oauth.as_ref() else {
             return Ok(self.config.token.clone());
         };
-        if let Some(cached) = self.oauth_token.lock().unwrap().as_ref() {
+        if let Some(cached) = self
+            .oauth_token
+            .lock()
+            .expect("OAuth token cache mutex is not poisoned")
+            .as_ref()
+        {
             if cached.expires_at > std::time::Instant::now() {
                 return Ok(cached.token.clone());
             }
@@ -250,7 +255,10 @@ impl DatabricksSqlExecutor {
             + ttl
                 .saturating_sub(Duration::from_secs(60))
                 .max(Duration::from_secs(1));
-        *self.oauth_token.lock().unwrap() = Some(CachedToken {
+        *self
+            .oauth_token
+            .lock()
+            .expect("OAuth token cache mutex is not poisoned") = Some(CachedToken {
             token: token.clone(),
             expires_at,
         });

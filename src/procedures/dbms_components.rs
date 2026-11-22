@@ -51,9 +51,11 @@ pub fn execute(
 mod tests {
     use super::*;
     use crate::graph_catalog::graph_schema::GraphSchema;
+    use serial_test::serial;
     use std::collections::HashMap;
 
     #[test]
+    #[serial]
     fn test_dbms_components_response_format() {
         // Default (non-compat): native ClickGraph identity
         std::env::remove_var("CLICKGRAPH_NEO4J_COMPAT_MODE");
@@ -83,6 +85,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_dbms_components_version_present() {
         std::env::remove_var("CLICKGRAPH_NEO4J_COMPAT_MODE");
         let schema = GraphSchema::build(1, "test".to_string(), HashMap::new(), HashMap::new());
