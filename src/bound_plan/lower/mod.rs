@@ -7147,7 +7147,16 @@ impl<'s> Lowerer<'s> {
             let mixed_key = if self.options.dialect.is_clickhouse() {
                 // (A map, or a list of known maps, was refused above.)
                 match &kind {
-                    unwind::Kind::List(inner) if matches!(**inner, unwind::Kind::Unknown) => {
+                    // A list of one known element type orders natively even
+                    // when the kind is unknown: `collect()` of a column of one
+                    // type (`Map`, `Array`), and a one-element list (`[u.name]`,
+                    // review finding: the key's text order put `{k:12}` before
+                    // `{k:3}`, and cost 7.5 KB and 0.2 s where main took 3 KB
+                    // and 0.06 s).
+                    unwind::Kind::List(inner)
+                        if matches!(**inner, unwind::Kind::Unknown)
+                            && !self.one_ordered_element_type(&k.expr) =>
+                    {
                         current_function_mapper()
                             .lists()
                             .and_then(|lists| lists.mixed_order)
@@ -7202,6 +7211,55 @@ impl<'s> Lowerer<'s> {
             .into_iter()
             .filter(|o| !is_constant(&o.expression))
             .collect())
+    }
+
+    /// Whether list `e` has one known element type that ClickHouse orders
+    /// natively: a `collect()` or a one-element list of a property whose
+    /// column is of one type in every label / type, without `Dynamic` /
+    /// `Variant` / `JSON` (which ClickHouse refuses in an order key). Such a
+    /// list cannot mix element types, so the native `ORDER BY` keeps numbers
+    /// numeric: the text key put `{k:12}` before `{k:3}` and cost 7.5 KB of
+    /// SQL for `[u.name]` where main took 3 KB (#1491 review). A type that
+    /// was not read (No entry in `column_types`) is unknown: the key is
+    /// needed.
+    fn one_ordered_element_type(&self, e: &LogicalExpr) -> bool {
+        let mut e = e;
+        // A WITH alias (`WITH [u.name] AS l ORDER BY l`).
+        for _ in 0..8 {
+            let LogicalExpr::TableAlias(crate::query_planner::logical_expr::TableAlias(n)) = e
+            else {
+                break;
+            };
+            let Some(source) = parse_var(n).and_then(|v| self.projected.get(&v)) else {
+                return false;
+            };
+            e = source;
+        }
+        let element = match e {
+            LogicalExpr::AggregateFnCall(f) if f.name.eq_ignore_ascii_case("collect") => {
+                f.args.first()
+            }
+            LogicalExpr::ScalarFnCall(f) if f.name.eq_ignore_ascii_case("collect") => {
+                f.args.first()
+            }
+            LogicalExpr::List(xs) if xs.len() == 1 => xs.first(),
+            _ => None,
+        };
+        let Some(LogicalExpr::PropertyAccessExp(pa)) = element else {
+            return false;
+        };
+        let (PropertyValue::Column(p), Some(v)) = (&pa.column, parse_var(&pa.table_alias.0)) else {
+            return false;
+        };
+        let types = self.property_columns(v, p);
+        let Some(first) = types.first().copied().flatten() else {
+            return false;
+        };
+        let any = |raw: &str| {
+            let raw = raw.to_ascii_lowercase();
+            raw.contains("dynamic") || raw.contains("variant") || raw.contains("json")
+        };
+        types.iter().all(|t| *t == Some(first)) && !any(&first.raw)
     }
 
     /// The SELECT of a WITH or RETURN over the current relation. For a WITH

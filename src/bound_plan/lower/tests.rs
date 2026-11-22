@@ -6561,6 +6561,67 @@ fn a_single_type_list_orders_natively_and_a_mixed_one_by_an_element_key() {
     assert!(!got.contains("ORDER BY w1.v1 ASC"), "{got}");
 }
 
+/// #1491 review: a list whose one element type is known keeps the native
+/// ORDER BY even when `Kind` does not know it: `collect()` of a `Map` column
+/// (whose map elements ordered numerically on main, not by text), and a
+/// one-element list (`[u.name]`, 3 KB of SQL on main, not 7.5 KB).
+#[test]
+fn a_known_one_element_type_keeps_the_native_order_by_1491() {
+    let schema = crate::graph_catalog::config::GraphSchemaConfig::from_yaml_str(
+        r#"
+name: lower_order_one_type
+graph_schema:
+  nodes:
+    - label: U
+      database: db
+      table: us
+      node_id: id
+      property_mappings: {id: id, name: name, m: m, dm: dm}
+      column_types: {id: UInt64, name: String, m: 'Map(String, Int64)', dm: 'Map(String, Dynamic)'}
+  edges: []
+"#,
+    )
+    .unwrap()
+    .to_graph_schema()
+    .unwrap();
+    // A list of maps of one value type: ClickHouse orders it natively,
+    // numerically, as main did.
+    for q in [
+        "MATCH (u:U) RETURN collect(u.m) AS l ORDER BY l",
+        "MATCH (u:U) WITH collect(u.m) AS l ORDER BY l RETURN l",
+        "MATCH (u:U) WITH DISTINCT [u.name] AS l ORDER BY l LIMIT 2 RETURN l",
+        "MATCH (u:U) RETURN [u.name] AS l ORDER BY l",
+    ] {
+        let (sql, _) = shaped(q, &schema);
+        assert!(
+            sql.contains("ORDER BY") && !sql.contains("arrayMap(x -> tuple("),
+            "{q}: {sql}"
+        );
+    }
+    // A map of Dynamic values, and a list whose element type was not read:
+    // only the key can order them.
+    let (sql, _) = shaped("MATCH (u:U) RETURN collect(u.dm) AS l ORDER BY l", &schema);
+    assert!(sql.contains("arrayMap(x -> tuple("), "{sql}");
+    let untyped = crate::graph_catalog::config::GraphSchemaConfig::from_yaml_str(
+        r#"
+name: lower_order_one_type_untyped
+graph_schema:
+  nodes:
+    - label: U
+      database: db
+      table: us
+      node_id: id
+      property_mappings: {id: id, name: name}
+  edges: []
+"#,
+    )
+    .unwrap()
+    .to_graph_schema()
+    .unwrap();
+    let (sql, _) = shaped("MATCH (u:U) RETURN [u.name] AS l ORDER BY l", &untyped);
+    assert!(sql.contains("arrayMap(x -> tuple("), "{sql}");
+}
+
 /// #1423: `x IN` a list expression is three-valued, as for a list of items
 /// (ClickHouse's `x IN l` is false where an element is NULL): NULL where no
 /// element is `x` and one is NULL, or `x` is NULL and the list is not empty.
