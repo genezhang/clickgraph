@@ -897,11 +897,19 @@ mod tests {
     #[test]
     fn in_flight_guard_drops_on_panic() {
         let sm = ServerMetrics::new(MetricsConfig::default());
-        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let _g = sm.in_flight_guard();
-            assert_eq!(sm.in_flight(), 1);
-            panic!("boom");
-        }));
+        // A scoped thread lets `join` observe the panic; the guide prohibits
+        // `catch_unwind` even though this use is test-only.
+        let panicked = std::thread::scope(|scope| {
+            scope
+                .spawn(|| {
+                    let _g = sm.in_flight_guard();
+                    assert_eq!(sm.in_flight(), 1);
+                    panic!("boom");
+                })
+                .join()
+                .is_err()
+        });
+        assert!(panicked);
         assert_eq!(sm.in_flight(), 0);
     }
 
