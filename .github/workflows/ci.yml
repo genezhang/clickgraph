@@ -79,6 +79,16 @@ jobs:
         CLICKHOUSE_PASSWORD: "test_pass"
         CLICKHOUSE_DATABASE: "test_integration"
 
+    # #1482 review: the key's unit test sees only its SQL text, which is how
+    # its map branch reached ClickHouse as Code 43 on a list value. This
+    # live tier runs the generated key for a list and a map.
+    - name: Distinct-key live tier (rust)
+      run: cargo test --test integration distinct_key_live --verbose
+      env:
+        CLICKHOUSE_URL: "http://localhost:8123"
+        CLICKHOUSE_USER: "test_user"
+        CLICKHOUSE_PASSWORD: "test_pass"
+
     - name: Setup test data
       run: |
         chmod +x scripts/test/setup_social_integration_data.sh
