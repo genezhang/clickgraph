@@ -8,6 +8,7 @@ mod clause_list_parity;
 mod corpus_sweep;
 #[cfg(feature = "databricks")]
 mod databricks_introspect_tests;
+mod distinct_key_live_tests;
 mod id_number_endpoint_tests;
 mod metrics_endpoint_tests;
 mod schema_registry_tests;
