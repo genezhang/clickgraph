@@ -413,19 +413,30 @@ impl Lowerer<'_> {
             LogicalExpr::List(xs) => {
                 // T4a (#1396): elements of no common type meet in one.
                 let target = self.list_meeting_type(xs);
-                RenderExpr::List(
-                    xs.iter()
-                        .map(|x| {
-                            self.element(x, items).map(|e| match &target {
-                                Some(t) => RenderExpr::Cast {
-                                    expr: Box::new(e),
-                                    target: t.clone(),
-                                },
-                                None => e,
-                            })
+                let elements: Vec<RenderExpr> = xs
+                    .iter()
+                    .map(|x| {
+                        self.element(x, items).map(|e| match &target {
+                            Some(t) => RenderExpr::Cast {
+                                expr: Box::new(e),
+                                target: t.clone(),
+                            },
+                            None => e,
                         })
-                        .collect::<Result<_, _>>()?,
-                )
+                    })
+                    .collect::<Result<_, _>>()?;
+                if self.options.dialect.is_clickhouse() && literals_of_no_common_type(&elements) {
+                    // ClickHouse reads `[1, 'a']` of literals as one constant
+                    // and finds no common type for it (Code 386), whatever
+                    // `use_variant_as_common_type` says; `array(1, 'a')` is a
+                    // function call, which does (#1491).
+                    RenderExpr::ScalarFnCall(ScalarFnCall {
+                        name: "array".to_string(),
+                        args: elements,
+                    })
+                } else {
+                    RenderExpr::List(elements)
+                }
             }
             LogicalExpr::MapLiteral(entries)
                 if entries.iter().any(|(_, v)| self.holds_elements(v)) =>
@@ -3069,4 +3080,64 @@ fn holds_empty_list(e: &LogicalExpr) -> bool {
         LogicalExpr::MapLiteral(entries) => entries.iter().any(|(_, v)| holds_empty_list(v)),
         _ => false,
     }
+}
+
+/// The type of a literal list element as far as ClickHouse's constant-array
+/// reader tells (#1491): what two of them can meet in.
+#[derive(Debug, Clone, PartialEq)]
+enum LiteralType {
+    /// A `NULL`, and the elements of `[]`: meets any type.
+    Any,
+    /// A number or a boolean (`UInt8`, `Int8`, `Float64`, ...: they meet).
+    Number,
+    String,
+    /// A list of literals, of its elements' meeting type.
+    List(Box<LiteralType>),
+}
+
+impl LiteralType {
+    /// The type two elements meet in, `None` where ClickHouse has no common
+    /// type for them (a string and a number, a list and a number, a list of
+    /// strings and a list of numbers).
+    fn meet(&self, other: &LiteralType) -> Option<LiteralType> {
+        use LiteralType::*;
+        match (self, other) {
+            (Any, t) | (t, Any) => Some(t.clone()),
+            (Number, Number) => Some(Number),
+            (String, String) => Some(String),
+            (List(a), List(b)) => a.meet(b).map(|t| List(Box::new(t))),
+            _ => None,
+        }
+    }
+}
+
+/// The meeting type of the elements, `None` when they are not all literals or
+/// two of them have no common type.
+fn literal_meeting_type(elements: &[RenderExpr]) -> Option<Option<LiteralType>> {
+    // Outer `None`: not all literals. Inner `None`: no common type.
+    let mut meeting = Some(LiteralType::Any);
+    for e in elements {
+        let t = match e {
+            RenderExpr::Literal(Literal::Null) => LiteralType::Any,
+            RenderExpr::Literal(Literal::Integer(_) | Literal::Float(_) | Literal::Boolean(_)) => {
+                LiteralType::Number
+            }
+            RenderExpr::Literal(Literal::String(_)) => LiteralType::String,
+            RenderExpr::List(inner) => match literal_meeting_type(inner)? {
+                Some(t) => LiteralType::List(Box::new(t)),
+                // A list of literals of no common type reaches here as a
+                // function call (below), so it is not a literal.
+                None => return None,
+            },
+            _ => return None,
+        };
+        meeting = meeting.and_then(|m| m.meet(&t));
+    }
+    Some(meeting)
+}
+
+/// Whether `elements` are literals (or lists of them) of no common type: the
+/// list that ClickHouse reads as one constant array and refuses (#1491).
+fn literals_of_no_common_type(elements: &[RenderExpr]) -> bool {
+    matches!(literal_meeting_type(elements), Some(None))
 }
