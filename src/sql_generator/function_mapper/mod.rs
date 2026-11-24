@@ -481,6 +481,11 @@ pub(crate) struct CypherUnion {
     /// for two values exactly when Cypher's DISTINCT takes them as equal:
     /// `1` and `1.0` are, `1` and `true` or `'1'` are not.
     pub distinct_key: fn(&str) -> String,
+    /// [`Self::distinct_key`] of a value that is known to be a scalar (never a
+    /// list or a map): no element to look at, so the key a dialect needs for
+    /// a container is not paid for (ClickHouse plans it for every column of
+    /// a `UNION`: ~20 ms, ~165 ms on 25.8).
+    pub scalar_key: fn(&str) -> String,
     /// A key of the value `{0}` of any type (a node's or relationship's
     /// tuple too) that sorts: rows tied on such keys of all their columns
     /// are alike, so which a SKIP / LIMIT takes, or how they are numbered,

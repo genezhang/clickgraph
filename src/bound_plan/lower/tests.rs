@@ -1290,7 +1290,7 @@ fn an_order_dependent_cte_read_twice_is_lowered_stable() {
         "MATCH (a:User) WITH a.country AS g, count(*) AS k ORDER BY k LIMIT 2 \
          OPTIONAL MATCH (b:User) WHERE b.country = g AND b.user_id > k RETURN g, count(b)",
         &[
-            r#"ORDER BY count(*) ASC, tuple(multiIf(replaceRegexpOne(dynamicType(CAST("v1", 'Dynamic'))"#,
+            r#"ORDER BY count(*) ASC, multiIf(((startsWith(replaceRegexpOne(dynamicType(CAST("v1", 'Dynamic'))"#,
         ],
     );
     // Read once: as listed, no ties broken.
@@ -5810,7 +5810,7 @@ fn embedded_property_of_several_values_is_an_error_when_checked() {
     assert!(got.contains("arrayElement([anyIfOrNull("), "{got}");
     assert!(
         got.contains(
-            "1 + throwIf(uniqUpToIf(1)(cityHash64(tuple(multiIf(replaceRegexpOne(dynamicType("
+            "1 + throwIf(uniqUpToIf(1)(cityHash64(multiIf(((startsWith(replaceRegexpOne(dynamicType("
         ),
         "{got}"
     );
@@ -6130,7 +6130,9 @@ fn a_union_reads_each_arm_from_its_own_cte() {
             r#"SELECT w3.__cg_c0 AS "n", w3.__cg_c1 AS "i" FROM with_w3 AS w3"#,
         ],
     );
-    // UNION: one row per group of equal rows, in no order.
+    // UNION: one row per group of equal rows, in no order. A column of
+    // scalars is keyed by the plain key (no container to look into, which
+    // would be planned for nothing: #1482).
     let got = squash(&sql("RETURN 1 AS a UNION RETURN 1.0 AS a"));
     assert!(
         got.contains(
@@ -6138,6 +6140,14 @@ fn a_union_reads_each_arm_from_its_own_cte() {
         ) && got.ends_with(r#"toString(w3.__cg_c0)))"#),
         "{got}"
     );
+    assert!(!got.contains("arrayFold"), "{got}");
+    // A column of values of no known type (a property, here) may hold a
+    // list or a map: the key looks into one.
+    let got = squash(&sql(
+        "MATCH (u:User) RETURN u.name AS a UNION MATCH (p:Post) RETURN p.post_title AS a",
+    ));
+    assert!(got.contains("GROUP BY multiIf(((startsWith("), "{got}");
+    assert!(got.contains("arrayFold"), "{got}");
     // Three arms; the arms' WITH segments continue the CTE names.
     has(
         "MATCH (u:User) WITH u.name AS n RETURN n UNION ALL RETURN 'x' AS n \
@@ -6266,7 +6276,7 @@ fn a_union_keeps_elements_apart_by_identity() {
             && sql.contains(r#"w2.__cg_w2_k0 AS "__cg_k0" FROM with_w2 AS w2"#)
             // Grouped by every column's key and the identity.
             && sql.contains(r#"SELECT any(w3.__cg_c0) AS "k.from_id","#)
-            && sql.contains(r#"GROUP BY tuple(multiIf(replaceRegexpOne(dynamicType(CAST(w3.__cg_c0, "#)
+            && sql.contains(r#"GROUP BY multiIf(((startsWith(replaceRegexpOne(dynamicType(CAST(w3.__cg_c0, "#)
             && sql.ends_with(r#"toString(w3.__cg_c4))), w3.__cg_k0"#),
         "{sql}"
     );
@@ -6280,7 +6290,7 @@ fn a_union_keeps_elements_apart_by_identity() {
     assert!(
         sql.contains(r#"v1.__cg_rid_0 AS "__cg_w3_k3""#)
             && sql.ends_with(
-                "toString(w7.__cg_c0))), w7.__cg_k0, w7.__cg_k1, w7.__cg_k2, w7.__cg_k3"
+                "toString(w7.__cg_c0)))), w7.__cg_k0, w7.__cg_k1, w7.__cg_k2, w7.__cg_k3"
             ),
         "{sql}"
     );
@@ -6449,7 +6459,7 @@ fn a_null_list_is_told_by_its_source() {
         "UNWIND [1, 2] AS x WITH CASE WHEN x > 1 THEN [x] END AS l RETURN l, count(*) AS c",
         &[
             r#"any(if(w2.v1__null, NULL, CAST(w2.v1__held, 'Dynamic'))) AS "l""#,
-            "toString(w2.v1__held))), w2.v1__null",
+            "toString(w2.v1__held)))), w2.v1__null",
         ],
     );
     // split() of a CASE's NULL: NULL; of a column, as it always was.
@@ -6507,7 +6517,7 @@ fn a_null_list_is_told_by_its_source() {
     assert!(!got.contains("GROUP BY any("), "{got}");
     // (As on `main`: the DISTINCT's group is not keyed by the list read back.)
     assert!(
-        !got.contains("GROUP BY tuple(multiIf(replaceRegexpOne(dynamicType(CAST(any("),
+        !got.contains("GROUP BY multiIf(((startsWith(replaceRegexpOne(dynamicType(CAST(any("),
         "{got}"
     );
     assert!(!got.contains("toString([v0.full_name]))), any("), "{got}");
@@ -8656,7 +8666,7 @@ fn a_collect_of_lists_or_null_and_a_list_grouping_key() {
         "MATCH (u:User) WITH [u.name, u.age] AS l, count(*) AS c RETURN l, c",
     ));
     assert!(
-        got.contains("GROUP BY tuple(multiIf(replaceRegexpOne(dynamicType(CAST("),
+        got.contains("GROUP BY multiIf(((startsWith(replaceRegexpOne(dynamicType(CAST("),
         "{got}"
     );
 }
@@ -8671,6 +8681,8 @@ fn a_grouped_list_or_map_is_keyed_by_its_elements_types_1482() {
     let list = squash(&sql(
         "MATCH (u:User) WITH [u.name] AS l, count(*) AS c RETURN l, c",
     ));
+    // A list of one type is its classed type and its text (no element is
+    // looked at); a list that may hide its elements' types is keyed by them.
     assert!(list.contains("concat('c:', replaceRegexpAll("), "{list}");
     assert!(
         list.contains("dynamicType(CAST([v0.full_name], 'Dynamic'))"),
@@ -8681,12 +8693,16 @@ fn a_grouped_list_or_map_is_keyed_by_its_elements_types_1482() {
     // of two storage types are one key, a `Date` and a `String` two.
     assert!(list.contains("'Number')"), "{list}");
     assert!(list.contains(r"(Nullable|LowCardinality)\\("), "{list}");
-    // The map's type and its value types, as `mapValues` sees them (the
-    // Dynamic element keeps any other kind a `[]`, so `multiIf` still works).
+    // A map's values are looked at by `deep_key`: level by level, its
+    // elements' kinds and texts.
     let map = squash(&sql(
         "MATCH (u:User) WITH {a: u.name} AS m, count(*) AS c RETURN m, c",
     ));
-    assert!(map.contains("concat('m:', replaceRegexpAll("), "{map}");
+    assert!(map.contains("arrayFold((acc, i) -> "), "{map}");
+    assert!(map.contains("'Array(Tuple(String, Dynamic))')"), "{map}");
+    // The key of a map that is looked into is its kind and its tokens.
+    assert!(map.contains("toString(f.2)"), "{map}");
+    // A typed map's value list is empty: its type tells.
     assert!(map.contains("mapValues(dynamicElement(CAST("), "{map}");
     assert!(map.contains("'Map(String, Dynamic)')"), "{map}");
 }

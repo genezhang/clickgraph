@@ -64,6 +64,8 @@ struct Arm {
     /// text of a wide integer (#1536).
     cte: usize,
     wide: Vec<bool>,
+    /// Which output columns hold a scalar (`LoweredQuery::scalar`).
+    scalar: Vec<bool>,
 }
 
 /// Lower the UNION of `arms`, arm `i` returning the bindings
@@ -130,6 +132,7 @@ fn lower_arms(
             shape,
             identities,
             wide,
+            scalar,
         } = q.lower(arm, &mut ctes)?;
         let shape = in_union_order(shape, &projection.items, columns)?;
         // The UNION's column order, which the CTEs export.
@@ -138,6 +141,13 @@ fn lower_arms(
             .flat_map(|c| {
                 let wide = c.columns.iter().any(|(_, col)| wide.contains(col));
                 std::iter::repeat_n(wide, c.columns.len())
+            })
+            .collect();
+        let arm_scalar: Vec<bool> = shape
+            .iter()
+            .flat_map(|c| {
+                let scalar = c.columns.iter().all(|(_, col)| scalar.contains(col));
+                std::iter::repeat_n(scalar, c.columns.len())
             })
             .collect();
         if let Some(first) = &first {
@@ -239,6 +249,7 @@ fn lower_arms(
             identity_columns,
             cte: ctes.len() - 1,
             wide: arm_wide,
+            scalar: arm_scalar,
         });
         first.get_or_insert(shape);
     }
@@ -348,6 +359,10 @@ fn lower_arms(
         // ClickHouse cannot group by (`Dynamic`).
         plan.group_by.0.push(match kind {
             ResultKind::NodeId { .. } | ResultKind::ElementIdNumber => column,
+            // A column of scalars in every arm needs no look into a container.
+            ResultKind::Value if lowered.iter().all(|a| a.scalar[n]) => {
+                RenderExpr::Raw((spelling.scalar_key)(&sql))
+            }
             ResultKind::Value
             | ResultKind::Graph(_)
             | ResultKind::Node { .. }

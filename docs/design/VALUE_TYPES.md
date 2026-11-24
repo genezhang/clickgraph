@@ -127,6 +127,10 @@ and is verified live against ClickHouse and the Neo4j oracle.
   element key unless the elements are shown to be one type
   (`Lowerer::scalar_list_one_class`): a `Variant` is refused in an order key
   (Code 44).
+- [x] **T4c — a container's key looks into the container** (#1482). The
+  ClickHouse distinct key of a map or list that hides its elements
+  (`Dynamic`, `Variant`) or prints them by storage type (`DateTime`) is a
+  level-order tree of its elements' own keys (`CONTAINER_DISTINCT_KEY.md`).
 - [ ] **T4 — one value key.** Equality, DISTINCT, grouping and ordering of a
   value of mixed or container kind go through one recursive key on ClickHouse
   (#1396, #1482, #1491, #1362), with a sortable form for ORDER BY.

@@ -388,6 +388,9 @@ struct LoweredQuery {
     identities: Vec<(String, Vec<RenderExpr>)>,
     /// The SELECT columns returned as exact text for a wide integer (#1536).
     wide: BTreeSet<String>,
+    /// The SELECT columns that hold a scalar, never a list or a map: a UNION
+    /// keys them without looking into a container (`CypherUnion::scalar_key`).
+    scalar: BTreeSet<String>,
 }
 
 impl Query<'_> {
@@ -409,11 +412,13 @@ impl Query<'_> {
             .extend(std::mem::take(&mut l.unstable));
         let (plan, shape) = lowered?;
         let wide = std::mem::take(&mut l.wide_columns);
+        let scalar = std::mem::take(&mut l.scalar_columns);
         Ok(LoweredQuery {
             plan,
             shape,
             identities: l.identities,
             wide,
+            scalar,
         })
     }
 
@@ -455,6 +460,7 @@ impl Query<'_> {
             one_row: true,
             identities: Vec::new(),
             wide_columns: BTreeSet::new(),
+            scalar_columns: BTreeSet::new(),
             subqueries: &self.stmt.subqueries,
             projected: projected_items(&self.stmt.plan),
             unwound_lists: unwound_lists(&self.stmt.plan),
@@ -1607,6 +1613,8 @@ struct Lowerer<'s> {
     /// The final SELECT's columns returned as exact text for a wide integer
     /// (#1536).
     wide_columns: BTreeSet<String>,
+    /// The final SELECT's columns whose item is a scalar (`LoweredQuery::scalar`).
+    scalar_columns: BTreeSet<String>,
     /// The statement's subquery expressions (`subquery.rs`).
     subqueries: &'s [Subquery],
     /// The expression each WITH / RETURN item was projected from.
@@ -7736,6 +7744,13 @@ impl<'s> Lowerer<'s> {
                     let column = body.column(e, &it.name);
                     if wide {
                         self.wide_columns.insert(column.clone());
+                    }
+                    // A number, a string, a boolean, NULL: never a container.
+                    if matches!(
+                        self.kind(&it.expr),
+                        unwind::Kind::Scalar | unwind::Kind::Boolean | unwind::Kind::Null
+                    ) {
+                        self.scalar_columns.insert(column.clone());
                     }
                     // (An aggregate is its group's already.)
                     if map_key.is_some() || (null && !it.aggregate) {
