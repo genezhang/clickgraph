@@ -36,6 +36,7 @@ use crate::render_plan::render_expr::{
 };
 use crate::sql_generator::emitters::clickhouse::to_sql_query::render_expr_to_sql_plain;
 use crate::sql_generator::function_mapper::{current_function_mapper, MapEntry};
+use crate::sql_generator::literal_list::{self, LiteralType};
 
 use super::elements::Elem;
 use super::null_list;
@@ -3082,62 +3083,26 @@ fn holds_empty_list(e: &LogicalExpr) -> bool {
     }
 }
 
-/// The type of a literal list element as far as ClickHouse's constant-array
-/// reader tells (#1491): what two of them can meet in.
-#[derive(Debug, Clone, PartialEq)]
-enum LiteralType {
-    /// A `NULL`, and the elements of `[]`: meets any type.
-    Any,
-    /// A number or a boolean (`UInt8`, `Int8`, `Float64`, ...: they meet).
-    Number,
-    String,
-    /// A list of literals, of its elements' meeting type.
-    List(Box<LiteralType>),
-}
-
-impl LiteralType {
-    /// The type two elements meet in, `None` where ClickHouse has no common
-    /// type for them (a string and a number, a list and a number, a list of
-    /// strings and a list of numbers).
-    fn meet(&self, other: &LiteralType) -> Option<LiteralType> {
-        use LiteralType::*;
-        match (self, other) {
-            (Any, t) | (t, Any) => Some(t.clone()),
-            (Number, Number) => Some(Number),
-            (String, String) => Some(String),
-            (List(a), List(b)) => a.meet(b).map(|t| List(Box::new(t))),
-            _ => None,
+/// The type of a list element that is a literal token in the SQL
+/// (`literal_list::LiteralType`): `None` for anything else, `Some(None)` for
+/// a nested list whose own elements have no common type (it is a call by now).
+fn literal_type(e: &RenderExpr) -> Option<Option<LiteralType>> {
+    Some(Some(match e {
+        RenderExpr::Literal(Literal::Null) => LiteralType::Any,
+        RenderExpr::Literal(Literal::Integer(_) | Literal::Float(_) | Literal::Boolean(_)) => {
+            LiteralType::Number
         }
-    }
-}
-
-/// The meeting type of the elements, `None` when they are not all literals or
-/// two of them have no common type.
-fn literal_meeting_type(elements: &[RenderExpr]) -> Option<Option<LiteralType>> {
-    // Outer `None`: not all literals. Inner `None`: no common type.
-    let mut meeting = Some(LiteralType::Any);
-    for e in elements {
-        let t = match e {
-            RenderExpr::Literal(Literal::Null) => LiteralType::Any,
-            RenderExpr::Literal(Literal::Integer(_) | Literal::Float(_) | Literal::Boolean(_)) => {
-                LiteralType::Number
-            }
-            RenderExpr::Literal(Literal::String(_)) => LiteralType::String,
-            RenderExpr::List(inner) => match literal_meeting_type(inner)? {
-                Some(t) => LiteralType::List(Box::new(t)),
-                // A list of literals of no common type reaches here as a
-                // function call (below), so it is not a literal.
-                None => return None,
-            },
-            _ => return None,
-        };
-        meeting = meeting.and_then(|m| m.meet(&t));
-    }
-    Some(meeting)
+        RenderExpr::Literal(Literal::String(_)) => LiteralType::String,
+        RenderExpr::List(inner) => match literal_list::meeting_type(inner, &literal_type)? {
+            Some(t) => LiteralType::List(Box::new(t)),
+            None => return None,
+        },
+        _ => return None,
+    }))
 }
 
 /// Whether `elements` are literals (or lists of them) of no common type: the
 /// list that ClickHouse reads as one constant array and refuses (#1491).
 fn literals_of_no_common_type(elements: &[RenderExpr]) -> bool {
-    matches!(literal_meeting_type(elements), Some(None))
+    literal_list::of_no_common_type(elements, &literal_type)
 }

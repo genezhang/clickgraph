@@ -2,6 +2,7 @@
 ///
 /// This module provides safe parameter substitution by replacing $paramName placeholders
 /// with properly escaped values in SQL strings.
+use crate::sql_generator::literal_list;
 use serde_json::Value;
 use std::collections::HashMap;
 
@@ -32,6 +33,23 @@ fn escape_string(s: &str) -> String {
         .replace('\r', "\\r")
         .replace('\t', "\\t")
         .replace('\0', "\\0")
+}
+
+/// The type of a parameter value as the literal [`format_parameter`] writes
+/// it (`literal_list`): a boolean is a number there; an object is no literal
+/// (it is refused).
+fn json_literal_type(value: &Value) -> Option<Option<literal_list::LiteralType>> {
+    use literal_list::LiteralType;
+    Some(Some(match value {
+        Value::Null => LiteralType::Any,
+        Value::Bool(_) | Value::Number(_) => LiteralType::Number,
+        Value::String(_) => LiteralType::String,
+        Value::Array(items) => match literal_list::meeting_type(items, &json_literal_type)? {
+            Some(t) => LiteralType::List(Box::new(t)),
+            None => return None,
+        },
+        Value::Object(_) => return None,
+    }))
 }
 
 /// Format a parameter value as SQL literal
@@ -80,7 +98,15 @@ fn format_parameter(value: &Value) -> Result<String, ParameterSubstitutionError>
 
         Value::Array(arr) => {
             let items: Result<Vec<String>, _> = arr.iter().map(format_parameter).collect();
-            Ok(format!("[{}]", items?.join(", ")))
+            let items = items?.join(", ");
+            // `[1, 'a']` of literals has no type in ClickHouse (Code 386);
+            // `array(1, 'a')` makes a `Variant` (#1491).
+            Ok(
+                match literal_list::of_no_common_type(arr, &json_literal_type) {
+                    true => format!("array({items})"),
+                    false => format!("[{items}]"),
+                },
+            )
         }
 
         Value::Null => Ok("NULL".to_string()),
@@ -298,6 +324,35 @@ mod tests {
 
         let value = json!(["alice", "bob"]);
         assert_eq!(format_parameter(&value).unwrap(), "['alice', 'bob']");
+    }
+
+    /// #1491: a list parameter of values of no common type is a call of
+    /// `array` (`[1, 'a']` of literals has no type in ClickHouse, Code 386);
+    /// one with a common type stays a list.
+    #[test]
+    fn a_list_of_no_common_type_is_an_array_call_1491() {
+        for (value, sql) in [
+            (json!([1, "a"]), "array(1, 'a')"),
+            (
+                json!([1, "a", 2.5, true, null]),
+                "array(1, 'a', 2.5, 1, NULL)",
+            ),
+            (json!([[1], ["a"]]), "array([1], ['a'])"),
+            (json!([1, [2]]), "array(1, [2])"),
+            // Inner lists of no common type are calls; the outer one holds
+            // two calls, not literals.
+            (
+                json!([[1, "a"], ["b", 2]]),
+                "[array(1, 'a'), array('b', 2)]",
+            ),
+            (json!([1, 2.5]), "[1, 2.5]"),
+            (json!(["a", "b"]), "['a', 'b']"),
+            (json!([null, "a"]), "[NULL, 'a']"),
+            (json!([[], [1]]), "[[], [1]]"),
+            (json!([]), "[]"),
+        ] {
+            assert_eq!(format_parameter(&value).unwrap(), sql, "{value}");
+        }
     }
 
     #[test]

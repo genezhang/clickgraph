@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 
 pub(crate) mod emitters;
 pub(crate) mod function_mapper;
+pub(crate) mod literal_list;
 pub(crate) mod passthrough;
 
 /// SQL dialect for query generation.

@@ -283,7 +283,10 @@ impl Lowerer<'_> {
                         (Shape::Str, Shape::Str) => Shape::Str,
                         _ => Shape::Mixed,
                     },
-                    _ => Shape::Mixed,
+                    (O::Addition | O::Distinct, _) => Shape::Mixed,
+                    // The rest (comparisons, `AND`, `IN`, `IS NULL` ...) are
+                    // booleans, as `Lowerer::kind` has them.
+                    _ => Shape::Bool,
                 }
             }
             LogicalExpr::ScalarFnCall(f) => match f.name.to_ascii_lowercase().as_str() {
