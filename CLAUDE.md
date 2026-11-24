@@ -26,11 +26,12 @@ clickgraph-go/               # Idiomatic Go bindings via cgo + UniFFI-generated 
 clickgraph-py/               # Pythonic wrapper over UniFFI-generated ctypes bridge
 clickgraph-client/           # Interactive REPL client for querying ClickGraph servers (human use)
 clickgraph-tool/             # cg CLI — agent/script-oriented tool (sql, validate, query, nl, schema)
+clickgraph-mcp/              # MCP server (Python, stdio) — thin client over the HTTP API for AI assistants
 ```
 
 **Workspace members** (in `Cargo.toml`): `clickgraph-client`, `clickgraph-embedded`, `clickgraph-ffi`, `clickgraph-tool`
 
-Go and Python bindings are not Cargo workspace members — they consume `libclickgraph_ffi.so`.
+Go and Python bindings are not Cargo workspace members — they consume `libclickgraph_ffi.so`. `clickgraph-mcp` is not a Cargo member either: it is a pure-Python package that talks to a running server over HTTP and links no Rust.
 
 ## Build, Test, and Lint Commands
 
@@ -259,5 +260,5 @@ Five schema variations exist: Standard, FK-edge, Denormalized, Polymorphic, Comp
 - **`DEV_QUICK_START.md`** — Essential developer workflow
 - **`DEVELOPMENT_PROCESS.md`** — Detailed 6-phase development process
 - **`.github/copilot-instructions.md`** — Comprehensive architecture guide
-- **`*/AGENTS.md`** — Module-level architecture guides (in `src/`, `src/render_plan/`, `src/server/`, `clickgraph-ffi/`, `clickgraph-embedded/`, `clickgraph-tool/`, `clickgraph-go/`, `clickgraph-py/`, etc.)
+- **`*/AGENTS.md`** — Module-level architecture guides (in `src/`, `src/render_plan/`, `src/server/`, `clickgraph-ffi/`, `clickgraph-embedded/`, `clickgraph-tool/`, `clickgraph-go/`, `clickgraph-py/`, `clickgraph-mcp/`, etc.)
 - **`docs/wiki/cypher-language-reference.md`** — Primary feature documentation (must be updated for every feature)

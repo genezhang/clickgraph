@@ -10,7 +10,7 @@ behavior of its own.
 
 ## Requirements
 
-- A running ClickGraph server (default `http://localhost:8080`)
+- A running ClickGraph server (default `http://localhost:7475`)
 - Python 3.10 or newer
 
 ## Install
@@ -33,7 +33,7 @@ This installs the `clickgraph-mcp` command and the `clickgraph_mcp` module.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `CLICKGRAPH_URL` | `http://localhost:8080` | ClickGraph HTTP endpoint |
+| `CLICKGRAPH_URL` | `http://localhost:7475` | ClickGraph HTTP endpoint |
 | `CLICKGRAPH_SCHEMA` | unset | Schema used when a tool call does not name one. When unset, ClickGraph's own default schema is used. |
 | `CLICKGRAPH_TIMEOUT` | `30` | Request timeout in seconds |
 
@@ -48,7 +48,7 @@ Claude Desktop (`claude_desktop_config.json`) and Cursor
     "clickgraph": {
       "command": "clickgraph-mcp",
       "env": {
-        "CLICKGRAPH_URL": "http://localhost:8080",
+        "CLICKGRAPH_URL": "http://localhost:7475",
         "CLICKGRAPH_SCHEMA": "social"
       }
     }

@@ -8,7 +8,7 @@ import urllib.error
 import urllib.request
 from typing import Any
 
-DEFAULT_URL = "http://localhost:8080"
+DEFAULT_URL = "http://localhost:7475"
 DEFAULT_TIMEOUT = 30.0
 
 

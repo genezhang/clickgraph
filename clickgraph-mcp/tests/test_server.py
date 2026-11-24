@@ -17,6 +17,16 @@ def test_tools_are_registered():
     assert {t.name for t in tools} == {"run_cypher", "list_schemas", "explain_query"}
 
 
+def test_every_tool_is_marked_read_only():
+    # ClickGraph rejects writes, so no tool can change data. Clients use this
+    # hint to skip per-call approval prompts.
+    tools = asyncio.run(mcp.list_tools())
+    assert tools
+    for tool in tools:
+        assert tool.annotations is not None, tool.name
+        assert tool.annotations.read_only_hint is True, tool.name
+
+
 def test_run_cypher_omits_schema_by_default(fake_clickgraph, monkeypatch):
     monkeypatch.setenv("CLICKGRAPH_URL", fake_clickgraph.url)
     monkeypatch.delenv("CLICKGRAPH_SCHEMA", raising=False)

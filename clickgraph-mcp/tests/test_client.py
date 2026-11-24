@@ -103,3 +103,11 @@ def test_bad_timeout_env_is_a_clear_error(monkeypatch):
     monkeypatch.setenv("CLICKGRAPH_TIMEOUT", "soon")
     with pytest.raises(ClickGraphError, match="CLICKGRAPH_TIMEOUT"):
         ClickGraphClient()
+
+
+def test_default_url_is_the_servers_default_http_port(monkeypatch):
+    # ClickGraph's HTTP server listens on 7475 by default (src/config.rs, the
+    # Dockerfile, the README); 8080 was the default before #310. An MCP server
+    # started with no CLICKGRAPH_URL must reach a default ClickGraph.
+    monkeypatch.delenv("CLICKGRAPH_URL", raising=False)
+    assert ClickGraphClient().base_url == "http://localhost:7475"

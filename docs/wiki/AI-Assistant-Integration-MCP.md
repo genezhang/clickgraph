@@ -25,7 +25,7 @@ a running server:
     "clickgraph": {
       "command": "clickgraph-mcp",
       "env": {
-        "CLICKGRAPH_URL": "http://localhost:8080",
+        "CLICKGRAPH_URL": "http://localhost:7475",
         "CLICKGRAPH_SCHEMA": "social"
       }
     }
@@ -85,7 +85,7 @@ Start ClickGraph with both HTTP and Bolt protocols enabled:
 ```bash
 # Using Docker (recommended)
 docker run -d \
-  -p 8080:8080 \
+  -p 7475:7475 \
   -p 7687:7687 \
   -e CLICKHOUSE_URL="http://your-clickhouse:8123" \
   -e CLICKHOUSE_USER="your_user" \
@@ -101,7 +101,7 @@ export CLICKHOUSE_USER="your_user"
 export CLICKHOUSE_PASSWORD="your_pass"
 export CLICKHOUSE_DATABASE="your_database"
 export GRAPH_CONFIG_PATH="./your_schemas/your_schema.yaml"
-cargo run --bin clickgraph  # Defaults to port 8080 (HTTP) and 7687 (Bolt)
+cargo run --bin clickgraph  # Defaults to port 7475 (HTTP) and 7687 (Bolt)
 ```
 
 Verify Bolt is running:
@@ -419,7 +419,7 @@ Claude: [Writes query with OPTIONAL MATCH to find dangling refs]
 **Solutions**:
 ```bash
 # 1. Verify ClickGraph is running
-curl http://localhost:8080/health
+curl http://localhost:7475/health
 
 # 2. Verify Bolt port is accessible
 telnet localhost 7687
@@ -480,7 +480,7 @@ EOF
 
 1. **Test query directly**:
    ```bash
-   curl -X POST http://localhost:8080/query \
+   curl -X POST http://localhost:7475/query \
      -H "Content-Type: application/json" \
      -d '{"query": "MATCH (n) RETURN count(n)"}'
    ```
@@ -488,7 +488,7 @@ EOF
 2. **Check schema configuration**:
    ```bash
    # Verify schema is loaded correctly
-   curl http://localhost:8080/schemas
+   curl http://localhost:7475/schemas
    ```
 
 3. **Review generated SQL** (enable debug mode):
@@ -522,7 +522,7 @@ EOF
    ```bash
    # MCP is better for exploratory queries
    # Use direct API for bulk data extraction
-   curl -X POST http://localhost:8080/query \
+   curl -X POST http://localhost:7475/query \
      -d '{"query": "MATCH (n:User) RETURN n"}' > results.json
    ```
 
@@ -640,7 +640,7 @@ with driver.session() as session:
 Use ClickGraph's HTTP API for maximum control:
 
 ```bash
-curl -X POST http://localhost:8080/query \
+curl -X POST http://localhost:7475/query \
   -H "Content-Type: application/json" \
   -d '{"query": "MATCH (n:User) RETURN n LIMIT 10"}'
 ```

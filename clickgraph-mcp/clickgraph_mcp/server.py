@@ -7,9 +7,14 @@ from typing import Any
 
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
+from mcp.types import ToolAnnotations
 
 from . import __version__
 from .client import ClickGraphClient, ClickGraphError
+
+# ClickGraph is a read-only engine (writes are rejected), so every tool here is
+# read-only. Saying so lets MCP clients skip per-call approval prompts.
+_READ_ONLY = ToolAnnotations(read_only_hint=True)
 
 mcp = MCPServer(
     "clickgraph",
@@ -30,7 +35,7 @@ def _schema(schema: str | None) -> str | None:
     return schema or os.environ.get("CLICKGRAPH_SCHEMA") or None
 
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ONLY)
 def run_cypher(
     query: str,
     schema: str | None = None,
@@ -53,7 +58,7 @@ def run_cypher(
         raise ToolError(str(exc)) from exc
 
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ONLY)
 def list_schemas() -> Any:
     """List the graph schemas registered on the ClickGraph server."""
     try:
@@ -62,7 +67,7 @@ def list_schemas() -> Any:
         raise ToolError(str(exc)) from exc
 
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ONLY)
 def explain_query(
     query: str,
     schema: str | None = None,
