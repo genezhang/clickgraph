@@ -134,27 +134,27 @@ This indicates CTE expansion is not working - the variable is returned as a sing
 
 ### Check Server Status
 ```bash
-curl http://localhost:8080/health
+curl http://localhost:7475/health
 curl http://localhost:8123/ping
 ```
 
 ### Check Schema is Loaded
 ```bash
-curl -X POST http://localhost:8080/query \
+curl -X POST http://localhost:7475/query \
   -H "Content-Type: application/json" \
   -d '{"query": "USE social_benchmark MATCH (n:User) RETURN COUNT(n) LIMIT 1"}'
 ```
 
 ### Run Single Query
 ```bash
-curl -X POST http://localhost:8080/query \
+curl -X POST http://localhost:7475/query \
   -H "Content-Type: application/json" \
   -d '{"query": "USE social_benchmark MATCH (a:User) WITH a RETURN a LIMIT 1"}'
 ```
 
 ### Check Generated SQL
 ```bash
-curl -X POST http://localhost:8080/query \
+curl -X POST http://localhost:7475/query \
   -H "Content-Type: application/json" \
   -d '{"query": "USE social_benchmark MATCH (a:User) WITH a RETURN a LIMIT 1", "sql_only": true}'
 ```
@@ -176,7 +176,7 @@ curl -X POST http://localhost:8080/query \
 ## Pre-Test Checklist
 
 - [ ] ClickHouse running: `docker ps | grep clickhouse`
-- [ ] ClickGraph running: `curl http://localhost:8080/health`
+- [ ] ClickGraph running: `curl http://localhost:7475/health`
 - [ ] Proper branch: `git branch | grep fix/with-chaining`
 - [ ] Code compiled: `cargo build --release`
 - [ ] Tests syntax valid: `python3 -m py_compile tests/integration/test_with_cte_node_expansion.py`
@@ -206,7 +206,7 @@ curl -X POST http://localhost:8080/query \
 
 | Issue | Solution |
 |-------|----------|
-| `ConnectionError: Cannot connect to http://localhost:8080` | Start ClickGraph: `cargo run --bin clickgraph` |
+| `ConnectionError: Cannot connect to http://localhost:7475` | Start ClickGraph: `cargo run --bin clickgraph` |
 | `ConnectionError: Cannot connect to http://localhost:8123` | Start ClickHouse: `docker-compose up -d` |
 | `AssertionError: Expected multiple a.* columns` | CTE expansion not working - check TypedVariable registration |
 | `KeyError: 'results'` | API response format issue - check server logs |

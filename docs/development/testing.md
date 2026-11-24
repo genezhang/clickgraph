@@ -239,13 +239,13 @@ scripts/setup/setup_test_data.sql      # Test data
 
 ## Troubleshooting
 
-### "Port 8080 already in use"
+### "Port 7475 already in use"
 ```powershell
 # PowerShell
 .\scripts\server\test_server.ps1 -Clean
 
 # Or manually
-netstat -ano | findstr :8080
+netstat -ano | findstr :7475
 taskkill /PID <pid> /F
 ```
 
@@ -396,7 +396,7 @@ docker exec clickhouse clickhouse-client --database test_multi_rel --query "SHOW
 docker exec clickhouse clickhouse-client --database test_multi_rel --query "DESCRIBE users"
 
 # Test basic connectivity
-Invoke-WebRequest -Uri "http://localhost:8080/query" -Method POST -ContentType "application/json" -Body '{"query":"MATCH (u:User) RETURN count(u)"}'
+Invoke-WebRequest -Uri "http://localhost:7475/query" -Method POST -ContentType "application/json" -Body '{"query":"MATCH (u:User) RETURN count(u)"}'
 ```
 
 ### Current Path Variable Status

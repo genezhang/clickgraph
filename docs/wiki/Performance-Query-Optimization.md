@@ -518,7 +518,7 @@ def cached_query(query: str, ttl: int = 300):
         return json.loads(cached)
     
     # Execute query
-    result = requests.post('http://clickgraph:8080/query', 
+    result = requests.post('http://clickgraph:7475/query', 
                           json={'query': query}).json()
     
     # Cache result
@@ -568,7 +568,7 @@ python run_benchmarks.py --schema schemas/social_benchmark.yaml
 ```bash
 # PowerShell
 Measure-Command {
-    Invoke-RestMethod -Method POST -Uri "http://localhost:8080/query" `
+    Invoke-RestMethod -Method POST -Uri "http://localhost:7475/query" `
         -ContentType "application/json" `
         -Body '{"query":"MATCH (u:User) RETURN count(u)"}'
 }
@@ -623,7 +623,7 @@ EXPLAIN SELECT * FROM users_bench WHERE user_id = 1;
 ```bash
 # 1000 requests, 10 concurrent
 ab -n 1000 -c 10 -p query.json -T application/json \
-   http://localhost:8080/query
+   http://localhost:7475/query
 
 # query.json
 {"query": "MATCH (u:User {user_id: 1}) RETURN u.name"}
@@ -636,7 +636,7 @@ import aiohttp
 import time
 
 async def run_query(session, query):
-    async with session.post('http://localhost:8080/query',
+    async with session.post('http://localhost:7475/query',
                            json={'query': query}) as resp:
         return await resp.json()
 

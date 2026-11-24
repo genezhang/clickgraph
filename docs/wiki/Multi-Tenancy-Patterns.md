@@ -68,7 +68,7 @@ graph_schema:
 
 **HTTP API**:
 ```bash
-curl -X POST http://localhost:8080/query \
+curl -X POST http://localhost:7475/query \
   -H "Content-Type: application/json" \
   -d '{
     "query": "MATCH (u:User) RETURN u.name, u.email",

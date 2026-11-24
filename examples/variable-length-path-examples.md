@@ -16,7 +16,7 @@ docker-compose up -d
 ./target/release/brahmand
 ```
 
-Server will be available at `http://localhost:8080`
+Server will be available at `http://localhost:7475`
 
 ---
 
@@ -41,7 +41,7 @@ LIMIT 10
 
 ### cURL Request
 ```bash
-curl -X POST http://localhost:8080/query \
+curl -X POST http://localhost:7475/query \
   -H "Content-Type: application/json" \
   -d '{
     "query": "MATCH (me:User {user_id: 1})-[f:FOLLOWS*1..2]->(suggested:User) WHERE suggested.user_id <> 1 RETURN DISTINCT suggested.name, suggested.email LIMIT 10"
@@ -76,7 +76,7 @@ RETURN influencer.name,
 
 ### cURL Request
 ```bash
-curl -X POST http://localhost:8080/query \
+curl -X POST http://localhost:7475/query \
   -H "Content-Type: application/json" \
   -d '{
     "query": "MATCH (influencer:User {user_id: 5})-[f:FOLLOWS*1..2]->(reached:User) RETURN influencer.name, COUNT(DISTINCT reached) as total_reach, MAX(length(f)) as max_distance"
@@ -123,7 +123,7 @@ LIMIT 20
 
 ### cURL Request
 ```bash
-curl -X POST http://localhost:8080/query \
+curl -X POST http://localhost:7475/query \
   -H "Content-Type: application/json" \
   -d '{
     "query": "MATCH (me:User {user_id: 10})-[:LIKED]->(product1:Product)<-[:LIKED]-(similar:User)-[:LIKED]->(recommended:Product) WHERE NOT (me)-[:LIKED]->(recommended) RETURN recommended.name, recommended.category, COUNT(DISTINCT similar) as similarity_score ORDER BY similarity_score DESC LIMIT 20"
@@ -154,7 +154,7 @@ ORDER BY levels_up
 
 ### cURL Request
 ```bash
-curl -X POST http://localhost:8080/query \
+curl -X POST http://localhost:7475/query \
   -H "Content-Type: application/json" \
   -d '{
     "query": "MATCH (employee:Employee {employee_id: 42})-[r:REPORTS_TO*]->(manager:Employee) RETURN manager.name, manager.title, length(r) as levels_up ORDER BY levels_up"
@@ -198,7 +198,7 @@ LIMIT 15
 
 ### cURL Request
 ```bash
-curl -X POST http://localhost:8080/query \
+curl -X POST http://localhost:7475/query \
   -H "Content-Type: application/json" \
   -d '{
     "query": "MATCH (start:Concept {name: \"Machine Learning\"})-[r:RELATED_TO*1..3]->(related:Concept) RETURN DISTINCT related.name, related.category, MIN(length(r)) as shortest_distance ORDER BY shortest_distance, related.name LIMIT 15"
@@ -225,7 +225,7 @@ LIMIT 1
 
 ### cURL Request
 ```bash
-curl -X POST http://localhost:8080/query \
+curl -X POST http://localhost:7475/query \
   -H "Content-Type: application/json" \
   -d '{
     "query": "MATCH path = (user1:User {email: \"alice@example.com\"})-[*1..5]-(user2:User {email: \"bob@example.com\"}) RETURN length(path) as distance ORDER BY distance LIMIT 1"
@@ -249,7 +249,7 @@ ORDER BY hops
 
 ### cURL Request
 ```bash
-curl -X POST http://localhost:8080/query \
+curl -X POST http://localhost:7475/query \
   -H "Content-Type: application/json" \
   -d '{
     "query": "MATCH (center:User {user_id: 1})-[r:FOLLOWS*1..3]->(connected:User) RETURN length(r) as hops, COUNT(DISTINCT connected) as unique_connections ORDER BY hops"
@@ -283,7 +283,7 @@ RETURN COUNT(*) as num_paths,
 
 ### cURL Request
 ```bash
-curl -X POST http://localhost:8080/query \
+curl -X POST http://localhost:7475/query \
   -H "Content-Type: application/json" \
   -d '{
     "query": "MATCH (person1:User {name: \"Alice\"})-[*1..2]-(person2:User {name: \"Bob\"}) RETURN COUNT(*) as num_paths"
@@ -322,7 +322,7 @@ LIMIT 100
 
 ### cURL Request
 ```bash
-curl -X POST http://localhost:8080/query \
+curl -X POST http://localhost:7475/query \
   -H "Content-Type: application/json" \
   -d '{
     "query": "MATCH (u1:User {user_id: 1})-[*2]->(u2:User) RETURN u2.name, u2.email LIMIT 100"

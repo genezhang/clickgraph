@@ -366,7 +366,7 @@ export GRAPH_CONFIG_PATH="./schemas/my_graph.yaml"
 ```bash
 docker run -d --name clickgraph \
   --link clickhouse:clickhouse \
-  -p 8080:8080 \
+  -p 7475:7475 \
   -p 7687:7687 \
   -v $(pwd)/schemas:/schemas \
   -e GRAPH_CONFIG_PATH="/schemas/my_graph.yaml" \
@@ -380,7 +380,7 @@ docker run -d --name clickgraph \
 ### 4. Query Your Graph
 
 ```bash
-curl -X POST http://localhost:8080/query \
+curl -X POST http://localhost:7475/query \
   -H "Content-Type: application/json" \
   -d '{
     "query": "MATCH (u:User) RETURN u.name LIMIT 5"

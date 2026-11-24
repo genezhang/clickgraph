@@ -225,7 +225,7 @@ RETURN from, flight, to
 
 3. **Verify servers**:
    ```bash
-   curl http://localhost:8080/health
+   curl http://localhost:7475/health
    curl http://localhost:8123/ping
    ```
 

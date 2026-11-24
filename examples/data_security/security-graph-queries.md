@@ -332,7 +332,7 @@ LIMIT 10
 Use curl to test:
 
 ```bash
-curl -X POST http://localhost:8080/query \
+curl -X POST http://localhost:7475/query \
   -H "Content-Type: application/json" \
   -d '{"query": "MATCH (u:User)-[:HAS_ACCESS]->(folder:Folder)-[:CONTAINS*1..3]->(f:File) WHERE f.sensitive_data = 1 RETURN f.name, COUNT(u) LIMIT 5"}'
 ```

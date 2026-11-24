@@ -172,7 +172,7 @@ RETURN
 Use `format: "Graph"` to get deduplicated, typed graph objects — ideal for building context windows, feeding graph-structured data to LLMs, or powering visualization:
 
 ```bash
-curl -X POST http://localhost:8080/query \
+curl -X POST http://localhost:7475/query \
   -H "Content-Type: application/json" \
   -d '{
     "query": "MATCH (topic:Topic {name: \"Machine Learning\"})-[r]-(related) RETURN topic, r, related LIMIT 50",
@@ -369,7 +369,7 @@ This returns triples suitable for building LLM context windows.
 ### As structured graph (typed objects for programmatic use)
 
 ```bash
-curl -X POST http://localhost:8080/query \
+curl -X POST http://localhost:7475/query \
   -H "Content-Type: application/json" \
   -d '{
     "query": "MATCH (entity:Entity {id: 42})-[r]-(related) RETURN entity, r, related LIMIT 50",

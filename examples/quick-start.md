@@ -135,16 +135,16 @@ export CLICKHOUSE_DATABASE="social"
 export GRAPH_CONFIG_PATH="./my_social_network.yaml"  # Or use benchmark schema
 
 # Start ClickGraph
-cargo run --bin clickgraph -- --http-port 8080 --bolt-port 7687
+cargo run --bin clickgraph -- --http-port 7475 --bolt-port 7687
 ```
 
 **Expected output**:
 ```
 ClickGraph v0.0.1 (fork of Brahmand)
-Starting HTTP server on 0.0.0.0:8080
+Starting HTTP server on 0.0.0.0:7475
 Starting Bolt server on 0.0.0.0:7687
 Brahmand server is running
-  HTTP API: http://0.0.0.0:8080
+  HTTP API: http://0.0.0.0:7475
   Bolt Protocol: bolt://0.0.0.0:7687
 ```
 
@@ -152,7 +152,7 @@ Brahmand server is running
 
 ### Test 1: Simple Node Query
 ```bash
-curl -X POST http://localhost:8080/query \
+curl -X POST http://localhost:7475/query \
   -H "Content-Type: application/json" \
   -d '{"query": "MATCH (u:User) RETURN u.name, u.age, u.city"}'
 ```
@@ -172,7 +172,7 @@ curl -X POST http://localhost:8080/query \
 
 ### Test 2: Find Alice's Friends
 ```bash
-curl -X POST http://localhost:8080/query \
+curl -X POST http://localhost:7475/query \
   -H "Content-Type: application/json" \
   -d '{"query": "MATCH (alice:User {name: \"Alice\"})-[:FRIENDS_WITH]->(friend:User) RETURN friend.name, friend.city"}'
 ```
@@ -189,7 +189,7 @@ curl -X POST http://localhost:8080/query \
 
 ### Test 3: Graph Format (Structured Nodes & Edges)
 ```bash
-curl -X POST http://localhost:8080/query \
+curl -X POST http://localhost:7475/query \
   -H "Content-Type: application/json" \
   -d '{"query": "MATCH (u:User)-[r:FRIENDS_WITH]->(f:User) RETURN u, r, f LIMIT 5", "format": "Graph"}'
 ```
@@ -210,7 +210,7 @@ curl -X POST http://localhost:8080/query \
 
 ### Test 4: Find Mutual Friends
 ```bash
-curl -X POST http://localhost:8080/query \
+curl -X POST http://localhost:7475/query \
   -H "Content-Type: application/json" \
   -d '{"query": "MATCH (a:User {name: \"Alice\"})-[:FRIENDS_WITH]->(mutual)<-[:FRIENDS_WITH]-(b:User {name: \"Carol\"}) RETURN mutual.name as mutual_friend"}'
 ```
@@ -263,7 +263,7 @@ Friendships:
 ### Real-World Results from Our Demo:
 - ✅ **Database created**: `social` database with `users` and `friendships` tables
 - ✅ **Data populated**: 3 users (Alice, Bob, Carol) with 3 friendship relationships
-- ✅ **Server launched**: ClickGraph running on HTTP (port 8080) and Bolt (port 7687)
+- ✅ **Server launched**: ClickGraph running on HTTP (port 7475) and Bolt (port 7687)
 - ✅ **Configuration valid**: YAML mapping accepted and loaded
 - ⚠️ **Schema warnings**: Cosmetic warnings about internal catalog (functionality unaffected)
 

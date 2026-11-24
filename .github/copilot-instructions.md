@@ -59,7 +59,7 @@ We are at late stage of development with almost all the features implemented, an
 - **Use `curl`**: Available and works correctly on Linux
   ```bash
   # ✅ Standard curl syntax works
-  curl -X POST http://localhost:8080/query \
+  curl -X POST http://localhost:7475/query \
     -H "Content-Type: application/json" \
     -d '{"query":"MATCH (n) RETURN n"}'
   ```

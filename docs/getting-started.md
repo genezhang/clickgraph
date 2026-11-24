@@ -29,10 +29,10 @@ You should see:
 ```
 ClickGraph v0.5.1 (fork of Brahmand)
 
-Starting HTTP server on 0.0.0.0:8080
+Starting HTTP server on 0.0.0.0:7475
 Starting Bolt server on 0.0.0.0:7687
 ClickGraph server is running
-  HTTP API: http://0.0.0.0:8080
+  HTTP API: http://0.0.0.0:7475
   Bolt Protocol: bolt://0.0.0.0:7687
 ```
 
@@ -42,7 +42,7 @@ ClickGraph server is running
 - ✅ ClickHouse downloaded and started (ports 8123/9000)
 - ✅ ClickGraph image pulled from Docker Hub (`genezhang/clickgraph:latest`)
 - ✅ Pre-configured schema loaded (`test_integration.yaml`)
-- ✅ HTTP API ready at http://localhost:8080
+- ✅ HTTP API ready at http://localhost:7475
 - ✅ Bolt protocol ready at bolt://localhost:7687
 
 Skip to [First Graph Query](#first-graph-query) to start querying!
@@ -69,7 +69,7 @@ docker-compose up -d clickhouse-service
 > **💡 Why `clickhouse-service` only?** 
 > This starts just ClickHouse, allowing you to run ClickGraph from source with `cargo run`. 
 > If you run `docker-compose up -d` (all services), both the containerized ClickGraph 
-> and your local `cargo run` will try to bind to port 8080, causing a conflict.
+> and your local `cargo run` will try to bind to port 7475, causing a conflict.
 
 **Build and Run**:
 ```bash
@@ -86,7 +86,7 @@ export GRAPH_CONFIG_PATH="./benchmarks/social_network/schemas/social_benchmark.y
 # Start ClickGraph
 cargo run --bin clickgraph
 
-# Or use custom ports if 8080 is already in use:
+# Or use custom ports if 7475 is already in use:
 cargo run --bin clickgraph -- --http-port 8081 --bolt-port 7688
 ```
 
@@ -98,11 +98,11 @@ You should see output like:
 ```
 ClickGraph v0.5.1 (fork of Brahmand)
 
-Starting HTTP server on 0.0.0.0:8080
+Starting HTTP server on 0.0.0.0:7475
 Starting Bolt server on 0.0.0.0:7687
 Successfully bound Bolt listener to 0.0.0.0:7687
 ClickGraph server is running
-  HTTP API: http://0.0.0.0:8080
+  HTTP API: http://0.0.0.0:7475
   Bolt Protocol: bolt://0.0.0.0:7687
 Bolt server loop starting, listening for connections...
 ```
@@ -117,7 +117,7 @@ Bolt server loop starting, listening for connections...
 > ```
 > Error: Address already in use (os error 10048)
 > ```
-> **Cause:** The Docker Compose ClickGraph container is running (competes for port 8080).
+> **Cause:** The Docker Compose ClickGraph container is running (competes for port 7475).
 > 
 > **Solution 1:** Stop the containerized ClickGraph:
 > ```bash
@@ -144,7 +144,7 @@ Bolt server loop starting, listening for connections...
 ### Test with HTTP API
 ```bash
 # Simple test query
-curl -X POST http://localhost:8080/query \
+curl -X POST http://localhost:7475/query \
   -H "Content-Type: application/json" \
   -d '{"query": "RETURN 1 as test, \"Hello ClickGraph!\" as message"}'
 ```
@@ -256,21 +256,21 @@ export GRAPH_CONFIG_PATH="./social_network.yaml"
 cargo run --bin clickgraph
 
 # Find Alice's friends (in a new terminal)
-curl -X POST http://localhost:8080/query \
+curl -X POST http://localhost:7475/query \
   -H "Content-Type: application/json" \
   -d '{
     "query": "MATCH (alice:User {name: \"Alice\"})-[:FOLLOWS]->(friend:User) RETURN friend.name, friend.age"
   }'
 
 # Find mutual connections
-curl -X POST http://localhost:8080/query \
+curl -X POST http://localhost:7475/query \
   -H "Content-Type: application/json" \
   -d '{
     "query": "MATCH (a:User)-[:FOLLOWS]->(mutual:User)<-[:FOLLOWS]-(b:User) WHERE a.name = \"Alice\" AND b.name = \"Bob\" RETURN mutual.name"
   }'
 
 # Count followers by country
-curl -X POST http://localhost:8080/query \
+curl -X POST http://localhost:7475/query \
   -H "Content-Type: application/json" \
   -d '{
     "query": "MATCH (u:User)-[:FOLLOWS]->(f:User) RETURN f.country, count(u) as follower_count ORDER BY follower_count DESC"
@@ -340,7 +340,7 @@ export GRAPH_CONFIG_PATH="./schemas/multi.yaml"
 cargo run --bin clickgraph
 
 # Verify schemas loaded
-curl -s http://localhost:8080/schemas | jq
+curl -s http://localhost:7475/schemas | jq
 ```
 
 **Query Different Schemas**:
@@ -368,7 +368,7 @@ MATCH (u:User) RETURN count(u)
 **API Endpoint**:
 ```bash
 # List all loaded schemas
-curl -s http://localhost:8080/schemas | jq '.schemas[] | "\(.name): \(.node_count) nodes, \(.relationship_count) edges"'
+curl -s http://localhost:7475/schemas | jq '.schemas[] | "\(.name): \(.node_count) nodes, \(.relationship_count) edges"'
 
 # Example output:
 # social_network: 2 nodes, 1 edge
@@ -475,7 +475,7 @@ npm install neo4j-driver
 **Connection refused errors:**
 ```bash
 # Check if ClickGraph is running
-curl http://localhost:8080/query
+curl http://localhost:7475/query
 
 # Check ClickHouse connectivity
 curl http://localhost:8123/ping

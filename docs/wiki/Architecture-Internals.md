@@ -26,7 +26,7 @@ flowchart TD
     end
     
     subgraph "ClickGraph Server"
-        B1[HTTP API<br/>Port 8080]
+        B1[HTTP API<br/>Port 7475]
         B2[Bolt Protocol<br/>Port 7687]
         C[Request Router]
         D[Cypher Parser]
@@ -521,7 +521,7 @@ mod tests {
 
 #[tokio::test]
 async fn test_simple_query() {
-    let client = ClickGraphClient::new("http://localhost:8080");
+    let client = ClickGraphClient::new("http://localhost:7475");
     
     let result = client.query("MATCH (u:User) RETURN count(u)").await.unwrap();
     

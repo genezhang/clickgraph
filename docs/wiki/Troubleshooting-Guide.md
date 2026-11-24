@@ -20,7 +20,7 @@ Common issues, solutions, and debugging techniques for ClickGraph.
 
 **Symptoms**:
 ```bash
-curl: (7) Failed to connect to localhost port 8080: Connection refused
+curl: (7) Failed to connect to localhost port 7475: Connection refused
 ```
 
 **Causes & Solutions**:
@@ -42,7 +42,7 @@ cargo run --release --bin clickgraph  # Source
 docker-compose ps  # See port mappings
 
 # Connect to correct port
-curl http://localhost:8080/health  # Default HTTP
+curl http://localhost:7475/health  # Default HTTP
 curl bolt://localhost:7687  # Default Bolt
 ```
 
@@ -60,12 +60,12 @@ docker-compose logs clickgraph  # Docker
 **4. Firewall blocking**
 ```bash
 # Windows: Allow through firewall
-netsh advfirewall firewall add rule name="ClickGraph HTTP" dir=in action=allow protocol=TCP localport=8080
+netsh advfirewall firewall add rule name="ClickGraph HTTP" dir=in action=allow protocol=TCP localport=7475
 netsh advfirewall firewall add rule name="ClickGraph Bolt" dir=in action=allow protocol=TCP localport=7687
 
 # Linux: Check firewall
 sudo ufw status
-sudo ufw allow 8080/tcp
+sudo ufw allow 7475/tcp
 sudo ufw allow 7687/tcp
 ```
 
@@ -158,7 +158,7 @@ bolt://localhost:7687
 
 # NOT:
 http://localhost:7687  # Wrong protocol
-bolt://localhost:8080  # Wrong port
+bolt://localhost:7475  # Wrong port
 ```
 
 **3. Authentication configuration**
@@ -668,10 +668,10 @@ Queries take seconds or minutes when they should be fast.
 **1. Check if query cache is being used**
 ```bash
 # First run (cold cache): slower
-time curl -X POST http://localhost:8080/query -d '{"query":"MATCH (u:User) RETURN count(u)"}'
+time curl -X POST http://localhost:7475/query -d '{"query":"MATCH (u:User) RETURN count(u)"}'
 
 # Second run (cached): 10-100x faster
-time curl -X POST http://localhost:8080/query -d '{"query":"MATCH (u:User) RETURN count(u)"}'
+time curl -X POST http://localhost:7475/query -d '{"query":"MATCH (u:User) RETURN count(u)"}'
 ```
 
 **Expected**: Second run should be much faster
@@ -882,11 +882,11 @@ ERROR: Cannot start service: port is already allocated
 **1. Check what's using the port**
 ```bash
 # Linux/Mac
-lsof -i :8080
+lsof -i :7475
 lsof -i :8123
 
 # Windows
-netstat -ano | findstr :8080
+netstat -ano | findstr :7475
 netstat -ano | findstr :8123
 ```
 
@@ -906,7 +906,7 @@ taskkill /PID <PID> /F  # Windows
 services:
   clickgraph:
     ports:
-      - "8081:8080"  # Use 8081 instead of 8080
+      - "8081:7475"  # Use 8081 instead of 7475
 ```
 
 ---
@@ -984,7 +984,7 @@ export RUST_LOG=clickgraph::query_planner=debug,clickgraph::clickhouse_query_gen
 Use `sql_only` parameter to see generated SQL without executing:
 
 ```bash
-curl -X POST http://localhost:8080/query \
+curl -X POST http://localhost:7475/query \
   -H "Content-Type: application/json" \
   -d '{
     "query": "MATCH (u:User)-[:FOLLOWS]->(f) RETURN u.name, f.name",
@@ -1018,13 +1018,13 @@ docker exec clickhouse-clickhouse clickhouse-client -q "EXPLAIN SELECT * FROM us
 
 ```bash
 # Health check endpoint
-curl http://localhost:8080/health
+curl http://localhost:7475/health
 
 # Schema info
-curl http://localhost:8080/schema
+curl http://localhost:7475/schema
 
 # Version info
-curl http://localhost:8080/version
+curl http://localhost:7475/version
 ```
 
 ---

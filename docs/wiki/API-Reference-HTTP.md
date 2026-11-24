@@ -17,17 +17,17 @@ ClickGraph provides a comprehensive HTTP REST API for executing Cypher queries a
 
 Default server address:
 ```
-http://localhost:8080
+http://localhost:7475
 ```
 
 Configure via environment variables or CLI:
 ```bash
 # Environment
-export HTTP_HOST="0.0.0.0"
-export HTTP_PORT="8080"
+export CLICKGRAPH_HOST="0.0.0.0"
+export CLICKGRAPH_PORT="7475"
 
 # CLI
-clickgraph --http-host 0.0.0.0 --http-port 8080
+clickgraph --http-host 0.0.0.0 --http-port 7475
 ```
 
 ---
@@ -76,17 +76,17 @@ CYPHER replan=<option> <your-query>
 
 ```bash
 # Force regeneration (bypass cache)
-curl -X POST http://localhost:8080/query \
+curl -X POST http://localhost:7475/query \
   -H "Content-Type: application/json" \
   -d '{"query": "CYPHER replan=force MATCH (u:User) RETURN u.name"}'
 
 # Require cached query (error if not cached)
-curl -X POST http://localhost:8080/query \
+curl -X POST http://localhost:7475/query \
   -H "Content-Type: application/json" \
   -d '{"query": "CYPHER replan=skip MATCH (u:User) RETURN u.name"}'
 
 # Normal cache behavior (default)
-curl -X POST http://localhost:8080/query \
+curl -X POST http://localhost:7475/query \
   -H "Content-Type: application/json" \
   -d '{"query": "CYPHER replan=default MATCH (u:User) RETURN u.name"}'
 ```
@@ -97,13 +97,13 @@ curl -X POST http://localhost:8080/query \
 import requests
 
 # Force cache bypass for debugging
-response = requests.post('http://localhost:8080/query', json={
+response = requests.post('http://localhost:7475/query', json={
     'query': 'CYPHER replan=force MATCH (u:User) WHERE u.age > $age RETURN u.name',
     'parameters': {'age': 25}
 })
 
 # Require cached query (production - prevent latency spikes)
-response = requests.post('http://localhost:8080/query', json={
+response = requests.post('http://localhost:7475/query', json={
     'query': 'CYPHER replan=skip MATCH (u:User) WHERE u.age > $age RETURN u.name',
     'parameters': {'age': 30}
 })
@@ -213,12 +213,12 @@ Content-Type: application/json
 **curl:**
 ```bash
 # Basic query
-curl -X POST http://localhost:8080/query \
+curl -X POST http://localhost:7475/query \
   -H "Content-Type: application/json" \
   -d '{"query": "MATCH (u:User) RETURN u.name LIMIT 10"}'
 
 # With parameters
-curl -X POST http://localhost:8080/query \
+curl -X POST http://localhost:7475/query \
   -H "Content-Type: application/json" \
   -d '{
     "query": "MATCH (u:User) WHERE u.user_id = $id RETURN u",
@@ -226,7 +226,7 @@ curl -X POST http://localhost:8080/query \
   }'
 
 # With schema selection
-curl -X POST http://localhost:8080/query \
+curl -X POST http://localhost:7475/query \
   -H "Content-Type: application/json" \
   -d '{
     "query": "MATCH (u:User) RETURN count(u)",
@@ -234,7 +234,7 @@ curl -X POST http://localhost:8080/query \
   }'
 
 # SQL-only mode (debugging)
-curl -X POST http://localhost:8080/query \
+curl -X POST http://localhost:7475/query \
   -H "Content-Type: application/json" \
   -d '{
     "query": "MATCH (u:User) WHERE u.age > 25 RETURN u.name",
@@ -242,14 +242,14 @@ curl -X POST http://localhost:8080/query \
   }'
 
 # Force cache bypass (regenerate SQL)
-curl -X POST http://localhost:8080/query \
+curl -X POST http://localhost:7475/query \
   -H "Content-Type: application/json" \
   -d '{
     "query": "CYPHER replan=force MATCH (u:User) RETURN u.name"
   }'
 
 # Require cached query (prevent planning latency)
-curl -X POST http://localhost:8080/query \
+curl -X POST http://localhost:7475/query \
   -H "Content-Type: application/json" \
   -d '{
     "query": "CYPHER replan=skip MATCH (u:User) RETURN u.name"
@@ -261,24 +261,24 @@ curl -X POST http://localhost:8080/query \
 import requests
 
 # Basic query
-response = requests.post('http://localhost:8080/query', json={
+response = requests.post('http://localhost:7475/query', json={
     'query': 'MATCH (u:User) RETURN u.name LIMIT 10'
 })
 data = response.json()
 
 # With parameters
-response = requests.post('http://localhost:8080/query', json={
+response = requests.post('http://localhost:7475/query', json={
     'query': 'MATCH (u:User) WHERE u.user_id = $id RETURN u',
     'parameters': {'id': 123}
 })
 
 # Force cache bypass (debugging/testing)
-response = requests.post('http://localhost:8080/query', json={
+response = requests.post('http://localhost:7475/query', json={
     'query': 'CYPHER replan=force MATCH (u:User) RETURN u.name'
 })
 
 # Multi-tenant query
-response = requests.post('http://localhost:8080/query', json={
+response = requests.post('http://localhost:7475/query', json={
     'query': 'MATCH (u:User) RETURN u.name',
     'view_parameters': {'tenant_id': 'acme_corp'}
 })
@@ -287,7 +287,7 @@ response = requests.post('http://localhost:8080/query', json={
 **PowerShell:**
 ```powershell
 # Basic query
-Invoke-RestMethod -Method POST -Uri "http://localhost:8080/query" `
+Invoke-RestMethod -Method POST -Uri "http://localhost:7475/query" `
   -ContentType "application/json" `
   -Body '{"query":"MATCH (u:User) RETURN u.name LIMIT 10"}'
 
@@ -297,7 +297,7 @@ $body = @{
     parameters = @{id = 123}
 } | ConvertTo-Json
 
-Invoke-RestMethod -Method POST -Uri "http://localhost:8080/query" `
+Invoke-RestMethod -Method POST -Uri "http://localhost:7475/query" `
   -ContentType "application/json" `
   -Body $body
 ```
@@ -370,12 +370,12 @@ Content-Type: application/json
 **curl:**
 ```bash
 # Basic SQL generation
-curl -X POST http://localhost:8080/query/sql \
+curl -X POST http://localhost:7475/query/sql \
   -H "Content-Type: application/json" \
   -d '{"query": "MATCH (u:User) RETURN u.name LIMIT 10"}'
 
 # With role (includes SET ROLE in array)
-curl -X POST http://localhost:8080/query/sql \
+curl -X POST http://localhost:7475/query/sql \
   -H "Content-Type: application/json" \
   -d '{
     "query": "MATCH (u:User) WHERE u.age > 25 RETURN u.name",
@@ -383,7 +383,7 @@ curl -X POST http://localhost:8080/query/sql \
   }'
 
 # With logical plan
-curl -X POST http://localhost:8080/query/sql \
+curl -X POST http://localhost:7475/query/sql \
   -H "Content-Type: application/json" \
   -d '{
     "query": "MATCH (u:User)-[:FOLLOWS*1..3]->(f) RETURN f.name",
@@ -396,7 +396,7 @@ curl -X POST http://localhost:8080/query/sql \
 import requests
 
 # Generate SQL with role
-response = requests.post('http://localhost:8080/query/sql', json={
+response = requests.post('http://localhost:7475/query/sql', json={
     'query': 'MATCH (u:User)-[:FOLLOWS]->(f) WHERE u.name = $name RETURN f.name',
     'parameters': {'name': 'Alice'},
     'role': 'analyst'
@@ -417,7 +417,7 @@ for stmt in data['sql']:
 **PowerShell:**
 ```powershell
 # Generate SQL
-$response = Invoke-RestMethod -Method POST -Uri "http://localhost:8080/query/sql" `
+$response = Invoke-RestMethod -Method POST -Uri "http://localhost:7475/query/sql" `
   -ContentType "application/json" `
   -Body '{"query":"MATCH (u:User) RETURN u.name LIMIT 10"}'
 
@@ -459,7 +459,7 @@ GET /schemas HTTP/1.1
 
 **Example:**
 ```bash
-curl http://localhost:8080/schemas
+curl http://localhost:7475/schemas
 ```
 
 ### GET /schemas/{name}
@@ -484,7 +484,7 @@ GET /schemas/social_network HTTP/1.1
 
 **Example:**
 ```bash
-curl http://localhost:8080/schemas/social_network
+curl http://localhost:7475/schemas/social_network
 ```
 
 ### POST /schemas/load
@@ -674,7 +674,7 @@ Semantics (Kafka Connect's `config.storage.topic` pattern, applied on ClickHouse
 **Load from file (bash):**
 ```bash
 # Read YAML file and send as string
-curl -X POST http://localhost:8080/schemas/load \
+curl -X POST http://localhost:7475/schemas/load \
   -H "Content-Type: application/json" \
   -d "$(jq -Rs '{schema_name: "ecommerce", config_content: ., validate_schema: true}' schemas/ecommerce.yaml)"
 ```
@@ -688,7 +688,7 @@ $body = @{
     validate_schema = $true
 } | ConvertTo-Json
 
-Invoke-RestMethod -Method POST -Uri "http://localhost:8080/schemas/load" `
+Invoke-RestMethod -Method POST -Uri "http://localhost:7475/schemas/load" `
   -ContentType "application/json" `
   -Body $body
 ```
@@ -701,7 +701,7 @@ import requests
 with open('schemas/ecommerce.yaml', 'r') as f:
     yaml_content = f.read()
 
-response = requests.post('http://localhost:8080/schemas/load', json={
+response = requests.post('http://localhost:7475/schemas/load', json={
     'schema_name': 'ecommerce',
     'config_content': yaml_content,
     'validate_schema': True
@@ -823,7 +823,7 @@ clickgraph healthy 0.5.0
 
 **Example:**
 ```bash
-curl http://localhost:8080/health
+curl http://localhost:7475/health
 ```
 
 ---
@@ -845,7 +845,7 @@ ClickHouse byte counters, plus cache and connection-pool gauges. Labels are
 bounded (never raw query text, role, or tenant).
 
 ```bash
-curl http://localhost:8080/metrics
+curl http://localhost:7475/metrics
 ```
 
 ### GET /stats
@@ -860,7 +860,7 @@ tracing health is observable without waiting for a log line; when tracing is
 not configured the field is absent entirely (not `null`).
 
 ```bash
-curl http://localhost:8080/stats | jq
+curl http://localhost:7475/stats | jq
 ```
 
 ### GET /stats/queries
@@ -877,7 +877,7 @@ Each record carries `timestamp_ms`, `query_type`, `total_ms`, `exec_ms`,
 `CLICKGRAPH_METRICS_QUERY_PREVIEW=true` — a truncated `query_preview`.
 
 ```bash
-curl "http://localhost:8080/stats/queries?recent=10&slowest=10" | jq
+curl "http://localhost:7475/stats/queries?recent=10&slowest=10" | jq
 ```
 
 ### OTLP query spans (opt-in)
@@ -976,7 +976,7 @@ MATCH (u:User) RETURN u.name;
 ```
 
 ```bash
-curl -X POST http://localhost:8080/query \
+curl -X POST http://localhost:7475/query \
   -d '{"query": "MATCH (u:User) RETURN u.name", "schema_name": "social_network"}'
 ```
 
@@ -990,7 +990,7 @@ RETURN u.name, u.country
 ```
 
 ```bash
-curl -X POST http://localhost:8080/query \
+curl -X POST http://localhost:7475/query \
   -d '{
     "query": "MATCH (u:User) WHERE u.email = $email AND u.age > $minAge RETURN u.name",
     "parameters": {"email": "alice@example.com", "minAge": 25}
@@ -1002,7 +1002,7 @@ curl -X POST http://localhost:8080/query \
 Use view parameters for tenant isolation:
 
 ```bash
-curl -X POST http://localhost:8080/query \
+curl -X POST http://localhost:7475/query \
   -d '{
     "query": "MATCH (u:User) RETURN u.name",
     "view_parameters": {"tenant_id": "acme_corp"}
@@ -1016,7 +1016,7 @@ See [Multi-Tenancy & RBAC](Multi-Tenancy-RBAC.md) for details.
 Use ClickHouse's RBAC system:
 
 ```bash
-curl -X POST http://localhost:8080/query \
+curl -X POST http://localhost:7475/query \
   -d '{
     "query": "MATCH (u:User) RETURN u.name",
     "role": "analyst_role"
@@ -1043,13 +1043,13 @@ Requires database-managed users with granted roles. See [Multi-Tenancy & RBAC](M
 
 3. **Check Performance Headers**: Monitor timing
    ```bash
-   curl -i http://localhost:8080/query -d '{"query":"..."}'
+   curl -i http://localhost:7475/query -d '{"query":"..."}'
    # Check X-Total-Time-Ms header
    ```
 
 4. **Use SQL-only Mode**: Debug query generation
    ```bash
-   curl http://localhost:8080/query -d '{"query":"...", "sql_only": true}'
+   curl http://localhost:7475/query -d '{"query":"...", "sql_only": true}'
    ```
 
 See [Performance & Query Optimization](Performance-Query-Optimization.md) for more details.

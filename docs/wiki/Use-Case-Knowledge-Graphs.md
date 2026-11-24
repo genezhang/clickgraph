@@ -942,7 +942,7 @@ Knowledge graphs stored in ClickGraph can serve as the retrieval layer for Graph
 
 ```bash
 # Extract structured context around an entity for an LLM prompt
-curl -X POST http://localhost:8080/query \
+curl -X POST http://localhost:7475/query \
   -H "Content-Type: application/json" \
   -d '{
     "query": "MATCH (e:Entity {name: \"Machine Learning\"})-[r]-(related) RETURN e, r, related LIMIT 50",

@@ -19,7 +19,7 @@ cargo run --bin brahmand
 ```
 
 This starts:
-- HTTP API server on `http://0.0.0.0:8080`
+- HTTP API server on `http://0.0.0.0:7475`
 - Bolt protocol server on `bolt://0.0.0.0:7687`
 
 ## Command-Line Options
@@ -27,7 +27,7 @@ This starts:
 ### Basic Configuration
 
 ```bash
-# Default configuration (HTTP:8080, Bolt:7687)
+# Default configuration (HTTP:7475, Bolt:7687)
 cargo run --bin brahmand
 
 # Show all available options
@@ -78,7 +78,7 @@ cargo run --bin brahmand
 | Option | Description | Default |
 |--------|-------------|---------|
 | `--http-host <HOST>` | HTTP server bind address | `0.0.0.0` |
-| `--http-port <PORT>` | HTTP server port | `8080` |
+| `--http-port <PORT>` | HTTP server port | `7475` |
 | `--bolt-host <HOST>` | Bolt server bind address | `0.0.0.0` |
 | `--bolt-port <PORT>` | Bolt server port | `7687` |
 | `--disable-bolt` | Disable Bolt protocol server | false (Bolt enabled by default) |
@@ -98,7 +98,7 @@ export CLICKHOUSE_DATABASE="brahmand"
 
 # Server configuration (optional)
 export CLICKGRAPH_HOST="0.0.0.0"              # HTTP host
-export CLICKGRAPH_PORT="8080"                 # HTTP port
+export CLICKGRAPH_PORT="7475"                 # HTTP port
 export CLICKGRAPH_BOLT_HOST="0.0.0.0"         # Bolt host
 export CLICKGRAPH_BOLT_PORT="7687"            # Bolt port
 export CLICKGRAPH_BOLT_ENABLED="true"         # Enable/disable Bolt
@@ -173,7 +173,7 @@ export GRAPH_CONFIG_PATH="./schemas/multi_schema.yaml"
 cargo run --bin clickgraph
 
 # Verify schemas loaded
-curl -s http://localhost:8080/schemas | jq '.schemas[] | "\(.name): \(.node_count) nodes, \(.relationship_count) edges"'
+curl -s http://localhost:7475/schemas | jq '.schemas[] | "\(.name): \(.node_count) nodes, \(.relationship_count) edges"'
 
 # Output:
 # social_benchmark: 4 nodes, 6 edges
@@ -257,7 +257,7 @@ export CLICKGRAPH_LLM_MODEL="llama3.1:70b"
 
 ```bash
 # Start the client (server must be running)
-clickgraph-client --url http://localhost:8080
+clickgraph-client --url http://localhost:7475
 
 # Run LLM-powered discovery
 clickgraph-client :) :discover mydb
@@ -297,7 +297,7 @@ Schema discovery is a one-time operation per database. Typical costs:
 ## Protocol Support
 
 ### HTTP API
-- **Port**: 8080 (default)
+- **Port**: 7475 (default)
 - **Endpoint**: `POST /query`
 - **Format**: JSON with Cypher queries
 - **Usage**: REST API clients, web applications
@@ -339,7 +339,7 @@ cargo run --bin brahmand -- --http-port 9090 --disable-bolt
 ```bash
 # Bind to all interfaces for container deployments
 cargo run --bin brahmand -- \
-  --http-host 0.0.0.0 --http-port 8080 \
+  --http-host 0.0.0.0 --http-port 7475 \
   --bolt-host 0.0.0.0 --bolt-port 7687
 ```
 
@@ -351,7 +351,7 @@ Connect to the HTTP API using standard HTTP clients:
 
 ```bash
 # curl example
-curl -X POST http://localhost:8080/query \
+curl -X POST http://localhost:7475/query \
   -H "Content-Type: application/json" \
   -d '{"query": "MATCH (n) RETURN n LIMIT 10"}'
 ```
@@ -360,7 +360,7 @@ curl -X POST http://localhost:8080/query \
 # Python requests example
 import requests
 
-response = requests.post('http://localhost:8080/query', 
+response = requests.post('http://localhost:7475/query', 
                         json={'query': 'MATCH (n) RETURN n LIMIT 10'})
 result = response.json()
 ```
@@ -420,11 +420,11 @@ When ClickGraph starts successfully, you'll see:
 ```
 ClickGraph v0.0.1 (fork of Brahmand)
 
-Starting HTTP server on 0.0.0.0:8080
+Starting HTTP server on 0.0.0.0:7475
 Starting Bolt server on 0.0.0.0:7687
 Successfully bound Bolt listener to 0.0.0.0:7687
 Brahmand server is running
-  HTTP API: http://0.0.0.0:8080
+  HTTP API: http://0.0.0.0:7475
   Bolt Protocol: bolt://0.0.0.0:7687
 Bolt server loop starting, listening for connections...
 ```
@@ -432,7 +432,7 @@ Bolt server loop starting, listening for connections...
 ### Health Check Endpoints
 ```bash
 # Basic connectivity test
-curl http://localhost:8080/query -X POST \
+curl http://localhost:7475/query -X POST \
   -H "Content-Type: application/json" \
   -d '{"query": "RETURN 1 as health_check"}'
 ```
@@ -441,7 +441,7 @@ curl http://localhost:8080/query -X POST \
 
 **Connection refused errors:**
 - Verify ClickHouse is running and accessible
-- Check firewall settings for ports 8080/7687
+- Check firewall settings for ports 7475/7687
 - Ensure proper host binding (0.0.0.0 vs 127.0.0.1)
 
 **ClickHouse connection issues:**

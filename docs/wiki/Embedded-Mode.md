@@ -50,7 +50,7 @@ Or with the CLI flag:
 ./clickgraph --embedded
 ```
 
-Everything works as in standard mode: HTTP REST API on port 8080, Bolt on port 7687. The only difference is that queries run against chdb in-process rather than a remote ClickHouse server.
+Everything works as in standard mode: HTTP REST API on port 7475, Bolt on port 7687. The only difference is that queries run against chdb in-process rather than a remote ClickHouse server.
 
 ### Option B — Library (Rust API)
 

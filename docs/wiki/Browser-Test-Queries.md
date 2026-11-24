@@ -184,7 +184,7 @@ RETURN o, type(r)  // Returns different results
 
 ```bash
 # Time queries via HTTP
-time curl -X POST http://localhost:8080/query \
+time curl -X POST http://localhost:7475/query \
   -H "Content-Type: application/json" \
   -d '{"query":"USE social_standard MATCH (u:User)-[r]-(o) WHERE u.user_id = 1 RETURN o"}'
 
@@ -202,7 +202,7 @@ with driver.session(database='social_standard') as session:
 
 1. **Use `sql_only` parameter** (via HTTP):
    ```bash
-   curl -X POST http://localhost:8080/query \
+   curl -X POST http://localhost:7475/query \
      -H "Content-Type: application/json" \
      -d '{"query":"MATCH (u:User)-[r]-(o) WHERE u.user_id = 1 RETURN o", "sql_only": true}'
    ```

@@ -642,7 +642,7 @@ RETURN center.username as center,
 LIMIT 100
 """
 
-response = requests.post('http://localhost:8080/query', json={'query': query})
+response = requests.post('http://localhost:7475/query', json={'query': query})
 data = response.json()
 
 # Build NetworkX graph

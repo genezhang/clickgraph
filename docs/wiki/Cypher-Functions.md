@@ -979,7 +979,7 @@ LIMIT 10
 
 **HTTP API with vector parameter:**
 ```bash
-curl -X POST http://localhost:8080/query \
+curl -X POST http://localhost:7475/query \
   -H "Content-Type: application/json" \
   -d '{
     "query": "MATCH (doc:Document) RETURN doc.title, gds.similarity.cosine(doc.embedding, $vec) AS score ORDER BY score DESC LIMIT 5",

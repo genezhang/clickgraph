@@ -770,7 +770,7 @@ def calculate_fraud_score(account_id):
               WHERE rel.timestamp > datetime() - duration({{days: 7}}))
     RETURN count(path) as circular_paths
     """
-    result = requests.post('http://localhost:8080/query', json={'query': query1}).json()
+    result = requests.post('http://localhost:7475/query', json={'query': query1}).json()
     scores['circular'] = min(result['results'][0]['circular_paths'] * 10, 30)
     
     # Check 2: Shared data with other accounts
@@ -779,7 +779,7 @@ def calculate_fraud_score(account_id):
     MATCH (c1)-[:SHARES_PHONE|SHARES_EMAIL|SHARES_ADDRESS]-(c2:Customer)
     RETURN count(DISTINCT c2) as linked_customers
     """
-    result = requests.post('http://localhost:8080/query', json={'query': query2}).json()
+    result = requests.post('http://localhost:7475/query', json={'query': query2}).json()
     scores['synthetic_identity'] = min(result['results'][0]['linked_customers'] * 5, 25)
     
     # Check 3: Transaction velocity
@@ -788,7 +788,7 @@ def calculate_fraud_score(account_id):
     WHERE txn.timestamp > datetime() - duration({{hours: 24}})
     RETURN count(txn) as txn_count_24h
     """
-    result = requests.post('http://localhost:8080/query', json={'query': query3}).json()
+    result = requests.post('http://localhost:7475/query', json={'query': query3}).json()
     txn_count = result['results'][0]['txn_count_24h']
     scores['velocity'] = min(max(txn_count - 10, 0) * 2, 20)
     
@@ -799,7 +799,7 @@ def calculate_fraud_score(account_id):
       AND paid.timestamp > datetime() - duration({{days: 7}})
     RETURN count(paid) as high_risk_txns, sum(paid.amount) as high_risk_volume
     """
-    result = requests.post('http://localhost:8080/query', json={'query': query4}).json()
+    result = requests.post('http://localhost:7475/query', json={'query': query4}).json()
     high_risk = result['results'][0]
     scores['merchant_risk'] = min(high_risk['high_risk_txns'] * 3, 15)
     
@@ -810,7 +810,7 @@ def calculate_fraud_score(account_id):
     WHERE ip.is_vpn = 1 OR ip.is_proxy = 1 OR ip.ip_risk_score > 0.7
     RETURN count(DISTINCT ip) as risky_ips
     """
-    result = requests.post('http://localhost:8080/query', json={'query': query5}).json()
+    result = requests.post('http://localhost:7475/query', json={'query': query5}).json()
     scores['ip_risk'] = min(result['results'][0]['risky_ips'] * 5, 10)
     
     # Total score (0-100)
@@ -875,7 +875,7 @@ def monitor_high_risk_patterns():
     while True:
         for alert_name, query in alert_queries.items():
             try:
-                response = requests.post('http://localhost:8080/query', 
+                response = requests.post('http://localhost:7475/query', 
                                        json={'query': query},
                                        timeout=5)
                 results = response.json()['results']

@@ -13,7 +13,7 @@ docker pull genezhang/clickgraph:latest
 
 docker run -d \
   --name clickgraph \
-  -p 8080:8080 \
+  -p 7475:7475 \
   -p 7687:7687 \
   -e CLICKHOUSE_URL="http://clickhouse:8123" \
   -e CLICKHOUSE_USER="default" \
@@ -50,7 +50,7 @@ docker-compose logs -f clickgraph
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `CLICKGRAPH_HOST` | `0.0.0.0` | HTTP server bind address |
-| `CLICKGRAPH_PORT` | `8080` | HTTP server port |
+| `CLICKGRAPH_PORT` | `7475` | HTTP server port |
 | `CLICKGRAPH_BOLT_HOST` | `0.0.0.0` | Bolt protocol bind address |
 | `CLICKGRAPH_BOLT_PORT` | `7687` | Bolt protocol port |
 | `CLICKGRAPH_BOLT_ENABLED` | `true` | Enable/disable Bolt protocol |
@@ -144,7 +144,7 @@ services:
       CLICKHOUSE_DATABASE: "production"
       
       # Server config
-      CLICKGRAPH_PORT: "8080"
+      CLICKGRAPH_PORT: "7475"
       CLICKGRAPH_BOLT_PORT: "7687"
       CLICKGRAPH_BOLT_ENABLED: "true"
       CLICKGRAPH_MAX_CTE_DEPTH: "200"
@@ -160,13 +160,13 @@ services:
       # Schema
       GRAPH_CONFIG_PATH: "/app/config/schema.yaml"
     ports:
-      - "8080:8080"
+      - "7475:7475"
       - "7687:7687"
     volumes:
       - ./config/schema.yaml:/app/config/schema.yaml:ro
       - ./schemas:/app/schemas:ro
     healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/health"]
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:7475/health"]
       interval: 30s
       timeout: 3s
       retries: 3
@@ -211,7 +211,7 @@ spec:
       - name: clickgraph
         image: genezhang/clickgraph:0.5.0
         ports:
-        - containerPort: 8080
+        - containerPort: 7475
           name: http
         - containerPort: 7687
           name: bolt
@@ -237,13 +237,13 @@ spec:
         livenessProbe:
           httpGet:
             path: /health
-            port: 8080
+            port: 7475
           initialDelaySeconds: 10
           periodSeconds: 30
         readinessProbe:
           httpGet:
             path: /health
-            port: 8080
+            port: 7475
           initialDelaySeconds: 5
           periodSeconds: 10
         resources:
@@ -271,8 +271,8 @@ spec:
     app: clickgraph
   ports:
   - name: http
-    port: 8080
-    targetPort: 8080
+    port: 7475
+    targetPort: 7475
   - name: bolt
     port: 7687
     targetPort: 7687
@@ -360,7 +360,7 @@ services:
 
 **HTTP endpoint:**
 ```bash
-curl http://localhost:8080/health
+curl http://localhost:7475/health
 # Returns: {"status":"healthy"}
 ```
 
@@ -401,7 +401,7 @@ RUST_LOG=clickgraph=debug,tower_http=debug
 ClickGraph includes performance metrics in HTTP response headers:
 
 ```bash
-curl -v http://localhost:8080/query
+curl -v http://localhost:7475/query
 # Response headers:
 # X-Query-Cache-Status: HIT|MISS|BYPASS
 # X-Parse-Time-Ms: 5
@@ -421,12 +421,12 @@ docker logs clickgraph
 ```
 
 **Common issues:**
-1. **Port conflict** - Another service using 8080 or 7687
+1. **Port conflict** - Another service using 7475 or 7687
    ```bash
    # Check what's using the port
-   netstat -tulpn | grep 8080
+   netstat -tulpn | grep 7475
    # Use different port
-   docker run -p 8081:8080 genezhang/clickgraph:latest --http-port 8080
+   docker run -p 8081:7475 genezhang/clickgraph:latest --http-port 7475
    ```
 
 2. **Missing ClickHouse connection** - Check environment variables
