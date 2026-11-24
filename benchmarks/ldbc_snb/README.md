@@ -1,157 +1,126 @@
 # LDBC SNB Benchmark for ClickGraph
 
-## Overview
+This directory contains the official LDBC Social Network Benchmark (SNB)
+queries, the ClickHouse schema that maps them to ClickGraph, and a reproducible
+runner that records pass/fail and latency per query.
 
-This directory contains the LDBC Social Network Benchmark (SNB) implementation for ClickGraph. The benchmark uses official LDBC queries to test ClickGraph's Cypher-to-SQL translation capabilities.
+## Current status
 
-**Current Status (January 2026)**: 4/5 Interactive Short (IS) queries passing, 3/4 Interactive Complex (IC) queries tested passing.
+The last full runs are from August 2026:
 
-## Quick Start
+| Scale | Passed | Total |
+| --- | --- | --- |
+| SF1 | 26 | 41 |
+| SF10 | 26 | 41 |
 
-### Start ClickHouse & ClickGraph
+Read the reports:
+
+- [`results/SF1_REAL_RUN_2026-08-30.md`](results/SF1_REAL_RUN_2026-08-30.md)
+- [`results/SF1_SF10_POSTFIX_2026-08-31.md`](results/SF1_SF10_POSTFIX_2026-08-31.md)
+
+The 15 remaining failures are structural, not scale-driven: GDS/APOC
+procedures, `CALL {}` subqueries, a polymorphic schema-mapping gap, one planner
+limitation, and five residual variable-length-path shapes. Check the reports
+for the exact list.
+
+## Layout
+
+| Path | Purpose |
+| --- | --- |
+| `queries/official/` | 41 official IS, IC and BI queries, each with a `.params.json` |
+| `queries/adapted/` | Development workarounds; not used by the harness |
+| `schemas/` | ClickGraph schema YAML and ClickHouse DDL variants |
+| `data/mini_dataset.sql` | Small dataset for smoke tests |
+| `scripts/` | Data generation, loading and older benchmark scripts |
+| `run.py` | Current benchmark harness |
+| `results/` | JSON and Markdown reports |
+
+## Reproduce a run
+
+Prerequisites: Docker, a built `clickgraph` binary, and Python 3.10+.
+
 ```bash
-cd /home/gz/clickgraph
+# 1. Start ClickHouse and create the LDBC tables.
+cd benchmarks/ldbc_snb
+docker compose -f docker-compose.ldbc.yaml up -d
 
-# Start ClickHouse LDBC instance
-docker-compose up -d clickhouse-ldbc
+# 2. Generate the SF1 CSV files. This takes a while and needs disk space.
+./scripts/download_data.sh sf1 --generate
 
-# Configure environment for LDBC
-export CLICKHOUSE_URL="http://localhost:18123"
-export CLICKHOUSE_USER="test_user"
-export CLICKHOUSE_PASSWORD="test_pass"
-export CLICKHOUSE_DATABASE="ldbc"
-export GRAPH_CONFIG_PATH="benchmarks/ldbc_snb/schemas/ldbc_snb_complete.yaml"
-export RUST_LOG=warn
+# 3. Load the CSVs through the running ClickHouse container.
+./schemas/sf1_load_data.sh \
+  http://localhost:8123 default default \
+  /data/sf1/graphs/csv/interactive/composite-projected-fk
 
-# Start ClickGraph server
-cargo run --bin clickgraph &> /tmp/clickgraph_ldbc.log &
+# 4. Start ClickGraph with the LDBC schema.
+cd ../..
+cargo build --release --bin clickgraph
+CLICKHOUSE_URL=http://localhost:8123 \
+CLICKHOUSE_USER=default \
+CLICKHOUSE_PASSWORD=default \
+CLICKHOUSE_DATABASE=ldbc \
+GRAPH_CONFIG_PATH=benchmarks/ldbc_snb/schemas/ldbc_snb.yaml \
+  ./target/release/clickgraph --http-port 7475
+
+# 5. In another terminal, run the benchmark.
+python3 benchmarks/ldbc_snb/run.py --label sf1 --iterations 5
 ```
 
-### Run Full Benchmark Suite
-```bash
-cd benchmarks/ldbc_snb/scripts
-./run_full_benchmark.sh sf10
+If the ClickHouse container already has a volume from an older schema, remove
+it with `docker compose -f docker-compose.ldbc.yaml down -v` before step 1.
+Use a different `--http-port` if 7475 is taken.
+
+## Harness
+
+```text
+python3 benchmarks/ldbc_snb/run.py [options]
 ```
 
-## Query Organization
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `--url` | `http://localhost:7475` | ClickGraph HTTP endpoint |
+| `--schema` | server default | Schema name to send with each query |
+| `--iterations` | `5` | Measured runs per query |
+| `--warmup` | `1` | Unmeasured runs per query |
+| `--timeout` | `300` | Seconds per request |
+| `--query` | all 41 | Repeatable query id, for example `short-1` or `bi-5` |
+| `--params-file` | none | JSON object mapping query id to parameter overrides |
+| `--param` | none | Repeatable `KEY=VALUE`; JSON values are parsed |
+| `--out-dir` | `results/` | Directory for the JSON and Markdown reports |
+| `--label` | `ldbc` | Report name and metadata |
+| `--strict` | off | Exit 1 if any query fails |
 
-### Official Queries (Primary Testing)
+The harness reads `foo.params.json` beside each `foo.cypher`, strips comments,
+checks that every `$parameter` has a value, runs the warm-up, then records
+`min`, `median` and `max` wall-clock time and the row count. A query that fails
+is kept in the report with ClickGraph's own error text; it is never skipped
+silently.
 
-Located in `queries/official/` with subdirectories:
-- `interactive/short-*.cypher` (7 queries) - Simple lookups
-- `interactive/complex-*.cypher` (14 queries) - Multi-hop graph traversals
-- `bi/*.cypher` (20 queries) - Business intelligence analytics
+Outputs are a diffable `YYYYMMDD_HHMMSS_<label>.json` and a matching `.md`.
+The JSON is the source of truth; the Markdown is for reading.
 
-**Total**: 41 official LDBC queries
+### Mini smoke test
 
-**Usage**: Test official queries first. These represent the LDBC benchmark standard.
+The mini dataset is useful for checking the harness itself without generating
+SF1. Load `data/mini_dataset.sql` into ClickHouse, start ClickGraph with
+`schemas/ldbc_snb_mini.yaml`, then override the sample IDs:
 
-### Adapted Queries (When Official Fails)
-
-Located in `queries/adapted/` - Created only when official queries cannot work due to:
-1. **Syntax Workarounds**: ClickGraph parser limitations requiring query restructuring
-2. **Bug Workarounds**: Known bugs that need alternative syntax (e.g., OPTIONAL MATCH + inline property)
-3. **Schema Mapping**: Query adjustments for ClickGraph's schema representation
-
-**Example**: `interactive-short-7.cypher` (adapted)
-- **Official version**: Uses `MATCH (m:Message {id: $messageId})<-...` (inline property)
-- **Issue**: Generates SQL error with OPTIONAL MATCH: `Unknown expression identifier 't34.PersonId'`
-- **Adapted version**: Splits to `MATCH (m:Message) WHERE m.id = $messageId MATCH (m)<-...`
-- **Status**: Workaround needed until inline property + OPTIONAL MATCH bug is fixed
-
-**Current Adapted Queries**:
-- `interactive-short-7.cypher` - OPTIONAL MATCH + inline property workaround
-- `interactive-complex-9.cypher` - CTE column naming workaround (underscores vs dots)
-- Additional queries as needed
-
-### Custom Queries (Development Only)
-
-Located in `queries/custom/` - Used for:
-- Feature testing
-- Simplified examples
-- Development experiments
-
-**Note**: NOT used for official benchmarking.
-
-## Database Configuration
-
-### ClickHouse LDBC Instance
-- **Container**: `clickhouse-ldbc`
-- **Port**: 18123 (not default 8123)
-- **Credentials**: test_user/test_pass
-- **Database**: ldbc
-- **Schema**: `benchmarks/ldbc_snb/schemas/ldbc_snb_complete.yaml`
-
-## Individual Benchmarks
-
-### Data Loading
-```bash
-cd benchmarks/ldbc_snb/scripts
-./benchmark_data_loading.sh sf10
+```json
+{"short-1": {"personId": 1}, "short-3": {"personId": 1}}
 ```
-Measures: rows/sec, MB/sec, per-table timing  
-Output: `results/loading/loading_benchmark_*.json`
 
-### Query Performance
 ```bash
-export WARMUP_RUNS=1 BENCHMARK_RUNS=3
-./benchmark_query_performance.sh
+python3 benchmarks/ldbc_snb/run.py \
+  --query short-1 --query short-3 \
+  --params-file /tmp/mini-params.json \
+  --label mini --iterations 3 --warmup 1
 ```
-Tests: LDBC query suite  
-Measures: min/max/avg/median duration, rows returned  
-Output: `results/performance/query_benchmark_*.json`
 
-### Concurrent Load
-```bash
-export TEST_DURATION=30 CONNECTION_COUNTS="1 2 4 8 16 32"
-./benchmark_concurrent_load.sh
-```
-Tests: Representative queries at each concurrency level  
-Measures: QPS, P50/P90/P99 latency, error rate  
-Output: `results/concurrency/concurrent_benchmark_*.json`
+## Legacy material
 
-## Testing Workflow
+`scripts/` still contains older benchmark helpers (`comprehensive_benchmark.py`,
+`benchmark_query_performance.sh`, `embedded_benchmark.py`, and others). They
+have hardcoded paths and are kept for history. Use `run.py` for new results.
 
-1. **Test Official Query First**
-   ```bash
-   ./test_query.sh queries/official/interactive/short-1.cypher
-   ```
-
-2. **If Official Fails**, determine if:
-   - Parser cannot handle syntax → Create adapted version with workaround
-   - Known bug prevents correct SQL generation → Create adapted version, document bug
-   - Schema mismatch → Verify schema, adjust if needed
-
-3. **Document Adaptation Reason** in commit message and test files
-
-## Query Status Summary
-
-### Interactive Short (IS): 4/5 Passing ✅
-- ✅ IS-1: Person profile
-- ✅ IS-2: Recent messages
-- ✅ IS-3: Friends
-- ✅ IS-5: Message creator
-- ⚠️ IS-7: Replies (adapted version works, official has bug)
-
-Missing: IS-4, IS-6 (not yet in benchmark dataset)
-
-### Interactive Complex (IC): 3/4 Tested ✅
-- ✅ IC-2: Recent messages by friends
-- ✅ IC-6: Tag co-occurrence
-- ✅ IC-12: Expert search
-- ⚠️ IC-9: Shortest path (adapted version works, official has CTE bug)
-
-### Business Intelligence (BI): In Progress
-Testing underway for BI query suite.
-
-## Known Issues
-
-See project-level [KNOWN_ISSUES.md](../../KNOWN_ISSUES.md) for:
-- OPTIONAL MATCH + inline property bug (affects IS-7)
-- CTE column naming inconsistency (affects IC-9)
-- Additional parser/generator limitations
-
-## Additional Documentation
-
-- `QUERY_FEATURE_ANALYSIS.md` - Detailed feature usage analysis across all LDBC queries
-- `DATA_LOADING_GUIDE.md` - Dataset setup and loading procedures
+The `embedded_benchmark.py` path exercises the embedded Parquet/Iceberg mode
+rather than the server and is outside this harness.

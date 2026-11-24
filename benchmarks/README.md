@@ -8,6 +8,7 @@ This directory contains benchmark suites for validating ClickGraph's Cypher-to-S
 |-----------|---------|-------------|
 | [social_network](./social_network/) | Traditional (normalized) | Separate node/edge tables with property mappings |
 | [ontime_flights](./ontime_flights/) | Denormalized edge | Virtual nodes with properties embedded in edge table |
+| [ldbc_snb](./ldbc_snb/) | Official LDBC SNB | 41 official IS/IC/BI queries with a reproducible runner |
 
 ## Prerequisites
 

@@ -87,6 +87,18 @@ class FakeHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def do_GET(self):
+        if self.path == "/health":
+            body = b"OK"
+        elif self.path == "/schemas":
+            body = json.dumps({"schemas": [{"name": "ldbc"}]}).encode()
+        else:
+            body = b"not found"
+        self.send_response(200 if self.path in ("/health", "/schemas") else 404)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def log_message(self, *args):
         pass
 
@@ -213,3 +225,51 @@ def test_write_markdown_contains_summary_and_full_failure_text(tmp_path):
     assert "## Failures" in text
     assert "server said no | because reasons" in text
     assert "second line" in text
+
+
+def test_check_server_accepts_healthy_server_and_known_schema(fake_server):
+    url, _ = fake_server
+    run.check_server(url, "ldbc", 5)
+
+
+def test_check_server_rejects_unknown_schema(fake_server):
+    url, _ = fake_server
+    with pytest.raises(run.HarnessError, match="nope"):
+        run.check_server(url, "nope", 5)
+
+
+def test_main_writes_reports_and_returns_zero(fake_server, tmp_path):
+    url, handler = fake_server
+    handler.responses = [(200, {"results": [{"firstName": "Alice"}]})]
+
+    code = run.main([
+        "--url", url, "--query", "short-1", "--iterations", "1",
+        "--warmup", "0", "--label", "test", "--out-dir", str(tmp_path),
+    ])
+
+    assert code == 0
+    assert list(tmp_path.glob("*_test.json"))
+    assert list(tmp_path.glob("*_test.md"))
+
+
+def test_main_strict_returns_one_when_a_query_fails(fake_server, tmp_path):
+    url, handler = fake_server
+    handler.responses = [(200, {"error": "bad query"})]
+
+    code = run.main([
+        "--url", url, "--query", "short-1", "--iterations", "1",
+        "--warmup", "0", "--label", "test", "--out-dir", str(tmp_path),
+        "--strict",
+    ])
+
+    assert code == 1
+    assert list(tmp_path.glob("*_test.json"))
+
+
+def test_main_rejects_unknown_query_before_touching_the_server(tmp_path, capsys):
+    code = run.main([
+        "--url", "http://127.0.0.1:1", "--query", "nope",
+        "--out-dir", str(tmp_path),
+    ])
+    assert code == 2
+    assert "unknown query" in capsys.readouterr().err

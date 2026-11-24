@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+import argparse
 import json
+import platform
 import re
 import statistics
+import subprocess
+import sys
 import time
 import urllib.error
 import urllib.request
 from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -363,3 +368,162 @@ def write_markdown(
             )
 
     path.write_text("\n".join(lines).rstrip() + "\n")
+
+
+def _get(url: str, timeout: float) -> tuple[int, bytes]:
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as response:
+            return response.status, response.read()
+    except urllib.error.HTTPError as exc:
+        return exc.code, exc.read()
+    except urllib.error.URLError as exc:
+        raise HarnessError(f"cannot reach {url}: {exc.reason}") from exc
+    except TimeoutError as exc:
+        raise HarnessError(f"timeout after {timeout}s while reading {url}") from exc
+
+
+def check_server(base_url: str, schema: str | None, timeout: float) -> None:
+    health_url = _endpoint(base_url, "/health")
+    status, _ = _get(health_url, timeout)
+    if status != 200:
+        raise HarnessError(f"health check failed: HTTP {status} from {health_url}")
+
+    if schema:
+        schemas_url = _endpoint(base_url, "/schemas")
+        status, body = _get(schemas_url, timeout)
+        if status != 200:
+            raise HarnessError(f"schema check failed: HTTP {status} from {schemas_url}")
+        try:
+            data = json.loads(body)
+        except json.JSONDecodeError as exc:
+            raise HarnessError(f"invalid schema response from {schemas_url}: {exc}") from exc
+        names = {
+            entry.get("name")
+            for entry in data.get("schemas", [])
+            if isinstance(entry, dict) and entry.get("name")
+        }
+        if schema not in names:
+            raise HarnessError(
+                f"schema {schema!r} not found; available: {', '.join(sorted(names)) or 'none'}"
+            )
+
+
+def git_commit() -> str | None:
+    try:
+        completed = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    return completed.stdout.strip() or None
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Run the official LDBC SNB queries against a ClickGraph endpoint."
+    )
+    parser.add_argument("--url", default="http://localhost:7475")
+    parser.add_argument("--schema", default=None)
+    parser.add_argument("--iterations", type=int, default=5)
+    parser.add_argument("--warmup", type=int, default=1)
+    parser.add_argument("--timeout", type=float, default=300.0)
+    parser.add_argument("--query", action="append", default=[], dest="queries")
+    parser.add_argument("--params-file", type=Path, default=None)
+    parser.add_argument("--param", action="append", default=[], dest="params")
+    parser.add_argument("--out-dir", type=Path, default=RESULTS_DIR)
+    parser.add_argument("--label", default=None)
+    parser.add_argument("--strict", action="store_true")
+    return parser.parse_args(argv)
+
+
+def _safe_label(label: str) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9_.-]+", "-", label).strip(".-")
+    return cleaned or "ldbc"
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
+    try:
+        if args.iterations < 1:
+            raise HarnessError("--iterations must be >= 1")
+        if args.warmup < 0:
+            raise HarnessError("--warmup must be >= 0")
+        if args.timeout <= 0:
+            raise HarnessError("--timeout must be > 0")
+
+        args.url = args.url.rstrip("/")
+        cases = discover_queries()
+        if args.queries:
+            by_id = {case.id: case for case in cases}
+            unknown = [query for query in args.queries if query not in by_id]
+            if unknown:
+                raise HarnessError("unknown query: " + ", ".join(unknown))
+            cases = [by_id[query] for query in args.queries]
+
+        overrides = load_overrides(args.params_file)
+        global_params = parse_param_overrides(args.params)
+        check_server(args.url, args.schema, args.timeout)
+
+        results: list[QueryResult] = []
+        for index, case in enumerate(cases, 1):
+            print(f"[{index}/{len(cases)}] {case.id} ... ", end="", flush=True)
+            try:
+                cypher = strip_comments(case.path.read_text())
+                params = resolve_params(case, overrides, global_params)
+                validate_params(cypher, params)
+                result = benchmark_case(
+                    case,
+                    cypher,
+                    params,
+                    args.url,
+                    args.schema,
+                    args.iterations,
+                    args.warmup,
+                    args.timeout,
+                )
+            except (OSError, HarnessError) as exc:
+                result = QueryResult(
+                    case.id, case.category, "fail", error=str(exc)
+                )
+            results.append(result)
+            if result.status == "pass":
+                print(f"PASS {result.median_ms:.2f} ms ({result.rows} rows)")
+            else:
+                print(f"FAIL: {result.error}")
+
+        summary = summarize(results)
+        label = args.label or "ldbc"
+        timestamp = datetime.now(timezone.utc)
+        base = args.out_dir / f"{timestamp.strftime('%Y%m%d_%H%M%S')}_{_safe_label(label)}"
+        metadata = {
+            "timestamp": timestamp.isoformat(timespec="seconds"),
+            "label": label,
+            "url": args.url,
+            "schema": args.schema,
+            "iterations": args.iterations,
+            "warmup": args.warmup,
+            "timeout_seconds": args.timeout,
+            "commit": git_commit(),
+            "python": platform.python_version(),
+            "platform": platform.platform(),
+        }
+        json_path = base.with_suffix(".json")
+        markdown_path = base.with_suffix(".md")
+        write_json(json_path, metadata, summary, results)
+        write_markdown(markdown_path, metadata, summary, results)
+
+        print(f"{summary['passed']}/{summary['total']} passed")
+        print(f"JSON: {json_path}")
+        print(f"Markdown: {markdown_path}")
+        return 1 if args.strict and summary["failed"] else 0
+    except HarnessError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
