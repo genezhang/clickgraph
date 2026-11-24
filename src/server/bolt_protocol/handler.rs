@@ -530,7 +530,7 @@ fn substitute_cypher_parameters(query: &str, parameters: &HashMap<String, Value>
     let matches: Vec<_> = re.captures_iter(query).collect();
 
     for cap in matches {
-        let full_match = cap.get(0).unwrap();
+        let full_match = cap.get(0).expect("group 0 is the whole match");
         let match_start = full_match.start();
         let param_name = &cap[1];
 
@@ -571,7 +571,7 @@ fn substitute_cypher_parameters(query: &str, parameters: &HashMap<String, Value>
     let snapshot = result.clone();
     let mut offset2: isize = 0;
     for cap in re_limit_skip.captures_iter(&snapshot) {
-        let full_match = cap.get(0).unwrap();
+        let full_match = cap.get(0).expect("group 0 is the whole match");
         let match_start = full_match.start();
         let keyword = &cap[1];
         let param_name = &cap[2];
@@ -611,7 +611,7 @@ fn substitute_cypher_parameters(query: &str, parameters: &HashMap<String, Value>
     let snapshot = result.clone();
     let mut offset_dc: isize = 0;
     for cap in re_dedupe_case.captures_iter(&snapshot) {
-        let full_match = cap.get(0).unwrap();
+        let full_match = cap.get(0).expect("group 0 is the whole match");
         let match_start = full_match.start();
         let inner_alias = &cap[1];
         let else_alias = &cap[2];
@@ -657,11 +657,20 @@ fn substitute_cypher_parameters(query: &str, parameters: &HashMap<String, Value>
     let snapshot = result.clone();
     let mut offset3: isize = 0;
     for cap in re_elem_id.captures_iter(&snapshot) {
-        let full_match = cap.get(0).unwrap();
+        let full_match = cap.get(0).expect("group 0 is the whole match");
         let match_start = full_match.start();
-        let alias = cap.name("alias").unwrap().as_str();
-        let op = cap.name("op").unwrap().as_str();
-        let param_name = cap.name("param").unwrap().as_str();
+        let alias = cap
+            .name("alias")
+            .expect("alias is a named capture in the regex")
+            .as_str();
+        let op = cap
+            .name("op")
+            .expect("op is a named capture in the regex")
+            .as_str();
+        let param_name = cap
+            .name("param")
+            .expect("param is a named capture in the regex")
+            .as_str();
         let lead = cap.name("lead").map(|m| m.as_str().to_string());
 
         if is_inside_string(&snapshot, match_start) {

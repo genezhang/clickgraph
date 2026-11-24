@@ -191,10 +191,9 @@ impl PatternSchemaContext {
             node_schema.table_name
         );
 
-        if resolved.len() == 1 {
-            Ok(Identifier::Single(resolved.into_iter().next().unwrap()))
-        } else {
-            Ok(Identifier::Composite(resolved))
+        match resolved.as_slice() {
+            [only] => Ok(Identifier::Single(only.clone())),
+            _ => Ok(Identifier::Composite(resolved)),
         }
     }
 

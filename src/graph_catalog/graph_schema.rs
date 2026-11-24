@@ -1674,8 +1674,8 @@ impl ProcessedNodeMetadata {
     }
 
     /// Get property sources for a given property name
-    pub fn get_property_sources(&self, property: &str) -> Option<&Vec<PropertySource>> {
-        self.property_sources.get(property)
+    pub fn get_property_sources(&self, property: &str) -> Option<&[PropertySource]> {
+        self.property_sources.get(property).map(Vec::as_slice)
     }
 
     /// Get all relationship types that have this node
@@ -2538,12 +2538,12 @@ impl GraphSchema {
     pub fn expand_node_type_constrained(
         &self,
         node_type: &str,
-        label_values: Option<&Vec<String>>,
+        label_values: Option<&[String]>,
     ) -> Vec<String> {
         if node_type == "$any" {
             if let Some(values) = label_values {
                 if !values.is_empty() {
-                    return values.clone();
+                    return values.to_vec();
                 }
             }
         }

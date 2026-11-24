@@ -805,7 +805,7 @@ pub async fn get_graph_catalog(clickhouse_client: Client) -> Result<GraphSchema,
     }
 }
 
-pub async fn validate_schema(graph_schema_element: &Vec<GraphSchemaElement>) -> Result<(), String> {
+pub async fn validate_schema(graph_schema_element: &[GraphSchemaElement]) -> Result<(), String> {
     for element in graph_schema_element {
         if let GraphSchemaElement::Rel(relationship_schema) = element {
             // here check if both from_node and to_node tables are present or not in the schema

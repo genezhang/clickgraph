@@ -63,7 +63,7 @@ pub fn extract_property_mappings(
 ///
 /// Tables with a `source:` field are backed by external data (Parquet, S3, etc.)
 /// and cannot be modified via INSERT, DELETE, or UPDATE operations.
-pub fn check_writable(source: &Option<String>, label: &str) -> Result<(), EmbeddedError> {
+pub fn check_writable(source: Option<&str>, label: &str) -> Result<(), EmbeddedError> {
     if source.is_some() {
         return Err(EmbeddedError::Validation(format!(
             "Cannot modify source-backed table for '{}'. \
@@ -457,13 +457,13 @@ mod tests {
 
     #[test]
     fn test_check_writable_allows_no_source() {
-        assert!(check_writable(&None, "User").is_ok());
+        assert!(check_writable(None, "User").is_ok());
     }
 
     #[test]
     fn test_check_writable_rejects_source_backed() {
         let source = Some("s3://bucket/data.parquet".to_string());
-        let result = check_writable(&source, "User");
+        let result = check_writable(source.as_deref(), "User");
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("source-backed"));
     }

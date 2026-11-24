@@ -11,7 +11,9 @@ use tokio::io::AsyncBufReadExt;
 
 fn validate_sql_identifier(identifier: &str) -> Result<String, String> {
     static RE: OnceLock<Regex> = OnceLock::new();
-    let re = RE.get_or_init(|| Regex::new(r"^[a-zA-Z_][a-zA-Z0-9_.]*$").unwrap());
+    let re = RE.get_or_init(|| {
+        Regex::new(r"^[a-zA-Z_][a-zA-Z0-9_.]*$").expect("identifier validation regex is valid")
+    });
     if re.is_match(identifier) {
         Ok(identifier.to_string())
     } else {
@@ -92,7 +94,7 @@ pub struct DraftRequest {
     pub options: Option<DraftOptions>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct DraftOptions {
     #[serde(rename = "auto_discover_columns")]
     pub auto_discover_columns: Option<bool>,

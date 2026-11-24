@@ -651,7 +651,7 @@ impl<'db> Connection<'db> {
         filters: HashMap<String, Value>,
     ) -> Result<(), EmbeddedError> {
         let node_schema = self.get_node_schema(label)?;
-        write_helpers::check_writable(&node_schema.source, label)?;
+        write_helpers::check_writable(node_schema.source.as_deref(), label)?;
         let id_columns = node_schema.node_id.id.columns();
         let id_col_strs: Vec<&str> = id_columns.to_vec();
         let property_mappings =
@@ -675,7 +675,7 @@ impl<'db> Connection<'db> {
         filters: HashMap<String, Value>,
     ) -> Result<(), EmbeddedError> {
         let rel_schema = self.get_rel_schema(edge_type)?;
-        write_helpers::check_writable(&rel_schema.source, edge_type)?;
+        write_helpers::check_writable(rel_schema.source.as_deref(), edge_type)?;
         let from_id_cols = rel_schema.from_id.columns();
         let to_id_cols = rel_schema.to_id.columns();
         let mut id_col_strs: Vec<&str> = Vec::new();
@@ -703,7 +703,7 @@ impl<'db> Connection<'db> {
     /// Import nodes from inline newline-delimited JSON (JSONEachRow format).
     pub fn import_json(&self, label: &str, json_lines: &str) -> Result<(), EmbeddedError> {
         let node_schema = self.get_node_schema(label)?;
-        write_helpers::check_writable(&node_schema.source, label)?;
+        write_helpers::check_writable(node_schema.source.as_deref(), label)?;
         let id_columns = node_schema.node_id.id.columns();
         let id_col_strs: Vec<&str> = id_columns.to_vec();
         let property_mappings =
@@ -770,7 +770,7 @@ impl<'db> Connection<'db> {
         }
         write_helpers::validate_file_path(file_path)?;
         let node_schema = self.get_node_schema(label)?;
-        write_helpers::check_writable(&node_schema.source, label)?;
+        write_helpers::check_writable(node_schema.source.as_deref(), label)?;
         let id_columns = node_schema.node_id.id.columns();
         let id_col_strs: Vec<&str> = id_columns.to_vec();
         let property_mappings =

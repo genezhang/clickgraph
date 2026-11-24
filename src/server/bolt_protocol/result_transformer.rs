@@ -1816,7 +1816,11 @@ fn transform_vlp_path_standard(
     }
 
     let start_id_str = value_to_id_string(&path_nodes[0]);
-    let end_id_str = value_to_id_string(path_nodes.last().unwrap());
+    let end_id_str = value_to_id_string(
+        path_nodes
+            .last()
+            .expect("a path node list has at least the first node"),
+    );
 
     let start_label = start_labels
         .first()
