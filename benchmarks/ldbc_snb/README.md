@@ -6,22 +6,22 @@ runner that records pass/fail and latency per query.
 
 ## Current status
 
-The last full runs are from August 2026:
+| Scale | Date | Passed | Total | Report |
+| --- | --- | --- | --- | --- |
+| SF1 | 2026-11-24 | 29 | 41 | [`results/20261124_185005_sf1.md`](results/20261124_185005_sf1.md) |
+| SF1 | 2026-08-30 | 26 | 41 | [`results/SF1_REAL_RUN_2026-08-30.md`](results/SF1_REAL_RUN_2026-08-30.md) |
+| SF10 | 2026-08-31 | 26 | 41 | [`results/SF1_SF10_POSTFIX_2026-08-31.md`](results/SF1_SF10_POSTFIX_2026-08-31.md) |
 
-| Scale | Passed | Total |
-| --- | --- | --- |
-| SF1 | 26 | 41 |
-| SF10 | 26 | 41 |
+The November run used an 18-core Apple M5 Pro and an 8 GB Docker VM, so its
+latencies are not comparable with the August runs on a 32-core, 121 GB host.
 
-Read the reports:
-
-- [`results/SF1_REAL_RUN_2026-08-30.md`](results/SF1_REAL_RUN_2026-08-30.md)
-- [`results/SF1_SF10_POSTFIX_2026-08-31.md`](results/SF1_SF10_POSTFIX_2026-08-31.md)
-
-The 15 remaining failures are structural, not scale-driven: GDS/APOC
-procedures, `CALL {}` subqueries, a polymorphic schema-mapping gap, one planner
-limitation, and five residual variable-length-path shapes. Check the reports
-for the exact list.
+Nine of the twelve SF1 failures are unsupported Cypher constructs: GDS/APOC
+procedures (`complex-14`, `bi-10`, `bi-15`), `CALL {}` subqueries (`bi-4`,
+`bi-16`), node values (`complex-3`, `bi-13`), a procedure call in a query
+(`bi-19`) and a parser limitation (`bi-20`). The other three (`short-2`,
+`bi-6`, `bi-8`) hit the benchmark profile's 3 GB per-query memory cap while
+building a join; raise the limits in `schemas/clickhouse_memory.xml` on a host
+with more memory.
 
 ## Layout
 
@@ -68,6 +68,11 @@ python3 benchmarks/ldbc_snb/run.py --schema ldbc_snb --label sf1 --iterations 5
 If the ClickHouse container already has a volume from an older schema, remove
 it with `docker compose -f docker-compose.ldbc.yaml down -v` before step 1.
 Use a different `--http-port` if 7475 is taken.
+
+The compose file mounts `schemas/clickhouse_memory.xml`, which caps each query
+at 3 GB, uses four threads and spills large aggregations and sorts to disk.
+These settings keep the heavy BI queries inside an 8 GB Docker VM; raise them
+on a larger host to measure default ClickHouse behaviour.
 
 ## Harness
 
