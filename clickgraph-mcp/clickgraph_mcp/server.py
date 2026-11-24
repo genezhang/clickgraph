@@ -1,0 +1,89 @@
+"""MCP tools for ClickGraph."""
+
+from __future__ import annotations
+
+import os
+from typing import Any
+
+from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
+
+from . import __version__
+from .client import ClickGraphClient, ClickGraphError
+
+mcp = MCPServer(
+    "clickgraph",
+    version=__version__,
+    instructions=(
+        "ClickGraph runs Cypher queries over ClickHouse. Call list_schemas to see "
+        "the registered graph schemas, then run_cypher with the schema that fits. "
+        "Use explain_query to see the SQL a query would run without executing it."
+    ),
+)
+
+
+def _client() -> ClickGraphClient:
+    return ClickGraphClient()
+
+
+def _schema(schema: str | None) -> str | None:
+    return schema or os.environ.get("CLICKGRAPH_SCHEMA") or None
+
+
+@mcp.tool()
+def run_cypher(
+    query: str,
+    schema: str | None = None,
+    parameters: dict[str, Any] | None = None,
+) -> Any:
+    """Run a Cypher query against ClickGraph and return its rows.
+
+    Args:
+        query: Cypher statement, for example
+            "MATCH (p:Person) RETURN p.name LIMIT 10".
+        schema: Registered graph schema to query. Defaults to
+            CLICKGRAPH_SCHEMA, else the server's default schema.
+        parameters: Values for $parameters used in the query.
+    """
+    try:
+        return _client().run_cypher(
+            query, schema=_schema(schema), parameters=parameters
+        )
+    except ClickGraphError as exc:
+        raise ToolError(str(exc)) from exc
+
+
+@mcp.tool()
+def list_schemas() -> Any:
+    """List the graph schemas registered on the ClickGraph server."""
+    try:
+        return _client().list_schemas()
+    except ClickGraphError as exc:
+        raise ToolError(str(exc)) from exc
+
+
+@mcp.tool()
+def explain_query(
+    query: str,
+    schema: str | None = None,
+    parameters: dict[str, Any] | None = None,
+) -> Any:
+    """Translate a Cypher query to ClickHouse SQL without executing it.
+
+    Args:
+        query: Cypher statement to translate.
+        schema: Registered graph schema to use. Defaults to
+            CLICKGRAPH_SCHEMA, else the server's default schema.
+        parameters: Values for $parameters used in the query.
+    """
+    try:
+        return _client().explain_query(
+            query, schema=_schema(schema), parameters=parameters
+        )
+    except ClickGraphError as exc:
+        raise ToolError(str(exc)) from exc
+
+
+def main() -> None:
+    """Run the server over stdio, as MCP clients expect."""
+    mcp.run("stdio")
