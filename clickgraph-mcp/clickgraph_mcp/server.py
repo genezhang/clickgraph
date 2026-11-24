@@ -109,4 +109,11 @@ def explain_query(
 
 def main() -> None:
     """Run the server over stdio, as MCP clients expect."""
+    # Validate the CLICKGRAPH_* settings once, up front. Tools build their
+    # client per call, so without this a bad CLICKGRAPH_VIEW_PARAMETERS or
+    # CLICKGRAPH_MAX_ROWS would only show up as an error on every tool call.
+    try:
+        _client()
+    except ClickGraphError as exc:
+        raise SystemExit(f"clickgraph-mcp: {exc}") from None
     mcp.run("stdio")

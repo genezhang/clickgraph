@@ -13,9 +13,31 @@ from clickgraph_mcp.server import (
     explain_query,
     get_schema,
     list_schemas,
+    main,
     mcp,
     run_cypher,
 )
+
+
+@pytest.mark.parametrize(
+    "name, value",
+    [
+        ("CLICKGRAPH_VIEW_PARAMETERS", "not json"),
+        ("CLICKGRAPH_VIEW_PARAMETERS", "[1, 2]"),
+        ("CLICKGRAPH_MAX_ROWS", "-1"),
+        ("CLICKGRAPH_MAX_ROWS", "lots"),
+        ("CLICKGRAPH_TIMEOUT", "soon"),
+    ],
+)
+def test_bad_configuration_stops_the_server_at_startup(monkeypatch, name, value):
+    # A misconfigured tenant scope must be noticed when the server starts, not
+    # surface as an error on every later tool call.
+    monkeypatch.setenv(name, value)
+    monkeypatch.setattr(
+        mcp, "run", lambda *a, **k: pytest.fail("started with a bad setting")
+    )
+    with pytest.raises(SystemExit, match=name):
+        main()
 
 
 def test_tools_are_registered():
