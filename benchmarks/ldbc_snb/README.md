@@ -45,10 +45,10 @@ cd benchmarks/ldbc_snb
 docker compose -f docker-compose.ldbc.yaml up -d
 
 # 2. Generate the SF1 CSV files. This takes a while and needs disk space.
-./scripts/download_data.sh sf1 --generate
+bash ./scripts/download_data.sh sf1 --generate
 
 # 3. Load the CSVs through the running ClickHouse container.
-./schemas/sf1_load_data.sh \
+bash ./schemas/sf1_load_data.sh \
   http://localhost:8123 default default \
   /data/sf1/graphs/csv/interactive/composite-projected-fk
 

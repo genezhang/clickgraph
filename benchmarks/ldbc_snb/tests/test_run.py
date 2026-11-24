@@ -1,3 +1,4 @@
+import http.client
 import importlib.util
 import json
 import sys
@@ -273,3 +274,92 @@ def test_main_rejects_unknown_query_before_touching_the_server(tmp_path, capsys)
     ])
     assert code == 2
     assert "unknown query" in capsys.readouterr().err
+
+
+def test_discover_queries_returns_empty_for_missing_directory(tmp_path):
+    assert run.discover_queries(tmp_path) == []
+
+
+def test_main_exits_two_when_no_queries_are_found(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(run, "discover_queries", lambda: [])
+
+    code = run.main(["--url", "http://127.0.0.1:1", "--out-dir", str(tmp_path)])
+
+    assert code == 2
+    assert "no queries" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "exc", [http.client.IncompleteRead(b""), http.client.BadStatusLine("")]
+)
+def test_post_query_converts_malformed_http_response_to_failure(monkeypatch, exc):
+    def boom(*args, **kwargs):
+        raise exc
+
+    monkeypatch.setattr(run.urllib.request, "urlopen", boom)
+
+    rows, error = run.post_query("http://example", "RETURN 1", {}, None, 5)
+
+    assert rows is None
+    assert "malformed HTTP response" in error
+
+
+def test_main_reports_malformed_health_response_as_harness_error(
+    tmp_path, monkeypatch, capsys
+):
+    def boom(*args, **kwargs):
+        raise http.client.IncompleteRead(b"")
+
+    monkeypatch.setattr(run.urllib.request, "urlopen", boom)
+
+    code = run.main(
+        ["--url", "http://127.0.0.1:1", "--query", "short-1", "--out-dir", str(tmp_path)]
+    )
+
+    assert code == 2
+    assert "malformed HTTP response" in capsys.readouterr().err
+
+
+def test_benchmark_case_records_deterministic_median(fake_server, monkeypatch):
+    url, handler = fake_server
+    handler.responses = [(200, {"results": [{"a": 1}]})] * 3
+    case = run.QueryCase("short-1", "IS", Path("short-1.cypher"))
+    ticks = iter([0.0, 0.010, 0.020, 0.035, 0.040, 0.042])
+    monkeypatch.setattr(run.time, "perf_counter", lambda: next(ticks))
+
+    result = run.benchmark_case(
+        case, "RETURN 1", {}, url, None, iterations=3, warmup=0, timeout=5
+    )
+
+    assert (result.min_ms, result.median_ms, result.max_ms) == (2.0, 10.0, 15.0)
+
+
+def test_benchmark_case_keeps_rows_from_last_successful_run(fake_server):
+    url, handler = fake_server
+    handler.responses = [
+        (200, {"results": [{"a": 1}, {"a": 2}]}),
+        (200, {"error": "bad query"}),
+    ]
+    case = run.QueryCase("short-1", "IS", Path("short-1.cypher"))
+
+    result = run.benchmark_case(
+        case, "RETURN 1", {}, url, None, iterations=3, warmup=0, timeout=5
+    )
+
+    assert result.status == "fail"
+    assert result.runs == 1
+    assert result.rows == 2
+
+
+def test_main_preserves_dots_in_report_label(fake_server, tmp_path):
+    url, handler = fake_server
+    handler.responses = [(200, {"results": []})]
+
+    code = run.main([
+        "--url", url, "--query", "short-1", "--iterations", "1",
+        "--warmup", "0", "--label", "sf1.mini", "--out-dir", str(tmp_path),
+    ])
+
+    assert code == 0
+    assert list(tmp_path.glob("*_sf1.mini.json"))
+    assert list(tmp_path.glob("*_sf1.mini.md"))

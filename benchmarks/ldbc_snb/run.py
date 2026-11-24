@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import http.client
 import json
 import platform
 import re
@@ -54,6 +55,8 @@ def discover_queries(root: Path = QUERY_ROOT) -> list[QueryCase]:
 
 
 def strip_comments(cypher: str) -> str:
+    # shortcut: textual stripping, so "//" or "/*" inside a string literal is
+    # not safe; upgrade to a tokenizer if an official query needs one.
     text = re.sub(r"/\*.*?\*/", "", cypher, flags=re.DOTALL)
     lines = [line for line in text.splitlines() if not line.lstrip().startswith("//")]
     return "\n".join(lines).strip()
@@ -165,6 +168,8 @@ def _post_json(url: str, payload: dict[str, Any], timeout: float) -> tuple[int, 
         raise HarnessError(f"connection error: {exc.reason}") from exc
     except TimeoutError as exc:
         raise HarnessError(f"timeout after {timeout}s") from exc
+    except (http.client.HTTPException, UnicodeDecodeError) as exc:
+        raise HarnessError(f"malformed HTTP response from {url}: {exc}") from exc
     except json.JSONDecodeError as exc:
         raise HarnessError(f"invalid JSON from {url}: {exc}") from exc
 
@@ -222,7 +227,7 @@ def benchmark_case(
     rows: int | None = None
     for _ in range(iterations):
         start = time.perf_counter()
-        rows, error = post_query(base_url, cypher, params, schema, timeout)
+        attempt_rows, error = post_query(base_url, cypher, params, schema, timeout)
         elapsed_ms = (time.perf_counter() - start) * 1000
         if error:
             return QueryResult(
@@ -233,6 +238,7 @@ def benchmark_case(
                 rows=rows,
                 error=error,
             )
+        rows = attempt_rows
         durations.append(elapsed_ms)
 
     if not durations:
@@ -380,6 +386,8 @@ def _get(url: str, timeout: float) -> tuple[int, bytes]:
         raise HarnessError(f"cannot reach {url}: {exc.reason}") from exc
     except TimeoutError as exc:
         raise HarnessError(f"timeout after {timeout}s while reading {url}") from exc
+    except (http.client.HTTPException, UnicodeDecodeError) as exc:
+        raise HarnessError(f"malformed HTTP response from {url}: {exc}") from exc
 
 
 def check_server(base_url: str, schema: str | None, timeout: float) -> None:
@@ -457,6 +465,8 @@ def main(argv: list[str] | None = None) -> int:
 
         args.url = args.url.rstrip("/")
         cases = discover_queries()
+        if not cases:
+            raise HarnessError(f"no queries found under {QUERY_ROOT}")
         if args.queries:
             by_id = {case.id: case for case in cases}
             unknown = [query for query in args.queries if query not in by_id]
@@ -511,8 +521,8 @@ def main(argv: list[str] | None = None) -> int:
             "python": platform.python_version(),
             "platform": platform.platform(),
         }
-        json_path = base.with_suffix(".json")
-        markdown_path = base.with_suffix(".md")
+        json_path = base.parent / (base.name + ".json")
+        markdown_path = base.parent / (base.name + ".md")
         write_json(json_path, metadata, summary, results)
         write_markdown(markdown_path, metadata, summary, results)
 
