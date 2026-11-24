@@ -14,7 +14,7 @@ third-party `mcp-neo4j-cypher` server talks to ClickGraph's Bolt port (see
 
 ```
 MCP client (stdio)
-  └── clickgraph_mcp/server.py   (MCPServer + 3 @mcp.tool functions)
+  └── clickgraph_mcp/server.py   (MCPServer + 4 @mcp.tool functions)
         └── clickgraph_mcp/client.py   (urllib HTTP client, error text extraction)
               └── ClickGraph HTTP API (default http://localhost:7475)
 ```
@@ -37,11 +37,12 @@ pyproject.toml       ← package `clickgraph-mcp`, script `clickgraph-mcp`, dep 
 
 | Tool | ClickGraph endpoint | Notes |
 |---|---|---|
-| `list_schemas` | `GET /schemas` | Names and node/relationship counts only — **no properties** |
+| `list_schemas` | `GET /schemas` | Names and node/relationship counts only — use `get_schema` for properties |
+| `get_schema` | `POST /query` (`apoc.meta.schema()`) | Labels, relationship types, properties; payload is under `records` |
 | `run_cypher` | `POST /query` (`format: JSONEachRow`) | Rows are under `results`; `CALL` procedures answer under `records` |
 | `explain_query` | `POST /query/sql` | Generated SQL, never executes |
 
-All three carry `readOnlyHint` (ClickGraph rejects writes). Keep it that way:
+All four carry `readOnlyHint` (ClickGraph rejects writes). Keep it that way:
 adding a tool that can change data would contradict the hint.
 
 ## Configuration
@@ -51,6 +52,9 @@ adding a tool that can change data would contradict the hint.
 | `CLICKGRAPH_URL` | `http://localhost:7475` | ClickGraph HTTP endpoint |
 | `CLICKGRAPH_SCHEMA` | unset | Schema when a call names none (else the server's `default`) |
 | `CLICKGRAPH_TIMEOUT` | `30` | Request timeout in seconds |
+| `CLICKGRAPH_MAX_ROWS` | `1000` | Max rows in a payload; `0` is unlimited |
+| `CLICKGRAPH_VIEW_PARAMETERS` | unset | JSON object forwarded as `view_parameters` |
+| `CLICKGRAPH_ROLE` | unset | Role forwarded on every query |
 
 **The default port is 7475, not 8080.** The server's HTTP default moved from
 8080 to 7475 in #310; `src/config.rs`, the Dockerfile and the README agree. A
@@ -73,11 +77,11 @@ stdio, or point any MCP client at it.
   others; `client._error_text` handles both. Do not assume one shape.
 - Tool failures must surface ClickGraph's own message (`ToolError`), not a
   generic one: agents repair their Cypher from it.
-- There is no result-size cap. A `run_cypher` with no `LIMIT` returns every
-  row to the agent's context. Any cap must be explicit in the response
-  (a `truncated` marker), never silent — see the root ground rule on query
-  semantics.
-- `/query` also accepts `tenant_id`, `view_parameters` and `role`; these tools
-  do not send them, so tenant-scoped (parameterized-view) schemas are not
-  usable through this server yet. Tenant isolation must be set by the operator
-  (environment), never chosen by the agent as a tool argument.
+- `CLICKGRAPH_MAX_ROWS` caps `results` and `records`. Over the cap, the payload
+  keeps the first N rows and adds `truncated`, `returned`, `total` and a
+  `message` telling the agent to add a `LIMIT`. Never truncate silently and
+  never inject a `LIMIT` into the Cypher.
+- `CLICKGRAPH_VIEW_PARAMETERS` and `CLICKGRAPH_ROLE` are forwarded on `/query`
+  and `/query/sql` so tenant-scoped parameterized views work. They are
+  environment-only by design: tenant isolation must be set by the operator,
+  never chosen by the agent as a tool argument.

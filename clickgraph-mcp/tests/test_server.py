@@ -9,12 +9,23 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from mcp.server.mcpserver.exceptions import ToolError
 
-from clickgraph_mcp.server import explain_query, list_schemas, mcp, run_cypher
+from clickgraph_mcp.server import (
+    explain_query,
+    get_schema,
+    list_schemas,
+    mcp,
+    run_cypher,
+)
 
 
 def test_tools_are_registered():
     tools = asyncio.run(mcp.list_tools())
-    assert {t.name for t in tools} == {"run_cypher", "list_schemas", "explain_query"}
+    assert {t.name for t in tools} == {
+        "run_cypher",
+        "list_schemas",
+        "explain_query",
+        "get_schema",
+    }
 
 
 def test_every_tool_is_marked_read_only():
@@ -133,3 +144,56 @@ def test_stdio_round_trip_reports_clickgraph_error(fake_clickgraph):
     result = asyncio.run(call())
     assert result.is_error is True
     assert "Schema not found: nope" in result.content[0].text
+
+
+def test_get_schema_returns_records_and_uses_env_schema(fake_clickgraph, monkeypatch):
+    monkeypatch.setenv("CLICKGRAPH_URL", fake_clickgraph.url)
+    monkeypatch.setenv("CLICKGRAPH_SCHEMA", "social")
+    payload = {"records": [{"value": {"Person": {"properties": {"name": {}}}}}]}
+    fake_clickgraph.responses[("POST", "/query")] = (200, payload)
+
+    assert get_schema() == payload
+    assert fake_clickgraph.requests[0]["body"]["schema_name"] == "social"
+    assert fake_clickgraph.requests[0]["body"]["query"].startswith(
+        "CALL apoc.meta.schema()"
+    )
+
+
+def test_protocol_result_is_capped(fake_clickgraph, monkeypatch):
+    monkeypatch.setenv("CLICKGRAPH_URL", fake_clickgraph.url)
+    monkeypatch.setenv("CLICKGRAPH_MAX_ROWS", "1")
+    fake_clickgraph.responses[("POST", "/query")] = (
+        200,
+        {"results": [{"n": 1}, {"n": 2}]},
+    )
+
+    result = asyncio.run(mcp.call_tool("run_cypher", {"query": "RETURN 1"}))
+    payload = json.loads(result.content[0].text)
+
+    assert payload["results"] == [{"n": 1}]
+    assert payload["truncated"] is True
+    assert payload["total"] == 2
+
+
+def test_tenant_controls_are_forwarded_from_environment(
+    fake_clickgraph, monkeypatch
+):
+    monkeypatch.setenv("CLICKGRAPH_URL", fake_clickgraph.url)
+    monkeypatch.setenv("CLICKGRAPH_VIEW_PARAMETERS", '{"tenant_id": "acme"}')
+    monkeypatch.setenv("CLICKGRAPH_ROLE", "analyst")
+    fake_clickgraph.responses[("POST", "/query")] = (200, {"results": []})
+
+    run_cypher("RETURN 1")
+
+    body = fake_clickgraph.requests[0]["body"]
+    assert body["view_parameters"] == {"tenant_id": "acme"}
+    assert body["role"] == "analyst"
+
+
+def test_tool_schemas_do_not_expose_tenant_controls():
+    tools = {tool.name: tool for tool in asyncio.run(mcp.list_tools())}
+    forbidden = {"view_parameters", "role", "tenant_id"}
+
+    for tool in tools.values():
+        properties = set((tool.input_schema or {}).get("properties", {}))
+        assert not properties & forbidden, tool.name

@@ -21,7 +21,8 @@ mcp = MCPServer(
     version=__version__,
     instructions=(
         "ClickGraph runs Cypher queries over ClickHouse. Call list_schemas to see "
-        "the registered graph schemas, then run_cypher with the schema that fits. "
+        "the registered graph schemas, then get_schema for the chosen schema to "
+        "see its labels, relationship types and properties before writing Cypher. "
         "Use explain_query to see the SQL a query would run without executing it."
     ),
 )
@@ -63,6 +64,23 @@ def list_schemas() -> Any:
     """List the graph schemas registered on the ClickGraph server."""
     try:
         return _client().list_schemas()
+    except ClickGraphError as exc:
+        raise ToolError(str(exc)) from exc
+
+
+@mcp.tool(annotations=_READ_ONLY)
+def get_schema(schema: str | None = None) -> Any:
+    """Return a schema's labels, relationship types and their properties.
+
+    Use this before writing Cypher so property names come from the schema
+    rather than a guess. The response is ClickGraph's procedure payload.
+
+    Args:
+        schema: Registered graph schema to describe. Defaults to
+            CLICKGRAPH_SCHEMA, else the server's default schema.
+    """
+    try:
+        return _client().get_schema(_schema(schema))
     except ClickGraphError as exc:
         raise ToolError(str(exc)) from exc
 

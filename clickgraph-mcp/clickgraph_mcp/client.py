@@ -10,6 +10,7 @@ from typing import Any
 
 DEFAULT_URL = "http://localhost:7475"
 DEFAULT_TIMEOUT = 30.0
+DEFAULT_MAX_ROWS = 1000
 
 
 class ClickGraphError(RuntimeError):
@@ -27,6 +28,42 @@ def _error_text(body: str) -> str:
             if key in payload:
                 return str(payload[key])
     return body.strip() or "(empty response)"
+
+
+def _env_json_object(name: str) -> dict[str, Any] | None:
+    """Read an optional JSON object from the environment."""
+    raw = os.environ.get(name)
+    if not raw:
+        return None
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError:
+        raise ClickGraphError(
+            f"{name} must be a JSON object, got {raw!r}"
+        ) from None
+    if not isinstance(value, dict):
+        raise ClickGraphError(f"{name} must be a JSON object, got {raw!r}")
+    return value
+
+
+def _cap_rows(payload: Any, max_rows: int) -> Any:
+    """Cap a query payload's rows without hiding that it was capped."""
+    if max_rows == 0 or not isinstance(payload, dict):
+        return payload
+    for key in ("results", "records"):
+        rows = payload.get(key)
+        if isinstance(rows, list) and len(rows) > max_rows:
+            capped = dict(payload)
+            capped[key] = rows[:max_rows]
+            capped["truncated"] = True
+            capped["returned"] = max_rows
+            capped["total"] = len(rows)
+            capped["message"] = (
+                f"Result truncated to the first {max_rows} rows; add a LIMIT "
+                "to the Cypher query to choose a range."
+            )
+            return capped
+    return payload
 
 
 class ClickGraphClient:
@@ -47,6 +84,29 @@ class ClickGraphClient:
             raise ClickGraphError(
                 f"CLICKGRAPH_TIMEOUT must be a number, got {raw_timeout!r}"
             ) from None
+        raw_max_rows = os.environ.get(
+            "CLICKGRAPH_MAX_ROWS", str(DEFAULT_MAX_ROWS)
+        )
+        try:
+            self.max_rows = int(raw_max_rows)
+        except (TypeError, ValueError):
+            raise ClickGraphError(
+                f"CLICKGRAPH_MAX_ROWS must be an integer, got {raw_max_rows!r}"
+            ) from None
+        if self.max_rows < 0:
+            raise ClickGraphError(
+                "CLICKGRAPH_MAX_ROWS must be zero or greater, "
+                f"got {self.max_rows}"
+            )
+        self.view_parameters = _env_json_object("CLICKGRAPH_VIEW_PARAMETERS")
+        self.role = os.environ.get("CLICKGRAPH_ROLE") or None
+
+    def _with_scope(self, payload: dict[str, Any]) -> dict[str, Any]:
+        if self.view_parameters:
+            payload["view_parameters"] = self.view_parameters
+        if self.role:
+            payload["role"] = self.role
+        return payload
 
     def _request(
         self, method: str, path: str, payload: dict[str, Any] | None = None
@@ -88,6 +148,19 @@ class ClickGraphClient:
         """Return the schemas registered on the server."""
         return self._request("GET", "/schemas")
 
+    def get_schema(self, schema: str | None = None) -> Any:
+        """Return a schema's labels, relationship types and properties."""
+        payload: dict[str, Any] = {
+            "query": "CALL apoc.meta.schema() YIELD value RETURN value",
+            "format": "JSONEachRow",
+        }
+        if schema:
+            payload["schema_name"] = schema
+        return _cap_rows(
+            self._request("POST", "/query", self._with_scope(payload)),
+            self.max_rows,
+        )
+
     def run_cypher(
         self,
         query: str,
@@ -100,7 +173,10 @@ class ClickGraphClient:
             payload["schema_name"] = schema
         if parameters:
             payload["parameters"] = parameters
-        return self._request("POST", "/query", payload)
+        return _cap_rows(
+            self._request("POST", "/query", self._with_scope(payload)),
+            self.max_rows,
+        )
 
     def explain_query(
         self,
@@ -114,4 +190,4 @@ class ClickGraphClient:
             payload["schema_name"] = schema
         if parameters:
             payload["parameters"] = parameters
-        return self._request("POST", "/query/sql", payload)
+        return self._request("POST", "/query/sql", self._with_scope(payload))

@@ -15,7 +15,10 @@ The Model Context Protocol (MCP) enables AI assistants to connect to external da
 ## First-party MCP server
 
 The repository ships `clickgraph-mcp`, a stdio MCP server that exposes
-`list_schemas`, `run_cypher` and `explain_query` over ClickGraph's HTTP API.
+`list_schemas`, `get_schema`, `run_cypher` and `explain_query` over ClickGraph's
+HTTP API. `get_schema` reports every label's properties and every relationship
+type's direction, endpoints and properties, so an agent can write Cypher
+without guessing property names.
 Install it with `pip install ./clickgraph-mcp` from a checkout and point it at
 a running server:
 
