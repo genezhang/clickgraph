@@ -408,15 +408,15 @@ SELECT
 FROM ldbc.Comment_isLocatedIn_Place;
 
 -- Unified reply-of view (to get target Message of a reply)
-CREATE OR REPLACE VIEW Message_replyOf_Message AS
-SELECT 
+CREATE OR REPLACE VIEW ldbc.Message_replyOf_Message AS
+SELECT
     CommentId AS MessageId,
     PostId AS TargetMessageId,
     creationDate
-FROM Comment_replyOf_Post
+FROM ldbc.Comment_replyOf_Post
 UNION ALL
-SELECT 
+SELECT
     Comment1Id AS MessageId,
     Comment2Id AS TargetMessageId,
     creationDate
-FROM Comment_replyOf_Comment
+FROM ldbc.Comment_replyOf_Comment;

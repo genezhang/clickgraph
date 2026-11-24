@@ -40,17 +40,16 @@ for the exact list.
 Prerequisites: Docker, a built `clickgraph` binary, and Python 3.10+.
 
 ```bash
-# 1. Start ClickHouse and create the LDBC tables.
+# 1. Start ClickHouse.
 cd benchmarks/ldbc_snb
 docker compose -f docker-compose.ldbc.yaml up -d
 
 # 2. Generate the SF1 CSV files. This takes a while and needs disk space.
 bash ./scripts/download_data.sh sf1 --generate
 
-# 3. Load the CSVs through the running ClickHouse container.
-bash ./schemas/sf1_load_data.sh \
-  http://localhost:8123 default default \
-  /data/sf1/graphs/csv/interactive/composite-projected-fk
+# 3. Load the CSVs over ClickHouse's HTTP interface. This applies
+#    schemas/clickhouse_ddl.sql and verifies row counts.
+python3 scripts/load_data.py --scale-factor sf1
 
 # 4. Start ClickGraph with the LDBC schema.
 cd ../..
@@ -63,7 +62,7 @@ GRAPH_CONFIG_PATH=benchmarks/ldbc_snb/schemas/ldbc_snb.yaml \
   ./target/release/clickgraph --http-port 7475
 
 # 5. In another terminal, run the benchmark.
-python3 benchmarks/ldbc_snb/run.py --label sf1 --iterations 5
+python3 benchmarks/ldbc_snb/run.py --schema ldbc_snb --label sf1 --iterations 5
 ```
 
 If the ClickHouse container already has a volume from an older schema, remove
