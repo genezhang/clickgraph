@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 
 pub(crate) mod emitters;
 pub(crate) mod function_mapper;
+pub(crate) mod literal_list;
 pub(crate) mod passthrough;
 
 /// SQL dialect for query generation.
@@ -144,11 +145,16 @@ impl SqlDialect {
 /// correctness** (not limits or formats). `join_use_nulls = 1` makes the
 /// unmatched side of a LEFT JOIN NULL instead of the type default (`''`, `0`),
 /// which OPTIONAL MATCH, `IS NULL`, `count(x)` and `coalesce` rely on.
+/// `use_variant_as_common_type = 1` gives a list (or `CASE`, or map) of values
+/// of no common type (`[n.name, n.age]`) a `Variant` element type, as
+/// ClickHouse 26 does by default and 25.8 does not: without it every such list
+/// fails with Code 386 (#1491). Where a common type exists nothing changes.
 ///
 /// The server connection pool, the chdb executor and [`portable_sql`] apply
 /// these through [`session_settings`], which adds the opt-in
 /// [`WIDE_NUMBERS_SETTING`] and [`DATETIME_ISO8601_SETTING`] when they are on.
-pub const SEMANTIC_SESSION_SETTINGS: &[(&str, &str)] = &[("join_use_nulls", "1")];
+pub const SEMANTIC_SESSION_SETTINGS: &[(&str, &str)] =
+    &[("join_use_nulls", "1"), ("use_variant_as_common_type", "1")];
 
 /// The opt-in output-format setting (`CLICKGRAPH_WIDE_NUMBERS_AS_TEXT`,
 /// #1536): ClickHouse prints a `Decimal` as its exact text. A JSON number is
@@ -248,7 +254,7 @@ mod portable_sql_tests {
         assert_eq!(
             portable_sql(sql, SqlDialect::ClickHouse),
             "SELECT a.x\nFROM t AS a\nLEFT JOIN u AS b ON b.k = a.k\n\
-             SETTINGS join_use_nulls = 1"
+             SETTINGS join_use_nulls = 1, use_variant_as_common_type = 1"
         );
     }
 
@@ -259,28 +265,36 @@ mod portable_sql_tests {
     fn iso_datetime_output_is_an_opt_in_1068() {
         assert_eq!(
             session_settings_with(false, false),
-            vec![("join_use_nulls", "1")]
+            SEMANTIC_SESSION_SETTINGS.to_vec()
         );
         assert_eq!(
             session_settings_with(true, false),
-            vec![("join_use_nulls", "1"), ("date_time_output_format", "iso")]
+            [
+                SEMANTIC_SESSION_SETTINGS,
+                &[("date_time_output_format", "iso")][..]
+            ]
+            .concat()
         );
         assert_eq!(
             portable_sql_with("SELECT 1", SqlDialect::ClickHouse, false, false),
-            "SELECT 1\nSETTINGS join_use_nulls = 1"
+            "SELECT 1\nSETTINGS join_use_nulls = 1, use_variant_as_common_type = 1"
         );
         assert_eq!(
             portable_sql_with("SELECT 1", SqlDialect::ClickHouse, true, false),
-            "SELECT 1\nSETTINGS join_use_nulls = 1, date_time_output_format = 'iso'"
+            "SELECT 1\nSETTINGS join_use_nulls = 1, use_variant_as_common_type = 1, \
+             date_time_output_format = 'iso'"
         );
         // The process-wide opt-in is what `portable_sql` / `session_settings` read.
         crate::server::query_context::with_datetime_iso8601(true, || {
-            assert_eq!(session_settings().len(), 2);
+            assert_eq!(
+                session_settings().len(),
+                SEMANTIC_SESSION_SETTINGS.len() + 1
+            );
             assert!(portable_sql("SELECT 1", SqlDialect::ClickHouse)
                 .ends_with("date_time_output_format = 'iso'"));
         });
         crate::server::query_context::with_datetime_iso8601(false, || {
-            assert_eq!(session_settings().len(), 1);
+            assert_eq!(session_settings().len(), SEMANTIC_SESSION_SETTINGS.len());
         });
     }
 
@@ -292,30 +306,38 @@ mod portable_sql_tests {
     fn exact_wide_numbers_are_an_opt_in_1536() {
         assert_eq!(
             session_settings_with(false, true),
-            vec![
-                ("join_use_nulls", "1"),
-                ("output_format_json_quote_decimals", "1")
+            [
+                SEMANTIC_SESSION_SETTINGS,
+                &[("output_format_json_quote_decimals", "1")][..]
             ]
+            .concat()
         );
         assert_eq!(
             session_settings_with(true, true),
-            vec![
-                ("join_use_nulls", "1"),
-                ("output_format_json_quote_decimals", "1"),
-                ("date_time_output_format", "iso")
+            [
+                SEMANTIC_SESSION_SETTINGS,
+                &[
+                    ("output_format_json_quote_decimals", "1"),
+                    ("date_time_output_format", "iso")
+                ][..]
             ]
+            .concat()
         );
         assert_eq!(
             portable_sql_with("SELECT 1", SqlDialect::ClickHouse, false, true),
-            "SELECT 1\nSETTINGS join_use_nulls = 1, output_format_json_quote_decimals = 1"
+            "SELECT 1\nSETTINGS join_use_nulls = 1, use_variant_as_common_type = 1, \
+             output_format_json_quote_decimals = 1"
         );
         crate::server::query_context::with_wide_numbers_as_text(true, || {
-            assert_eq!(session_settings().len(), 2);
+            assert_eq!(
+                session_settings().len(),
+                SEMANTIC_SESSION_SETTINGS.len() + 1
+            );
             assert!(portable_sql("SELECT 1", SqlDialect::ClickHouse)
                 .ends_with("output_format_json_quote_decimals = 1"));
         });
         crate::server::query_context::with_wide_numbers_as_text(false, || {
-            assert_eq!(session_settings().len(), 1);
+            assert_eq!(session_settings().len(), SEMANTIC_SESSION_SETTINGS.len());
         });
     }
 

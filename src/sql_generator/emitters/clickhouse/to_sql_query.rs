@@ -324,6 +324,35 @@ fn is_known_scalar(expr: &RenderExpr) -> bool {
 /// arithmetic: SQL has no precedence that keeps Cypher's grouping there
 /// (ClickHouse reads `a = b < c` as `(a = b) < c`, `a < b IN l` as
 /// `(a < b) IN l`, `NOT a = b` as `NOT (a = b)`).
+/// A list as SQL. A list of literals of no common type (`[1, 'a']`) is a call
+/// where the dialect has one (`FunctionMapper::mixed_array_literal`, #1491),
+/// unless `plain`: the list of an `IN` is a set, which the call would not be.
+/// The tree keeps the list, so what folds a list of literals at print time
+/// (`[1, 'a', null] = [1, 'a', null]`) still sees one.
+fn list_sql(items: &[RenderExpr], plain: bool) -> String {
+    let inner = items
+        .iter()
+        .map(|e| e.to_sql())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let mapper = crate::sql_generator::function_mapper::current_function_mapper();
+    if !plain && crate::sql_generator::literal_list::render_elements_of_no_common_type(items) {
+        if let Some(call) = mapper.mixed_array_literal(&inner) {
+            return call;
+        }
+    }
+    mapper.array_literal(&inner)
+}
+
+/// An operand of `op` as SQL: the list of an `IN` plain, any other as it is.
+fn operand_to_sql(op: Operator, operand: &RenderExpr) -> String {
+    let sql = match (op, operand) {
+        (Operator::In | Operator::NotIn, RenderExpr::List(items)) => list_sql(items, true),
+        _ => operand.to_sql(),
+    };
+    operand_sql(op, operand, sql)
+}
+
 fn operand_sql(outer: Operator, operand: &RenderExpr, sql: String) -> String {
     use Operator as O;
     let loose = |o: Operator| {
@@ -2073,15 +2102,7 @@ impl RenderExpr {
                     format!("{}.{}", alias, raw_value)
                 }
             }
-            RenderExpr::List(items) => {
-                let inner = items
-                    .iter()
-                    .map(|e| e.to_sql())
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                crate::sql_generator::function_mapper::current_function_mapper()
-                    .array_literal(&inner)
-            }
+            RenderExpr::List(items) => list_sql(items, false),
             RenderExpr::ScalarFnCall(fn_call) => {
                 // Check for special functions that need custom handling
                 let fn_name_lower = fn_call.name.to_lowercase();
@@ -2681,7 +2702,7 @@ impl RenderExpr {
                 let rendered: Vec<String> = op
                     .operands
                     .iter()
-                    .map(|e| operand_sql(op.operator, e, e.to_sql()))
+                    .map(|e| operand_to_sql(op.operator, e))
                     .collect();
 
                 // Special handling for RegexMatch - ClickHouse uses match() function
@@ -3531,7 +3552,7 @@ impl ToSql for OperatorApplication {
         let rendered: Vec<String> = self
             .operands
             .iter()
-            .map(|e| operand_sql(self.operator, e, e.to_sql()))
+            .map(|e| operand_to_sql(self.operator, e))
             .collect();
 
         // Debug operand information

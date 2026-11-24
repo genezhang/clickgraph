@@ -287,6 +287,12 @@ impl FunctionMapper for ClickhouseFunctionMapper {
         format!("[{elems}]")
     }
 
+    fn mixed_array_literal(&self, elems: &str) -> Option<String> {
+        // `[1, 'a']` of literals is one constant array with no type (Code
+        // 386); `array(1, 'a')` is a call, which makes a `Variant` (#1491).
+        Some(format!("array({elems})"))
+    }
+
     fn tuple_constructor(&self) -> &'static str {
         "tuple"
     }

@@ -295,6 +295,14 @@ Bolt's Integer is 64-bit signed, as Neo4j's. A `UInt64` value above `92233720368
 
 Not covered by default: `Int128` / `UInt128` / `Int256` values, and `Decimal`s, above 18446744073709551615 (or with more fractional digits than a double holds) are read from ClickHouse's JSON as doubles, so over HTTP and over Bolt alike they are Floats that hold the digits a Float holds (`340282366920938463463374607431768211455` is `3.402823669209385e38`). With `CLICKGRAPH_WIDE_NUMBERS_AS_TEXT=true` (or `cg --wide-numbers-as-text`, #1536) a returned property of a 128/256-bit integer type is its exact digits as text, and every `Decimal` is exact text; a `UNION` column wide in one arm is text in every arm (a `Float64` or 64-bit integer arm of that column becomes text too: `"2.5"`, `"1e-7"`). The opt-in does not reach a value computed from a wide property (`n.big + 0`, `toUInt128('…')`), nor a wide property inside a returned path, node value, list or map (`RETURN p`, `collect(n)`, `{v: n.big}`): those are still JSON numbers, so wrap them in `toString()` if every digit matters. It also turns every `Decimal` into a string for clients that expected a number.
 
+### Lists of values of different types (ClickHouse `Variant`)
+
+A list of values with no common type (`[1, 'a']`, `[n.name, n.age]`) is an `Array(Variant(...))` in ClickHouse, and its values keep their own types (a list of literals is written `array(1, 'a')`, as the constant `[1, 'a']` has no type; `cg sql` output carries `use_variant_as_common_type = 1` for ClickHouse 25.8, which has it off). Three things to know:
+
+- **A `NULL` in such a list is a `Variant`'s NULL.** `count(x)` over the unwound list counts it (Neo4j does not) and `toString(x)` of it is `''` (`ᴺᵁᴸᴸ` on 25.8) instead of NULL. A list of literals that holds a `NULL` is therefore left as a constant list, which ClickHouse 25.8 types (with the setting) and 26.7 refuses (Code 386). (#1426 has the `any()` side.)
+- **`ORDER BY` of such a list** is by Cypher's element order (a string before a number, then the value). Where the elements are not known to be one type, the element key orders them; `ORDER BY x` of a bare unwound `Variant` value (`UNWIND [1, 'a'] AS x RETURN x ORDER BY x`) is still refused by ClickHouse (Code 44).
+- **`x IN [1, 'a']`** of literals of no common type still fails in ClickHouse (Code 53).
+
 ### Integration Test Status
 
 **100% Pass Rate (1,378/1,378)**

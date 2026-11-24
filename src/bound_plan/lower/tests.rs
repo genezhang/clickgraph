@@ -11440,3 +11440,94 @@ fn split_of_non_ascii_text_by_empty_delimiter_is_code_points() {
     let got = sql("RETURN split('', '')");
     assert!(got.contains("['']"), "{got}");
 }
+
+/// #1491: ClickHouse reads `[1, 'a']` of literals as one constant array and
+/// finds no common type for it (Code 386), on 26.7 as on 25.8, whatever
+/// `use_variant_as_common_type` says. A list of literals of no common type is
+/// a call of `array`, which does take a `Variant`; one with a common type, or
+/// with an element that is not a literal, is as it was.
+#[test]
+fn a_list_of_literals_of_no_common_type_is_an_array_call_1491() {
+    for (q, call) in [
+        ("RETURN [1, 'a'] AS l", "array(1, 'a')"),
+        (
+            "RETURN [1, 'a', true, 2.5] AS l",
+            "array(1, 'a', true, 2.5)",
+        ),
+        ("RETURN [1, [2]] AS l", "array(1, [2])"),
+        ("RETURN [[1], ['a']] AS l", "array([1], ['a'])"),
+        // Each inner list is a call too; the outer one has no literal left.
+        (
+            "RETURN [[1, 'a'], ['b', 2]] AS l",
+            "[array(1, 'a'), array('b', 2)]",
+        ),
+    ] {
+        let got = squash(&sql(q));
+        assert!(got.contains(call), "{q}: {got}");
+    }
+    for (q, list) in [
+        ("RETURN [1, 2.5] AS l", "[1, 2.5]"),
+        ("RETURN ['a', 'b'] AS l", "['a', 'b']"),
+        ("RETURN [[1], [1.5]] AS l", "[[1], [1.5]]"),
+        ("RETURN [null, 'a'] AS l", "[NULL, 'a']"),
+        ("RETURN [[], [1]] AS l", "[[], [1]]"),
+        ("RETURN [] AS l", "[]"),
+        // Not all literals: ClickHouse reads it as a function call already
+        // (`-1` is spelled `0 - 1`).
+        ("RETURN [1, toString(2)] AS l", "[1, toString(2)]"),
+        ("RETURN [-1, 'a'] AS l", "[0 - 1, 'a']"),
+        // A `Variant`'s NULL is counted by `count()` and printed `''` by
+        // `toString()`: a list holding a NULL is left as it was.
+        (
+            "RETURN [1, 'a', true, null, 2.5] AS l",
+            "[1, 'a', true, NULL, 2.5]",
+        ),
+        // What compares or tests a list of literals at print time still sees
+        // a list: `=` of lists with a NULL is NULL, and `IN` is a set.
+        (
+            "RETURN [1, 'a', null] = [1, 'a', null] AS e",
+            "CAST(null AS Nullable(Bool))",
+        ),
+        (
+            "RETURN [1, 'a'] = [1, null] AS e",
+            "CAST(null AS Nullable(Bool))",
+        ),
+        ("RETURN 'z' IN [1, 'a'] AS e", "'z' IN [1, 'a']"),
+    ] {
+        let got = squash(&sql(q));
+        assert!(got.contains(list) && !got.contains("array("), "{q}: {got}");
+    }
+}
+
+/// #1491: a list of scalars is ordered natively only where its elements are
+/// shown to be of one type; otherwise they may be a `Variant`, which
+/// ClickHouse refuses in an order key (Code 44), and the element key orders
+/// them.
+#[test]
+fn a_list_of_scalars_of_unproven_type_is_ordered_by_the_element_key_1491() {
+    let keyed = |q: &str| squash(&sql(q)).contains("arrayMap(x -> tuple(multiIf(");
+    for q in [
+        "RETURN [1, 'a'] AS l ORDER BY l",
+        "UNWIND [1, 'a', 2.5] AS x RETURN [x, 1] AS l ORDER BY l",
+        "UNWIND range(1, 3) AS i RETURN [i, 'x'] AS l ORDER BY l DESC",
+        "UNWIND [[1, 'a'], ['b', 2]] AS l RETURN l ORDER BY l",
+        "UNWIND [[1, 'a'], ['b', 2]] AS l WITH l, count(*) AS c RETURN l ORDER BY l",
+        "UNWIND [1, 'a', 2.5] AS x WITH collect(x) AS xs RETURN xs ORDER BY xs",
+        // A boolean orders before a number in Cypher, not as `UInt8`.
+        "RETURN [true, 1] AS l ORDER BY l",
+    ] {
+        assert!(keyed(q), "{q}");
+    }
+    for q in [
+        "RETURN [3, 1, 2] AS l ORDER BY l",
+        "RETURN [1, 2.5] AS l ORDER BY l",
+        "RETURN ['b', 'a'] AS l ORDER BY l",
+        "RETURN [true, false] AS l ORDER BY l",
+        "UNWIND [[3, 1], [2, 5]] AS l RETURN l ORDER BY l DESC",
+        "UNWIND [['b', 'a'], ['a', 'z']] AS l RETURN l ORDER BY l",
+        "UNWIND range(1, 3) AS i WITH collect(i) AS xs RETURN xs ORDER BY xs",
+        "UNWIND [1, 2] AS x WITH [x * 3] AS l RETURN l ORDER BY l",
+    ] {
+        assert!(!keyed(q), "{q}");
+    }
+}

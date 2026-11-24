@@ -457,6 +457,7 @@ impl Query<'_> {
             wide_columns: BTreeSet::new(),
             subqueries: &self.stmt.subqueries,
             projected: projected_items(&self.stmt.plan),
+            unwound_lists: unwound_lists(&self.stmt.plan),
             as_values: self.as_values.clone(),
             ordered_unwinds: ordered_unwinds(&self.stmt.plan),
             numbers: HashSet::new(),
@@ -1610,6 +1611,8 @@ struct Lowerer<'s> {
     subqueries: &'s [Subquery],
     /// The expression each WITH / RETURN item was projected from.
     projected: HashMap<VarId, &'s LogicalExpr>,
+    /// Each UNWIND's variable and the list it unwinds (`scalar_list_one_class`).
+    unwound_lists: HashMap<VarId, &'s LogicalExpr>,
     /// RETURN items returned as values ([`Query::as_values`]).
     as_values: BTreeSet<String>,
     /// The UNWINDs (by variable) whose elements a later clause takes in
@@ -7178,6 +7181,19 @@ impl<'s> Lowerer<'s> {
                             .lists()
                             .and_then(|lists| lists.mixed_order)
                     }
+                    // A list of scalars is no one type unless it is shown to
+                    // be: `[x, 1]` of an unwound `[1, 'a']`, a list of mixed
+                    // literals, a `collect` of values of several types. Its
+                    // elements are a `Variant`, which ClickHouse refuses in
+                    // an order key (Code 44). (#1491)
+                    unwind::Kind::List(inner)
+                        if matches!(**inner, unwind::Kind::Scalar | unwind::Kind::Boolean)
+                            && !self.scalar_list_one_class(&k.expr) =>
+                    {
+                        current_function_mapper()
+                            .lists()
+                            .and_then(|lists| lists.mixed_order)
+                    }
                     _ => None,
                 }
             } else {
@@ -9832,6 +9848,29 @@ fn projected_items(op: &BoundOp) -> HashMap<VarId, &LogicalExpr> {
             }
             BoundOp::Match { input, .. }
             | BoundOp::Unwind { input, .. }
+            | BoundOp::Sort { input, .. }
+            | BoundOp::Filter { input, .. }
+            | BoundOp::Skip { input, .. }
+            | BoundOp::Limit { input, .. } => walk(input, out),
+            BoundOp::Union { arms, .. } => arms.iter().for_each(|a| walk(a, out)),
+        }
+    }
+    walk(op, &mut out);
+    out
+}
+
+/// Each UNWIND's variable and the list it unwinds.
+fn unwound_lists(op: &BoundOp) -> HashMap<VarId, &LogicalExpr> {
+    let mut out = HashMap::new();
+    fn walk<'a>(op: &'a BoundOp, out: &mut HashMap<VarId, &'a LogicalExpr>) {
+        match op {
+            BoundOp::Unit => {}
+            BoundOp::Unwind { input, var, expr } => {
+                walk(input, out);
+                out.insert(*var, expr);
+            }
+            BoundOp::Project { input, .. }
+            | BoundOp::Match { input, .. }
             | BoundOp::Sort { input, .. }
             | BoundOp::Filter { input, .. }
             | BoundOp::Skip { input, .. }

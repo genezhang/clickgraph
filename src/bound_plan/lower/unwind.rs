@@ -170,6 +170,148 @@ impl Lowerer<'_> {
     }
 }
 
+/// What list `e`'s elements are, as far as ClickHouse's order of a list is
+/// concerned (`Lowerer::scalar_list_one_class`).
+#[derive(Debug, Clone, PartialEq)]
+enum Shape {
+    /// NULL, or an element of `[]`: meets any shape.
+    Any,
+    /// A number literal or a numeric function: integers and floats have a
+    /// common type.
+    Num,
+    Str,
+    Bool,
+    List(Box<Shape>),
+    /// A property whose column is of this one type in every label / type
+    /// (`Dynamic` / `Variant` / `JSON` excluded): a type is its own meet only.
+    Typed(String),
+    /// Not known to be one shape.
+    Mixed,
+}
+
+impl Shape {
+    fn meet(self, other: Shape) -> Shape {
+        match (self, other) {
+            (Shape::Any, s) | (s, Shape::Any) => s,
+            (Shape::List(a), Shape::List(b)) => Shape::List(Box::new(a.meet(*b))),
+            (a, b) if a == b && a != Shape::Mixed => a,
+            _ => Shape::Mixed,
+        }
+    }
+}
+
+impl Lowerer<'_> {
+    /// Whether the elements of list `e` are provably of one type that
+    /// ClickHouse orders natively and Cypher orders the same way: literals of
+    /// numbers, of strings or of booleans, a `range()` / `split()` /
+    /// `keys()`, a `collect` of such, a property of one declared type, and
+    /// the variables that are one of those (a `WITH` item, an unwound
+    /// element). `false`: the elements may be of several types, and the list
+    /// is ordered by the element key (`mixed_order`).
+    pub(super) fn scalar_list_one_class(&self, e: &LogicalExpr) -> bool {
+        matches!(
+            self.shape(e, 8),
+            Shape::List(s) if !matches!(*s, Shape::Mixed | Shape::List(_))
+        )
+    }
+
+    fn shape(&self, e: &LogicalExpr, depth: usize) -> Shape {
+        use lx::Operator as O;
+        if depth == 0 {
+            return Shape::Mixed;
+        }
+        let shape = |x: &LogicalExpr| self.shape(x, depth - 1);
+        match e {
+            LogicalExpr::Literal(lx::Literal::Null) => Shape::Any,
+            LogicalExpr::Literal(lx::Literal::Integer(_) | lx::Literal::Float(_)) => Shape::Num,
+            LogicalExpr::Literal(lx::Literal::String(_)) => Shape::Str,
+            LogicalExpr::Literal(lx::Literal::Boolean(_)) => Shape::Bool,
+            LogicalExpr::List(xs) => Shape::List(Box::new(
+                xs.iter()
+                    .map(shape)
+                    .reduce(Shape::meet)
+                    .unwrap_or(Shape::Any),
+            )),
+            LogicalExpr::TableAlias(lx::TableAlias(n)) => {
+                let Some(v) = parse_var(n) else {
+                    return Shape::Mixed;
+                };
+                if let Some(list) = self.unwound_lists.get(&v) {
+                    // An unwound element is an element of its list.
+                    return match shape(list) {
+                        Shape::List(element) => *element,
+                        _ => Shape::Mixed,
+                    };
+                }
+                match self.projected.get(&v) {
+                    Some(source) => shape(source),
+                    None => Shape::Mixed,
+                }
+            }
+            LogicalExpr::PropertyAccessExp(pa) => {
+                let (PropertyValue::Column(p), Some(v)) =
+                    (&pa.column, parse_var(&pa.table_alias.0))
+                else {
+                    return Shape::Mixed;
+                };
+                let types = self.property_columns(v, p);
+                let Some(first) = types.first().copied().flatten() else {
+                    return Shape::Mixed;
+                };
+                let raw = first.raw.to_ascii_lowercase();
+                let any = ["dynamic", "variant", "json"]
+                    .iter()
+                    .any(|t| raw.contains(t));
+                match types.iter().all(|t| *t == Some(first)) && !any {
+                    true => Shape::Typed(raw),
+                    false => Shape::Mixed,
+                }
+            }
+            LogicalExpr::Operator(op) | LogicalExpr::OperatorApplicationExp(op) => {
+                match (op.operator, op.operands.as_slice()) {
+                    (
+                        O::Subtraction
+                        | O::Multiplication
+                        | O::Division
+                        | O::ModuloDivision
+                        | O::Exponentiation,
+                        _,
+                    ) => Shape::Num,
+                    // `+` is a number's, a string's, or a list's.
+                    (O::Addition, [a, b]) => match (shape(a), shape(b)) {
+                        (Shape::Num, Shape::Num) => Shape::Num,
+                        (Shape::Str, Shape::Str) => Shape::Str,
+                        _ => Shape::Mixed,
+                    },
+                    (O::Addition | O::Distinct, _) => Shape::Mixed,
+                    // The rest (comparisons, `AND`, `IN`, `IS NULL` ...) are
+                    // booleans, as `Lowerer::kind` has them.
+                    _ => Shape::Bool,
+                }
+            }
+            LogicalExpr::ScalarFnCall(f) => match f.name.to_ascii_lowercase().as_str() {
+                "range" => Shape::List(Box::new(Shape::Num)),
+                "split" | "keys" => Shape::List(Box::new(Shape::Str)),
+                "size" | "length" | "tointeger" | "tofloat" | "abs" | "ceil" | "floor"
+                | "round" | "sign" | "sqrt" | "exp" | "log" | "log10" | "rand" => Shape::Num,
+                "tostring" | "tolower" | "toupper" | "trim" | "ltrim" | "rtrim" | "substring"
+                | "replace" | "left" | "right" | "type" => Shape::Str,
+                "toboolean" => Shape::Bool,
+                _ => Shape::Mixed,
+            },
+            LogicalExpr::AggregateFnCall(f) => match f.name.to_ascii_lowercase().as_str() {
+                "collect" => match f.args.first() {
+                    Some(x) => Shape::List(Box::new(shape(x))),
+                    None => Shape::Mixed,
+                },
+                "count" => Shape::Num,
+                _ => Shape::Mixed,
+            },
+            _ => Shape::Mixed,
+        }
+    }
+}
+
 /// A list comprehension's part: `[x IN l WHERE p]` keeps elements, `[x IN l
 /// | e]` maps them (`[x IN l WHERE p | e]` is a map of a filter).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

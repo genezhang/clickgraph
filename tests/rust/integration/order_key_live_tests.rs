@@ -39,6 +39,9 @@ async fn post(sql: &str) -> String {
                 std::env::var("CLICKHOUSE_PASSWORD").unwrap_or_default(),
             ),
         ])
+        // The session every executor runs the SQL in (`join_use_nulls`,
+        // `use_variant_as_common_type`).
+        .query(&clickgraph::sql_generator::session_settings())
         .body(sql.to_string())
         .send()
         .await
@@ -126,4 +129,122 @@ async fn a_list_of_maps_orders_numerically_on_live_clickhouse() {
     .await;
     let ids: Vec<u64> = got.iter().map(|r| r["id"].as_u64().unwrap()).collect();
     assert_eq!(ids, [2, 3, 1], "{got:?}");
+}
+
+fn mixed_schema() -> GraphSchema {
+    GraphSchemaConfig::from_yaml_str(
+        "graph_schema:\n  nodes:\n    - label: X\n      database: live_order\n      \
+         table: m_mix\n      node_id: id\n      property_mappings:\n        id: id\n        \
+         s: s\n  edges: []\n",
+    )
+    .unwrap()
+    .to_graph_schema()
+    .unwrap()
+}
+
+async fn mixed_rows(cypher: &str) -> Vec<Value> {
+    let sql =
+        clickgraph::clickhouse_query_generator::cypher_to_sql(cypher, &mixed_schema()).unwrap();
+    let json: Value = serde_json::from_str(&post(&sql).await).unwrap();
+    json["data"].as_array().unwrap().clone()
+}
+
+/// #1491: a list of values of no common type works on every ClickHouse the
+/// SQL runs on, as a list of literals (`array(…)`, as the constant `[1, 'a']`
+/// has no type on 26.7 either) and as a list of columns (25.8 needs
+/// `use_variant_as_common_type`, which the session carries).
+#[tokio::test]
+async fn a_list_of_values_of_no_common_type_works_on_live_clickhouse() {
+    if std::env::var("CLICKHOUSE_URL").is_err() {
+        println!("skipping: CLICKHOUSE_URL not set (offline suite)");
+        return;
+    }
+    for sql in [
+        "CREATE DATABASE IF NOT EXISTS live_order",
+        "DROP TABLE IF EXISTS live_order.m_mix",
+        "CREATE TABLE live_order.m_mix (id UInt64, s String) ENGINE = MergeTree ORDER BY id",
+        "INSERT INTO live_order.m_mix VALUES (1, 'b'), (2, 'a'), (3, 'b')",
+    ] {
+        post(sql).await;
+    }
+    let got = mixed_rows("RETURN [1, 'a', true, 2.5] AS l").await;
+    assert_eq!(
+        got[0]["l"],
+        serde_json::json!([1, "a", true, 2.5]),
+        "{got:?}"
+    );
+    // What compares lists of literals at print time still sees lists (a NULL
+    // element makes `=` NULL).
+    let got =
+        mixed_rows("RETURN [1, 'a', null] = [1, 'a', null] AS e, [1, 'a'] = [1, 'a'] AS f").await;
+    assert_eq!(got[0]["e"], Value::Null, "{got:?}");
+    assert_eq!(got[0]["f"], serde_json::json!(true), "{got:?}");
+    let got = mixed_rows("RETURN [[1, 'a'], ['b', 2]] AS l").await;
+    assert_eq!(
+        got[0]["l"],
+        serde_json::json!([[1, "a"], ["b", 2]]),
+        "{got:?}"
+    );
+    // A list of columns of two types, grouped and ordered by.
+    let got =
+        mixed_rows("MATCH (n:X) WITH [n.s, n.id] AS l, count(*) AS c RETURN l, c ORDER BY l DESC")
+            .await;
+    let lists: Vec<Value> = got.iter().map(|r| r["l"].clone()).collect();
+    assert_eq!(
+        lists,
+        [
+            serde_json::json!(["b", 3]),
+            serde_json::json!(["b", 1]),
+            serde_json::json!(["a", 2])
+        ],
+        "{got:?}"
+    );
+}
+
+/// #1491: Cypher orders a list element by element, and a string before a
+/// number whatever their values; a list of scalars of no one type used to
+/// fail in ClickHouse's ORDER BY (Code 44).
+#[tokio::test]
+async fn a_list_of_scalars_of_no_one_type_orders_by_type_rank_on_live_clickhouse() {
+    if std::env::var("CLICKHOUSE_URL").is_err() {
+        println!("skipping: CLICKHOUSE_URL not set (offline suite)");
+        return;
+    }
+    let got =
+        mixed_rows("UNWIND [[1, 'a'], ['b', 2], [2.5, 'c'], [2, 'a']] AS l RETURN l ORDER BY l")
+            .await;
+    let lists: Vec<Value> = got.iter().map(|r| r["l"].clone()).collect();
+    assert_eq!(
+        lists,
+        [
+            serde_json::json!(["b", 2]),
+            serde_json::json!([1, "a"]),
+            serde_json::json!([2, "a"]),
+            serde_json::json!([2.5, "c"])
+        ],
+        "{got:?}"
+    );
+    let got = mixed_rows("UNWIND [1, 'a', 2.5] AS x RETURN [x, 1] AS l ORDER BY l DESC").await;
+    let lists: Vec<Value> = got.iter().map(|r| r["l"].clone()).collect();
+    assert_eq!(
+        lists,
+        [
+            serde_json::json!([2.5, 1]),
+            serde_json::json!([1, 1]),
+            serde_json::json!(["a", 1])
+        ],
+        "{got:?}"
+    );
+    // Lists of one type keep the native order: `[3, 1]` after `[2, 5]`.
+    let got = mixed_rows("UNWIND [[3, 1], [2, 5], [1, 9]] AS l RETURN l ORDER BY l DESC").await;
+    let lists: Vec<Value> = got.iter().map(|r| r["l"].clone()).collect();
+    assert_eq!(
+        lists,
+        [
+            serde_json::json!([3, 1]),
+            serde_json::json!([2, 5]),
+            serde_json::json!([1, 9])
+        ],
+        "{got:?}"
+    );
 }

@@ -117,6 +117,16 @@ and is verified live against ClickHouse and the Neo4j oracle.
   same rule T3 needs for identities): only where the backend has no common
   type, only on ClickHouse, and only when every element's type is known.
   Casts are a SQL IR node (`RenderExpr::Cast`).
+- [x] **T4b — a list of values of no common type works and orders** (#1491).
+  ClickHouse 25.8 has no `Variant` common type unless
+  `use_variant_as_common_type = 1` (26.x does by default; the session now sets
+  it, `SEMANTIC_SESSION_SETTINGS`), and neither version has a type for a
+  constant `[1, 'a']` (the printer writes a list of literals of no common type
+  as `array(1, 'a')`, `literal_list`; not one with a NULL, whose `Variant`
+  NULL `count()` counts, nor the list of an `IN`). `ORDER BY` of a list of scalars uses the
+  element key unless the elements are shown to be one type
+  (`Lowerer::scalar_list_one_class`): a `Variant` is refused in an order key
+  (Code 44).
 - [ ] **T4 — one value key.** Equality, DISTINCT, grouping and ordering of a
   value of mixed or container kind go through one recursive key on ClickHouse
   (#1396, #1482, #1491, #1362), with a sortable form for ORDER BY.
