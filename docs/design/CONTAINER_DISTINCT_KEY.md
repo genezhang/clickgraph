@@ -66,3 +66,56 @@ container's type and to each map value's `dynamicType`.
    (`tests/rust/integration/distinct_key_live_tests.rs`).
 4. The same list / map value in two storage types is one group
    (`a_union_of_one_value_in_two_storage_types_is_one_row_on_live_clickhouse`).
+5. A container inside a container is keyed by what is in it, to eight levels
+   (`nested_containers_are_keyed_by_what_is_in_them_on_live_clickhouse`), and
+   one instant is one value in a `DateTime` and a `DateTime64`, in a list or a
+   map (`one_instant_in_two_datetime_types_is_one_row_in_a_container_on_live_clickhouse`).
+
+## Nested containers (#1482, second part)
+
+The first part keyed a container by its type and its text. That is exact where
+the type tells what the elements are (`Array(Date)`), but a map literal's values
+are `Dynamic` (the type is `Map(String, Dynamic)` whatever they hold), so
+`{a: {b: date(...)}}` and `{a: {b: '...'}}`, `[{a: date(...)}]` and
+`[{a: '...'}]` were one group. And `DateTime` / `DateTime64` print a fraction or
+none (`[00:00:00]`, `[00:00:00.000]`): one instant, two texts.
+
+`distinct_key` is now a gate outside every lambda:
+
+```
+multiIf(<keyed by elements>, <deep key>, <plain key>)
+```
+
+- **Plain key** (every scalar; a container whose elements are what its type
+  says, such as `Array(Int64)`): exactly the key above. A long typed list is
+  one `toString`.
+- **Keyed by elements** (`keyed_by_elements`): a map, or a list of one
+  dimension, whose type hides its elements (`Dynamic`, `Variant`) or prints
+  them by storage type (`DateTime`, `Time`).
+- **Deep key** (`deep_key`): the container as a tree, level by level
+  (`arrayFold`), one token per node, the node's kind, its text and its number of
+  elements (a container looked into has neither kind nor text of its own: its
+  elements' are its). The elements of one level are the next level's nodes, so
+  one lambda serves every level, and ClickHouse's planning time does not grow
+  with `KEY_LEVELS` (nested lambdas did: 0.1 s at four levels, 0.25 s on 25.8).
+  A level order with the number of elements of each node is one tree only, and
+  each token is `toString` of a tuple, so no text can pass for another's.
+  Because every token is a scalar's own, an instant is one value in any
+  `DateTime` type, a date is not a string, and numbers of any width are one.
+
+The elements of a `Dynamic` are read through a cast to `Array(Dynamic)` or to
+`Array(Tuple(String, Dynamic))` (a map as its pairs), taken only where the value
+is one: a cast of a scalar is an error and an `if` is evaluated for every row,
+so the others hold a dummy container, and the cast is of an `identity(...)`
+because ClickHouse moves a cast into the two arms of an `if`.
+
+### Limits
+
+- `KEY_LEVELS` (8) levels below the first container; deeper, a container is its
+  type and text.
+- A list in a list whose elements hide their types (`Array(Array(Dynamic))`) is
+  its type and its text: ClickHouse casts a `Dynamic` to a list of one dimension
+  only.
+- The same list held as `Array(Date)` in one source and `Array(Dynamic)` in
+  another is two groups (the plain key and the deep key are different keys).
+- An `Interval` in a list through a `UNION` fails inside ClickHouse (Code 53).

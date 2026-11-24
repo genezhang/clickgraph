@@ -35,18 +35,96 @@ fn container_type(ty: &str) -> String {
     replace(t, wrapper, r"\\2")
 }
 
+/// How many levels below a container the distinct key looks into (#1482): a
+/// list in a map in a list in a map in a map is four below the first, and
+/// keyed by what is in it (maps in maps: eight). A container deeper is keyed by its type and its
+/// text, as a typed container is. Only a container that needs it
+/// ([`keyed_by_elements`]) pays for the levels.
+const KEY_LEVELS: usize = 8;
+
 /// The ClickHouse `CypherUnion::distinct_key`: the value's kind and text.
+///
+/// A container whose type hides what its elements are, or prints them by
+/// storage type ([`keyed_by_elements`]), is keyed by its elements
+/// ([`deep_key`]); every other value is [`plain_key`], which looks at no
+/// element. The gate is outside every lambda: ClickHouse evaluates a branch
+/// of `multiIf` only for the rows that take it there, and not inside a
+/// lambda, so a scalar (or a long typed list) costs what it did.
 fn distinct_key(v: &str) -> String {
-    // A `LowCardinality` value is its inner type's (`Float64`
-    // 1.5 and `LowCardinality(Float64)` 1.5 are one value).
-    let ty = format!(
+    format!(
+        "multiIf({}, {}, {})",
+        keyed_by_elements(&value_type_of(v)),
+        deep_key(v),
+        plain_key(v)
+    )
+}
+
+/// `v`'s type, a `LowCardinality` one as its inner type (`Float64`
+/// 1.5 and `LowCardinality(Float64)` 1.5 are one value).
+fn value_type_of(v: &str) -> String {
+    format!(
         "replaceRegexpOne(dynamicType(CAST({v}, 'Dynamic')), \
          '^LowCardinality\\\\((.*)\\\\)$', '\\\\1')"
-    );
+    )
+}
+
+/// Whether the container of type `ty` is keyed by its elements: its type
+/// hides them (`Dynamic`, `Variant`) or prints them by storage type
+/// (`DateTime`, `Time`), and it is a map or a list (a list of lists is its
+/// type and its text: a `Dynamic` is cast to `Array(Dynamic)`, which
+/// ClickHouse does of an array of one dimension only).
+fn keyed_by_elements(ty: &str) -> String {
+    // (`startsWith` and `multiSearchAny`, not a regex: this is read of every
+    // value.)
+    format!(
+        "((startsWith({ty}, 'Map') OR (startsWith({ty}, 'Array') \
+         AND NOT startsWith({ty}, 'Array(Array('))) \
+         AND multiSearchAny({ty}, ['Dynamic', 'Variant', 'DateTime', 'Time']))"
+    )
+}
+
+/// The kind of value `v`, as [`plain_key`] has it. `values`: a map's kind has
+/// its values' types too (a map of `Dynamic` values, which [`deep_key`] reads
+/// for itself, has none to give).
+fn plain_kind(v: &str, values: bool) -> String {
+    let ty = value_type_of(v);
     // `Int[0-9]`: not an `Interval…`.
     let number = format!("match({ty}, '^(U?Int[0-9]|Float|BFloat|Decimal)')");
     let string = format!("match({ty}, '^(String|FixedString|Enum|UUID|IPv|LowCardinality)')");
     let zone = format!("extract({ty}, '''([^'']*)''')");
+    // `mapValues` of a raw `Dynamic` map is `[]` for a typed map and
+    // Code 43 for anything that is not one, and `multiIf` analyses
+    // every branch: the Dynamic value goes through `dynamicElement`
+    // (safe on any kind) and the map's own type joins the key, which
+    // separates typed maps whose value list is empty.
+    // The container's type and each value's are classed by
+    // [`container_type`]: the same value of two storage types is one key.
+    let container = container_type(&ty);
+    let map = match values {
+        true => {
+            let value_type = container_type("dynamicType(CAST(x, 'Dynamic'))");
+            format!(
+                "concat('m:', {container}, ':', arrayStringConcat(arrayMap(x -> \
+                 {value_type}, CAST(mapValues(dynamicElement(\
+                 CAST({v}, 'Dynamic'), 'Map(String, Dynamic)')), 'Array(Dynamic)')), ','))"
+            )
+        }
+        false => format!("concat('m:', {container}, ':')"),
+    };
+    format!(
+        "multiIf({ty} = 'None', '', {ty} = 'Bool', 'b', {number}, 'n', \
+         startsWith({ty}, 'Map'), {map}, \
+         match({ty}, '^(Array|Tuple)'), concat('c:', {container}), {string}, 's', \
+         {ty} = 'Date32', 'Date', startsWith({ty}, 'DateTime'), \
+         concat('DateTime ', if({zone} = '', timezone(), {zone})), \
+         startsWith({ty}, 'Time'), 'Time', {ty})"
+    )
+}
+
+/// The text of value `v`, as [`plain_key`] has it.
+fn plain_text(v: &str) -> String {
+    let ty = value_type_of(v);
+    let number = format!("match({ty}, '^(U?Int[0-9]|Float|BFloat|Decimal)')");
     let clock = format!(
         "replaceRegexpOne(replaceRegexpOne(toString({v}), \
          '(\\\\.[0-9]*[1-9])0+$', '\\\\1'), '\\\\.0+$', '')"
@@ -60,35 +138,88 @@ fn distinct_key(v: &str) -> String {
          if(startsWith({ty}, 'DateTime'), CAST({v}, 'Dynamic'), NULL), \
          'DateTime64(6, ''UTC'')'))), '')"
     );
-    // `mapValues` of a raw `Dynamic` map is `[]` for a typed map and
-    // Code 43 for anything that is not one, and `multiIf` analyses
-    // every branch: the Dynamic value goes through `dynamicElement`
-    // (safe on any kind) and the map's own type joins the key, which
-    // separates typed maps whose value list is empty.
-    // The container's type and each value's are classed by
-    // [`container_type`]: the same value of two storage types is one key.
-    let container = container_type(&ty);
-    let value_type = container_type("dynamicType(CAST(x, 'Dynamic'))");
-    let map = format!(
-        "concat('m:', {container}, ':', arrayStringConcat(arrayMap(x -> \
-         {value_type}, CAST(mapValues(dynamicElement(\
-         CAST({v}, 'Dynamic'), 'Map(String, Dynamic)')), 'Array(Dynamic)')), ','))"
-    );
     // `toString` drops a FixedString's trailing zero bytes,
     // which the output prints: padded back to its width.
     format!(
-        "tuple(multiIf({ty} = 'None', '', {ty} = 'Bool', 'b', {number}, 'n', \
-         startsWith({ty}, 'Map'), {map}, \
-         match({ty}, '^(Array|Tuple)'), concat('c:', {container}), {string}, 's', \
-         {ty} = 'Date32', 'Date', startsWith({ty}, 'DateTime'), \
-         concat('DateTime ', if({zone} = '', timezone(), {zone})), \
-         startsWith({ty}, 'Time'), 'Time', {ty}), \
-         multiIf({number} AND toString({v}) = '-0', '0', \
+        "multiIf({number} AND toString({v}) = '-0', '0', \
          startsWith({ty}, 'FixedString'), \
          rightPad(toString({v}), toUInt64OrZero(extract({ty}, '[0-9]+')), '\\0'), \
          startsWith({ty}, 'DateTime'), concat({clock}, ' ', {instant}), \
          startsWith({ty}, 'Time'), {clock}, \
-         toString({v})))"
+         toString({v}))"
+    )
+}
+
+/// The key of a value that looks at no element of a container: its kind and
+/// text, a container being its classed type and its text. (A container whose
+/// elements are looked at is [`deep_key`]'s.)
+fn plain_key(v: &str) -> String {
+    format!("tuple({}, {})", plain_kind(v, true), plain_text(v))
+}
+
+/// The elements of container `n` that is [`keyed_by_elements`], as an
+/// `Array(Dynamic)`: a map's keys and values in turn, a list's elements; none
+/// for any other value. (A `Dynamic` is cast to a container only where it is
+/// one: a cast of a scalar is an error, and an `if` is evaluated for every
+/// row. The other rows hold a one-element container, which is never read, and
+/// the `identity` keeps ClickHouse from moving the cast into the two arms of
+/// the `if`, which would cast the scalars too.)
+fn elements_of(n: &str) -> String {
+    let ty = value_type_of(n);
+    let deep = keyed_by_elements(&ty);
+    // A map as its `(key, value)` pairs.
+    let pairs = format!(
+        "CAST(identity(if({deep} AND startsWith({ty}, 'Map'), CAST({n}, 'Dynamic'), \
+         CAST(map('', 0), 'Dynamic'))), 'Array(Tuple(String, Dynamic))')"
+    );
+    let list = format!(
+        "CAST(identity(if({deep} AND startsWith({ty}, 'Array'), CAST({n}, 'Dynamic'), \
+         CAST([0], 'Dynamic'))), 'Array(Dynamic)')"
+    );
+    format!(
+        "multiIf({deep} AND startsWith({ty}, 'Map'), arrayFlatten(arrayMap(p -> \
+         [CAST(p.1, 'Dynamic'), p.2], {pairs})), \
+         {deep} AND startsWith({ty}, 'Array'), {list}, \
+         arrayPopBack([CAST(0, 'Dynamic')]))"
+    )
+}
+
+/// The key of a container that is [`keyed_by_elements`] (#1482): a date in a
+/// map in a list is a date, not the string of its text, and the same instant
+/// is one value whatever it is stored in.
+///
+/// The container's tree, level by level: each node as its kind, its text and
+/// how many elements it has (a container that is itself keyed by its
+/// elements has neither kind nor text of its own: they are its elements').
+/// The elements of one level are the next level's nodes, so the lambda is the
+/// same for every level, and the key is the same size however deep it looks
+/// ([`KEY_LEVELS`]); a level order with the number of elements of each node
+/// is one tree only. A node on the last level is [`plain_key`], whatever it
+/// holds.
+fn deep_key(v: &str) -> String {
+    let n = "n";
+    let ty = value_type_of(n);
+    let deep = format!("({} AND i < {KEY_LEVELS})", keyed_by_elements(&ty));
+    // A node's token: its kind, its text and its number of elements `c`.
+    let token = format!(
+        "toString(tuple(if({deep}, if(startsWith({ty}, 'Map'), 'm', 'c'), {kind}), \
+         if({deep}, '', {text}), length(c)))",
+        kind = plain_kind(n, false),
+        text = plain_text(n),
+    );
+    // The last level's nodes are not opened (`i` is the last level's index).
+    let levels = format!(
+        "arrayFold((acc, i) -> arrayMap(ch -> (arrayFlatten(ch), \
+         arrayConcat(acc.2, arrayMap((n, c) -> {token}, acc.1, ch))), \
+         [arrayMap(n -> if(i < {KEY_LEVELS}, {elements}, arrayPopBack([CAST(0, 'Dynamic')])), \
+         acc.1)])[1], range({KEY_LEVELS} + 1), \
+         ([CAST({v}, 'Dynamic')], CAST([], 'Array(String)')))",
+        elements = elements_of(n)
+    );
+    format!(
+        "arrayMap(f -> tuple(if(startsWith({root}, 'Map'), 'm', 'c'), toString(f.2)), \
+         [{levels}])[1]",
+        root = value_type_of(v)
     )
 }
 
@@ -614,10 +745,11 @@ mod tests {
     /// the key of `Array(Int32)` and `Array(Int64)` (or `Nullable` and
     /// `LowCardinality` elements, a `Map` of either width) is one, which a
     /// `UNION` of two storage types relies on. The class is used for the list /
-    /// tuple branch, the map's own type and each map value's type.
+    /// tuple branch, the map's own type and each map value's type, in the plain
+    /// key, and for a nested container's type in the key by elements.
     #[test]
     fn a_containers_type_in_the_distinct_key_is_classed_not_spelled_1482() {
-        let key = super::distinct_key("v");
+        let key = super::plain_key("v");
         assert_eq!(key.matches("'Number')").count(), 3, "{key}");
         assert_eq!(key.matches("'String')").count(), 3, "{key}");
         assert!(key.contains("'Date')"), "{key}");
@@ -631,6 +763,44 @@ mod tests {
         );
         assert!(key.contains("concat('c:', replaceRegexpAll("), "{key}");
         assert!(key.contains("concat('m:', replaceRegexpAll("), "{key}");
+        // The key of a container looked into classes its elements' types too.
+        let deep = super::deep_key("v");
+        assert!(deep.contains("concat('c:', replaceRegexpAll("), "{deep}");
+        assert!(deep.contains("'Number')"), "{deep}");
+    }
+
+    /// #1482: a container whose type hides its elements (`Dynamic`,
+    /// `Variant`) or prints them by storage type (`DateTime`) is keyed by its
+    /// elements, `KEY_LEVELS` levels of them; every other value is its plain
+    /// key, and which is chosen outside any lambda (a branch of `multiIf` is
+    /// evaluated only for its rows, and not inside a lambda).
+    #[test]
+    fn a_container_that_hides_its_elements_is_keyed_by_them_1482() {
+        let key = super::distinct_key("v");
+        assert!(key.starts_with("multiIf(((startsWith("), "{key}");
+        assert!(
+            key.ends_with(&format!(", {})", super::plain_key("v"))),
+            "{key}"
+        );
+        let deep = super::deep_key("v");
+        assert!(key.contains(&deep), "{key}");
+        assert!(
+            deep.contains(&format!("range({} + 1)", super::KEY_LEVELS)),
+            "{deep}"
+        );
+        // A `Dynamic` is cast to a container only where it is one, through an
+        // `identity` (ClickHouse moves a cast into the arms of an `if`, and
+        // casts the scalars too): a list, and a map as its pairs.
+        for target in ["'Array(Dynamic)'", "'Array(Tuple(String, Dynamic))'"] {
+            assert!(deep.contains(target), "{target}: {deep}");
+        }
+        assert_eq!(deep.matches("CAST(identity(if(").count(), 2, "{deep}");
+        for part in ["Dynamic", "Variant", "DateTime", "Time"] {
+            assert!(
+                deep.contains(&format!("'{part}'")),
+                "{part} is a type to look into: {deep}"
+            );
+        }
     }
     use super::ClickhouseFunctionMapper;
     use super::FunctionMapper;

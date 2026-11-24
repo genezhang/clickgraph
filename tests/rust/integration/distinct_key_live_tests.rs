@@ -155,3 +155,117 @@ async fn a_union_of_one_value_in_two_storage_types_is_one_row_on_live_clickhouse
         assert_eq!(rows_over(cypher, &schema).await.len(), want, "{cypher}");
     }
 }
+
+/// #1482: a container inside a container is keyed by what is in it, to the
+/// depth the key looks (`KEY_DEPTH`): a date in a map in a map in a list is a
+/// date, not the string of its text. A map literal holds `Dynamic` values,
+/// which hide their types from the map's own, so each is read in turn.
+#[tokio::test]
+async fn nested_containers_are_keyed_by_what_is_in_them_on_live_clickhouse() {
+    if std::env::var("CLICKHOUSE_URL").is_err() {
+        println!("skipping: CLICKHOUSE_URL not set (offline suite)");
+        return;
+    }
+    let nested = |n: usize, leaf: &str| (0..n).fold(leaf.to_string(), |s, _| format!("{{k: {s}}}"));
+    let mut cases: Vec<(String, usize)> = vec![
+        // A date and a string that print alike, in a map, a list, a map in
+        // a list, a list in a map, a map in a map.
+        ("RETURN {a: date('2020-01-15')} AS x UNION RETURN {a: '2020-01-15'} AS x".into(), 2),
+        ("RETURN [date('2020-01-15')] AS x UNION RETURN ['2020-01-15'] AS x".into(), 2),
+        ("RETURN [{a: date('2020-01-15')}] AS x UNION RETURN [{a: '2020-01-15'}] AS x".into(), 2),
+        ("RETURN {a: [date('2020-01-15')]} AS x UNION RETURN {a: ['2020-01-15']} AS x".into(), 2),
+        // The limit: a list in a list whose elements hide their types (a
+        // `Dynamic` is cast to `Array(Dynamic)`, not to a list of lists) is
+        // keyed by its type and its text.
+        (
+            "RETURN [[{a: date('2020-01-15')}]] AS x UNION RETURN [[{a: '2020-01-15'}]] AS x"
+                .into(),
+            1,
+        ),
+        // The same value is one row, and numbers of any width are one class.
+        (
+            "RETURN {a: {b: date('2020-01-15')}} AS x UNION RETURN {a: {b: date('2020-01-15')}} AS x"
+                .into(),
+            1,
+        ),
+        ("RETURN {a: {b: 1}} AS x UNION RETURN {a: {b: 1.0}} AS x".into(), 1),
+        ("RETURN [{a: 1}] AS x UNION RETURN [{a: toInteger(1)}] AS x".into(), 1),
+        // Different values stay different.
+        ("RETURN {a: {b: 1}} AS x UNION RETURN {a: {b: 2}} AS x".into(), 2),
+        ("RETURN {a: {b: 1}} AS x UNION RETURN {a: {c: 1}} AS x".into(), 2),
+        ("RETURN [{a: 'x,'}] AS x UNION RETURN [{a: 'x'}, {a: ''}] AS x".into(), 2),
+    ];
+    // Maps in maps, as deep as the key looks (`KEY_LEVELS`: eight), and the
+    // limit: a ninth map deep is keyed by its type and text again.
+    for n in 1..=8 {
+        cases.push((
+            format!(
+                "RETURN {} AS x UNION RETURN {} AS x",
+                nested(n, "date('2020-01-15')"),
+                nested(n, "'2020-01-15'")
+            ),
+            2,
+        ));
+    }
+    cases.push((
+        format!(
+            "RETURN {} AS x UNION RETURN {} AS x",
+            nested(9, "date('2020-01-15')"),
+            nested(9, "'2020-01-15'")
+        ),
+        1,
+    ));
+    for (cypher, want) in cases {
+        assert_eq!(rows(&cypher).await.len(), want, "{cypher}");
+    }
+}
+
+/// #1482: the same instant is one value whether a `DateTime` or a
+/// `DateTime64` holds it (a container printed its text, `00:00:00` and
+/// `00:00:00.000`), in a list or in a map, as it is for a scalar.
+#[tokio::test]
+async fn one_instant_in_two_datetime_types_is_one_row_in_a_container_on_live_clickhouse() {
+    if std::env::var("CLICKHOUSE_URL").is_err() {
+        println!("skipping: CLICKHOUSE_URL not set (offline suite)");
+        return;
+    }
+    for ddl in [
+        "CREATE DATABASE IF NOT EXISTS dk_live",
+        "DROP TABLE IF EXISTS dk_live.c",
+        "DROP TABLE IF EXISTS dk_live.d",
+        "CREATE TABLE dk_live.c (id UInt64, dt Array(DateTime('UTC')), \
+         dm Map(String, DateTime('UTC'))) ENGINE = MergeTree ORDER BY id",
+        "CREATE TABLE dk_live.d (id UInt64, dt Array(DateTime64(3, 'UTC')), \
+         dm Map(String, DateTime64(3, 'UTC'))) ENGINE = MergeTree ORDER BY id",
+        "INSERT INTO dk_live.c VALUES \
+         (1, ['2020-01-01 00:00:00'], {'k': '2020-01-01 00:00:00'}), \
+         (2, ['2021-02-02 03:04:05'], {'k': '2021-02-02 03:04:05'})",
+        "INSERT INTO dk_live.d VALUES \
+         (1, ['2020-01-01 00:00:00.000'], {'k': '2020-01-01 00:00:00.000'}), \
+         (2, ['2021-02-02 03:04:05.500'], {'k': '2021-02-02 03:04:05.500'})",
+    ] {
+        run(ddl.to_string(), ddl).await;
+    }
+    let schema = GraphSchemaConfig::from_yaml_str(
+        "graph_schema:\n  nodes:\n    - label: C\n      database: dk_live\n      table: c\n      \
+         node_id: id\n      property_mappings: {id: id, dt: dt, dm: dm}\n    \
+         - label: D\n      database: dk_live\n      table: d\n      node_id: id\n      \
+         property_mappings: {id: id, dt: dt, dm: dm}\n  edges: []\n",
+    )
+    .unwrap()
+    .to_graph_schema()
+    .unwrap();
+    for (cypher, want) in [
+        // The first instant is held by both; the second differs by 0.5 s.
+        (
+            "MATCH (n:C) RETURN n.dt AS t UNION MATCH (m:D) RETURN m.dt AS t",
+            3,
+        ),
+        (
+            "MATCH (n:C) RETURN n.dm AS t UNION MATCH (m:D) RETURN m.dm AS t",
+            3,
+        ),
+    ] {
+        assert_eq!(rows_over(cypher, &schema).await.len(), want, "{cypher}");
+    }
+}
