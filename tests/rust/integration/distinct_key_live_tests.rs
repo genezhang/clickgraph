@@ -157,7 +157,7 @@ async fn a_union_of_one_value_in_two_storage_types_is_one_row_on_live_clickhouse
 }
 
 /// #1482: a container inside a container is keyed by what is in it, to the
-/// depth the key looks (`KEY_DEPTH`): a date in a map in a map in a list is a
+/// depth the key looks (`KEY_LEVELS`): a date in a map in a map in a list is a
 /// date, not the string of its text. A map literal holds `Dynamic` values,
 /// which hide their types from the map's own, so each is read in turn.
 #[tokio::test]
@@ -268,4 +268,40 @@ async fn one_instant_in_two_datetime_types_is_one_row_in_a_container_on_live_cli
     ] {
         assert_eq!(rows_over(cypher, &schema).await.len(), want, "{cypher}");
     }
+}
+
+/// #1482 review: an `Enum` label that reads like a type name (`'Timeout'`,
+/// `'DateTime'`) does not make a list one whose elements are looked into: the
+/// list is its classed type and its text, as one of `String` is, so the same
+/// value in either is one row.
+#[tokio::test]
+async fn an_enum_label_that_reads_like_a_type_keeps_a_list_plain_on_live_clickhouse() {
+    if std::env::var("CLICKHOUSE_URL").is_err() {
+        println!("skipping: CLICKHOUSE_URL not set (offline suite)");
+        return;
+    }
+    for ddl in [
+        "CREATE DATABASE IF NOT EXISTS dk_live",
+        "DROP TABLE IF EXISTS dk_live.e",
+        "DROP TABLE IF EXISTS dk_live.s",
+        "CREATE TABLE dk_live.e (id UInt64, t Array(Enum8('Timeout' = 1, 'DateTime' = 2, 'a' = 3))) \
+         ENGINE = MergeTree ORDER BY id",
+        "CREATE TABLE dk_live.s (id UInt64, t Array(String)) ENGINE = MergeTree ORDER BY id",
+        "INSERT INTO dk_live.e VALUES (1, ['a']), (2, ['Timeout']), (3, ['DateTime', 'a'])",
+        "INSERT INTO dk_live.s VALUES (1, ['a']), (2, ['x']), (3, ['DateTime', 'a'])",
+    ] {
+        run(ddl.to_string(), ddl).await;
+    }
+    let schema = GraphSchemaConfig::from_yaml_str(
+        "graph_schema:\n  nodes:\n    - label: E\n      database: dk_live\n      table: e\n      \
+         node_id: id\n      property_mappings: {id: id, t: t}\n    \
+         - label: S\n      database: dk_live\n      table: s\n      node_id: id\n      \
+         property_mappings: {id: id, t: t}\n  edges: []\n",
+    )
+    .unwrap()
+    .to_graph_schema()
+    .unwrap();
+    // ['a'] and ['DateTime', 'a'] are in both; ['Timeout'] and ['x'] in one.
+    let cypher = "MATCH (n:E) RETURN n.t AS t UNION MATCH (m:S) RETURN m.t AS t";
+    assert_eq!(rows_over(cypher, &schema).await.len(), 4, "{cypher}");
 }

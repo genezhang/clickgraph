@@ -109,6 +109,16 @@ is one: a cast of a scalar is an error and an `if` is evaluated for every row,
 so the others hold a dummy container, and the cast is of an `identity(...)`
 because ClickHouse moves a cast into the two arms of an `if`.
 
+A `UNION` column that every arm lowers to a scalar (`Kind::Scalar`, `Boolean`
+or `Null`: a literal, a function of numbers, a property of a declared scalar
+type) is keyed by the plain key (`CypherUnion::scalar_key`) outright: ClickHouse
+plans the whole expression of a key, the deep arm too, whatever the gate does at
+run time (a 10-column `UNION` of integers took 1.7 s to plan on 25.8 with it,
+79 ms without). A column of a type the lowering does not know (an undeclared
+property, offline `cg sql`), a list or a map keeps the gate. The gate reads the
+type's name after `(` or a space, so an `Enum` label such as `'Timeout'` is not
+a type.
+
 ### Limits
 
 - `KEY_LEVELS` (8) levels below the first container; deeper, a container is its

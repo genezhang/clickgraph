@@ -326,6 +326,7 @@ impl FunctionMapper for DatabricksFunctionMapper {
             // A text of the value's kind and value (Spark groups no VARIANT):
             // `variant_key`.
             distinct_key: |v| variant_key(&format!("CAST({v} AS VARIANT)"), 0),
+            scalar_key: |v| variant_key(&format!("CAST({v} AS VARIANT)"), 0),
             order_key,
             any: |v| format!("any_value({v})"),
             row_number: |keys| format!("row_number() OVER (ORDER BY {keys})"),

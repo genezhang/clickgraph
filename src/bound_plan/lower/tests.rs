@@ -6130,14 +6130,24 @@ fn a_union_reads_each_arm_from_its_own_cte() {
             r#"SELECT w3.__cg_c0 AS "n", w3.__cg_c1 AS "i" FROM with_w3 AS w3"#,
         ],
     );
-    // UNION: one row per group of equal rows, in no order.
+    // UNION: one row per group of equal rows, in no order. A column of
+    // scalars is keyed by the plain key (no container to look into, which
+    // would be planned for nothing: #1482).
     let got = squash(&sql("RETURN 1 AS a UNION RETURN 1.0 AS a"));
     assert!(
         got.contains(
-            r#"SELECT any(w3.__cg_c0) AS "a" FROM with_w3 AS w3 GROUP BY multiIf(((startsWith(replaceRegexpOne(dynamicType(CAST(w3.__cg_c0, 'Dynamic')), '^LowCardinality\\((.*)\\)$', '\\1'), 'Map') OR "#
-        ) && got.ends_with(r#"toString(w3.__cg_c0))))"#),
+            r#"SELECT any(w3.__cg_c0) AS "a" FROM with_w3 AS w3 GROUP BY tuple(multiIf(replaceRegexpOne(dynamicType(CAST(w3.__cg_c0, 'Dynamic')), '^LowCardinality\\((.*)\\)$', '\\1') = 'None', '', "#
+        ) && got.ends_with(r#"toString(w3.__cg_c0)))"#),
         "{got}"
     );
+    assert!(!got.contains("arrayFold"), "{got}");
+    // A column of values of no known type (a property, here) may hold a
+    // list or a map: the key looks into one.
+    let got = squash(&sql(
+        "MATCH (u:User) RETURN u.name AS a UNION MATCH (p:Post) RETURN p.post_title AS a",
+    ));
+    assert!(got.contains("GROUP BY multiIf(((startsWith("), "{got}");
+    assert!(got.contains("arrayFold"), "{got}");
     // Three arms; the arms' WITH segments continue the CTE names.
     has(
         "MATCH (u:User) WITH u.name AS n RETURN n UNION ALL RETURN 'x' AS n \
@@ -6267,7 +6277,7 @@ fn a_union_keeps_elements_apart_by_identity() {
             // Grouped by every column's key and the identity.
             && sql.contains(r#"SELECT any(w3.__cg_c0) AS "k.from_id","#)
             && sql.contains(r#"GROUP BY multiIf(((startsWith(replaceRegexpOne(dynamicType(CAST(w3.__cg_c0, "#)
-            && sql.ends_with(r#"toString(w3.__cg_c4)))), w3.__cg_k0"#),
+            && sql.ends_with(r#"toString(w3.__cg_c4))), w3.__cg_k0"#),
         "{sql}"
     );
     // A relationship of several types is a graph value, whose `elementId`

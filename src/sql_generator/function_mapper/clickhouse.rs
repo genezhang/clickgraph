@@ -35,11 +35,10 @@ fn container_type(ty: &str) -> String {
     replace(t, wrapper, r"\\2")
 }
 
-/// How many levels below a container the distinct key looks into (#1482): a
-/// list in a map in a list in a map in a map is four below the first, and
-/// keyed by what is in it (maps in maps: eight). A container deeper is keyed by its type and its
-/// text, as a typed container is. Only a container that needs it
-/// ([`keyed_by_elements`]) pays for the levels.
+/// How many levels below a container the distinct key looks into (#1482):
+/// eight maps in maps, say, each keyed by what is in it. A container deeper is
+/// keyed by its type and its text, as a typed container is. Only a container
+/// that needs it ([`keyed_by_elements`]) pays for the levels.
 const KEY_LEVELS: usize = 8;
 
 /// The ClickHouse `CypherUnion::distinct_key`: the value's kind and text.
@@ -75,11 +74,13 @@ fn value_type_of(v: &str) -> String {
 /// ClickHouse does of an array of one dimension only).
 fn keyed_by_elements(ty: &str) -> String {
     // (`startsWith` and `multiSearchAny`, not a regex: this is read of every
-    // value.)
+    // value. A type name follows `(` or a space: an `Enum` label such as
+    // `'Timeout'` is not one.)
     format!(
         "((startsWith({ty}, 'Map') OR (startsWith({ty}, 'Array') \
          AND NOT startsWith({ty}, 'Array(Array('))) \
-         AND multiSearchAny({ty}, ['Dynamic', 'Variant', 'DateTime', 'Time']))"
+         AND multiSearchAny({ty}, ['(Dynamic', ' Dynamic', '(Variant', ' Variant', \
+         '(DateTime', ' DateTime', '(Time', ' Time']))"
     )
 }
 
@@ -88,6 +89,7 @@ fn keyed_by_elements(ty: &str) -> String {
 /// for itself, has none to give).
 fn plain_kind(v: &str, values: bool) -> String {
     let ty = value_type_of(v);
+    let container = container_type(&ty);
     // `Int[0-9]`: not an `Interval…`.
     let number = format!("match({ty}, '^(U?Int[0-9]|Float|BFloat|Decimal)')");
     let string = format!("match({ty}, '^(String|FixedString|Enum|UUID|IPv|LowCardinality)')");
@@ -99,7 +101,6 @@ fn plain_kind(v: &str, values: bool) -> String {
     // separates typed maps whose value list is empty.
     // The container's type and each value's are classed by
     // [`container_type`]: the same value of two storage types is one key.
-    let container = container_type(&ty);
     let map = match values {
         true => {
             let value_type = container_type("dynamicType(CAST(x, 'Dynamic'))");
@@ -165,22 +166,24 @@ fn plain_key(v: &str) -> String {
 /// the `identity` keeps ClickHouse from moving the cast into the two arms of
 /// the `if`, which would cast the scalars too.)
 fn elements_of(n: &str) -> String {
+    // The node's type and whether it is looked into are computed once, as the
+    // parameters of a lambda over one-element arrays.
     let ty = value_type_of(n);
     let deep = keyed_by_elements(&ty);
     // A map as its `(key, value)` pairs.
     let pairs = format!(
-        "CAST(identity(if({deep} AND startsWith({ty}, 'Map'), CAST({n}, 'Dynamic'), \
+        "CAST(identity(if(d AND startsWith(t, 'Map'), CAST({n}, 'Dynamic'), \
          CAST(map('', 0), 'Dynamic'))), 'Array(Tuple(String, Dynamic))')"
     );
     let list = format!(
-        "CAST(identity(if({deep} AND startsWith({ty}, 'Array'), CAST({n}, 'Dynamic'), \
+        "CAST(identity(if(d AND startsWith(t, 'Array'), CAST({n}, 'Dynamic'), \
          CAST([0], 'Dynamic'))), 'Array(Dynamic)')"
     );
     format!(
-        "multiIf({deep} AND startsWith({ty}, 'Map'), arrayFlatten(arrayMap(p -> \
+        "arrayMap((t, d) -> multiIf(d AND startsWith(t, 'Map'), arrayFlatten(arrayMap(p -> \
          [CAST(p.1, 'Dynamic'), p.2], {pairs})), \
-         {deep} AND startsWith({ty}, 'Array'), {list}, \
-         arrayPopBack([CAST(0, 'Dynamic')]))"
+         d AND startsWith(t, 'Array'), {list}, \
+         arrayPopBack([CAST(0, 'Dynamic')])), [{ty}], [{deep}])[1]"
     )
 }
 
@@ -199,18 +202,21 @@ fn elements_of(n: &str) -> String {
 fn deep_key(v: &str) -> String {
     let n = "n";
     let ty = value_type_of(n);
-    let deep = format!("({} AND i < {KEY_LEVELS})", keyed_by_elements(&ty));
-    // A node's token: its kind, its text and its number of elements `c`.
+    let deep = keyed_by_elements(&ty);
+    // A node's token: its kind, its text and its number of elements `kids`.
+    // (Not bound to a lambda's parameters as `elements_of`'s are: a lambda
+    // over one-element arrays per node costs more per row than the repeated
+    // type costs ClickHouse to plan.)
     let token = format!(
-        "toString(tuple(if({deep}, if(startsWith({ty}, 'Map'), 'm', 'c'), {kind}), \
-         if({deep}, '', {text}), length(c)))",
+        "toString(tuple(if({deep} AND i < {KEY_LEVELS}, if(startsWith({ty}, 'Map'), 'm', 'c'), \
+         {kind}), if({deep} AND i < {KEY_LEVELS}, '', {text}), length(kids)))",
         kind = plain_kind(n, false),
         text = plain_text(n),
     );
     // The last level's nodes are not opened (`i` is the last level's index).
     let levels = format!(
         "arrayFold((acc, i) -> arrayMap(ch -> (arrayFlatten(ch), \
-         arrayConcat(acc.2, arrayMap((n, c) -> {token}, acc.1, ch))), \
+         arrayConcat(acc.2, arrayMap((n, kids) -> {token}, acc.1, ch))), \
          [arrayMap(n -> if(i < {KEY_LEVELS}, {elements}, arrayPopBack([CAST(0, 'Dynamic')])), \
          acc.1)])[1], range({KEY_LEVELS} + 1), \
          ([CAST({v}, 'Dynamic')], CAST([], 'Array(String)')))",
@@ -557,6 +563,7 @@ impl FunctionMapper for ClickhouseFunctionMapper {
             // `toJSONString` quotes a 64-bit integer as a string under
             // `output_format_json_quote_64bit_integers`. NULL is one group.
             distinct_key,
+            scalar_key: plain_key,
             // Sortable as it is (a tuple of strings), and equal only for
             // values DISTINCT takes as one.
             order_key: distinct_key,
@@ -796,10 +803,13 @@ mod tests {
         }
         assert_eq!(deep.matches("CAST(identity(if(").count(), 2, "{deep}");
         for part in ["Dynamic", "Variant", "DateTime", "Time"] {
-            assert!(
-                deep.contains(&format!("'{part}'")),
-                "{part} is a type to look into: {deep}"
-            );
+            // A type name (after `(` or a space), not an `Enum` label.
+            for lead in ["(", " "] {
+                assert!(
+                    key.contains(&format!("'{lead}{part}'")),
+                    "{part} is a type to look into: {key}"
+                );
+            }
         }
     }
     use super::ClickhouseFunctionMapper;
