@@ -8,7 +8,7 @@ import statistics
 import time
 import urllib.error
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
@@ -243,3 +243,123 @@ def benchmark_case(
         median_ms=round(statistics.median(durations), 2),
         max_ms=round(max(durations), 2),
     )
+
+
+def summarize(results: list[QueryResult]) -> dict[str, Any]:
+    by_category: dict[str, dict[str, int]] = {}
+    for category in ("IS", "IC", "BI"):
+        subset = [result for result in results if result.category == category]
+        by_category[category] = {
+            "total": len(subset),
+            "passed": sum(1 for result in subset if result.status == "pass"),
+        }
+    passed = sum(1 for result in results if result.status == "pass")
+    return {
+        "total": len(results),
+        "passed": passed,
+        "failed": len(results) - passed,
+        "by_category": by_category,
+    }
+
+
+def _md_cell(value: Any) -> str:
+    if value is None:
+        return ""
+    return str(value).replace("|", "\\|").replace("\n", "<br>")
+
+
+def write_json(
+    path: Path,
+    metadata: dict[str, Any],
+    summary: dict[str, Any],
+    results: list[QueryResult],
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "schema_version": 1,
+        "metadata": metadata,
+        "summary": summary,
+        "queries": [asdict(result) for result in results],
+    }
+    path.write_text(json.dumps(payload, indent=2) + "\n")
+
+
+def write_markdown(
+    path: Path,
+    metadata: dict[str, Any],
+    summary: dict[str, Any],
+    results: list[QueryResult],
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    label = metadata.get("label", "ldbc")
+    lines = [f"# LDBC SNB Benchmark — {label}", ""]
+
+    for key, value in metadata.items():
+        if key == "schema" and value is None:
+            value = "default"
+        lines.append(f"- **{key.replace('_', ' ').capitalize()}**: {value}")
+    lines.extend(
+        [
+            "",
+            "## Summary",
+            "",
+            "| Category | Passed | Total |",
+            "| --- | --- | --- |",
+        ]
+    )
+    for category in ("IS", "IC", "BI"):
+        counts = summary["by_category"][category]
+        lines.append(f"| {category} | {counts['passed']} | {counts['total']} |")
+    lines.append(
+        f"| **Total** | **{summary['passed']}** | **{summary['total']}** |"
+    )
+    lines.extend(
+        [
+            "",
+            "## Queries",
+            "",
+            "| Query | Category | Status | Runs | Rows | Min (ms) | Median (ms) | Max (ms) | Error |",
+            "| --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+        ]
+    )
+    for result in results:
+        status = "PASS" if result.status == "pass" else "FAIL"
+        error = result.error or ""
+        if len(error) > 120:
+            error = error[:117] + "..."
+        lines.append(
+            "| "
+            + " | ".join(
+                [
+                    _md_cell(result.id),
+                    _md_cell(result.category),
+                    status,
+                    _md_cell(result.runs),
+                    _md_cell(result.rows),
+                    _md_cell(result.min_ms),
+                    _md_cell(result.median_ms),
+                    _md_cell(result.max_ms),
+                    _md_cell(error),
+                ]
+            )
+            + " |"
+        )
+
+    lines.extend(["", "## Failures", ""])
+    failures = [result for result in results if result.status != "pass"]
+    if not failures:
+        lines.append("No failures.")
+    else:
+        for result in failures:
+            lines.extend(
+                [
+                    f"### {result.id}",
+                    "",
+                    "```",
+                    result.error or "unknown error",
+                    "```",
+                    "",
+                ]
+            )
+
+    path.write_text("\n".join(lines).rstrip() + "\n")

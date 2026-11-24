@@ -163,3 +163,53 @@ def test_benchmark_case_stops_on_a_failed_measured_run(fake_server):
     assert result.runs == 0
     assert result.error == "bad query"
     assert len(handler.requests) == 2
+
+
+def test_summarize_counts_passes_and_failures_by_category():
+    results = [
+        run.QueryResult("short-1", "IS", "pass", rows=1),
+        run.QueryResult("short-2", "IS", "fail", error="bad"),
+        run.QueryResult("bi-1", "BI", "pass", rows=2),
+    ]
+
+    summary = run.summarize(results)
+
+    assert summary["total"] == 3
+    assert summary["passed"] == 2
+    assert summary["failed"] == 1
+    assert summary["by_category"]["IS"] == {"total": 2, "passed": 1}
+    assert summary["by_category"]["BI"] == {"total": 1, "passed": 1}
+
+
+def test_write_json_round_trips_query_results(tmp_path):
+    path = tmp_path / "result.json"
+    results = [run.QueryResult("short-1", "IS", "pass", runs=5, rows=1,
+                               min_ms=1.0, median_ms=2.0, max_ms=3.0)]
+
+    run.write_json(path, {"label": "test"}, run.summarize(results), results)
+
+    data = json.loads(path.read_text())
+    assert data["schema_version"] == 1
+    assert data["metadata"]["label"] == "test"
+    assert data["summary"]["passed"] == 1
+    assert data["queries"][0]["id"] == "short-1"
+    assert data["queries"][0]["median_ms"] == 2.0
+
+
+def test_write_markdown_contains_summary_and_full_failure_text(tmp_path):
+    path = tmp_path / "report.md"
+    results = [
+        run.QueryResult("short-1", "IS", "pass", runs=5, rows=1,
+                        min_ms=1.0, median_ms=2.0, max_ms=3.0),
+        run.QueryResult("short-2", "IS", "fail",
+                        error="server said no | because reasons\nsecond line"),
+    ]
+
+    run.write_markdown(path, {"label": "test"}, run.summarize(results), results)
+    text = path.read_text()
+
+    assert "# LDBC SNB Benchmark — test" in text
+    assert "| **Total** | **1** | **2** |" in text
+    assert "## Failures" in text
+    assert "server said no | because reasons" in text
+    assert "second line" in text
