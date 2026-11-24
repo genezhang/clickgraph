@@ -230,6 +230,12 @@ pub(crate) trait FunctionMapper: Send + Sync {
     /// rendered expressions and pass them here.
     fn array_literal(&self, elems: &str) -> String;
 
+    /// A list of literals of no common type (`literal_list`), where the
+    /// dialect cannot type the literal spelling: `None` where it can.
+    fn mixed_array_literal(&self, _elems: &str) -> Option<String> {
+        None
+    }
+
     /// Tuple / struct constructor for composite-key comparisons (e.g.,
     /// `tuple(a, b) = tuple(c, d)`). CH: `tuple`. Spark: `struct`.
     /// Both spellings preserve element-wise ordering and equality.

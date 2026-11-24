@@ -11451,8 +11451,8 @@ fn a_list_of_literals_of_no_common_type_is_an_array_call_1491() {
     for (q, call) in [
         ("RETURN [1, 'a'] AS l", "array(1, 'a')"),
         (
-            "RETURN [1, 'a', true, null, 2.5] AS l",
-            "array(1, 'a', true, NULL, 2.5)",
+            "RETURN [1, 'a', true, 2.5] AS l",
+            "array(1, 'a', true, 2.5)",
         ),
         ("RETURN [1, [2]] AS l", "array(1, [2])"),
         ("RETURN [[1], ['a']] AS l", "array([1], ['a'])"),
@@ -11476,6 +11476,23 @@ fn a_list_of_literals_of_no_common_type_is_an_array_call_1491() {
         // (`-1` is spelled `0 - 1`).
         ("RETURN [1, toString(2)] AS l", "[1, toString(2)]"),
         ("RETURN [-1, 'a'] AS l", "[0 - 1, 'a']"),
+        // A `Variant`'s NULL is counted by `count()` and printed `''` by
+        // `toString()`: a list holding a NULL is left as it was.
+        (
+            "RETURN [1, 'a', true, null, 2.5] AS l",
+            "[1, 'a', true, NULL, 2.5]",
+        ),
+        // What compares or tests a list of literals at print time still sees
+        // a list: `=` of lists with a NULL is NULL, and `IN` is a set.
+        (
+            "RETURN [1, 'a', null] = [1, 'a', null] AS e",
+            "CAST(null AS Nullable(Bool))",
+        ),
+        (
+            "RETURN [1, 'a'] = [1, null] AS e",
+            "CAST(null AS Nullable(Bool))",
+        ),
+        ("RETURN 'z' IN [1, 'a'] AS e", "'z' IN [1, 'a']"),
     ] {
         let got = squash(&sql(q));
         assert!(got.contains(list) && !got.contains("array("), "{q}: {got}");

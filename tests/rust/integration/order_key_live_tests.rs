@@ -167,12 +167,18 @@ async fn a_list_of_values_of_no_common_type_works_on_live_clickhouse() {
     ] {
         post(sql).await;
     }
-    let got = mixed_rows("RETURN [1, 'a', true, null, 2.5] AS l").await;
+    let got = mixed_rows("RETURN [1, 'a', true, 2.5] AS l").await;
     assert_eq!(
         got[0]["l"],
-        serde_json::json!([1, "a", true, null, 2.5]),
+        serde_json::json!([1, "a", true, 2.5]),
         "{got:?}"
     );
+    // What compares lists of literals at print time still sees lists (a NULL
+    // element makes `=` NULL).
+    let got =
+        mixed_rows("RETURN [1, 'a', null] = [1, 'a', null] AS e, [1, 'a'] = [1, 'a'] AS f").await;
+    assert_eq!(got[0]["e"], Value::Null, "{got:?}");
+    assert_eq!(got[0]["f"], serde_json::json!(true), "{got:?}");
     let got = mixed_rows("RETURN [[1, 'a'], ['b', 2]] AS l").await;
     assert_eq!(
         got[0]["l"],

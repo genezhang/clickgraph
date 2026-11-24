@@ -36,12 +36,13 @@ fn escape_string(s: &str) -> String {
 }
 
 /// The type of a parameter value as the literal [`format_parameter`] writes
-/// it (`literal_list`): a boolean is a number there; an object is no literal
-/// (it is refused).
+/// it (`literal_list`): a boolean is a number there; a `NULL` or an object is
+/// no literal that makes a list a call (a list with a `NULL` is left as it
+/// was: a `Variant`'s NULL is counted, see `literal_list`).
 fn json_literal_type(value: &Value) -> Option<Option<literal_list::LiteralType>> {
     use literal_list::LiteralType;
     Some(Some(match value {
-        Value::Null => LiteralType::Any,
+        Value::Null => return None,
         Value::Bool(_) | Value::Number(_) => LiteralType::Number,
         Value::String(_) => LiteralType::String,
         Value::Array(items) => match literal_list::meeting_type(items, &json_literal_type)? {
@@ -97,16 +98,23 @@ fn format_parameter(value: &Value) -> Result<String, ParameterSubstitutionError>
         Value::Bool(b) => Ok(if *b { "1".to_string() } else { "0".to_string() }),
 
         Value::Array(arr) => {
-            let items: Result<Vec<String>, _> = arr.iter().map(format_parameter).collect();
-            let items = items?.join(", ");
             // `[1, 'a']` of literals has no type in ClickHouse (Code 386);
-            // `array(1, 'a')` makes a `Variant` (#1491).
-            Ok(
-                match literal_list::of_no_common_type(arr, &json_literal_type) {
-                    true => format!("array({items})"),
-                    false => format!("[{items}]"),
-                },
-            )
+            // `array(1, 'a')` makes a `Variant` (#1491), in which a boolean
+            // is a `Bool`: `true`, where among numbers (`1`, as ever) it
+            // would read as one.
+            let mixed = literal_list::of_no_common_type(arr, &json_literal_type);
+            let items: Result<Vec<String>, _> = arr
+                .iter()
+                .map(|item| match item {
+                    Value::Bool(b) if mixed => Ok(b.to_string()),
+                    _ => format_parameter(item),
+                })
+                .collect();
+            let items = items?.join(", ");
+            Ok(match mixed {
+                true => format!("array({items})"),
+                false => format!("[{items}]"),
+            })
         }
 
         Value::Null => Ok("NULL".to_string()),
@@ -333,10 +341,9 @@ mod tests {
     fn a_list_of_no_common_type_is_an_array_call_1491() {
         for (value, sql) in [
             (json!([1, "a"]), "array(1, 'a')"),
-            (
-                json!([1, "a", 2.5, true, null]),
-                "array(1, 'a', 2.5, 1, NULL)",
-            ),
+            (json!([1, "a", 2.5, true]), "array(1, 'a', 2.5, true)"),
+            // A list with a NULL is left as it was.
+            (json!([1, "a", null]), "[1, 'a', NULL]"),
             (json!([[1], ["a"]]), "array([1], ['a'])"),
             (json!([1, [2]]), "array(1, [2])"),
             // Inner lists of no common type are calls; the outer one holds

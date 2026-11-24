@@ -36,7 +36,6 @@ use crate::render_plan::render_expr::{
 };
 use crate::sql_generator::emitters::clickhouse::to_sql_query::render_expr_to_sql_plain;
 use crate::sql_generator::function_mapper::{current_function_mapper, MapEntry};
-use crate::sql_generator::literal_list::{self, LiteralType};
 
 use super::elements::Elem;
 use super::null_list;
@@ -426,18 +425,7 @@ impl Lowerer<'_> {
                         })
                     })
                     .collect::<Result<_, _>>()?;
-                if self.options.dialect.is_clickhouse() && literals_of_no_common_type(&elements) {
-                    // ClickHouse reads `[1, 'a']` of literals as one constant
-                    // and finds no common type for it (Code 386), whatever
-                    // `use_variant_as_common_type` says; `array(1, 'a')` is a
-                    // function call, which does (#1491).
-                    RenderExpr::ScalarFnCall(ScalarFnCall {
-                        name: "array".to_string(),
-                        args: elements,
-                    })
-                } else {
-                    RenderExpr::List(elements)
-                }
+                RenderExpr::List(elements)
             }
             LogicalExpr::MapLiteral(entries)
                 if entries.iter().any(|(_, v)| self.holds_elements(v)) =>
@@ -3081,28 +3069,4 @@ fn holds_empty_list(e: &LogicalExpr) -> bool {
         LogicalExpr::MapLiteral(entries) => entries.iter().any(|(_, v)| holds_empty_list(v)),
         _ => false,
     }
-}
-
-/// The type of a list element that is a literal token in the SQL
-/// (`literal_list::LiteralType`): `None` for anything else, `Some(None)` for
-/// a nested list whose own elements have no common type (it is a call by now).
-fn literal_type(e: &RenderExpr) -> Option<Option<LiteralType>> {
-    Some(Some(match e {
-        RenderExpr::Literal(Literal::Null) => LiteralType::Any,
-        RenderExpr::Literal(Literal::Integer(_) | Literal::Float(_) | Literal::Boolean(_)) => {
-            LiteralType::Number
-        }
-        RenderExpr::Literal(Literal::String(_)) => LiteralType::String,
-        RenderExpr::List(inner) => match literal_list::meeting_type(inner, &literal_type)? {
-            Some(t) => LiteralType::List(Box::new(t)),
-            None => return None,
-        },
-        _ => return None,
-    }))
-}
-
-/// Whether `elements` are literals (or lists of them) of no common type: the
-/// list that ClickHouse reads as one constant array and refuses (#1491).
-fn literals_of_no_common_type(elements: &[RenderExpr]) -> bool {
-    literal_list::of_no_common_type(elements, &literal_type)
 }

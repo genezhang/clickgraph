@@ -121,8 +121,9 @@ and is verified live against ClickHouse and the Neo4j oracle.
   ClickHouse 25.8 has no `Variant` common type unless
   `use_variant_as_common_type = 1` (26.x does by default; the session now sets
   it, `SEMANTIC_SESSION_SETTINGS`), and neither version has a type for a
-  constant `[1, 'a']` (a list of literals is spelled `array(1, 'a')` then,
-  `literals_of_no_common_type`). `ORDER BY` of a list of scalars uses the
+  constant `[1, 'a']` (the printer writes a list of literals of no common type
+  as `array(1, 'a')`, `literal_list`; not one with a NULL, whose `Variant`
+  NULL `count()` counts, nor the list of an `IN`). `ORDER BY` of a list of scalars uses the
   element key unless the elements are shown to be one type
   (`Lowerer::scalar_list_one_class`): a `Variant` is refused in an order key
   (Code 44).
