@@ -77,22 +77,13 @@ impl<'de> Deserialize<'de> for RawBytes {
             type Value = Bytes;
 
             fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
-                formatter.write_str("a pointer to a Bytes instance")
+                formatter.write_str("raw bytes")
             }
 
-            fn visit_u64<E>(self, v: u64) -> Result<Self::Value, E>
-            where
-                E: serde::de::Error,
-            {
-                let bytes = v as usize as *mut Bytes;
-                // SAFETY: neo4rs encodes the address of a leaked `Box<Bytes>`
-                // as a `u64` for `RawBytes`. `from_raw` takes back ownership
-                // of that exact allocation, so it is freed exactly once.
-                let bytes = unsafe { Box::from_raw(bytes) };
-                let bytes = *bytes;
-                Ok(bytes)
-            }
-
+            // There is deliberately no `visit_u64`: nothing in this crate
+            // encodes a `Bytes` as a pointer-sized integer (`de.rs` hands
+            // `RawBytes` to `visit_bytes`), so an integer here is malformed
+            // input and must be an error, never an address to take ownership of.
             fn visit_bytes<E>(self, v: &[u8]) -> Result<Self::Value, E>
             where
                 E: serde::de::Error,
@@ -661,6 +652,22 @@ mod tests {
         let actual = to_bytes(&expected).unwrap();
         let expected = Bytes::copy_from_slice(input);
         assert_eq!(actual, expected);
+    }
+
+    /// `RawBytes` used to take a `u64` for the address of a leaked
+    /// `Box<Bytes>` and free it. Nothing produces such a value, so an integer
+    /// reaching it must be rejected instead of being dereferenced.
+    #[test]
+    fn raw_bytes_rejects_an_integer_instead_of_taking_it_as_a_pointer() {
+        use serde::de::IntoDeserializer;
+
+        let integer: serde::de::value::U64Deserializer<serde::de::value::Error> =
+            0xDEAD_BEEF_u64.into_deserializer();
+        let err = RawBytes::deserialize(integer).expect_err("an integer is not raw bytes");
+        assert!(
+            err.to_string().contains("expected raw bytes"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]

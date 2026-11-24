@@ -520,12 +520,17 @@ impl Visitation {
 
 /// A raw pointer to the `Bytes` that `ItemsParser<'a>` is consuming.
 ///
-/// `get` hands out `'de`-lived mutable references even though it only borrows
-/// `self`, which safe code cannot express: `SeqAccess<'de>` must return data
-/// borrowed for `'de`, while the `&mut self` borrow of the parser is shorter.
-/// The pointer is valid for `'de` because the original input handle owns the
-/// allocation for that lifetime. The parser calls `get` once per item and
-/// drops each reference before the next call, so no two are ever live at once.
+/// `SeqAccess` and `MapAccess` take `&mut self` but must give each seed a
+/// `Deserializer` that is not tied to that short borrow, which safe code cannot
+/// express, so `get` returns a `&'x mut Bytes` of unbounded lifetime.
+///
+/// The pointee is the `Bytes` handle behind the `&'a mut Bytes` given to `new`,
+/// so the pointer is valid for `'a`, not for any longer `'de`. That is sound
+/// only because nothing borrowed from the handle is ever passed to a visitor as
+/// `'de` data (`visit_borrowed_*` is never called with a slice of it), so the
+/// unbounded lifetime is never relied on past `'a`. The parser calls `get` for
+/// one item at a time and drops that reference before the next call, so no two
+/// are live at once.
 struct SharedBytes<'a> {
     bytes: *mut Bytes,
     _lifetime: PhantomData<&'a mut ()>,
@@ -557,10 +562,11 @@ impl<'a> SharedBytes<'a> {
     }
 
     fn get<'x>(&mut self) -> &'x mut Bytes {
-        // SAFETY: `SharedBytes` is only used by `ItemsParser`, which calls
-        // `get` for one item at a time and drops that reference before the
-        // next call. The pointer is valid for `'de` because the input handle
-        // owns the `Bytes` allocation for that lifetime.
+        // SAFETY: the pointer comes from the `&'a mut Bytes` this was built
+        // with, so it is valid for `'a`. The unbounded `'x` is never used to
+        // hand out `'de`-borrowed data (see the type's doc comment), and
+        // `ItemsParser` calls `get` for one item at a time, dropping that
+        // reference before the next call.
         unsafe { &mut *self.bytes }
     }
 }
