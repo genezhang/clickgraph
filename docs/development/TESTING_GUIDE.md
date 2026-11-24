@@ -91,7 +91,7 @@ fn test_path_variable_sql_generation()
 **Location**: `tests/integration/*.py`  
 **Run**: `cd tests/integration && python -m pytest`  
 **Duration**: ~20-40 seconds  
-**Requirements**: Server running on port 8080
+**Requirements**: Server running on port 7475
 
 **Test Files**:
 - `test_basic_queries.py` - Core MATCH/WHERE/RETURN patterns
@@ -298,7 +298,7 @@ mod tests {
 import requests
 import pytest
 
-SERVER_URL = "http://localhost:8080/query"
+SERVER_URL = "http://localhost:7475/query"
 
 def test_my_feature():
     """Test description"""

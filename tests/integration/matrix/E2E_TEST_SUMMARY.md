@@ -121,14 +121,14 @@ export CLICKHOUSE_PASSWORD=test_pass
 export CLICKHOUSE_DATABASE=brahmand
 
 # Start server
-./target/release/clickgraph --http-port 8080
+./target/release/clickgraph --http-port 7475
 
 # Load additional schemas via API
 python3 << 'EOF'
 import requests
 with open('schemas/examples/security_graph.yaml', 'r') as f:
     yaml_content = f.read()
-requests.post('http://localhost:8080/schemas/load', 
+requests.post('http://localhost:7475/schemas/load', 
     json={'schema_name': 'security_graph', 'config_content': yaml_content})
 EOF
 

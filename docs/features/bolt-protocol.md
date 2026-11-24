@@ -179,7 +179,7 @@ driver = GraphDatabase.driver(
 
 # First, load a schema via HTTP API
 import requests
-requests.post("http://localhost:8080/load_schema", 
+requests.post("http://localhost:7475/load_schema", 
               data=open("social_graph.yaml"))
 
 # Now run graph queries via Bolt

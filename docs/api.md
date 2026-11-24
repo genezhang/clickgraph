@@ -10,7 +10,7 @@ ClickGraph provides two API interfaces:
 
 ### Base URL
 ```
-http://localhost:8080
+http://localhost:7475
 ```
 
 ### Authentication
@@ -191,12 +191,12 @@ Content-Type: application/json
 
 ```bash
 # Basic SQL generation
-curl -X POST http://localhost:8080/query/sql \
+curl -X POST http://localhost:7475/query/sql \
   -H "Content-Type: application/json" \
   -d '{"query": "MATCH (u:User) RETURN u.name LIMIT 10"}'
 
 # With role (includes SET ROLE in SQL array)
-curl -X POST http://localhost:8080/query/sql \
+curl -X POST http://localhost:7475/query/sql \
   -H "Content-Type: application/json" \
   -d '{
     "query": "MATCH (u:User) WHERE u.age > 25 RETURN u.name",
@@ -204,7 +204,7 @@ curl -X POST http://localhost:8080/query/sql \
   }'
 
 # With parameters and logical plan
-curl -X POST http://localhost:8080/query/sql \
+curl -X POST http://localhost:7475/query/sql \
   -H "Content-Type: application/json" \
   -d '{
     "query": "MATCH (u:User) WHERE u.age > $minAge RETURN u.name",
@@ -217,7 +217,7 @@ curl -X POST http://localhost:8080/query/sql \
 ```python
 import requests
 
-response = requests.post('http://localhost:8080/query/sql', json={
+response = requests.post('http://localhost:7475/query/sql', json={
     'query': 'MATCH (u:User)-[:FOLLOWS]->(f:User) WHERE u.name = $name RETURN f.name',
     'parameters': {'name': 'Alice'},
     'role': 'analyst',
@@ -292,7 +292,7 @@ Content-Type: application/json
 
 **Example:**
 ```bash
-curl http://localhost:8080/schemas
+curl http://localhost:7475/schemas
 ```
 
 #### GET /schemas/{name}
@@ -339,7 +339,7 @@ Content-Type: application/json
 
 **Example:**
 ```bash
-curl http://localhost:8080/schemas/social_network
+curl http://localhost:7475/schemas/social_network
 ```
 
 #### POST /schemas/load
@@ -394,14 +394,14 @@ Content-Type: application/json
 **Example (Loading from File):**
 ```bash
 # Read YAML file and send as string
-curl -X POST http://localhost:8080/schemas/load \
+curl -X POST http://localhost:7475/schemas/load \
   -H "Content-Type: application/json" \
   -d "$(jq -Rs '{schema_name: "ecommerce", config_content: ., validate_schema: true}' schemas/ecommerce.yaml)"
 ```
 
 **Example (Direct YAML Content):**
 ```bash
-curl -X POST http://localhost:8080/schemas/load \
+curl -X POST http://localhost:7475/schemas/load \
   -H "Content-Type: application/json" \
   -d '{
     "schema_name": "ecommerce",
@@ -420,7 +420,7 @@ $body = @{
     validate_schema = $true
 } | ConvertTo-Json
 
-Invoke-RestMethod -Method POST -Uri "http://localhost:8080/schemas/load" `
+Invoke-RestMethod -Method POST -Uri "http://localhost:7475/schemas/load" `
   -ContentType "application/json" `
   -Body $body
 ```
@@ -443,14 +443,14 @@ OK
 
 **Example:**
 ```bash
-curl http://localhost:8080/health
+curl http://localhost:7475/health
 ```
 
 ### Examples
 
 #### Basic Node Query
 ```bash
-curl -X POST http://localhost:8080/query \
+curl -X POST http://localhost:7475/query \
   -H "Content-Type: application/json" \
   -d '{
     "query": "MATCH (u:User) WHERE u.age > 25 RETURN u.name, u.age LIMIT 5"
@@ -459,7 +459,7 @@ curl -X POST http://localhost:8080/query \
 
 #### Edge Traversal
 ```bash
-curl -X POST http://localhost:8080/query \
+curl -X POST http://localhost:7475/query \
   -H "Content-Type: application/json" \
   -d '{
     "query": "MATCH (u:User)-[:FOLLOWS]->(friend:User) WHERE u.name = $userName RETURN friend.name",
@@ -469,7 +469,7 @@ curl -X POST http://localhost:8080/query \
 
 #### Aggregation Query
 ```bash
-curl -X POST http://localhost:8080/query \
+curl -X POST http://localhost:7475/query \
   -H "Content-Type: application/json" \
   -d '{
     "query": "MATCH (u:User)-[:FOLLOWS]->(friend) RETURN u.name, count(friend) as friend_count ORDER BY friend_count DESC"
@@ -482,7 +482,7 @@ The `Graph` output format returns a structured response with deduplicated nodes 
 
 **Request:**
 ```bash
-curl -X POST http://localhost:8080/query \
+curl -X POST http://localhost:7475/query \
   -H "Content-Type: application/json" \
   -d '{
     "query": "MATCH (u:User)-[r:FOLLOWS]->(f:User) RETURN u, r, f LIMIT 5",
@@ -550,7 +550,7 @@ curl -X POST http://localhost:8080/query \
 ```python
 import requests
 
-response = requests.post('http://localhost:8080/query', json={
+response = requests.post('http://localhost:7475/query', json={
     'query': 'MATCH (u:User)-[r:FOLLOWS]->(f:User) RETURN u, r, f LIMIT 10',
     'format': 'Graph'
 })
@@ -571,7 +571,7 @@ for node in data['nodes']:
 
 **String parameters:**
 ```bash
-curl -X POST http://localhost:8080/query \
+curl -X POST http://localhost:7475/query \
   -H "Content-Type: application/json" \
   -d '{
     "query": "MATCH (u:User) WHERE u.name = $userName RETURN u",
@@ -581,7 +581,7 @@ curl -X POST http://localhost:8080/query \
 
 **Numeric parameters:**
 ```bash
-curl -X POST http://localhost:8080/query \
+curl -X POST http://localhost:7475/query \
   -H "Content-Type: application/json" \
   -d '{
     "query": "MATCH (u:User) WHERE u.age >= $minAge RETURN u.name, u.age",
@@ -591,7 +591,7 @@ curl -X POST http://localhost:8080/query \
 
 **Multiple parameters:**
 ```bash
-curl -X POST http://localhost:8080/query \
+curl -X POST http://localhost:7475/query \
   -H "Content-Type: application/json" \
   -d '{
     "query": "MATCH (u:User) WHERE u.age >= $minAge AND u.age <= $maxAge RETURN u.name, u.age",
@@ -601,7 +601,7 @@ curl -X POST http://localhost:8080/query \
 
 **Array parameters:**
 ```bash
-curl -X POST http://localhost:8080/query \
+curl -X POST http://localhost:7475/query \
   -H "Content-Type: application/json" \
   -d '{
     "query": "MATCH (u:User) WHERE u.city IN $cities RETURN u.name, u.city",
@@ -611,7 +611,7 @@ curl -X POST http://localhost:8080/query \
 
 **Boolean parameters:**
 ```bash
-curl -X POST http://localhost:8080/query \
+curl -X POST http://localhost:7475/query \
   -H "Content-Type: application/json" \
   -d '{
     "query": "MATCH (u:User) WHERE u.is_active = $active RETURN u.name",
@@ -628,7 +628,7 @@ $query = @{
   }
 } | ConvertTo-Json
 
-Invoke-RestMethod -Method POST -Uri "http://localhost:8080/query" `
+Invoke-RestMethod -Method POST -Uri "http://localhost:7475/query" `
   -ContentType "application/json" `
   -Body $query
 ```
@@ -749,7 +749,7 @@ The `USE` clause overrides the `schema_name` parameter:
 
 ```bash
 # The USE clause will select 'social_network', not 'ecommerce'
-curl -X POST http://localhost:8080/query \
+curl -X POST http://localhost:7475/query \
   -H "Content-Type: application/json" \
   -d '{
     "query": "USE social_network MATCH (u:User) RETURN u.name",
@@ -1039,7 +1039,7 @@ Monitor ClickGraph performance through:
 ### Health Checks
 ```bash
 # HTTP API health check
-curl -f http://localhost:8080/query \
+curl -f http://localhost:7475/query \
   -H "Content-Type: application/json" \
   -d '{"query": "RETURN 1 as health"}'
 

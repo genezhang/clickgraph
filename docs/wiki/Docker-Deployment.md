@@ -48,7 +48,7 @@ EOF
 docker-compose -f docker-compose.prod.yaml up -d
 
 # 4. Verify deployment
-curl http://localhost:8080/health
+curl http://localhost:7475/health
 ```
 
 ---
@@ -85,7 +85,7 @@ services:
     build: .
     container_name: clickgraph
     ports:
-      - "8080:8080"  # HTTP API
+      - "7475:7475"  # HTTP API
       - "7687:7687"  # Bolt protocol
     environment:
       CLICKHOUSE_URL: http://clickhouse:8123
@@ -117,7 +117,7 @@ services:
     image: clickgraph:latest
     container_name: clickgraph-prod
     ports:
-      - "8080:8080"  # HTTP API
+      - "7475:7475"  # HTTP API
       - "7687:7687"  # Bolt protocol
     environment:
       # ClickHouse connection
@@ -154,7 +154,7 @@ services:
     
     # Health check
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:7475/health"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -239,11 +239,11 @@ COPY --chown=clickgraph:clickgraph schemas /app/schemas
 USER clickgraph
 
 # Expose ports
-EXPOSE 8080 7687
+EXPOSE 7475 7687
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
-  CMD curl -f http://localhost:8080/health || exit 1
+  CMD curl -f http://localhost:7475/health || exit 1
 
 # Run application
 CMD ["/app/clickgraph"]
@@ -353,7 +353,7 @@ docker-compose up -d
 
 | Port | Protocol | Purpose | Expose to |
 |------|----------|---------|-----------|
-| 8080 | HTTP | REST API | Load balancer / Reverse proxy |
+| 7475 | HTTP | REST API | Load balancer / Reverse proxy |
 | 7687 | Bolt | Neo4j protocol | Load balancer / Reverse proxy |
 | 8123 | HTTP | ClickHouse interface | Internal only |
 | 9000 | TCP | ClickHouse native | Internal only |
@@ -364,9 +364,9 @@ docker-compose up -d
 services:
   clickgraph:
     ports:
-      - "8081:8080"  # Map to different host port
+      - "8081:7475"  # Map to different host port
       - "7688:7687"
-    command: ["--http-port", "8080", "--bolt-port", "7687"]
+    command: ["--http-port", "7475", "--bolt-port", "7687"]
 ```
 
 Or via environment:
@@ -374,7 +374,7 @@ Or via environment:
 ```bash
 # Note: These change the ports inside the container
 # Typically you'd change the host mapping instead
-docker run -p 8081:8080 -p 7688:7687 clickgraph:latest
+docker run -p 8081:7475 -p 7688:7687 clickgraph:latest
 ```
 
 ### Reverse Proxy Configuration
@@ -385,8 +385,8 @@ docker run -p 8081:8080 -p 7688:7687 clickgraph:latest
 # /etc/nginx/sites-available/clickgraph
 upstream clickgraph_http {
     least_conn;
-    server clickgraph-1:8080 max_fails=3 fail_timeout=30s;
-    server clickgraph-2:8080 max_fails=3 fail_timeout=30s;
+    server clickgraph-1:7475 max_fails=3 fail_timeout=30s;
+    server clickgraph-2:7475 max_fails=3 fail_timeout=30s;
     keepalive 32;
 }
 
@@ -490,7 +490,7 @@ services:
       - "traefik.http.routers.clickgraph.rule=Host(`api.clickgraph.example.com`)"
       - "traefik.http.routers.clickgraph.entrypoints=websecure"
       - "traefik.http.routers.clickgraph.tls=true"
-      - "traefik.http.services.clickgraph.loadbalancer.server.port=8080"
+      - "traefik.http.services.clickgraph.loadbalancer.server.port=7475"
       
       # Bolt routing
       - "traefik.tcp.routers.clickgraph-bolt.rule=HostSNI(`*`)"
@@ -750,7 +750,7 @@ x-common-env: &common-env
 
 ```yaml
 healthcheck:
-  test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+  test: ["CMD", "curl", "-f", "http://localhost:7475/health"]
   interval: 30s      # Check every 30 seconds
   timeout: 10s       # Fail if takes > 10s
   retries: 3         # Try 3 times before marking unhealthy
@@ -761,15 +761,15 @@ healthcheck:
 
 ```bash
 # Health check
-curl http://localhost:8080/health
+curl http://localhost:7475/health
 # {"status":"ok","clickhouse":"connected","version":"0.4.0"}
 
 # Schema info
-curl http://localhost:8080/schema
+curl http://localhost:7475/schema
 # Returns loaded schema details
 
 # Metrics (if enabled)
-curl http://localhost:8080/metrics
+curl http://localhost:7475/metrics
 # Prometheus-style metrics
 ```
 
@@ -875,9 +875,9 @@ services:
 ```yaml
 # nginx.conf
 upstream clickgraph {
-    server clickgraph-1:8080;
-    server clickgraph-2:8080;
-    server clickgraph-3:8080;
+    server clickgraph-1:7475;
+    server clickgraph-2:7475;
+    server clickgraph-3:7475;
 }
 ```
 
@@ -885,8 +885,8 @@ upstream clickgraph {
 ```yaml
 upstream clickgraph {
     least_conn;
-    server clickgraph-1:8080;
-    server clickgraph-2:8080;
+    server clickgraph-1:7475;
+    server clickgraph-2:7475;
 }
 ```
 
@@ -894,8 +894,8 @@ upstream clickgraph {
 ```yaml
 upstream clickgraph {
     ip_hash;
-    server clickgraph-1:8080;
-    server clickgraph-2:8080;
+    server clickgraph-1:7475;
+    server clickgraph-2:7475;
 }
 ```
 
@@ -924,7 +924,7 @@ docker-compose logs clickgraph
 
 ```bash
 # Manual health check
-docker exec clickgraph curl http://localhost:8080/health
+docker exec clickgraph curl http://localhost:7475/health
 
 # If connection refused:
 # - Check if server started (view logs)

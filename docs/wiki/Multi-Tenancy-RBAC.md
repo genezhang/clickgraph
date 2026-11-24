@@ -199,7 +199,7 @@ PARTITION BY tenant_id;
 **Querying with Tenant Parameter**:
 ```bash
 # Query for Tenant A
-curl -X POST http://localhost:8080/query \
+curl -X POST http://localhost:7475/query \
   -H "Content-Type: application/json" \
   -d '{
     "query": "MATCH (u:User) RETURN u.name",
@@ -207,7 +207,7 @@ curl -X POST http://localhost:8080/query \
   }'
 
 # Query for Tenant B (different data)
-curl -X POST http://localhost:8080/query \
+curl -X POST http://localhost:7475/query \
   -H "Content-Type: application/json" \
   -d '{
     "query": "MATCH (u:User) RETURN u.name",
@@ -362,7 +362,7 @@ app.post('/query', async (req, res) => {
   const { query } = req.body;
   
   try {
-    const response = await axios.post('http://clickgraph:8080/query', {
+    const response = await axios.post('http://clickgraph:7475/query', {
       query,
       view_parameters: { tenant_id: req.tenant_id },
       role: req.role
@@ -399,7 +399,7 @@ app.post('/tenants/:tenant_id/query', async (req, res) => {
     return res.status(403).json({ error: 'Forbidden' });
   }
   
-  const response = await axios.post('http://clickgraph:8080/query', {
+  const response = await axios.post('http://clickgraph:7475/query', {
     query,
     view_parameters: { tenant_id }
   });
@@ -451,7 +451,7 @@ class TenantQueryClient:
         return response.json()
 
 # Usage
-client = TenantQueryClient('http://clickgraph:8080')
+client = TenantQueryClient('http://clickgraph:7475')
 
 # Query for different tenants
 acme_result = client.query('acme_corp', 'MATCH (u:User) RETURN count(u)')
@@ -470,7 +470,7 @@ widget_result = client.query('widget_inc', 'MATCH (u:User) RETURN count(u)')
 app.post('/query', async (req, res) => {
   const { query, tenant_id } = req.body;  // ❌ DANGEROUS
   
-  const response = await axios.post('http://clickgraph:8080/query', {
+  const response = await axios.post('http://clickgraph:7475/query', {
     query,
     view_parameters: { tenant_id }  // ❌ Client controls this!
   });
@@ -485,7 +485,7 @@ app.post('/query', async (req, res) => {
   // Extract from JWT or session (server-controlled)
   const tenant_id = req.user.tenant_id;  // ✅ Server controls this
   
-  const response = await axios.post('http://clickgraph:8080/query', {
+  const response = await axios.post('http://clickgraph:7475/query', {
     query,
     view_parameters: { tenant_id }
   });
@@ -524,7 +524,7 @@ def test_tenant_isolation():
     print("✓ Tenant isolation verified")
 
 def query_users(tenant_id: str):
-    response = requests.post('http://clickgraph:8080/query', json={
+    response = requests.post('http://clickgraph:7475/query', json={
         'query': 'MATCH (u:User) RETURN u.name, u.email',
         'view_parameters': {'tenant_id': tenant_id}
     })

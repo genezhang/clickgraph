@@ -53,10 +53,10 @@ kubectl wait --for=condition=ready pod \
 
 # 4. Port-forward to access
 kubectl port-forward -n clickgraph \
-  svc/my-clickgraph 8080:8080 7687:7687
+  svc/my-clickgraph 7475:7475 7687:7687
 
 # 5. Test the deployment
-curl http://localhost:8080/health
+curl http://localhost:7475/health
 ```
 
 ---
@@ -139,7 +139,7 @@ schemas:
 service:
   type: ClusterIP
   http:
-    port: 8080
+    port: 7475
   bolt:
     port: 7687
 
@@ -377,7 +377,7 @@ spec:
         
         ports:
         - name: http
-          containerPort: 8080
+          containerPort: 7475
           protocol: TCP
         - name: bolt
           containerPort: 7687
@@ -485,7 +485,7 @@ spec:
   type: ClusterIP
   ports:
   - name: http
-    port: 8080
+    port: 7475
     targetPort: http
     protocol: TCP
   - name: bolt
@@ -611,9 +611,9 @@ env:
     value: "/app/schemas/social.yaml,/app/schemas/commerce.yaml"
   
   # Server configuration
-  - name: HTTP_PORT
-    value: "8080"
-  - name: BOLT_PORT
+  - name: CLICKGRAPH_PORT
+    value: "7475"
+  - name: CLICKGRAPH_BOLT_PORT
     value: "7687"
   - name: HTTP_ENABLED
     value: "true"
@@ -882,7 +882,7 @@ spec:
           name: ingress-nginx
     ports:
     - protocol: TCP
-      port: 8080
+      port: 7475
     - protocol: TCP
       port: 7687
   
@@ -980,8 +980,8 @@ kubectl get secret -n clickgraph clickhouse-credentials -o yaml
 
 ```bash
 # Check health endpoint manually
-kubectl port-forward -n clickgraph <pod-name> 8080:8080
-curl http://localhost:8080/health
+kubectl port-forward -n clickgraph <pod-name> 7475:7475
+curl http://localhost:7475/health
 
 # Common causes:
 # - ClickHouse not accessible
@@ -1035,7 +1035,7 @@ kubectl exec -n clickgraph <pod-name> -- \
 kubectl exec -n clickgraph <pod-name> -- env | grep CLICKHOUSE
 
 # Port-forward for local testing
-kubectl port-forward -n clickgraph svc/clickgraph 8080:8080 7687:7687
+kubectl port-forward -n clickgraph svc/clickgraph 7475:7475 7687:7687
 ```
 
 ---

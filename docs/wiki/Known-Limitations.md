@@ -383,7 +383,7 @@ export QUERY_CACHE_TTL_SECONDS=3600
 **Examples:**
 ```powershell
 # ✅ Correct
-Invoke-RestMethod -Method POST -Uri "http://localhost:8080/query" `
+Invoke-RestMethod -Method POST -Uri "http://localhost:7475/query" `
   -ContentType "application/json" `
   -Body '{"query":"MATCH (n) RETURN n LIMIT 10"}'
 
@@ -461,7 +461,7 @@ property_mappings:
 **3. Test Schema Loading:**
 ```bash
 # Validate schema without executing queries
-curl -X POST http://localhost:8080/schemas/load \
+curl -X POST http://localhost:7475/schemas/load \
   -d '{"schema_name":"test", "config_content":"...", "validate_schema":true}'
 ```
 

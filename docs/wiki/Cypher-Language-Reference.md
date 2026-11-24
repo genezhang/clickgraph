@@ -99,7 +99,7 @@ The same rule applies on HTTP `/query`, `/query/sql` and Bolt. A Bolt session th
 
 ```bash
 # USE clause overrides schema_name parameter
-curl -X POST http://localhost:8080/query \
+curl -X POST http://localhost:7475/query \
   -H "Content-Type: application/json" \
   -d '{
     "query": "USE social_graph; MATCH (n) RETURN count(n)",
@@ -113,7 +113,7 @@ curl -X POST http://localhost:8080/query \
 Combine USE clause with view_parameters for tenant isolation:
 
 ```bash
-curl -X POST http://localhost:8080/query \
+curl -X POST http://localhost:7475/query \
   -d '{
     "query": "USE tenant_graph; MATCH (u:User) RETURN u",
     "view_parameters": {"tenant_id": "acme_corp"}
@@ -2082,7 +2082,7 @@ WHERE u.age > $minAge
 
 **HTTP API:**
 ```bash
-curl -X POST http://localhost:8080/query \
+curl -X POST http://localhost:7475/query \
   -H "Content-Type: application/json" \
   -d '{
     "query": "MATCH (u:User) WHERE u.user_id = $id RETURN u",
@@ -2149,7 +2149,7 @@ WHERE tenant_id = {tenant_id:String};  -- Parameterized filter
 
 **Query with Tenant Isolation:**
 ```bash
-curl -X POST http://localhost:8080/query \
+curl -X POST http://localhost:7475/query \
   -H "Content-Type: application/json" \
   -d '{
     "query": "MATCH (u:User) RETURN u",
@@ -2167,7 +2167,7 @@ curl -X POST http://localhost:8080/query \
 
 **HTTP API:**
 ```bash
-curl -X POST http://localhost:8080/query \
+curl -X POST http://localhost:7475/query \
   -H "Content-Type: application/json" \
   -d '{
     "query": "MATCH (u:User) RETURN u",
@@ -2202,20 +2202,20 @@ MATCH (u:User) RETURN u;
 
 **Method 2: schema_name Parameter (API)**
 ```bash
-curl -X POST http://localhost:8080/query \
+curl -X POST http://localhost:7475/query \
   -d '{"query":"...", "schema_name":"social_graph"}'
 ```
 
 **Method 3: Environment Variable (Server Default)**
 ```bash
 export DEFAULT_SCHEMA=social_graph
-clickgraph --http-port 8080
+clickgraph --http-port 7475
 ```
 
 ### Complete API Request Example
 
 ```bash
-curl -X POST http://localhost:8080/query \
+curl -X POST http://localhost:7475/query \
   -H "Content-Type: application/json" \
   -d '{
     "query": "USE tenant_graph; MATCH (u:User) WHERE u.age > $minAge RETURN u",
@@ -2540,7 +2540,7 @@ CALL db.ping()
 **HTTP API:**
 ```bash
 # Specify schema per request
-curl -X POST http://localhost:8080/query \
+curl -X POST http://localhost:7475/query \
   -d '{"query":"CALL db.labels()", "schema_name":"ldbc_snb"}'
 ```
 

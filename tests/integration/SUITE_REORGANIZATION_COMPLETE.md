@@ -108,7 +108,7 @@ export CLICKHOUSE_USER="default"
 export CLICKHOUSE_PASSWORD="default"
 export CLICKHOUSE_HOST="localhost"
 export CLICKHOUSE_PORT="8123"
-export CLICKGRAPH_URL="http://localhost:8080"
+export CLICKGRAPH_URL="http://localhost:7475"
 
 # Set up all suites
 python3 suite_manager.py setup-all
@@ -155,7 +155,7 @@ $ python3 suite_manager.py setup-all
 
 Verified all schemas loaded:
 ```bash
-$ curl -s http://localhost:8080/schemas | jq '.schemas[] | .name' | sort
+$ curl -s http://localhost:7475/schemas | jq '.schemas[] | .name' | sort
 "default"
 "ldbc_snb"
 "multi_tenant_test"

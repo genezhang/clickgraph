@@ -104,7 +104,7 @@ MATCH (u:User {name: 'Alice'}) RETURN u
 **For code features**:
 ```bash
 # Test the specific query pattern
-curl -X POST http://localhost:8080/query \
+curl -X POST http://localhost:7475/query \
   -H "Content-Type: application/json" \
   -d '{"query": "MATCH (n) RETURN n LIMIT 1"}'
 ```

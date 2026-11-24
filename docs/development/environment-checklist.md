@@ -19,14 +19,14 @@ docker rmi clickgraph-brahmand  # if you want a truly clean start
 ```
 
 **Why?** Old containers can:
-- Block ports (8080, 7687)
+- Block ports (7475, 7687)
 - Serve stale code (making debug output mysteriously disappear)
 - Cause confusing behavior where code changes don't seem to work
 
 ### 2. Verify Ports Are Free
 ```powershell
 # Check if ports are available
-netstat -ano | Select-String "8080|7687"
+netstat -ano | Select-String "7475|7687"
 
 # If something is using them, find the process
 Get-Process -Id <PID>  # Use PID from netstat output
@@ -81,7 +81,7 @@ Get-ChildItem Env: | Where-Object { $_.Name -like "CLICKHOUSE*" -or $_.Name -lik
 ### 7. Verify Server Started
 Look for these in server output:
 ```
-✅ Successfully bound HTTP listener to 0.0.0.0:8080
+✅ Successfully bound HTTP listener to 0.0.0.0:7475
 ✅ Found GRAPH_CONFIG_PATH: social_network.yaml
 ✅ Successfully loaded schema from YAML config
   - Loaded 1 node types: ["User"]
@@ -103,7 +103,7 @@ python test_query_simple.py
 ## 🔥 Common Issues & Solutions
 
 ### "Address already in use" Error
-**Cause**: Old container or process using port 8080  
+**Cause**: Old container or process using port 7475  
 **Solution**: Run step #1 (Clean Docker Environment)
 
 ### "No GRAPH_CONFIG_PATH environment variable found"
@@ -142,8 +142,8 @@ python test_query_simple.py
 # Kill all brahmand processes
 Get-Process | Where-Object { $_.Name -like "*brahmand*" } | Stop-Process -Force
 
-# Check what's using port 8080
-netstat -ano | Select-String "8080"
+# Check what's using port 7475
+netstat -ano | Select-String "7475"
 
 # Clean Docker completely
 docker stop brahmand; docker rm brahmand
@@ -170,7 +170,7 @@ python test_query_simple.py
 docker stop brahmand 2>$null; docker rm brahmand 2>$null
 
 # 2. Verify ports free
-netstat -ano | Select-String "8080|7687"
+netstat -ano | Select-String "7475|7687"
 
 # 3. Start ClickHouse if needed
 docker-compose up -d

@@ -308,7 +308,7 @@ MATCH (c:Customer) RETURN c.name LIMIT 10;
 
 ```bash
 # Via HTTP API
-curl -X POST http://localhost:8080/query \
+curl -X POST http://localhost:7475/query \
   -H "Content-Type: application/json" \
   -d '{
     "query": "MATCH (u:User) RETURN u.name LIMIT 10",
@@ -321,7 +321,7 @@ curl -X POST http://localhost:8080/query \
 import requests
 
 def query_with_schema(query: str, schema: str):
-    response = requests.post('http://localhost:8080/query', json={
+    response = requests.post('http://localhost:7475/query', json={
         'query': query,
         'schema_name': schema
     })
@@ -357,12 +357,12 @@ clickgraph \
 **Dynamic Registration** (via HTTP API):
 ```bash
 # Load schema from file
-curl -X POST http://localhost:8080/schemas/load \
+curl -X POST http://localhost:7475/schemas/load \
   -H "Content-Type: application/json" \
   -d "$(jq -Rs '{schema_name: "new_graph", config_content: ., validate_schema: true}' new_schema.yaml)"
 
 # Or with inline YAML content
-curl -X POST http://localhost:8080/schemas/load \
+curl -X POST http://localhost:7475/schemas/load \
   -H "Content-Type: application/json" \
   -d '{
     "schema_name": "new_graph",
@@ -423,7 +423,7 @@ graph_schema:
 
 **Step 3: Query with Tenant Context**:
 ```bash
-curl -X POST http://localhost:8080/query \
+curl -X POST http://localhost:7475/query \
   -H "Content-Type: application/json" \
   -d '{
     "query": "MATCH (u:User) RETURN u.name, u.email",
@@ -592,7 +592,7 @@ def validate_schema(schema_path: str):
     print(f"✓ Required fields present")
     
     # 3. Test basic query
-    response = requests.post('http://localhost:8080/query', json={
+    response = requests.post('http://localhost:7475/query', json={
         'query': 'MATCH (n) RETURN count(n) LIMIT 1'
     })
     

@@ -73,7 +73,7 @@ cg schema discover --database mydb --out mydb_schema.yaml
 export ANTHROPIC_API_KEY=sk-ant-...
 
 # Start the client
-clickgraph-client --url http://localhost:8080
+clickgraph-client --url http://localhost:7475
 
 # Discover schema for a database
 clickgraph-client :) :discover mydb

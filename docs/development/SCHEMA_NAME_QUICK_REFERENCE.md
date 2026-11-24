@@ -38,7 +38,7 @@ MATCH (u:User) RETURN u;       # ✅ CORRECT: Use label
 
 ### HTTP API
 ```bash
-curl -X POST http://localhost:8080/query \
+curl -X POST http://localhost:7475/query \
   -d '{
     "query": "MATCH (u:User) RETURN u",
     "schema_name": "test_graph_schema"    # ✅ CORRECT: Schema name

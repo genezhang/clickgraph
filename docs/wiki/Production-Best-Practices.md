@@ -23,9 +23,9 @@ flowchart TD
     LB[Load Balancer / CDN<br/>nginx, HAProxy, CloudFlare]
     
     subgraph "ClickGraph Cluster"
-        CG1[ClickGraph-1<br/>:8080 :7687]
-        CG2[ClickGraph-2<br/>:8080 :7687]
-        CG3[ClickGraph-3<br/>:8080 :7687]
+        CG1[ClickGraph-1<br/>:7475 :7687]
+        CG2[ClickGraph-2<br/>:7475 :7687]
+        CG3[ClickGraph-3<br/>:7475 :7687]
     end
     
     subgraph "ClickHouse Cluster"
@@ -73,7 +73,7 @@ flowchart TD
 ```bash
 # Only allow necessary ports
 # Production ClickGraph instances
-iptables -A INPUT -p tcp --dport 8080 -s 10.0.0.0/8 -j ACCEPT  # Internal only
+iptables -A INPUT -p tcp --dport 7475 -s 10.0.0.0/8 -j ACCEPT  # Internal only
 iptables -A INPUT -p tcp --dport 7687 -s 10.0.0.0/8 -j ACCEPT  # Internal only
 
 # ClickHouse (internal only - never expose publicly)
@@ -81,7 +81,7 @@ iptables -A INPUT -p tcp --dport 8123 -s 10.0.1.0/24 -j ACCEPT  # From ClickGrap
 iptables -A INPUT -p tcp --dport 9000 -s 10.0.1.0/24 -j ACCEPT  # From ClickGraph only
 
 # Deny all other traffic to these ports
-iptables -A INPUT -p tcp --dport 8080 -j DROP
+iptables -A INPUT -p tcp --dport 7475 -j DROP
 iptables -A INPUT -p tcp --dport 7687 -j DROP
 iptables -A INPUT -p tcp --dport 8123 -j DROP
 iptables -A INPUT -p tcp --dport 9000 -j DROP
@@ -383,8 +383,8 @@ ClickGraph includes built-in query plan caching (10-100x speedup):
 **nginx Connection Pooling**:
 ```nginx
 upstream clickgraph_backend {
-    server clickgraph-1:8080 max_fails=3 fail_timeout=30s;
-    server clickgraph-2:8080 max_fails=3 fail_timeout=30s;
+    server clickgraph-1:7475 max_fails=3 fail_timeout=30s;
+    server clickgraph-2:7475 max_fails=3 fail_timeout=30s;
     
     keepalive 64;  # Keep 64 connections alive
 }
@@ -455,7 +455,7 @@ services:
 **Health Checks**:
 ```yaml
 healthcheck:
-  test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+  test: ["CMD", "curl", "-f", "http://localhost:7475/health"]
   interval: 30s
   timeout: 10s
   retries: 3
@@ -528,9 +528,9 @@ backend clickgraph_servers
     option httpchk GET /health
     http-check expect status 200
     
-    server cg1 10.0.1.10:8080 check inter 5s fall 3 rise 2
-    server cg2 10.0.1.11:8080 check inter 5s fall 3 rise 2
-    server cg3 10.0.1.12:8080 check inter 5s fall 3 rise 2
+    server cg1 10.0.1.10:7475 check inter 5s fall 3 rise 2
+    server cg2 10.0.1.11:7475 check inter 5s fall 3 rise 2
+    server cg3 10.0.1.12:7475 check inter 5s fall 3 rise 2
 ```
 
 **Keepalived for LB HA**:

@@ -41,7 +41,7 @@ docker run -d --name clickhouse \
 # 3. Run ClickGraph with ClickHouse credentials
 docker run -d --name clickgraph \
   --link clickhouse:clickhouse \
-  -p 8080:8080 \
+  -p 7475:7475 \
   -p 7687:7687 \
   -e CLICKHOUSE_URL="http://clickhouse:8123" \
   -e CLICKHOUSE_USER="test_user" \
@@ -50,7 +50,7 @@ docker run -d --name clickgraph \
   genezhang/clickgraph:latest
 
 # 4. Run your first query
-curl -X POST http://localhost:8080/query \
+curl -X POST http://localhost:7475/query \
   -H "Content-Type: application/json" \
   -d '{"query": "MATCH (u:User) RETURN u.name LIMIT 5"}'
 ```
@@ -162,7 +162,7 @@ relationships:
 ```python
 # HTTP REST API
 import requests
-response = requests.post('http://localhost:8080/query', 
+response = requests.post('http://localhost:7475/query', 
     json={'query': 'MATCH (u:User) RETURN u.name LIMIT 5'})
 
 # Neo4j Bolt Protocol

@@ -231,7 +231,7 @@ When adding new Cypher syntax:
 
 ```bash
 # Test unparsed tokens
-curl -X POST http://localhost:8080/query/sql \
+curl -X POST http://localhost:7475/query/sql \
   -H "Content-Type: application/json" \
   -d '{"query":"MATCH (n) } invalid", "schema_name": "social_benchmark"}'
 
@@ -256,7 +256,7 @@ fn test_parse_error_on_trailing_tokens() {
 ```python
 def test_parser_error_handling():
     response = requests.post(
-        "http://localhost:8080/query/sql",
+        "http://localhost:7475/query/sql",
         json={"query": "MATCH (n) } invalid", "schema_name": "test"}
     )
     assert response.status_code == 400

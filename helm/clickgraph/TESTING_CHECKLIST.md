@@ -74,10 +74,10 @@ kubectl logs -n clickgraph-test -l app.kubernetes.io/name=clickgraph
 ### 7. Test Connectivity
 ```bash
 # Port-forward to test
-kubectl port-forward -n clickgraph-test svc/clickgraph 8080:8080
+kubectl port-forward -n clickgraph-test svc/clickgraph 7475:7475
 
 # In another terminal, test HTTP endpoint
-curl http://localhost:8080/health
+curl http://localhost:7475/health
 ```
 
 ## Known Issues to Check

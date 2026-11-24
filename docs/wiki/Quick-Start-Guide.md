@@ -72,7 +72,7 @@ docker-compose ps
 
 You should see:
 - `clickhouse` - ClickHouse database (port 8123)
-- `clickgraph` - ClickGraph server (HTTP: 8080, Bolt: 7687)
+- `clickgraph` - ClickGraph server (HTTP: 7475, Bolt: 7687)
 
 ### Step 3: Load Sample Data
 
@@ -90,7 +90,7 @@ docker exec -i clickgraph-clickhouse clickhouse-client < benchmarks/social_netwo
 
 **Using curl (HTTP API)**:
 ```bash
-curl -X POST http://localhost:8080/query \
+curl -X POST http://localhost:7475/query \
   -H "Content-Type: application/json" \
   -d '{
     "query": "MATCH (u:User) RETURN u.name, u.age ORDER BY u.age LIMIT 5"
@@ -119,7 +119,7 @@ curl -X POST http://localhost:8080/query \
 
 Find Alice's friends:
 ```bash
-curl -X POST http://localhost:8080/query \
+curl -X POST http://localhost:7475/query \
   -H "Content-Type: application/json" \
   -d '{
     "query": "MATCH (u:User {name: \"Alice\"})-[:FOLLOWS]->(friend) RETURN friend.name"
@@ -128,7 +128,7 @@ curl -X POST http://localhost:8080/query \
 
 Find friends-of-friends (2-hop):
 ```bash
-curl -X POST http://localhost:8080/query \
+curl -X POST http://localhost:7475/query \
   -H "Content-Type: application/json" \
   -d '{
     "query": "MATCH (u:User {name: \"Alice\"})-[:FOLLOWS*2]->(fof) RETURN fof.name"
@@ -208,7 +208,7 @@ $env:GRAPH_CONFIG_PATH = ".\benchmarks\social_network\schemas\social_benchmark.y
 ### Step 4: Run ClickGraph
 
 ```bash
-# Run with default settings (HTTP: 8080, Bolt: 7687)
+# Run with default settings (HTTP: 7475, Bolt: 7687)
 cargo run --release --bin clickgraph
 
 # Or with custom ports
@@ -218,7 +218,7 @@ cargo run --release --bin clickgraph -- --http-port 8081 --bolt-port 7688
 You should see:
 ```
 [INFO] ClickGraph server starting...
-[INFO] HTTP server listening on 0.0.0.0:8080
+[INFO] HTTP server listening on 0.0.0.0:7475
 [INFO] Bolt server listening on 0.0.0.0:7687
 [INFO] Schema loaded: social_network (1 views, 2 node types, 1 relationship types)
 ```
@@ -230,7 +230,7 @@ You should see:
 docker exec -i clickhouse clickhouse-client < benchmarks/social_network/data/setup_unified.sql
 
 # Run a query
-curl -X POST http://localhost:8080/query \
+curl -X POST http://localhost:7475/query \
   -H "Content-Type: application/json" \
   -d '{"query": "MATCH (u:User) RETURN u.name LIMIT 5"}'
 ```
@@ -242,7 +242,7 @@ curl -X POST http://localhost:8080/query \
 ### Check Server Health
 
 ```bash
-curl http://localhost:8080/health
+curl http://localhost:7475/health
 ```
 
 **Expected response**:
@@ -257,7 +257,7 @@ curl http://localhost:8080/health
 ### Check Schema Loading
 
 ```bash
-curl http://localhost:8080/schema
+curl http://localhost:7475/schema
 ```
 
 **Expected response** (partial):
@@ -275,12 +275,12 @@ curl http://localhost:8080/schema
 
 ```bash
 # First run (cold cache)
-time curl -X POST http://localhost:8080/query \
+time curl -X POST http://localhost:7475/query \
   -H "Content-Type: application/json" \
   -d '{"query": "MATCH (u:User) RETURN count(u)"}'
 
 # Second run (cached - should be much faster!)
-time curl -X POST http://localhost:8080/query \
+time curl -X POST http://localhost:7475/query \
   -H "Content-Type: application/json" \
   -d '{"query": "MATCH (u:User) RETURN count(u)"}'
 ```
@@ -467,8 +467,8 @@ GRAPH_CONFIG_PATH="./benchmarks/social_network/schemas/social_benchmark.yaml"
 
 # Optional
 CLICKHOUSE_DATABASE="default"  # Defaults to "default" if not set
-CLICKGRAPH_HTTP_HOST="0.0.0.0"
-CLICKGRAPH_HTTP_PORT="8080"
+CLICKGRAPH_HOST="0.0.0.0"
+CLICKGRAPH_PORT="7475"
 CLICKGRAPH_BOLT_HOST="0.0.0.0"
 CLICKGRAPH_BOLT_PORT="7687"
 ```

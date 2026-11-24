@@ -75,7 +75,7 @@ Wait for "ClickGraph server is running" message.
 
 #### 6. Load Test Schema (in another terminal)
 ```powershell
-curl -X POST http://localhost:8080/schemas/load `
+curl -X POST http://localhost:7475/schemas/load `
   -H "Content-Type: application/json" `
   -d '{"schema_path": "tests/integration/test_integration.yaml", "schema_name": "test_integration"}'
 ```
@@ -127,11 +127,11 @@ follower_id → followed_id | since
 **Solution**: Set all required environment variables before starting server.
 
 ### Tests fail with "server not responding"
-**Problem**: ClickGraph server not running or not on port 8080.  
+**Problem**: ClickGraph server not running or not on port 7475.  
 **Solution**: 
 ```powershell
 # Check server status
-curl http://localhost:8080/health
+curl http://localhost:7475/health
 
 # Restart server
 .\setup_and_test.bat

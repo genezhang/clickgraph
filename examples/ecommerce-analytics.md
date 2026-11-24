@@ -514,7 +514,7 @@ ORDER BY generation, total_revenue DESC
 
 ```bash
 # Customer recommendation analysis
-curl -X POST http://localhost:8080/query \
+curl -X POST http://localhost:7475/query \
   -H "Content-Type: application/json" \
   -d '{
     "query": "MATCH (target:Customer {name: $customerName})-[:PURCHASED]->(p:Product) MATCH (similar:Customer)-[:PURCHASED]->(p) WHERE similar <> target WITH similar, count(p) as shared_products WHERE shared_products >= 2 MATCH (similar)-[:PURCHASED]->(rec:Product) WHERE NOT EXISTS((target)-[:PURCHASED]->(rec)) RETURN rec.name, rec.category, rec.price, count(similar) as recommended_by ORDER BY recommended_by DESC LIMIT 5",
@@ -522,7 +522,7 @@ curl -X POST http://localhost:8080/query \
   }'
 
 # Market basket analysis  
-curl -X POST http://localhost:8080/query \
+curl -X POST http://localhost:7475/query \
   -H "Content-Type: application/json" \
   -d '{
     "query": "MATCH (p1:Product)<-[:ORDER_CONTAINS]-(o:Order)-[:ORDER_CONTAINS]->(p2:Product) WHERE p1.product_id < p2.product_id WITH p1, p2, count(o) as co_purchases WHERE co_purchases >= 2 RETURN p1.name, p2.name, co_purchases ORDER BY co_purchases DESC LIMIT 10"

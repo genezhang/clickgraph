@@ -26,11 +26,11 @@ export GRAPH_CONFIG_PATH="schemas/examples/social_network.yaml"
 cargo run --release --bin clickgraph
 
 # Or with custom ports
-cargo run --release --bin clickgraph -- --http-port 8080 --bolt-port 7687
+cargo run --release --bin clickgraph -- --http-port 7475 --bolt-port 7687
 ```
 
 Default ports:
-- **HTTP**: 8080
+- **HTTP**: 7475
 - **Bolt**: 7687 (Neo4j compatible)
 
 ### 2. Connect Neo4j Browser
@@ -137,7 +137,7 @@ schemas:
 
 HTTP requests can specify any schema:
 ```bash
-curl -X POST http://localhost:8080/query \
+curl -X POST http://localhost:7475/query \
   -d '{"query":"MATCH (n) RETURN n", "schema_name":"ldbc_snb"}'
 ```
 

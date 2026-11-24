@@ -187,7 +187,7 @@ relationships:
 ```python
 import requests
 
-response = requests.post("http://localhost:8080/query", json={
+response = requests.post("http://localhost:7475/query", json={
     "query": "MATCH (a)-[:FOLLOWS*1..2]->(b) RETURN COUNT(*)",
     "schema_name": "your_schema"
 })
