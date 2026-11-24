@@ -4,6 +4,10 @@ from __future__ import annotations
 
 import json
 import re
+import statistics
+import time
+import urllib.error
+import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -114,3 +118,128 @@ def parse_param_overrides(values: list[str]) -> dict[str, Any]:
         except json.JSONDecodeError:
             overrides[key] = raw
     return overrides
+
+
+@dataclass
+class QueryResult:
+    id: str
+    category: str
+    status: str
+    runs: int = 0
+    rows: int | None = None
+    min_ms: float | None = None
+    median_ms: float | None = None
+    max_ms: float | None = None
+    error: str | None = None
+
+
+def _endpoint(base_url: str, path: str) -> str:
+    return base_url.rstrip("/") + path
+
+
+def _post_json(url: str, payload: dict[str, Any], timeout: float) -> tuple[int, Any]:
+    request = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Content-Type": "application/json",
+            "User-Agent": "clickgraph-ldbc-harness/1",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return response.status, json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", "replace")
+        try:
+            return exc.code, json.loads(body)
+        except json.JSONDecodeError:
+            return exc.code, body
+    except urllib.error.URLError as exc:
+        raise HarnessError(f"connection error: {exc.reason}") from exc
+    except TimeoutError as exc:
+        raise HarnessError(f"timeout after {timeout}s") from exc
+    except json.JSONDecodeError as exc:
+        raise HarnessError(f"invalid JSON from {url}: {exc}") from exc
+
+
+def post_query(
+    base_url: str,
+    cypher: str,
+    params: dict[str, Any],
+    schema: str | None,
+    timeout: float,
+) -> tuple[int | None, str | None]:
+    payload: dict[str, Any] = {"query": cypher, "parameters": params}
+    if schema:
+        payload["schema_name"] = schema
+
+    try:
+        status, body = _post_json(_endpoint(base_url, "/query"), payload, timeout)
+    except HarnessError as exc:
+        return None, str(exc)
+
+    if not 200 <= status < 300:
+        if isinstance(body, dict) and "error" in body:
+            detail = str(body["error"])
+        else:
+            detail = str(body)
+        return None, f"HTTP {status}: {detail}"
+
+    if not isinstance(body, dict):
+        return None, "invalid response: expected a JSON object"
+    if "error" in body:
+        return None, str(body["error"])
+
+    results = body.get("results")
+    if not isinstance(results, list):
+        return None, "invalid response: missing 'results' list"
+    return len(results), None
+
+
+def benchmark_case(
+    case: QueryCase,
+    cypher: str,
+    params: dict[str, Any],
+    base_url: str,
+    schema: str | None,
+    iterations: int,
+    warmup: int,
+    timeout: float,
+) -> QueryResult:
+    for _ in range(warmup):
+        _, error = post_query(base_url, cypher, params, schema, timeout)
+        if error:
+            return QueryResult(case.id, case.category, "fail", error=error)
+
+    durations: list[float] = []
+    rows: int | None = None
+    for _ in range(iterations):
+        start = time.perf_counter()
+        rows, error = post_query(base_url, cypher, params, schema, timeout)
+        elapsed_ms = (time.perf_counter() - start) * 1000
+        if error:
+            return QueryResult(
+                case.id,
+                case.category,
+                "fail",
+                runs=len(durations),
+                rows=rows,
+                error=error,
+            )
+        durations.append(elapsed_ms)
+
+    if not durations:
+        return QueryResult(case.id, case.category, "fail", error="no measured runs")
+
+    return QueryResult(
+        id=case.id,
+        category=case.category,
+        status="pass",
+        runs=len(durations),
+        rows=rows,
+        min_ms=round(min(durations), 2),
+        median_ms=round(statistics.median(durations), 2),
+        max_ms=round(max(durations), 2),
+    )

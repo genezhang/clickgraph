@@ -1,5 +1,8 @@
 import importlib.util
+import json
 import sys
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
@@ -67,3 +70,96 @@ def test_parse_param_overrides_uses_json_types_and_falls_back_to_string():
 def test_parse_param_overrides_rejects_missing_equals():
     with pytest.raises(run.HarnessError, match="KEY=VALUE"):
         run.parse_param_overrides(["personId"])
+
+
+class FakeHandler(BaseHTTPRequestHandler):
+    responses: list[tuple[int, object]] = []
+    requests: list[dict] = []
+
+    def do_POST(self):
+        length = int(self.headers.get("Content-Length", 0))
+        type(self).requests.append(json.loads(self.rfile.read(length) or b"{}"))
+        status, payload = type(self).responses.pop(0)
+        body = json.dumps(payload).encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *args):
+        pass
+
+
+@pytest.fixture
+def fake_server():
+    FakeHandler.responses = []
+    FakeHandler.requests = []
+    server = ThreadingHTTPServer(("127.0.0.1", 0), FakeHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_port}", FakeHandler
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_post_query_sends_schema_and_parameters(fake_server):
+    url, handler = fake_server
+    handler.responses = [(200, {"results": [{"a": 1}, {"a": 2}]})]
+
+    rows, error = run.post_query(url, "RETURN 1", {"x": 1}, "ldbc", 5)
+
+    assert (rows, error) == (2, None)
+    assert handler.requests == [
+        {"query": "RETURN 1", "parameters": {"x": 1}, "schema_name": "ldbc"}
+    ]
+
+
+def test_post_query_treats_200_error_body_as_failure(fake_server):
+    url, handler = fake_server
+    handler.responses = [(200, {"error": "bad schema"})]
+
+    assert run.post_query(url, "RETURN 1", {}, None, 5) == (None, "bad schema")
+
+
+def test_post_query_treats_http_error_body_as_failure(fake_server):
+    url, handler = fake_server
+    handler.responses = [(500, {"error": "boom"})]
+
+    assert run.post_query(url, "RETURN 1", {}, None, 5) == (None, "HTTP 500: boom")
+
+
+def test_benchmark_case_discards_warmup_and_records_median(fake_server):
+    url, handler = fake_server
+    handler.responses = [(200, {"results": [{"a": 1}, {"a": 2}]})] * 4
+    case = run.QueryCase("short-1", "IS", Path("short-1.cypher"))
+
+    result = run.benchmark_case(
+        case, "RETURN 1", {}, url, None, iterations=3, warmup=1, timeout=5
+    )
+
+    assert result.status == "pass"
+    assert result.runs == 3
+    assert result.rows == 2
+    assert result.min_ms <= result.median_ms <= result.max_ms
+    assert len(handler.requests) == 4
+
+
+def test_benchmark_case_stops_on_a_failed_measured_run(fake_server):
+    url, handler = fake_server
+    handler.responses = [
+        (200, {"results": [{"a": 1}]}),
+        (200, {"error": "bad query"}),
+    ]
+    case = run.QueryCase("short-1", "IS", Path("short-1.cypher"))
+
+    result = run.benchmark_case(
+        case, "RETURN 1", {}, url, None, iterations=3, warmup=1, timeout=5
+    )
+
+    assert result.status == "fail"
+    assert result.runs == 0
+    assert result.error == "bad query"
+    assert len(handler.requests) == 2
