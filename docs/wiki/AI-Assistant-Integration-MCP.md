@@ -12,11 +12,40 @@ The Model Context Protocol (MCP) enables AI assistants to connect to external da
 - 🚀 **Instant Setup**: 2-minute configuration
 - 💬 **Natural Language**: Query graphs conversationally
 
-## Two Integration Paths
+## First-party MCP server
+
+The repository ships `clickgraph-mcp`, a stdio MCP server that exposes
+`list_schemas`, `get_schema`, `run_cypher` and `explain_query` over ClickGraph's
+HTTP API. `get_schema` reports every label's properties and every relationship
+type's direction, endpoints and properties, so an agent can write Cypher
+without guessing property names.
+Install it with `pip install ./clickgraph-mcp` from a checkout and point it at
+a running server:
+
+```json
+{
+  "mcpServers": {
+    "clickgraph": {
+      "command": "clickgraph-mcp",
+      "env": {
+        "CLICKGRAPH_URL": "http://localhost:7475",
+        "CLICKGRAPH_SCHEMA": "social"
+      }
+    }
+  }
+}
+```
+
+See [`clickgraph-mcp/README.md`](https://github.com/genezhang/clickgraph/blob/main/clickgraph-mcp/README.md)
+for the tool arguments, configuration and test command. The rest of this page
+covers the alternative: existing Neo4j MCP servers that talk to ClickGraph over
+Bolt.
+
+## Two other integration paths
 
 | Path | When to use |
 |------|-------------|
-| **MCP server** (this page) | AI assistants that support MCP (Claude Desktop, Cursor, etc.) |
+| **Existing Neo4j MCP server** (this page) | AI assistants that support MCP (Claude Desktop, Cursor, etc.) and already have a Neo4j MCP server |
 | **`cg` CLI tool** | Agentic code / scripts that call ClickGraph directly without a UI |
 
 ### Using `cg` for Agent/Script Use
