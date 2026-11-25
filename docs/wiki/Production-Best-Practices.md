@@ -567,34 +567,33 @@ docker-compose up -d --no-deps --scale clickgraph=3  # Scale down old
 
 ### 1. Metrics Collection
 
-**Prometheus Metrics** (built-in):
+**Prometheus Metrics** (built-in, served on the HTTP port):
 ```yaml
-# Expose metrics endpoint
 services:
   clickgraph:
     ports:
-      - "9090:9090"  # Metrics port
+      - "7475:7475"  # HTTP API and /metrics
 ```
 
 **Key Metrics to Monitor**:
-- `clickgraph_requests_total` - Total requests
-- `clickgraph_request_duration_seconds` - Request latency
-- `clickgraph_cache_hits_total` - Cache hit rate
-- `clickgraph_clickhouse_queries_total` - ClickHouse queries
-- `clickgraph_errors_total` - Error count
+- `clickgraph_queries_total` / `clickgraph_queries_by_type_total` - Query volume
+- `clickgraph_queries_failed_total` / `clickgraph_query_errors_total{class=...}` - Failures
+- `clickgraph_query_duration_seconds_bucket{phase=...}` - Latency per phase (`total`, `parse`, `plan`, `render`, `sqlgen`, `exec`)
+- `clickgraph_in_flight_queries` - Concurrency
+- `clickgraph_cache_hits_total` / `clickgraph_cache_misses_total` - Cache hit rate
+- `clickgraph_clickhouse_read_bytes_total` / `clickgraph_clickhouse_read_rows_total` - ClickHouse work
+
+See [`observability/`](../../observability/README.md) for a runnable
+Prometheus, Tempo and Grafana stack with the **ClickGraph Overview** dashboard.
+The full metric list is in the [HTTP API reference](API-Reference-HTTP.md).
 
 **Prometheus Configuration** (`prometheus.yml`):
 ```yaml
 scrape_configs:
   - job_name: 'clickgraph'
     static_configs:
-      - targets: ['clickgraph-1:9090', 'clickgraph-2:9090', 'clickgraph-3:9090']
+      - targets: ['clickgraph-1:7475', 'clickgraph-2:7475', 'clickgraph-3:7475']
     scrape_interval: 15s
-  
-  - job_name: 'clickhouse'
-    static_configs:
-      - targets: ['clickhouse-1:9363', 'clickhouse-2:9363']
-    scrape_interval: 30s
 ```
 
 ### 2. Logging
@@ -661,15 +660,15 @@ groups:
           summary: "ClickGraph instance down"
           
       - alert: HighErrorRate
-        expr: rate(clickgraph_errors_total[5m]) > 0.05
+        expr: sum(rate(clickgraph_queries_failed_total[5m])) / clamp_min(sum(rate(clickgraph_queries_total[5m])), 1e-9) > 0.05
         for: 5m
         labels:
           severity: warning
         annotations:
-          summary: "High error rate: {{ $value }}%"
+          summary: "High error rate: {{ $value | humanizePercentage }}"
           
       - alert: SlowQueries
-        expr: histogram_quantile(0.95, clickgraph_request_duration_seconds) > 1
+        expr: histogram_quantile(0.95, sum by (le) (rate(clickgraph_query_duration_seconds_bucket{phase="total"}[5m]))) > 1
         for: 10m
         labels:
           severity: warning
@@ -677,7 +676,7 @@ groups:
           summary: "95th percentile latency > 1s"
           
       - alert: LowCacheHitRate
-        expr: rate(clickgraph_cache_hits_total[10m]) / rate(clickgraph_requests_total[10m]) < 0.5
+        expr: sum(rate(clickgraph_cache_hits_total[10m])) / clamp_min(sum(rate(clickgraph_cache_hits_total[10m])) + sum(rate(clickgraph_cache_misses_total[10m])), 1e-9) < 0.5
         for: 30m
         labels:
           severity: info
@@ -687,14 +686,20 @@ groups:
 
 ### 4. Distributed Tracing
 
-**OpenTelemetry Integration** (planned feature):
+ClickGraph exports one OTLP/HTTP span per translated or failed query, named
+`cypher.query`:
+
 ```yaml
 environment:
-  OTEL_EXPORTER_OTLP_ENDPOINT: "http://jaeger:4317"
-  OTEL_SERVICE_NAME: "clickgraph"
-  OTEL_TRACES_SAMPLER: "parentbased_traceidratio"
-  OTEL_TRACES_SAMPLER_ARG: "0.1"  # Sample 10% of traces
+  CLICKGRAPH_OTLP_ENDPOINT: "http://tempo:4318"  # posts to /v1/traces
+  CLICKGRAPH_OTLP_INCLUDE_QUERY: "false"          # true adds literals-stripped Cypher
 ```
+
+Spans carry `db.system`, `cypher.query.type`, `cypher.outcome`, `cypher.schema`,
+`cypher.result_rows` and per-phase timings. See the
+[HTTP API reference](API-Reference-HTTP.md) for headers and details. The local
+[`observability/`](../../observability/README.md) stack includes Tempo and trace
+panels in the overview dashboard.
 
 ---
 

@@ -327,6 +327,7 @@ RETURN friend.name
 - **[Configuration Guide](docs/configuration.md)** - Server configuration and CLI options
 - **[Wiki](https://github.com/genezhang/clickgraph/blob/main/docs/wiki/)** - Comprehensive guides: [Cypher Reference](https://github.com/genezhang/clickgraph/blob/main/docs/wiki/Cypher-Language-Reference.md), [Schema Basics](https://github.com/genezhang/clickgraph/blob/main/docs/wiki/Schema-Basics.md), [Graph-Notebook](https://github.com/genezhang/clickgraph/blob/main/docs/wiki/Graph-Notebook-Compatibility.md), [Neo4j Tools](https://github.com/genezhang/clickgraph/blob/main/docs/wiki/Neo4j-Tools-Integration.md)
 - **[Examples](examples/)** - [Quick Start](examples/quick-start.md) | [E-commerce Analytics](examples/ecommerce-analytics.md)
+- **[Observability](observability/README.md)** - Local Prometheus, Tempo and Grafana stack with a ClickGraph dashboard
 - **[Dev Quick Start](DEV_QUICK_START.md)** - 30-second workflow for contributors
 
 ---

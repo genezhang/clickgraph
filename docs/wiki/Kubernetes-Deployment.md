@@ -800,13 +800,16 @@ spec:
     matchLabels:
       app: clickgraph
   endpoints:
-  - port: metrics
+  - port: http   # /metrics is served on the HTTP port (7475 by default)
     interval: 30s
     path: /metrics
     scheme: http
 ```
 
 ### Grafana Dashboard ConfigMap
+
+This is a minimal example. The full provisioned dashboard is
+[`observability/grafana/dashboards/clickgraph.json`](../../observability/grafana/dashboards/clickgraph.json).
 
 ```yaml
 apiVersion: v1
@@ -823,15 +826,15 @@ data:
         "title": "ClickGraph Metrics",
         "panels": [
           {
-            "title": "Request Rate",
+            "title": "Query Rate",
             "targets": [{
-              "expr": "rate(clickgraph_requests_total[5m])"
+              "expr": "sum(rate(clickgraph_queries_total[5m]))"
             }]
           },
           {
-            "title": "Request Latency (p95)",
+            "title": "Query Latency (p95)",
             "targets": [{
-              "expr": "histogram_quantile(0.95, rate(clickgraph_request_duration_seconds_bucket[5m]))"
+              "expr": "histogram_quantile(0.95, sum by (le) (rate(clickgraph_query_duration_seconds_bucket{phase=\"total\"}[5m])))"
             }]
           }
         ]
