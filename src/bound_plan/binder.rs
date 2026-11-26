@@ -75,6 +75,11 @@ pub fn bind_statement(
         created: Vec::new(),
     };
     let (first_plan, first_cols) = b.bind_query(&stmt.first)?;
+    if first_cols.is_empty() {
+        return Err(BindError::Unsupported(
+            "a query ending in CALL (no RETURN)".to_string(),
+        ));
+    }
     if stmt.unions.is_empty() {
         return Ok(BoundStatement {
             plan: first_plan,
@@ -459,6 +464,52 @@ impl Binder {
                     }
                 }
                 Clause::Call(_) => return Err(BindError::NotARead("CALL")),
+                Clause::CallSubquery(c) => {
+                    if self.writes.is_some() {
+                        return Err(BindError::Unsupported(
+                            "a CALL { } subquery in a write statement".to_string(),
+                        ));
+                    }
+                    // A leading WITH of outer names imports them (the
+                    // deprecated form the LDBC queries use): the next slice.
+                    let imports = c.query.clauses.first().is_some_and(|clause| match clause {
+                        Clause::With(w) => w.items.iter().any(|i| {
+                            matches!(&i.expression, Expression::Variable(v)
+                                if scope.lookup(v).is_some())
+                        }),
+                        _ => false,
+                    });
+                    if imports {
+                        return Err(BindError::Unsupported(
+                            "an importing WITH in a CALL { } subquery".to_string(),
+                        ));
+                    }
+                    // A fresh scope: the body reads no outer variable.
+                    let (plan, outputs) = self.bind_query(&c.query)?;
+                    if outputs.is_empty() {
+                        return Err(BindError::Invalid(
+                            "A CALL { } subquery must conclude with RETURN".to_string(),
+                        ));
+                    }
+                    for (name, v) in &outputs {
+                        if !matches!(self.binding(*v).kind, BindingKind::Value) {
+                            return Err(BindError::Unsupported(format!(
+                                "a CALL {{ }} subquery returning `{name}` (only values)"
+                            )));
+                        }
+                        if scope.lookup(name).is_some() {
+                            return Err(BindError::AlreadyDeclared(name.clone()));
+                        }
+                    }
+                    for (name, v) in &outputs {
+                        scope.insert(name, *v);
+                    }
+                    op = BoundOp::Call {
+                        input: Box::new(op),
+                        plan: Box::new(plan),
+                        outputs,
+                    };
+                }
                 Clause::Create(_) | Clause::Set(_) | Clause::Remove(_) | Clause::Delete(_) => {
                     return Err(BindError::NotARead("updating clause"))
                 }

@@ -62,7 +62,8 @@ fn matches(op: &BoundOp) -> Vec<&BoundOp> {
             | BoundOp::Sort { input, .. }
             | BoundOp::Filter { input, .. }
             | BoundOp::Skip { input, .. }
-            | BoundOp::Limit { input, .. } => cur = input,
+            | BoundOp::Limit { input, .. }
+            | BoundOp::Call { input, .. } => cur = input,
             BoundOp::Union { .. } => break,
         }
     }
@@ -71,6 +72,56 @@ fn matches(op: &BoundOp) -> Vec<&BoundOp> {
 }
 
 // ------------------------------------------------------------------ scope
+
+#[test]
+fn a_call_subquery_returns_its_values_to_the_outer_scope() {
+    let s = ok("CALL { RETURN 1 AS x } RETURN x");
+    let all = named(&s, "x");
+    assert_eq!(all.len(), 2, "the subquery's x and the outer RETURN's x");
+    let BoundOp::Project { input, .. } = &s.plan else {
+        panic!("{:?}", s.plan)
+    };
+    let BoundOp::Call { plan, outputs, .. } = &**input else {
+        panic!("{input:?}")
+    };
+    assert_eq!(outputs, &[("x".to_string(), all[0].id)]);
+    assert!(matches!(&**plan, BoundOp::Project { .. }), "{plan:?}");
+}
+
+#[test]
+fn a_call_subquery_cannot_return_an_outer_name() {
+    assert_eq!(
+        bind("MATCH (n:User) CALL { RETURN 1 AS n } RETURN n"),
+        Err(BindError::AlreadyDeclared("n".to_string()))
+    );
+}
+
+#[test]
+fn a_call_subquery_may_return_values_only() {
+    assert!(matches!(
+        bind("CALL { MATCH (p:Post) RETURN p AS p } RETURN p"),
+        Err(BindError::Unsupported(_))
+    ));
+}
+
+#[test]
+fn an_importing_with_in_a_call_subquery_is_not_bound_yet() {
+    assert!(matches!(
+        bind("MATCH (n:User) CALL { WITH n RETURN n.user_id AS id } RETURN id"),
+        Err(BindError::Unsupported(_))
+    ));
+}
+
+#[test]
+fn a_call_subquery_is_uncorrelated() {
+    assert_eq!(
+        bind(
+            "MATCH (n:User) CALL { MATCH (m:Post) WHERE m.title = n.name \
+             RETURN m.title AS t } RETURN t"
+        ),
+        Err(BindError::UndefinedVariable("n".to_string()))
+    );
+}
 
 #[test]
 fn a_name_rebound_after_with_is_a_new_variable() {

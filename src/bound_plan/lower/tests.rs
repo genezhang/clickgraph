@@ -1162,6 +1162,72 @@ fn free_standing_order_skip_limit() {
 }
 
 #[test]
+fn an_uncorrelated_call_joins_its_body() {
+    // Its body is one query of its own, read as a CTE and cross joined.
+    has(
+        "CALL { RETURN 1 AS x } RETURN x",
+        &[
+            "WITH with_call_1 AS ( SELECT 1 AS \"x\" )",
+            "SELECT call_1.x AS \"x\" FROM with_call_1 AS call_1",
+        ],
+    );
+    has(
+        "MATCH (u:User) CALL { RETURN 1 AS one } RETURN u.name AS name, one",
+        &[
+            "SELECT v0.full_name AS \"name\", call_1.one AS \"one\"",
+            "FROM test_integration.users_test AS v0 CROSS JOIN with_call_1 AS call_1",
+        ],
+    );
+    // The outputs are values of the outer rows.
+    has(
+        "CALL { RETURN 1 AS x } RETURN x + 1 AS y",
+        &["call_1.x + 1 AS \"y\""],
+    );
+}
+
+#[test]
+fn a_call_body_returns_plain_values_only() {
+    // `id()` is a value to the binder, but its column is a node id, which
+    // Bolt encodes; carrying it through as a plain value would lose that.
+    let err = translate_bound_plan(
+        "CALL { MATCH (u:User) RETURN id(u) AS i } RETURN i",
+        &social(),
+        &ReadOptions::default(),
+    )
+    .unwrap_err();
+    assert!(err.contains("only plain values"), "{err}");
+}
+
+#[test]
+fn a_call_body_is_a_full_query() {
+    has(
+        "CALL { MATCH (u:User) RETURN count(u) AS c } RETURN c",
+        &[
+            "WITH with_call_1 AS ( SELECT count(v0.user_id) AS \"c\" \
+             FROM test_integration.users_test AS v0 )",
+            "SELECT call_1.c AS \"c\" FROM with_call_1 AS call_1",
+        ],
+    );
+    // Its own WITH keeps the names of its CTEs before the CALL's.
+    has(
+        "CALL { MATCH (u:User) WITH u RETURN u.user_id AS id } RETURN id",
+        &[
+            "WITH with_w1 AS",
+            "with_call_2 AS (",
+            "FROM with_call_2 AS call_2",
+        ],
+    );
+    // Two CALLs are two relations.
+    has(
+        "CALL { RETURN 1 AS x } CALL { RETURN 2 AS y } RETURN x, y",
+        &[
+            "WITH with_call_1 AS ( SELECT 1 AS \"x\" ), with_call_2 AS ( SELECT 2 AS \"y\" )",
+            "FROM with_call_1 AS call_1 CROSS JOIN with_call_2 AS call_2",
+        ],
+    );
+}
+
+#[test]
 fn constants_need_no_column() {
     has(
         "WITH 1 AS x RETURN x",
