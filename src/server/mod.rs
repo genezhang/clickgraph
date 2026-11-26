@@ -353,10 +353,13 @@ pub async fn run_with_config(config: ServerConfig) {
         Some(connection_pool.clone()),
     ));
     let app_state = if client_opt.is_some() {
-        let executor: Arc<dyn QueryExecutor> = Arc::new(RemoteClickHouseExecutor::with_ch_summary(
-            connection_pool.clone(),
-            config.metrics_ch_summary,
-        ));
+        let executor: Arc<dyn QueryExecutor> = Arc::new(
+            RemoteClickHouseExecutor::with_ch_summary(
+                connection_pool.clone(),
+                config.metrics_ch_summary,
+            )
+            .with_query_timeout(config.query_timeout_secs),
+        );
         AppState {
             executor,
             clickhouse_client: client_opt.clone(),
@@ -374,10 +377,13 @@ pub async fn run_with_config(config: ServerConfig) {
             "  Note: Some query functionality may be limited without ClickHouse connection."
         );
 
-        let executor: Arc<dyn QueryExecutor> = Arc::new(RemoteClickHouseExecutor::with_ch_summary(
-            connection_pool.clone(),
-            config.metrics_ch_summary,
-        ));
+        let executor: Arc<dyn QueryExecutor> = Arc::new(
+            RemoteClickHouseExecutor::with_ch_summary(
+                connection_pool.clone(),
+                config.metrics_ch_summary,
+            )
+            .with_query_timeout(config.query_timeout_secs),
+        );
         AppState {
             executor,
             clickhouse_client: None,

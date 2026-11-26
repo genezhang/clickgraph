@@ -114,8 +114,26 @@ impl RoleConnectionPool {
     ///
     /// Role pools are lazy-initialized on first use.
     pub async fn get_client(&self, role: Option<&str>) -> Client {
-        let idx = self.round_robin.fetch_add(1, Ordering::Relaxed) % self.default_clients.len();
+        let idx = self.next_index();
+        self.resolve_client(idx, role).await
+    }
 
+    /// Get the client and the HTTP endpoint for the SAME node.
+    ///
+    /// Query cancellation must reach the node that runs the query. A second
+    /// round-robin pick can select another node in cluster mode.
+    pub async fn get_client_and_endpoint(&self, role: Option<&str>) -> (Client, ChHttpEndpoint) {
+        let idx = self.next_index();
+        let client = self.resolve_client(idx, role).await;
+        (client, self.endpoint_for(idx, role))
+    }
+
+    fn next_index(&self) -> usize {
+        self.round_robin.fetch_add(1, Ordering::Relaxed) % self.default_clients.len()
+    }
+
+    /// Resolve the client for one node index, creating the role pool if needed.
+    async fn resolve_client(&self, idx: usize, role: Option<&str>) -> Client {
         let Some(role) = role else {
             return self.default_clients[idx].clone();
         };
@@ -156,6 +174,16 @@ impl RoleConnectionPool {
         client
     }
 
+    fn endpoint_for(&self, idx: usize, role: Option<&str>) -> ChHttpEndpoint {
+        ChHttpEndpoint {
+            url: self.base_config.urls[idx].clone(),
+            user: self.base_config.user.clone(),
+            password: self.base_config.password.clone(),
+            database: self.base_config.database.clone(),
+            options: ConnectionConfig::standard_options(self.base_config.max_cte_depth, role),
+        }
+    }
+
     /// Get statistics about pool usage
     pub async fn stats(&self) -> PoolStats {
         let pools = self.role_clients.read().await;
@@ -164,21 +192,6 @@ impl RoleConnectionPool {
             roles: pools.keys().cloned().collect(),
             node_count: self.default_clients.len(),
             cluster_name: self.base_config.cluster_name.clone(),
-        }
-    }
-
-    /// Raw HTTP endpoint parts for the metrics summary path (`remote.rs`), which
-    /// bypasses the `clickhouse` crate to read `X-ClickHouse-Summary`. Selects a
-    /// node via the same round-robin as `get_client` and carries the identical
-    /// settings (`standard_options`) + role so results match the crate path.
-    pub fn http_endpoint(&self, role: Option<&str>) -> ChHttpEndpoint {
-        let idx = self.round_robin.fetch_add(1, Ordering::Relaxed) % self.base_config.urls.len();
-        ChHttpEndpoint {
-            url: self.base_config.urls[idx].clone(),
-            user: self.base_config.user.clone(),
-            password: self.base_config.password.clone(),
-            database: self.base_config.database.clone(),
-            options: ConnectionConfig::standard_options(self.base_config.max_cte_depth, role),
         }
     }
 }

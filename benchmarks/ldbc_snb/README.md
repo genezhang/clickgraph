@@ -155,13 +155,12 @@ returns one aggregate row, such as a zero count, is never reported as empty.
 
 ### After a timeout
 
-When ClickGraph's query timeout fires (HTTP 408, 300 s by default), ClickGraph stops
-waiting but ClickHouse keeps running the query (it does not cancel a query when the
-client goes away). At SF1, `bi-17` kept about 30 cores and 10 GiB busy for 18
-minutes and made every later query several times slower. The harness prints a note
-when this may have happened; check `system.processes` and `KILL QUERY` before
-trusting later timings. The committed report was run with `bi-17` last for this
-reason.
+When ClickGraph's query timeout fires (HTTP 408, 300 s by default), the server
+cancels the ClickHouse query with `KILL QUERY ... ASYNC` (and sends
+`max_execution_time`), so it does not keep running after the client is gone. The
+harness prints a note when a query may have timed out. On a server older than the
+timeout-cancel fix, check `system.processes` and `KILL QUERY` before trusting
+later timings. The committed report was run with `bi-17` last for this reason.
 
 ### Mini smoke test
 

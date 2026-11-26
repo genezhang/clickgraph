@@ -619,9 +619,10 @@ def main(argv: list[str] | None = None) -> int:
         if timed_out:
             print(
                 "note: ClickGraph stopped waiting for " + ", ".join(timed_out)
-                + ", but ClickHouse may still be running the query and slowing "
-                "later ones; check system.processes (KILL QUERY) before trusting "
-                "later timings",
+                + " and asked ClickHouse to cancel it; on a server older than the "
+                "timeout-cancel fix the query may still be running and slowing "
+                "later ones, so check system.processes (KILL QUERY) before "
+                "trusting later timings",
                 file=sys.stderr,
             )
         print(f"JSON: {json_path}")
