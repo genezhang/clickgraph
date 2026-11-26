@@ -153,7 +153,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (type) (rate(clickgraph_queries_by_type_total[$__rate_interval]))",
+          "expr": "sum by (type) (rate(clickgraph_queries_by_type_total[$__rate_interval])) > 0",
           "legendFormat": "{{type}}"
         }
       ],
@@ -288,6 +288,7 @@
       "id": 10,
       "type": "timeseries",
       "title": "ClickHouse rows/s",
+      "description": "Rows ClickHouse reports reading. Needs CLICKGRAPH_METRICS_CH_SUMMARY=true on the server (off by default); without it this stays at 0.",
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "gridPos": {"h": 7, "w": 8, "x": 16, "y": 14},
       "targets": [
@@ -362,6 +363,7 @@
       "id": 12,
       "type": "timeseries",
       "title": "ClickHouse bytes/s",
+      "description": "The read series needs CLICKGRAPH_METRICS_CH_SUMMARY=true on the server (off by default); network bytes are always reported.",
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "gridPos": {"h": 7, "w": 12, "x": 12, "y": 21},
       "targets": [

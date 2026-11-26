@@ -1,13 +1,15 @@
 name: clickgraph-observability
 
 services:
+  # Every port is published on 127.0.0.1 only: Grafana runs with anonymous
+  # Admin access and Prometheus and Tempo have no authentication.
   prometheus:
     image: prom/prometheus:v3.2.1
     command:
       - --config.file=/etc/prometheus/prometheus.yml
       - --storage.tsdb.retention.time=6h
     ports:
-      - "9090:9090"
+      - "127.0.0.1:9090:9090"
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prometheus_data:/prometheus
@@ -24,9 +26,9 @@ services:
     image: grafana/tempo:2.7.2
     command: ["-config.file=/etc/tempo.yaml"]
     ports:
-      - "3200:3200"   # Tempo HTTP API
-      - "4317:4317"   # OTLP gRPC
-      - "4318:4318"   # OTLP HTTP, used by CLICKGRAPH_OTLP_ENDPOINT
+      - "127.0.0.1:3200:3200"   # Tempo HTTP API
+      - "127.0.0.1:4317:4317"   # OTLP gRPC
+      - "127.0.0.1:4318:4318"   # OTLP HTTP, used by CLICKGRAPH_OTLP_ENDPOINT
     volumes:
       - ./tempo.yaml:/etc/tempo.yaml:ro
       - tempo_data:/var/tempo
@@ -39,7 +41,7 @@ services:
   grafana:
     image: grafana/grafana:11.6.0
     ports:
-      - "${GRAFANA_PORT:-3000}:3000"
+      - "127.0.0.1:${GRAFANA_PORT:-3000}:3000"
     environment:
       # Local demo only. Never expose anonymous admin beyond localhost.
       GF_AUTH_ANONYMOUS_ENABLED: "true"

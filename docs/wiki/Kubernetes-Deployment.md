@@ -361,7 +361,7 @@ spec:
         app: clickgraph
       annotations:
         prometheus.io/scrape: "true"
-        prometheus.io/port: "9090"
+        prometheus.io/port: "7475"   # /metrics is served on the HTTP port
         prometheus.io/path: "/metrics"
     spec:
       serviceAccountName: clickgraph
