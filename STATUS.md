@@ -14,7 +14,7 @@ Supports server mode, embedded (in-process chdb), remote ClickHouse, and SQL-onl
 **Embedded Tests**: 152 passing (unit + integration + e2e)
 **Go Binding Tests**: 14 passing (100%)
 **openCypher TCK**: **402/402 read scenarios passing (100%)** — 0 failures. Write feature files (~205 scenarios across `Create*`/`Set*`/`Delete*`/`Remove*`) imported and partially lifted: 9 scenarios run end-to-end with counter assertions; remaining are `@wip` with per-scenario triage notes. See `clickgraph-tck/`.
-**LDBC SNB**: 36/37 queries passing at sf0.003 and sf1 (97%) — bi-16 blocked by CALL subquery
+**LDBC SNB**: 33/41 official read queries return rows at SF1 (2026-11-26), 33/36 without the five that need Neo4j GDS/APOC procedures (`complex-14`, `bi-10`, `bi-15`, `bi-19`, `bi-20`). The other three: `bi-4` and `bi-16` need `CALL {}` subqueries, `bi-17` times out at 300 s. Row counts are not checked against reference answers. See `benchmarks/ldbc_snb/README.md`
 **Benchmark**: 14/14 queries (100%)
 **E2E Tests**: Bolt 4/4, Cache 5/5 (100%)
 **Endurance**: 24h / 518M requests / 0 server errors / P50=1ms / 27 MB RSS (jemalloc) — [details](tests/stress/RESULTS.md)

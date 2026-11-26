@@ -73,7 +73,7 @@ See [CHANGELOG.md](CHANGELOG.md) for complete release history.
 - **Query Metrics** - Phase-by-phase timing via HTTP headers and structured logging
 - **ClickHouse cluster load balancing** - `CLICKHOUSE_CLUSTER` env var auto-discovers and balances queries across cluster nodes
 - **openCypher TCK: 402/402 read scenarios passing (100%)** - 0 failures. Write feature files are not yet imported from upstream; v0.6.7 adds the Cypher write pipeline (`CREATE` / `SET` / `DELETE` / `REMOVE`) that will unblock them.
-- **LDBC SNB benchmark: 36/37 queries (97%)** - Near-complete Social Network Benchmark coverage. See [benchmark results](benchmarks/ldbc_snb/BENCHMARK_RESULTS.md) for performance data on sf0.003, sf1 and sf10 datasets
+- **LDBC SNB benchmark: 33/41 official read queries return rows at SF1 (33/36 without the five that need Neo4j GDS/APOC procedures)** - `bi-4` and `bi-16` need `CALL {}` subqueries and `bi-17` times out at 300 s. Row counts are not yet checked against reference answers. See the [LDBC SNB README](benchmarks/ldbc_snb/README.md) for the run, the failures and how to reproduce it
 
 ### Neo4j Ecosystem Compatibility
 - **Bolt Protocol v5.8** - Full Neo4j driver compatibility (cypher-shell, Neo4j Browser, graph-notebook)
@@ -339,7 +339,7 @@ RETURN friend.name
 - **Rust Unit Tests**: 1,601 passing (100%)
 - **Integration Tests**: 3,068 passing (108 environment-dependent)
 - **openCypher TCK**: 402/402 read scenarios passing (100%), 0 failures
-- **LDBC SNB**: 36/37 queries passing (97%)
+- **LDBC SNB**: 33/41 official read queries return rows at SF1 (33/36 without the five GDS/APOC ones); see [benchmarks/ldbc_snb](benchmarks/ldbc_snb/README.md)
 - **Benchmarks**: 14/14 passing (100%)
 - **E2E Tests**: Bolt 4/4, Cache 5/5 (100%)
 
