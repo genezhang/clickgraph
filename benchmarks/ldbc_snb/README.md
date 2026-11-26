@@ -18,10 +18,21 @@ schema `schemas/ldbc_snb_complete.yaml` and ClickHouse's default memory settings
 *Ran without error* is what the harness can decide; it does **not** check that the
 rows are the right ones (see [What a pass means](#what-a-pass-means)).
 
-Eight SF1 queries fail. Seven use constructs ClickGraph does not support: GDS/APOC
-procedures (`complex-14`, `bi-10`, `bi-15`), `CALL {}` subqueries (`bi-4`, `bi-16`),
-a procedure call inside a query (`bi-19`) and a parser limitation (`bi-20`). `bi-17`
-runs into ClickGraph's 300 s query timeout (HTTP 408).
+Eight SF1 queries fail:
+
+- Five call Neo4j's Graph Data Science or APOC procedures (`complex-14`, `bi-10`,
+  `bi-15`, `bi-19`, `bi-20`; the query files say "Requires the Neo4j Graph Data
+  Science library"). ClickGraph does not implement those procedures.
+- Two use `CALL {}` subqueries (`bi-4`, `bi-16`), which ClickGraph does not support yet.
+- `bi-17` runs into ClickGraph's 300 s query timeout (HTTP 408).
+
+So the November run has two numbers: **33 of 41** official queries return rows, and
+**33 of 36** if the five GDS/APOC queries are left out. The 41 are all read queries
+(7 short, 14 complex, 20 BI); the set has no update operations.
+
+An older "36/37" figure (March 2026, `BENCHMARK_RESULTS.md`) is not comparable: its
+37-query set left out `bi-10`, `bi-15`, `bi-19` and `bi-20`, and it ran adapted
+versions of some queries (`complex-14`, `bi-17`).
 
 ## Layout
 
