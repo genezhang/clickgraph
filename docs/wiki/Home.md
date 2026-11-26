@@ -245,7 +245,7 @@ Key performance features:
 - ✅ GraphRAG write API (create_node, create_edge, upsert_node)
 - ✅ Hybrid remote query + local storage
 - ✅ Python (Pandas/PyArrow/Polars), Go, Rust language bindings
-- ✅ LDBC SNB: 36/37 queries passing (97%)
+- ✅ LDBC SNB: 33/41 official read queries return rows at SF1 (33/36 without the five that need Neo4j GDS/APOC procedures)
 - ✅ openCypher TCK: 383/402 scenarios (95.3%)
 
 **Test Coverage**: 1,601 Rust unit tests + 3,068 integration tests + 383/402 TCK scenarios  

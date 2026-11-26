@@ -183,6 +183,7 @@
 
 ### 📚 Documentation
 
+- **LDBC SNB headline is now two numbers, measured.** README, STATUS.md and the wiki Home page said "36/37 (97%)", which came from a 37-query set that left out four official queries and ran adapted versions of others. They now say 33/41 official read queries return rows at SF1, and 33/36 without the five that need Neo4j GDS/APOC procedures; the set has no update queries. `BENCHMARK_RESULTS.md` is marked as a historical snapshot.
 - **Every current doc names ClickGraph's real HTTP port, 7475.** The default moved from 8080 to 7475 in #310, but about 300 lines across 48 files (the wiki, `docs/`, `examples/`, the helm testing checklist and a few test notes) still gave 8080 in URLs, `docker run -p`, Kubernetes manifests, proxy upstreams, firewall rules and sample output, so copy-pasted commands failed with "connection refused". The frozen `docs/wiki-versions/` snapshots keep 8080: it was the default in those releases. Three blocks that set the ports through environment variables used names the server never reads (`HTTP_PORT`, `HTTP_HOST`, `BOLT_PORT`, `CLICKGRAPH_HTTP_PORT`, `CLICKGRAPH_HTTP_HOST`); they now use `CLICKGRAPH_PORT`, `CLICKGRAPH_HOST` and `CLICKGRAPH_BOLT_PORT`.
 
 ### 🔒 Security

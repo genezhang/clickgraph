@@ -2,6 +2,8 @@
 
 **Updated**: March 2026 · ClickGraph v0.6.5-dev
 
+> **Historical snapshot.** The "36/37" figures below come from a 37-query set that left out `bi-10`, `bi-15`, `bi-19` and `bi-20`, and that ran adapted versions of some queries. They are not comparable with the current runs of all 41 official queries; see the [README](README.md#current-status) for those.
+
 ## Summary
 
 | Mode | Scale | Pass | OOM | Timeout | Language Gap | Total |
