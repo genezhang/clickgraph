@@ -25,10 +25,7 @@ serviceAccount:
   name: ""
 
 # Pod annotations
-podAnnotations:
-  prometheus.io/scrape: "true"
-  prometheus.io/port: "9090"
-  prometheus.io/path: "/metrics"
+podAnnotations: {}
 
 # Pod security context
 podSecurityContext:
@@ -45,14 +42,15 @@ securityContext:
   readOnlyRootFilesystem: true
 
 # Service configuration
+# `service.http.port` and `service.bolt.port` are the source of truth: the
+# Deployment derives both the container ports and the server's
+# CLICKGRAPH_PORT / CLICKGRAPH_BOLT_PORT from them.
 service:
   type: ClusterIP
   http:
     port: 7475
   bolt:
     port: 7687
-  metrics:
-    port: 9090
 
 # Ingress configuration
 ingress:
@@ -138,15 +136,9 @@ readinessProbe:
 env:
   - name: RUST_LOG
     value: "info"
-  - name: HTTP_PORT
-    value: "7475"
-  - name: BOLT_PORT
-    value: "7687"
-  - name: HTTP_ENABLED
+  - name: CLICKGRAPH_BOLT_ENABLED
     value: "true"
-  - name: BOLT_ENABLED
-    value: "true"
-  - name: MAX_RECURSION_DEPTH
+  - name: CLICKGRAPH_MAX_CTE_DEPTH
     value: "100"
 
 # ClickHouse connection configuration
