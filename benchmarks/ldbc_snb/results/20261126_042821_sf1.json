@@ -1,0 +1,499 @@
+{
+  "schema_version": 2,
+  "metadata": {
+    "timestamp": "2026-11-26T04:28:21+00:00",
+    "label": "sf1",
+    "url": "http://localhost:7476",
+    "schema": "ldbc_snb",
+    "iterations": 5,
+    "warmup": 1,
+    "timeout_seconds": 300.0,
+    "server_version": "0.6.8-dev",
+    "harness_commit": "47b21a92",
+    "python": "3.14.4",
+    "platform": "Linux-7.0.0-43-generic-x86_64-with-glibc2.43",
+    "clickhouse": "25.8.11",
+    "memory_profile": "default-unlimited",
+    "schema_file": "benchmarks/ldbc_snb/schemas/ldbc_snb_complete.yaml",
+    "host": "Linux, 32 cores, 121 GB",
+    "data": "LDBC datagen 0.5.1 SF1 (composite-projected-fk)",
+    "run_order": "canonical, except bi-17 last: its timeout leaves ClickHouse busy for a while and slows the next query",
+    "orphan_cleanup": "queries still running 1 s after the 300 s timeout were killed in ClickHouse"
+  },
+  "summary": {
+    "total": 41,
+    "passed": 33,
+    "empty": 0,
+    "failed": 8,
+    "by_category": {
+      "IS": {
+        "total": 7,
+        "passed": 7,
+        "empty": 0
+      },
+      "IC": {
+        "total": 14,
+        "passed": 13,
+        "empty": 0
+      },
+      "BI": {
+        "total": 20,
+        "passed": 13,
+        "empty": 0
+      }
+    }
+  },
+  "queries": [
+    {
+      "id": "short-1",
+      "category": "IS",
+      "status": "pass",
+      "runs": 5,
+      "rows": 1,
+      "min_ms": 5.74,
+      "median_ms": 5.79,
+      "max_ms": 8.24,
+      "error": null
+    },
+    {
+      "id": "short-2",
+      "category": "IS",
+      "status": "pass",
+      "runs": 5,
+      "rows": 10,
+      "min_ms": 1691.05,
+      "median_ms": 1702.75,
+      "max_ms": 1706.5,
+      "error": null
+    },
+    {
+      "id": "short-3",
+      "category": "IS",
+      "status": "pass",
+      "runs": 5,
+      "rows": 18,
+      "min_ms": 4.61,
+      "median_ms": 5.43,
+      "max_ms": 7.92,
+      "error": null
+    },
+    {
+      "id": "short-4",
+      "category": "IS",
+      "status": "pass",
+      "runs": 5,
+      "rows": 1,
+      "min_ms": 5.99,
+      "median_ms": 6.28,
+      "max_ms": 6.81,
+      "error": null
+    },
+    {
+      "id": "short-5",
+      "category": "IS",
+      "status": "pass",
+      "runs": 5,
+      "rows": 1,
+      "min_ms": 57.14,
+      "median_ms": 60.97,
+      "max_ms": 66.51,
+      "error": null
+    },
+    {
+      "id": "short-6",
+      "category": "IS",
+      "status": "pass",
+      "runs": 5,
+      "rows": 1,
+      "min_ms": 919.43,
+      "median_ms": 943.87,
+      "max_ms": 981.74,
+      "error": null
+    },
+    {
+      "id": "short-7",
+      "category": "IS",
+      "status": "pass",
+      "runs": 5,
+      "rows": 2,
+      "min_ms": 189.48,
+      "median_ms": 199.34,
+      "max_ms": 206.56,
+      "error": null
+    },
+    {
+      "id": "complex-1",
+      "category": "IC",
+      "status": "pass",
+      "runs": 5,
+      "rows": 7,
+      "min_ms": 1878.38,
+      "median_ms": 1882.37,
+      "max_ms": 1909.85,
+      "error": null
+    },
+    {
+      "id": "complex-2",
+      "category": "IC",
+      "status": "pass",
+      "runs": 5,
+      "rows": 20,
+      "min_ms": 92.72,
+      "median_ms": 104.73,
+      "max_ms": 113.4,
+      "error": null
+    },
+    {
+      "id": "complex-3",
+      "category": "IC",
+      "status": "pass",
+      "runs": 5,
+      "rows": 20,
+      "min_ms": 301.0,
+      "median_ms": 310.09,
+      "max_ms": 315.38,
+      "error": null
+    },
+    {
+      "id": "complex-4",
+      "category": "IC",
+      "status": "pass",
+      "runs": 5,
+      "rows": 10,
+      "min_ms": 36.41,
+      "median_ms": 37.37,
+      "max_ms": 38.97,
+      "error": null
+    },
+    {
+      "id": "complex-5",
+      "category": "IC",
+      "status": "pass",
+      "runs": 5,
+      "rows": 20,
+      "min_ms": 1195.14,
+      "median_ms": 1241.48,
+      "max_ms": 1274.08,
+      "error": null
+    },
+    {
+      "id": "complex-6",
+      "category": "IC",
+      "status": "pass",
+      "runs": 5,
+      "rows": 10,
+      "min_ms": 784.45,
+      "median_ms": 803.62,
+      "max_ms": 828.33,
+      "error": null
+    },
+    {
+      "id": "complex-7",
+      "category": "IC",
+      "status": "pass",
+      "runs": 5,
+      "rows": 20,
+      "min_ms": 144.65,
+      "median_ms": 150.59,
+      "max_ms": 159.65,
+      "error": null
+    },
+    {
+      "id": "complex-8",
+      "category": "IC",
+      "status": "pass",
+      "runs": 5,
+      "rows": 20,
+      "min_ms": 119.82,
+      "median_ms": 121.71,
+      "max_ms": 130.58,
+      "error": null
+    },
+    {
+      "id": "complex-9",
+      "category": "IC",
+      "status": "pass",
+      "runs": 5,
+      "rows": 20,
+      "min_ms": 855.32,
+      "median_ms": 860.15,
+      "max_ms": 877.03,
+      "error": null
+    },
+    {
+      "id": "complex-10",
+      "category": "IC",
+      "status": "pass",
+      "runs": 5,
+      "rows": 10,
+      "min_ms": 220.1,
+      "median_ms": 225.9,
+      "max_ms": 235.23,
+      "error": null
+    },
+    {
+      "id": "complex-11",
+      "category": "IC",
+      "status": "pass",
+      "runs": 5,
+      "rows": 10,
+      "min_ms": 20.7,
+      "median_ms": 22.09,
+      "max_ms": 22.79,
+      "error": null
+    },
+    {
+      "id": "complex-12",
+      "category": "IC",
+      "status": "pass",
+      "runs": 5,
+      "rows": 17,
+      "min_ms": 111.27,
+      "median_ms": 113.51,
+      "max_ms": 117.51,
+      "error": null
+    },
+    {
+      "id": "complex-13",
+      "category": "IC",
+      "status": "pass",
+      "runs": 5,
+      "rows": 1,
+      "min_ms": 71.72,
+      "median_ms": 74.82,
+      "max_ms": 76.01,
+      "error": null
+    },
+    {
+      "id": "complex-14",
+      "category": "IC",
+      "status": "fail",
+      "runs": 0,
+      "rows": null,
+      "min_ms": null,
+      "median_ms": null,
+      "max_ms": null,
+      "error": "HTTP 400: Query syntax error: Parsing Failure: OpenCypherParsingError { errors: [(\"CALL gds.graph.project.cypher(\\n  apoc.create.uuidBase64(),\\n  'MATCH (p:Person) RETURN id(p) AS id',\\n  'MATCH\\n      (pA:Person)-[knows:KNOWS]-(pB:Person),\\n      (pA)<-[:HAS_CREATOR]-(m1:Message)-[r:REPLY_OF]-(m2:Message)-[:HAS_CREATOR]->(pB)\\n    WITH\\n      id(pA) AS source,\\n      id(pB) AS target,\\n      count(r) AS numInteractions\\n    RETURN\\n      source,\\n      target,\\n      CASE WHEN round(40-sqrt(numInteractions)) > 1 THEN round(40-sqrt(numInteractions)) ELSE 1 END AS weight\\n  '\\n)\\nYIELD graphName\\n\\nWITH person1, person2, graphName\\n\\nCALL gds.shortestPath.dijkstra.stream(\\n    graphName, {sourceNode: person1, targetNode: person2, relationshipWeightProperty: 'weight'}\\n)\\nYIELD index, sourceNode, targetNode, totalCost, nodeIds, costs, path\\n\\nWITH path, totalCost, graphName\\n\\nCALL gds.graph.drop(graphName, false)\\nYIELD graphName as graphNameremoved\\n\\nRETURN [person IN nodes(path) | person.id] AS personIdsInPath, totalCost AS pathWeight\\nLIMIT 1\", \"Unexpected tokens after query\"), (\"CALL gds.graph.project.cypher(\\n  apoc.create.uuidBase64(),\\n  'MATCH (p:Person) RETURN id(p) AS id',\\n  'MATCH\\n      (pA:Person)-[knows:KNOWS]-(pB:Person),\\n      (pA)<-[:HAS_CREATOR]-(m1:Message)-[r:REPLY_OF]-(m2:Message)-[:HAS_CREATOR]->(pB)\\n    WITH\\n      id(pA) AS source,\\n      id(pB) AS target,\\n      count(r) AS numInteractions\\n    RETURN\\n      source,\\n      target,\\n      CASE WHEN round(40-sqrt(numInteractions)) > 1 THEN round(40-sqrt(numInteractions)) ELSE 1 END AS weight\\n  '\\n)\\nYIELD graphName\\n\\nWITH person1, person2, graphName\\n\\nCALL gds.shortestPath.dijkstra.stream(\\n    graphName, {sourceNode: person1, targetNode: person2, relationshipWeightProperty: 'weight'}\\n)\\nYIELD index, sourceNode, targetNode, totalCost, nodeIds, costs, path\\n\\nWITH path, totalCost, graphName\\n\\nCALL gds.graph.drop(graphName, false)\\nYIELD graphName as graphNameremoved\\n\\nRETURN [person IN nodes(path) | person.id] AS personIdsInPath, totalCost AS pathWeight\\nLIMIT 1\", \"Unparsed input\")] }. Check Cypher syntax before proceeding."
+    },
+    {
+      "id": "bi-1",
+      "category": "BI",
+      "status": "pass",
+      "runs": 5,
+      "rows": 21,
+      "min_ms": 98.97,
+      "median_ms": 99.63,
+      "max_ms": 105.8,
+      "error": null
+    },
+    {
+      "id": "bi-2",
+      "category": "BI",
+      "status": "pass",
+      "runs": 5,
+      "rows": 77,
+      "min_ms": 110.65,
+      "median_ms": 115.79,
+      "max_ms": 124.56,
+      "error": null
+    },
+    {
+      "id": "bi-3",
+      "category": "BI",
+      "status": "pass",
+      "runs": 5,
+      "rows": 20,
+      "min_ms": 796.48,
+      "median_ms": 809.12,
+      "max_ms": 830.04,
+      "error": null
+    },
+    {
+      "id": "bi-4",
+      "category": "BI",
+      "status": "fail",
+      "runs": 0,
+      "rows": null,
+      "min_ms": null,
+      "median_ms": null,
+      "max_ms": null,
+      "error": "HTTP 400: Query syntax error: Parsing Failure: OpenCypherParsingError { errors: [(\"CALL {\\n  WITH topForums\\n  UNWIND topForums AS topForum1\\n  MATCH (topForum1)-[:CONTAINER_OF]->(post:Post)<-[:REPLY_OF*0..]-(message:Message)-[:HAS_CREATOR]->(person:Person)<-[:HAS_MEMBER]-(topForum2:Forum)\\n  WITH person, message, topForum2\\n  WHERE topForum2 IN topForums\\n  RETURN person, count(DISTINCT message) AS messageCount\\nUNION ALL\\n  WITH topForums\\n  UNWIND topForums AS topForum1\\n  MATCH (person:Person)<-[:HAS_MEMBER]-(topForum1:Forum)\\n  RETURN person, 0 AS messageCount\\n}\\nRETURN\\n  person.id AS personId,\\n  person.firstName AS personFirstName,\\n  person.lastName AS personLastName,\\n  person.creationDate AS personCreationDate,\\n  sum(messageCount) AS messageCount\\nORDER BY\\n  messageCount DESC,\\n  person.id ASC\\nLIMIT 100\", \"Unexpected tokens after query\"), (\"CALL {\\n  WITH topForums\\n  UNWIND topForums AS topForum1\\n  MATCH (topForum1)-[:CONTAINER_OF]->(post:Post)<-[:REPLY_OF*0..]-(message:Message)-[:HAS_CREATOR]->(person:Person)<-[:HAS_MEMBER]-(topForum2:Forum)\\n  WITH person, message, topForum2\\n  WHERE topForum2 IN topForums\\n  RETURN person, count(DISTINCT message) AS messageCount\\nUNION ALL\\n  WITH topForums\\n  UNWIND topForums AS topForum1\\n  MATCH (person:Person)<-[:HAS_MEMBER]-(topForum1:Forum)\\n  RETURN person, 0 AS messageCount\\n}\\nRETURN\\n  person.id AS personId,\\n  person.firstName AS personFirstName,\\n  person.lastName AS personLastName,\\n  person.creationDate AS personCreationDate,\\n  sum(messageCount) AS messageCount\\nORDER BY\\n  messageCount DESC,\\n  person.id ASC\\nLIMIT 100\", \"Unparsed input\")] }. Check Cypher syntax before proceeding."
+    },
+    {
+      "id": "bi-5",
+      "category": "BI",
+      "status": "pass",
+      "runs": 5,
+      "rows": 100,
+      "min_ms": 296.25,
+      "median_ms": 309.61,
+      "max_ms": 326.85,
+      "error": null
+    },
+    {
+      "id": "bi-6",
+      "category": "BI",
+      "status": "pass",
+      "runs": 5,
+      "rows": 100,
+      "min_ms": 1466.14,
+      "median_ms": 1476.64,
+      "max_ms": 1493.73,
+      "error": null
+    },
+    {
+      "id": "bi-7",
+      "category": "BI",
+      "status": "pass",
+      "runs": 5,
+      "rows": 100,
+      "min_ms": 160.28,
+      "median_ms": 166.96,
+      "max_ms": 168.11,
+      "error": null
+    },
+    {
+      "id": "bi-8",
+      "category": "BI",
+      "status": "pass",
+      "runs": 5,
+      "rows": 100,
+      "min_ms": 16078.24,
+      "median_ms": 16212.43,
+      "max_ms": 16514.16,
+      "error": null
+    },
+    {
+      "id": "bi-9",
+      "category": "BI",
+      "status": "pass",
+      "runs": 5,
+      "rows": 100,
+      "min_ms": 1181.38,
+      "median_ms": 1235.06,
+      "max_ms": 1260.4,
+      "error": null
+    },
+    {
+      "id": "bi-10",
+      "category": "BI",
+      "status": "fail",
+      "runs": 0,
+      "rows": null,
+      "min_ms": null,
+      "median_ms": null,
+      "max_ms": null,
+      "error": "HTTP 400: Query syntax error: Parsing Failure: OpenCypherParsingError { errors: [(\"CALL apoc.path.subgraphNodes(startPerson, {\\n\\trelationshipFilter: \\\"KNOWS\\\",\\n    minLevel: 1,\\n    maxLevel: $maxPathDistance\\n})\\nYIELD node\\nWITH nodesCloserThanMinPathDistance, collect(DISTINCT node) AS nodesCloserThanMaxPathDistance\\nWITH [n IN nodesCloserThanMaxPathDistance WHERE NOT n IN nodesCloserThanMinPathDistance] AS expertCandidatePersons\\nUNWIND expertCandidatePersons AS expertCandidatePerson\\nMATCH\\n  (expertCandidatePerson)-[:IS_LOCATED_IN]->(:City)-[:IS_PART_OF]->(:Country {name: $country}),\\n  (expertCandidatePerson)<-[:HAS_CREATOR]-(message:Message)-[:HAS_TAG]->(:Tag)-[:HAS_TYPE]->\\n  (:TagClass {name: $tagClass})\\nMATCH\\n  (message)-[:HAS_TAG]->(tag:Tag)\\nRETURN\\n  expertCandidatePerson.id,\\n  tag.name,\\n  count(DISTINCT message) AS messageCount\\nORDER BY\\n  messageCount DESC,\\n  tag.name ASC,\\n  expertCandidatePerson.id ASC\\nLIMIT 100\", \"Unexpected tokens after query\"), (\"CALL apoc.path.subgraphNodes(startPerson, {\\n\\trelationshipFilter: \\\"KNOWS\\\",\\n    minLevel: 1,\\n    maxLevel: $maxPathDistance\\n})\\nYIELD node\\nWITH nodesCloserThanMinPathDistance, collect(DISTINCT node) AS nodesCloserThanMaxPathDistance\\nWITH [n IN nodesCloserThanMaxPathDistance WHERE NOT n IN nodesCloserThanMinPathDistance] AS expertCandidatePersons\\nUNWIND expertCandidatePersons AS expertCandidatePerson\\nMATCH\\n  (expertCandidatePerson)-[:IS_LOCATED_IN]->(:City)-[:IS_PART_OF]->(:Country {name: $country}),\\n  (expertCandidatePerson)<-[:HAS_CREATOR]-(message:Message)-[:HAS_TAG]->(:Tag)-[:HAS_TYPE]->\\n  (:TagClass {name: $tagClass})\\nMATCH\\n  (message)-[:HAS_TAG]->(tag:Tag)\\nRETURN\\n  expertCandidatePerson.id,\\n  tag.name,\\n  count(DISTINCT message) AS messageCount\\nORDER BY\\n  messageCount DESC,\\n  tag.name ASC,\\n  expertCandidatePerson.id ASC\\nLIMIT 100\", \"Unparsed input\")] }. Check Cypher syntax before proceeding."
+    },
+    {
+      "id": "bi-11",
+      "category": "BI",
+      "status": "pass",
+      "runs": 5,
+      "rows": 1,
+      "min_ms": 85.94,
+      "median_ms": 91.01,
+      "max_ms": 93.18,
+      "error": null
+    },
+    {
+      "id": "bi-12",
+      "category": "BI",
+      "status": "pass",
+      "runs": 5,
+      "rows": 557,
+      "min_ms": 876.45,
+      "median_ms": 892.19,
+      "max_ms": 928.71,
+      "error": null
+    },
+    {
+      "id": "bi-13",
+      "category": "BI",
+      "status": "pass",
+      "runs": 5,
+      "rows": 57,
+      "min_ms": 3531.12,
+      "median_ms": 3575.34,
+      "max_ms": 6169.83,
+      "error": null
+    },
+    {
+      "id": "bi-14",
+      "category": "BI",
+      "status": "pass",
+      "runs": 5,
+      "rows": 100,
+      "min_ms": 4883.98,
+      "median_ms": 4898.18,
+      "max_ms": 4969.36,
+      "error": null
+    },
+    {
+      "id": "bi-15",
+      "category": "BI",
+      "status": "fail",
+      "runs": 0,
+      "rows": null,
+      "min_ms": null,
+      "median_ms": null,
+      "max_ms": null,
+      "error": "HTTP 400: Query syntax error: Parsing Failure: OpenCypherParsingError { errors: [(\"CALL gds.graph.project.cypher(\\n  'bi15',\\n  'MATCH (p:Person) RETURN id(p) AS id',\\n  'MATCH (pA:Person)-[knows:KNOWS]-(pB:Person)\\n      OPTIONAL MATCH (pA)<-[:HAS_CREATOR]-(m1:Message)-[r:REPLY_OF]-(m2:Message)-[:HAS_CREATOR]->(pB)\\n      OPTIONAL MATCH (m1)-[:REPLY_OF*0..]->(:Post)<-[:CONTAINER_OF]-(forum:Forum)\\n              WHERE forum.creationDate >= datetime({epochmillis: ' + $startDate.epochMillis + '})\\n                AND forum.creationDate <= datetime({epochmillis: ' + $endDate.epochMillis   + '})\\n      WITH pA, pB,\\n          sum(CASE forum IS NOT NULL\\n              WHEN true THEN\\n                  CASE (m1:Post OR m2:Post) WHEN true THEN 1.0\\n                  ELSE 0.5 END\\n              ELSE 0.0 END\\n          ) AS w\\n      RETURN\\n        id(pA) AS source,\\n        id(pB) AS target,\\n        1/(w+1) AS weight\\n  '\\n)\\nYIELD graphName\\n\\nWITH count(*) AS dummy\\n\\nCALL {\\n  MATCH (person1:Person {id: $person1Id}), (person2:Person {id: $person2Id})\\n  CALL gds.shortestPath.dijkstra.stream('bi15', {\\n    sourceNode: person1,\\n    targetNode: person2,\\n    relationshipWeightProperty: 'weight'\\n  })\\n  YIELD index, sourceNode, targetNode, totalCost, nodeIds, costs, path\\n  RETURN totalCost\\n  UNION ALL\\n  RETURN -1.0 AS totalCost\\n}\\nRETURN max(totalCost) AS totalCost\", \"Unexpected tokens after query\"), (\"CALL gds.graph.project.cypher(\\n  'bi15',\\n  'MATCH (p:Person) RETURN id(p) AS id',\\n  'MATCH (pA:Person)-[knows:KNOWS]-(pB:Person)\\n      OPTIONAL MATCH (pA)<-[:HAS_CREATOR]-(m1:Message)-[r:REPLY_OF]-(m2:Message)-[:HAS_CREATOR]->(pB)\\n      OPTIONAL MATCH (m1)-[:REPLY_OF*0..]->(:Post)<-[:CONTAINER_OF]-(forum:Forum)\\n              WHERE forum.creationDate >= datetime({epochmillis: ' + $startDate.epochMillis + '})\\n                AND forum.creationDate <= datetime({epochmillis: ' + $endDate.epochMillis   + '})\\n      WITH pA, pB,\\n          sum(CASE forum IS NOT NULL\\n              WHEN true THEN\\n                  CASE (m1:Post OR m2:Post) WHEN true THEN 1.0\\n                  ELSE 0.5 END\\n              ELSE 0.0 END\\n          ) AS w\\n      RETURN\\n        id(pA) AS source,\\n        id(pB) AS target,\\n        1/(w+1) AS weight\\n  '\\n)\\nYIELD graphName\\n\\nWITH count(*) AS dummy\\n\\nCALL {\\n  MATCH (person1:Person {id: $person1Id}), (person2:Person {id: $person2Id})\\n  CALL gds.shortestPath.dijkstra.stream('bi15', {\\n    sourceNode: person1,\\n    targetNode: person2,\\n    relationshipWeightProperty: 'weight'\\n  })\\n  YIELD index, sourceNode, targetNode, totalCost, nodeIds, costs, path\\n  RETURN totalCost\\n  UNION ALL\\n  RETURN -1.0 AS totalCost\\n}\\nRETURN max(totalCost) AS totalCost\", \"Unparsed input\")] }. Check Cypher syntax before proceeding."
+    },
+    {
+      "id": "bi-16",
+      "category": "BI",
+      "status": "fail",
+      "runs": 0,
+      "rows": null,
+      "min_ms": null,
+      "median_ms": null,
+      "max_ms": null,
+      "error": "HTTP 400: Query syntax error: Parsing Failure: OpenCypherParsingError { errors: [(\"CALL {\\n  WITH paramTagX, paramDateX\\n  MATCH (person1:Person)<-[:HAS_CREATOR]-(message1:Message)-[:HAS_TAG]->(tag:Tag {name: paramTagX})\\n  WHERE date(message1.creationDate) = date(paramDateX)\\n  OPTIONAL MATCH (person1)-[:KNOWS]-(person2:Person)<-[:HAS_CREATOR]-(message2:Message)-[:HAS_TAG]->(tag)\\n  WHERE date(message2.creationDate) = date(paramDateX)\\n  WITH person1, count(DISTINCT message1) AS cm, count(DISTINCT person2) AS cp2\\n  WHERE cp2 <= $maxKnowsLimit\\n  RETURN person1, cm\\n}\\nWITH person1, collect({letter: paramLetter, messageCount: cm}) AS results\\nWHERE size(results) = 2\\nRETURN\\n  person1.id,\\n  [r IN results WHERE r.letter = 'A' | r.messageCount][0] AS messageCountA,\\n  [r IN results WHERE r.letter = 'B' | r.messageCount][0] AS messageCountB\\nORDER BY messageCountA + messageCountB DESC, person1.id ASC\\nLIMIT 20\", \"Unexpected tokens after query\"), (\"CALL {\\n  WITH paramTagX, paramDateX\\n  MATCH (person1:Person)<-[:HAS_CREATOR]-(message1:Message)-[:HAS_TAG]->(tag:Tag {name: paramTagX})\\n  WHERE date(message1.creationDate) = date(paramDateX)\\n  OPTIONAL MATCH (person1)-[:KNOWS]-(person2:Person)<-[:HAS_CREATOR]-(message2:Message)-[:HAS_TAG]->(tag)\\n  WHERE date(message2.creationDate) = date(paramDateX)\\n  WITH person1, count(DISTINCT message1) AS cm, count(DISTINCT person2) AS cp2\\n  WHERE cp2 <= $maxKnowsLimit\\n  RETURN person1, cm\\n}\\nWITH person1, collect({letter: paramLetter, messageCount: cm}) AS results\\nWHERE size(results) = 2\\nRETURN\\n  person1.id,\\n  [r IN results WHERE r.letter = 'A' | r.messageCount][0] AS messageCountA,\\n  [r IN results WHERE r.letter = 'B' | r.messageCount][0] AS messageCountB\\nORDER BY messageCountA + messageCountB DESC, person1.id ASC\\nLIMIT 20\", \"Unparsed input\")] }. Check Cypher syntax before proceeding."
+    },
+    {
+      "id": "bi-18",
+      "category": "BI",
+      "status": "pass",
+      "runs": 5,
+      "rows": 20,
+      "min_ms": 92.77,
+      "median_ms": 93.78,
+      "max_ms": 95.87,
+      "error": null
+    },
+    {
+      "id": "bi-19",
+      "category": "BI",
+      "status": "fail",
+      "runs": 0,
+      "rows": null,
+      "min_ms": null,
+      "median_ms": null,
+      "max_ms": null,
+      "error": "HTTP 400: Not supported: a procedure CALL here (the server answers a standalone CALL; one inside a query or a UNION is not supported)"
+    },
+    {
+      "id": "bi-20",
+      "category": "BI",
+      "status": "fail",
+      "runs": 0,
+      "rows": null,
+      "min_ms": null,
+      "median_ms": null,
+      "max_ms": null,
+      "error": "HTTP 400: Query syntax error: Parsing Failure: OpenCypherParsingError { errors: [(\"\\nWITH person1.id AS person1Id, totalCost AS totalWeight\\nORDER BY totalWeight ASC\\nWITH collect({person1Id: person1Id, totalWeight: totalWeight}) AS results\\nUNWIND results AS result\\nWITH result.person1Id AS person1Id, result.totalWeight AS totalWeight\\nWHERE totalWeight = results[0].totalWeight\\nRETURN person1Id, totalWeight\\nORDER BY person1Id ASC\\nLIMIT 20\", \"Unexpected tokens after query\"), (\"WITH person1.id AS person1Id, totalCost AS totalWeight\\nORDER BY totalWeight ASC\\nWITH collect({person1Id: person1Id, totalWeight: totalWeight}) AS results\\nUNWIND results AS result\\nWITH result.person1Id AS person1Id, result.totalWeight AS totalWeight\\nWHERE totalWeight = results[0].totalWeight\\nRETURN person1Id, totalWeight\\nORDER BY person1Id ASC\\nLIMIT 20\", \"Unparsed input\")] }. Check Cypher syntax before proceeding."
+    },
+    {
+      "id": "bi-17",
+      "category": "BI",
+      "status": "fail",
+      "runs": 0,
+      "rows": null,
+      "min_ms": null,
+      "median_ms": null,
+      "max_ms": null,
+      "error": "HTTP 408: Request Timeout"
+    }
+  ]
+}

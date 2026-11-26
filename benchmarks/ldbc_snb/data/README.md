@@ -1,38 +1,30 @@
 # LDBC SNB Data Directory
 
-This directory contains downloaded LDBC SNB datasets.
+Generated datasets land here, one directory per scale factor. They are large and
+ignored by git (`/benchmarks/ldbc_snb/data/sf*`). `mini_dataset.sql` is the one
+tracked file besides this one: a few rows per table for smoke tests.
 
-## Download Data
+## Generate and load
+
+From `benchmarks/ldbc_snb`:
 
 ```bash
-# From the benchmarks/ldbc_snb directory:
-./scripts/download_data.sh sf0.1
+bash ./scripts/download_data.sh sf1 --generate    # LDBC datagen in Docker
+python3 scripts/load_data.py --scale-factor sf1   # needs ClickHouse up: see ../README.md
 ```
 
-## Directory Structure
+## Layout
 
-After download, you'll have:
-
-```
-data/
-├── sf0.1/
-│   ├── static/
-│   │   ├── place_0_0.csv
-│   │   ├── organisation_0_0.csv
-│   │   ├── tag_0_0.csv
-│   │   ├── tagclass_0_0.csv
-│   │   └── ...
-│   └── dynamic/
-│       ├── person_0_0.csv
-│       ├── post_0_0.csv
-│       ├── comment_0_0.csv
-│       ├── forum_0_0.csv
-│       └── ...
-└── sf1/
-    └── ...
+```text
+data/sf1/
+├── .generated                      # marker: delete the directory to regenerate
+└── graphs/csv/interactive/composite-projected-fk/
+    ├── static/                     # Place, Organisation, Tag, TagClass and their edges
+    │   └── Place/part-*.csv
+    └── dynamic/                    # Person, Forum, Post, Comment and their edges
+        └── Person/part-*.csv
 ```
 
-## Note
-
-Data files are large and should NOT be committed to git.
-This directory is in .gitignore.
+The CSV files are `|`-delimited with a header row. Datagen runs as root inside its
+container, so the generated files are owned by root; remove a scale factor with
+`docker run --rm -v "$PWD/data:/d" --entrypoint rm clickhouse/clickhouse-server:25.8.11 -rf /d/sf1`.

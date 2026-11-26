@@ -209,3 +209,21 @@ jobs:
 
     - name: Test MCP server
       run: pytest clickgraph-mcp/tests -q
+
+  ldbc-harness:
+
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Setup Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.12"
+
+    - name: Install pytest
+      run: pip install pytest
+
+    - name: Test LDBC harness
+      run: pytest benchmarks/ldbc_snb/tests -q

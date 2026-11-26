@@ -1,19 +1,16 @@
-# Docker Compose for LDBC SNB Benchmark
-# This starts a ClickHouse instance configured for LDBC data
-
-version: '3.8'
+# ClickHouse for the LDBC SNB benchmark, with ClickHouse's default (unlimited)
+# memory settings. `scripts/load_data.py` applies schemas/clickhouse_ddl.sql and
+# loads the CSVs. On a host with about 8 GB for Docker, add
+# `-f docker-compose.8gb.yaml` to cap each query.
 
 services:
   clickhouse:
     image: clickhouse/clickhouse-server:25.8.11
     container_name: clickgraph-ldbc-clickhouse
     ports:
-      - "8123:8123"   # HTTP interface
-      - "9000:9000"   # Native interface
+      - "8123:8123"   # HTTP interface, used by both the loader and ClickGraph
     volumes:
       - ldbc_clickhouse_data:/var/lib/clickhouse
-      - ./schemas/clickhouse_ddl.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
-      - ./data:/data:ro
     environment:
       - CLICKHOUSE_DB=ldbc
       - CLICKHOUSE_USER=default

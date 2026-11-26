@@ -1,0 +1,15 @@
+<clickhouse>
+    <!-- The benchmark VM has 8 GB and ~2 GB is used by other containers.
+         Keep ClickHouse inside the remainder: cap each query and join, use
+         fewer threads, and spill large aggregations and sorts to disk
+         instead of letting the container get OOM-killed. -->
+    <profiles>
+        <default>
+            <max_memory_usage>3000000000</max_memory_usage>
+            <max_threads>4</max_threads>
+            <max_bytes_before_external_group_by>1000000000</max_bytes_before_external_group_by>
+            <max_bytes_before_external_sort>1000000000</max_bytes_before_external_sort>
+            <max_bytes_in_join>1500000000</max_bytes_in_join>
+        </default>
+    </profiles>
+</clickhouse>
