@@ -85,8 +85,19 @@ def run_http(
     body: object = None,
     timeout: float = 600.0,
 ) -> str:
+    params = dict(params)
+    headers = {
+        header: params.pop(key)
+        for key, header in (
+            ("user", "X-ClickHouse-User"),
+            ("password", "X-ClickHouse-Key"),
+        )
+        if params.get(key)
+    }
     endpoint = f"{url.rstrip('/')}/?{urllib.parse.urlencode(params)}"
     request = urllib.request.Request(endpoint, data=body, method="POST")
+    for header, value in headers.items():
+        request.add_header(header, value)
     if hasattr(body, "fileno"):
         request.add_header("Content-Length", str(os.fstat(body.fileno()).st_size))
     try:
@@ -116,6 +127,11 @@ def row_count(url: str, params: dict[str, str], table: str, timeout: float) -> i
     return int(text.strip())
 
 
+def csv_data_rows(path: Path) -> int:
+    with path.open("rb") as body:
+        return max(0, sum(1 for _ in body) - 1)
+
+
 def load_table(
     url: str,
     params: dict[str, str],
@@ -134,7 +150,14 @@ def load_table(
     for path in files:
         with path.open("rb") as body:
             run_http(url, dict(params, query=insert), body, timeout)
-    return row_count(url, params, table, timeout)
+    count = row_count(url, params, table, timeout)
+    expected = sum(csv_data_rows(path) for path in files)
+    if count != expected:
+        raise LoadError(
+            f"ldbc.{table}: loaded {count} rows, but the CSV files "
+            f"have {expected} data rows"
+        )
+    return count
 
 
 def main() -> int:
