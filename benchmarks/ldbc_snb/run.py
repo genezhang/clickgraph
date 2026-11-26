@@ -130,6 +130,14 @@ def parse_param_overrides(values: list[str]) -> dict[str, Any]:
 
 @dataclass
 class QueryResult:
+    """One query's outcome.
+
+    ``status`` is ``pass`` (ran and returned rows), ``empty`` (ran without an
+    error but returned no rows) or ``fail`` (any error). A zero-row answer is
+    kept apart from a pass because it can be a plan that cannot match the data,
+    in which case its latency measures nothing.
+    """
+
     id: str
     category: str
     status: str
@@ -195,6 +203,8 @@ def post_query(
             detail = str(body["error"])
         else:
             detail = str(body)
+        if not detail.strip():
+            detail = http.client.responses.get(status, "empty response body")
         return None, f"HTTP {status}: {detail}"
 
     if not isinstance(body, dict):
@@ -247,7 +257,7 @@ def benchmark_case(
     return QueryResult(
         id=case.id,
         category=case.category,
-        status="pass",
+        status="empty" if rows == 0 else "pass",
         runs=len(durations),
         rows=rows,
         min_ms=round(min(durations), 2),
@@ -263,12 +273,13 @@ def summarize(results: list[QueryResult]) -> dict[str, Any]:
         by_category[category] = {
             "total": len(subset),
             "passed": sum(1 for result in subset if result.status == "pass"),
+            "empty": sum(1 for result in subset if result.status == "empty"),
         }
-    passed = sum(1 for result in results if result.status == "pass")
     return {
         "total": len(results),
-        "passed": passed,
-        "failed": len(results) - passed,
+        "passed": sum(1 for result in results if result.status == "pass"),
+        "empty": sum(1 for result in results if result.status == "empty"),
+        "failed": sum(1 for result in results if result.status == "fail"),
         "by_category": by_category,
     }
 
@@ -287,7 +298,7 @@ def write_json(
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
-        "schema_version": 1,
+        "schema_version": 2,
         "metadata": metadata,
         "summary": summary,
         "queries": [asdict(result) for result in results],
@@ -314,15 +325,26 @@ def write_markdown(
             "",
             "## Summary",
             "",
-            "| Category | Passed | Total |",
-            "| --- | --- | --- |",
+            "| Category | Passed | Empty | Total |",
+            "| --- | --- | --- | --- |",
         ]
     )
     for category in ("IS", "IC", "BI"):
         counts = summary["by_category"][category]
-        lines.append(f"| {category} | {counts['passed']} | {counts['total']} |")
+        lines.append(
+            f"| {category} | {counts['passed']} | {counts['empty']} | {counts['total']} |"
+        )
     lines.append(
-        f"| **Total** | **{summary['passed']}** | **{summary['total']}** |"
+        f"| **Total** | **{summary['passed']}** | **{summary['empty']}** "
+        f"| **{summary['total']}** |"
+    )
+    lines.extend(
+        [
+            "",
+            "Passed: ran and returned rows. Empty: ran without an error but returned "
+            "no rows, so its latency may measure nothing (an empty answer, or a plan "
+            "that cannot match the schema). The remaining queries failed; see Failures.",
+        ]
     )
     lines.extend(
         [
@@ -334,7 +356,7 @@ def write_markdown(
         ]
     )
     for result in results:
-        status = "PASS" if result.status == "pass" else "FAIL"
+        status = {"pass": "PASS", "empty": "EMPTY"}.get(result.status, "FAIL")
         error = result.error or ""
         if len(error) > 120:
             error = error[:117] + "..."
@@ -357,7 +379,7 @@ def write_markdown(
         )
 
     lines.extend(["", "## Failures", ""])
-    failures = [result for result in results if result.status != "pass"]
+    failures = [result for result in results if result.status == "fail"]
     if not failures:
         lines.append("No failures.")
     else:
@@ -390,11 +412,16 @@ def _get(url: str, timeout: float) -> tuple[int, bytes]:
         raise HarnessError(f"malformed HTTP response from {url}: {exc}") from exc
 
 
-def check_server(base_url: str, schema: str | None, timeout: float) -> None:
+def check_server(base_url: str, schema: str | None, timeout: float) -> str | None:
+    """Check the server answers, and that ``schema`` is loaded if one is named.
+
+    Returns the version `/health` reports, or None when it reports none.
+    """
     health_url = _endpoint(base_url, "/health")
-    status, _ = _get(health_url, timeout)
+    status, health = _get(health_url, timeout)
     if status != 200:
         raise HarnessError(f"health check failed: HTTP {status} from {health_url}")
+    version = _health_version(health)
 
     if schema:
         schemas_url = _endpoint(base_url, "/schemas")
@@ -414,6 +441,16 @@ def check_server(base_url: str, schema: str | None, timeout: float) -> None:
             raise HarnessError(
                 f"schema {schema!r} not found; available: {', '.join(sorted(names)) or 'none'}"
             )
+    return version
+
+
+def _health_version(body: bytes) -> str | None:
+    try:
+        data = json.loads(body)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return None
+    version = data.get("version") if isinstance(data, dict) else None
+    return str(version) if version else None
 
 
 def git_commit() -> str | None:
@@ -428,6 +465,39 @@ def git_commit() -> str | None:
     except (OSError, subprocess.CalledProcessError):
         return None
     return completed.stdout.strip() or None
+
+
+METADATA_KEYS = (
+    "timestamp",
+    "label",
+    "url",
+    "schema",
+    "iterations",
+    "warmup",
+    "timeout_seconds",
+    "server_version",
+    "harness_commit",
+    "python",
+    "platform",
+)
+
+
+def parse_meta(values: list[str]) -> dict[str, str]:
+    meta: dict[str, str] = {}
+    for item in values:
+        key, separator, value = item.partition("=")
+        key = key.strip()
+        if not separator or not key:
+            raise HarnessError("--meta must be KEY=VALUE")
+        if key in METADATA_KEYS:
+            raise HarnessError(f"--meta cannot reuse the built-in key {key!r}")
+        meta[key] = value
+    return meta
+
+
+def _timed_out(result: QueryResult) -> bool:
+    error = result.error or ""
+    return error.startswith("HTTP 408") or error.startswith("timeout after")
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -445,6 +515,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--out-dir", type=Path, default=RESULTS_DIR)
     parser.add_argument("--label", default=None)
     parser.add_argument("--strict", action="store_true")
+    parser.add_argument(
+        "--meta",
+        action="append",
+        default=[],
+        dest="meta",
+        metavar="KEY=VALUE",
+        help="record an extra fact in the report, e.g. clickhouse=25.8.11 "
+        "(repeatable; may not reuse a built-in key)",
+    )
     return parser.parse_args(argv)
 
 
@@ -476,7 +555,8 @@ def main(argv: list[str] | None = None) -> int:
 
         overrides = load_overrides(args.params_file)
         global_params = parse_param_overrides(args.params)
-        check_server(args.url, args.schema, args.timeout)
+        extra = parse_meta(args.meta)
+        server_version = check_server(args.url, args.schema, args.timeout)
 
         results: list[QueryResult] = []
         for index, case in enumerate(cases, 1):
@@ -500,10 +580,13 @@ def main(argv: list[str] | None = None) -> int:
                     case.id, case.category, "fail", error=str(exc)
                 )
             results.append(result)
-            if result.status == "pass":
-                print(f"PASS {result.median_ms:.2f} ms ({result.rows} rows)")
-            else:
+            if result.status == "fail":
                 print(f"FAIL: {result.error}")
+            else:
+                print(
+                    f"{result.status.upper()} {result.median_ms:.2f} ms "
+                    f"({result.rows} rows)"
+                )
 
         summary = summarize(results)
         label = args.label or "ldbc"
@@ -517,16 +600,30 @@ def main(argv: list[str] | None = None) -> int:
             "iterations": args.iterations,
             "warmup": args.warmup,
             "timeout_seconds": args.timeout,
-            "commit": git_commit(),
+            "server_version": server_version,
+            "harness_commit": git_commit(),
             "python": platform.python_version(),
             "platform": platform.platform(),
+            **extra,
         }
         json_path = base.parent / (base.name + ".json")
         markdown_path = base.parent / (base.name + ".md")
         write_json(json_path, metadata, summary, results)
         write_markdown(markdown_path, metadata, summary, results)
 
-        print(f"{summary['passed']}/{summary['total']} passed")
+        print(
+            f"{summary['passed']}/{summary['total']} returned rows, "
+            f"{summary['empty']} empty, {summary['failed']} failed"
+        )
+        timed_out = [result.id for result in results if _timed_out(result)]
+        if timed_out:
+            print(
+                "note: ClickGraph stopped waiting for " + ", ".join(timed_out)
+                + ", but ClickHouse may still be running the query and slowing "
+                "later ones; check system.processes (KILL QUERY) before trusting "
+                "later timings",
+                file=sys.stderr,
+            )
         print(f"JSON: {json_path}")
         print(f"Markdown: {markdown_path}")
         return 1 if args.strict and summary["failed"] else 0

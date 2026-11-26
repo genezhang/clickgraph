@@ -1,5 +1,7 @@
-# ClickHouse for the LDBC SNB benchmark.
-# `scripts/load_data.py` applies schemas/clickhouse_ddl.sql and loads the CSVs.
+# ClickHouse for the LDBC SNB benchmark, with ClickHouse's default (unlimited)
+# memory settings. `scripts/load_data.py` applies schemas/clickhouse_ddl.sql and
+# loads the CSVs. On a host with about 8 GB for Docker, add
+# `-f docker-compose.8gb.yaml` to cap each query.
 
 services:
   clickhouse:
@@ -9,7 +11,6 @@ services:
       - "8123:8123"   # HTTP interface, used by both the loader and ClickGraph
     volumes:
       - ldbc_clickhouse_data:/var/lib/clickhouse
-      - ./schemas/clickhouse_memory.xml:/etc/clickhouse-server/users.d/ldbc-memory.xml:ro
     environment:
       - CLICKHOUSE_DB=ldbc
       - CLICKHOUSE_USER=default

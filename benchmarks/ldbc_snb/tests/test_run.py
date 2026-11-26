@@ -76,6 +76,7 @@ def test_parse_param_overrides_rejects_missing_equals():
 class FakeHandler(BaseHTTPRequestHandler):
     responses: list[tuple[int, object]] = []
     requests: list[dict] = []
+    health: bytes = b"OK"
 
     def do_POST(self):
         length = int(self.headers.get("Content-Length", 0))
@@ -90,7 +91,7 @@ class FakeHandler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         if self.path == "/health":
-            body = b"OK"
+            body = type(self).health
         elif self.path == "/schemas":
             body = json.dumps({"schemas": [{"name": "ldbc"}]}).encode()
         else:
@@ -108,6 +109,7 @@ class FakeHandler(BaseHTTPRequestHandler):
 def fake_server():
     FakeHandler.responses = []
     FakeHandler.requests = []
+    FakeHandler.health = b"OK"
     server = ThreadingHTTPServer(("127.0.0.1", 0), FakeHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -178,20 +180,37 @@ def test_benchmark_case_stops_on_a_failed_measured_run(fake_server):
     assert len(handler.requests) == 2
 
 
-def test_summarize_counts_passes_and_failures_by_category():
+def test_summarize_counts_passes_empties_and_failures_by_category():
     results = [
         run.QueryResult("short-1", "IS", "pass", rows=1),
         run.QueryResult("short-2", "IS", "fail", error="bad"),
+        run.QueryResult("short-6", "IS", "empty", rows=0),
         run.QueryResult("bi-1", "BI", "pass", rows=2),
     ]
 
     summary = run.summarize(results)
 
-    assert summary["total"] == 3
+    assert summary["total"] == 4
     assert summary["passed"] == 2
+    assert summary["empty"] == 1
     assert summary["failed"] == 1
-    assert summary["by_category"]["IS"] == {"total": 2, "passed": 1}
-    assert summary["by_category"]["BI"] == {"total": 1, "passed": 1}
+    assert summary["by_category"]["IS"] == {"total": 3, "passed": 1, "empty": 1}
+    assert summary["by_category"]["BI"] == {"total": 1, "passed": 1, "empty": 0}
+
+
+def test_benchmark_case_reports_zero_rows_as_empty_not_pass(fake_server):
+    url, handler = fake_server
+    handler.responses = [(200, {"results": []})] * 3
+    case = run.QueryCase("short-6", "IS", Path("short-6.cypher"))
+
+    result = run.benchmark_case(
+        case, "RETURN 1", {}, url, None, iterations=3, warmup=0, timeout=5
+    )
+
+    assert result.status == "empty"
+    assert result.rows == 0
+    assert result.runs == 3
+    assert result.median_ms is not None
 
 
 def test_write_json_round_trips_query_results(tmp_path):
@@ -202,7 +221,7 @@ def test_write_json_round_trips_query_results(tmp_path):
     run.write_json(path, {"label": "test"}, run.summarize(results), results)
 
     data = json.loads(path.read_text())
-    assert data["schema_version"] == 1
+    assert data["schema_version"] == 2
     assert data["metadata"]["label"] == "test"
     assert data["summary"]["passed"] == 1
     assert data["queries"][0]["id"] == "short-1"
@@ -216,16 +235,22 @@ def test_write_markdown_contains_summary_and_full_failure_text(tmp_path):
                         min_ms=1.0, median_ms=2.0, max_ms=3.0),
         run.QueryResult("short-2", "IS", "fail",
                         error="server said no | because reasons\nsecond line"),
+        run.QueryResult("short-6", "IS", "empty", runs=5, rows=0,
+                        min_ms=1.0, median_ms=2.0, max_ms=3.0),
     ]
 
     run.write_markdown(path, {"label": "test"}, run.summarize(results), results)
     text = path.read_text()
 
     assert "# LDBC SNB Benchmark — test" in text
-    assert "| **Total** | **1** | **2** |" in text
+    assert "| Category | Passed | Empty | Total |" in text
+    assert "| **Total** | **1** | **1** | **3** |" in text
+    assert "| short-6 | IS | EMPTY |" in text
+    assert "Empty: ran without an error but returned no rows" in text
     assert "## Failures" in text
     assert "server said no | because reasons" in text
     assert "second line" in text
+    assert "### short-6" not in text
 
 
 def test_check_server_accepts_healthy_server_and_known_schema(fake_server):
@@ -363,3 +388,81 @@ def test_main_preserves_dots_in_report_label(fake_server, tmp_path):
     assert code == 0
     assert list(tmp_path.glob("*_sf1.mini.json"))
     assert list(tmp_path.glob("*_sf1.mini.md"))
+
+
+def test_post_query_names_the_status_when_the_error_body_is_empty(fake_server):
+    url, handler = fake_server
+    handler.responses = [(408, "")]
+
+    assert run.post_query(url, "RETURN 1", {}, None, 5) == (
+        None,
+        "HTTP 408: Request Timeout",
+    )
+
+
+def test_check_server_returns_the_version_the_server_reports(fake_server):
+    url, handler = fake_server
+    handler.health = b'{"service":"clickgraph","status":"healthy","version":"0.6.8-dev"}'
+
+    assert run.check_server(url, None, 5) == "0.6.8-dev"
+
+
+def test_check_server_returns_none_when_health_has_no_version(fake_server):
+    url, _ = fake_server
+
+    assert run.check_server(url, None, 5) is None
+
+
+def test_parse_meta_accepts_pairs_and_rejects_the_rest():
+    assert run.parse_meta(["clickhouse=25.8.11", "note=a=b"]) == {
+        "clickhouse": "25.8.11",
+        "note": "a=b",
+    }
+    with pytest.raises(run.HarnessError, match="KEY=VALUE"):
+        run.parse_meta(["no-equals"])
+    with pytest.raises(run.HarnessError, match="built-in key"):
+        run.parse_meta(["schema=other"])
+
+
+def test_main_records_server_version_harness_commit_and_meta(fake_server, tmp_path):
+    url, handler = fake_server
+    handler.health = b'{"version":"0.6.8-dev"}'
+    handler.responses = [(200, {"results": [{"a": 1}]})]
+
+    code = run.main([
+        "--url", url, "--query", "short-1", "--iterations", "1",
+        "--warmup", "0", "--label", "test", "--out-dir", str(tmp_path),
+        "--meta", "clickhouse=25.8.11",
+    ])
+
+    assert code == 0
+    metadata = json.loads(next(tmp_path.glob("*_test.json")).read_text())["metadata"]
+    assert metadata["server_version"] == "0.6.8-dev"
+    assert metadata["clickhouse"] == "25.8.11"
+    assert "harness_commit" in metadata
+    assert "commit" not in metadata
+
+
+def test_main_rejects_a_bad_meta_before_touching_the_server(tmp_path, capsys):
+    code = run.main([
+        "--url", "http://127.0.0.1:1", "--query", "short-1",
+        "--meta", "oops", "--out-dir", str(tmp_path),
+    ])
+
+    assert code == 2
+    assert "KEY=VALUE" in capsys.readouterr().err
+
+
+def test_main_warns_that_clickhouse_may_still_run_a_timed_out_query(
+    fake_server, tmp_path, capsys
+):
+    url, handler = fake_server
+    handler.responses = [(408, "")]
+
+    code = run.main([
+        "--url", url, "--query", "short-1", "--iterations", "1",
+        "--warmup", "0", "--label", "test", "--out-dir", str(tmp_path),
+    ])
+
+    assert code == 0
+    assert "ClickHouse may still be running" in capsys.readouterr().err

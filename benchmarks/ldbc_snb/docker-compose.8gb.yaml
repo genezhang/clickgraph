@@ -1,0 +1,14 @@
+# Optional override for a host with about 8 GB for Docker:
+#
+#   docker compose -f docker-compose.ldbc.yaml -f docker-compose.8gb.yaml up -d
+#
+# It caps each query at 3 GB, uses four threads and spills large aggregations and
+# sorts to disk (schemas/clickhouse_memory.xml), instead of letting the container
+# be OOM-killed. At SF1 the cap makes short-2, bi-6, bi-8, bi-12, bi-13, bi-14 and
+# bi-17 fail with "Query memory limit exceeded", so a run with it measures the
+# host as much as ClickGraph. Do not use it for numbers you want to compare.
+
+services:
+  clickhouse:
+    volumes:
+      - ./schemas/clickhouse_memory.xml:/etc/clickhouse-server/users.d/ldbc-memory.xml:ro

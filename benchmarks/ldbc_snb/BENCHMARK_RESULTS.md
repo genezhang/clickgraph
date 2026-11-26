@@ -159,7 +159,7 @@ Skipped: bi-10, bi-15, bi-16, bi-19, bi-20 (unsupported language features / no o
 cargo test  # 1114+ unit tests including SQL generation tests
 
 # sf1 (~3M messages) — load data into ClickHouse
-bash benchmarks/ldbc_snb/schemas/sf1_load_data.sh
+python3 benchmarks/ldbc_snb/scripts/load_data.py --scale-factor sf1
 
 # sf10 (~25M messages) — apply column name normalization
 curl 'http://localhost:18123/?user=test_user&password=test_pass' \
