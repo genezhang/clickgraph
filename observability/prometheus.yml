@@ -1,0 +1,9 @@
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+  - job_name: clickgraph
+    static_configs:
+      # ClickGraph runs on the host; the compose file maps host.docker.internal.
+      - targets: ["host.docker.internal:7475"]

@@ -773,6 +773,9 @@ curl http://localhost:7475/metrics
 # Prometheus-style metrics
 ```
 
+For a local Prometheus, Tempo and Grafana stack with a provisioned dashboard, see
+[`observability/`](../../observability/README.md).
+
 ### Logging Configuration
 
 ```yaml
