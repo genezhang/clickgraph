@@ -590,6 +590,7 @@ impl FunctionMapper for ClickhouseFunctionMapper {
             // Every type compares (a `Map`, a `Dynamic` by its type first).
             fixed_order: |l| format!("arraySort({l})"),
             mixed_order: Some(mixed_list_order_key),
+            value_order: Some(order_element_key),
             // An unmatched row's `Array` column is its default, `[]`, also
             // under `join_use_nulls = 1`.
             or_empty: None,

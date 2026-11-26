@@ -11547,3 +11547,61 @@ fn a_list_of_scalars_of_unproven_type_is_ordered_by_the_element_key_1491() {
         assert!(!keyed(q), "{q}");
     }
 }
+
+/// #1491's element key orders a map key's value too: a map holds every value
+/// as a `Dynamic`, which ClickHouse refuses in an ORDER BY key (Code 44). A
+/// map key a WITH projected as its own typed column orders natively.
+#[test]
+fn a_map_keys_dynamic_value_is_ordered_by_the_element_key() {
+    let lowered = |q: &str| squash(&sql(q));
+    let keyed = |q: &str| lowered(q).contains("ORDER BY tuple(multiIf(");
+    for q in [
+        "MATCH (u:User) WITH collect({a: u.user_id}) AS ms RETURN ms[0].a AS a ORDER BY a",
+        "MATCH (u:User) WITH collect({a: u.user_id}) AS ms \
+         WITH ms[0].a AS a RETURN a ORDER BY a",
+        "MATCH (u:User) WITH collect({a: u.user_id}) AS ms \
+         RETURN ms[0].a AS a ORDER BY ms[0].a + 1",
+        "MATCH (u:User) WITH collect({a: u.user_id}) AS ms \
+         RETURN ms[0].a AS a ORDER BY ms[0].a",
+        "MATCH (u:User) WITH collect({a: u.user_id}) AS ms \
+         RETURN ms[0]['a'] AS a ORDER BY ms[0]['a']",
+    ] {
+        assert!(keyed(q), "{q}: {}", lowered(q));
+    }
+    // A map key a WITH projected as its own typed column (a collected map
+    // read directly, a map literal) orders natively.
+    for q in [
+        "MATCH (u:User) WITH collect({a: u.user_id})[0] AS m RETURN m.a AS a ORDER BY a",
+        "MATCH (u:User) WITH {n: u.name} AS m RETURN m.n AS n ORDER BY n",
+    ] {
+        assert!(!keyed(q), "{q}: {}", lowered(q));
+    }
+}
+
+#[test]
+fn a_map_keys_dynamic_value_is_grouped_by_its_key() {
+    // ClickHouse groups no `Dynamic` (Code 44); the value is grouped by the
+    // same key DISTINCT and UNION use.
+    has(
+        "MATCH (u:User) WITH collect({a: u.user_id}) AS ms \
+         WITH ms[0].a AS a, count(*) AS c RETURN a, c",
+        &["GROUP BY multiIf(", "any(arrayElementOrNull("],
+    );
+    has(
+        "MATCH (u:User) WITH collect({a: u.user_id}) AS ms \
+         RETURN DISTINCT ms[0].a AS a",
+        &["GROUP BY multiIf("],
+    );
+    // Through later WITHs too: the segment that read the key has closed.
+    has(
+        "MATCH (u:User) WITH collect({a: u.user_id}) AS ms \
+         WITH ms[0].a AS a WITH a AS b, count(*) AS c RETURN b, c",
+        &["GROUP BY multiIf("],
+    );
+    // A map key a WITH projected as its own typed column groups natively.
+    has(
+        "MATCH (u:User) WITH collect({a: u.user_id})[0] AS m \
+         WITH m.a AS a, count(*) AS c RETURN a, c",
+        &["GROUP BY w1.v1__k0"],
+    );
+}
