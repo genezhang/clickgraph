@@ -6991,12 +6991,6 @@ fn a_map_keeps_its_values_types() {
             "MATCH (u:User) WITH {inner: {n: u.name}} AS m RETURN m.inner.n AS n",
             "a property of a map",
         ),
-        // A map whose keys are not known (a parameter, a list's element).
-        (
-            "UNWIND [{a: 1}] AS m RETURN m.a AS a",
-            "a property of a map",
-        ),
-        ("UNWIND [{a: 1}] AS m RETURN m['a'] AS a", "a key of a map"),
         (
             "WITH {days: 5} AS m RETURN duration(m) AS d",
             "duration() of a map",
@@ -7021,6 +7015,25 @@ fn a_map_keeps_its_values_types() {
     ] {
         not_lowered(q, why);
     }
+}
+
+/// A map's keys through UNWIND: the element keeps them, so `m.k` and
+/// `m['k']` read the key's value rather than refusing the type.
+#[test]
+fn a_map_unwound_reads_its_keys() {
+    has(
+        "UNWIND [{a: 1}] AS m RETURN m.a AS a, m['a'] AS b",
+        &[r#"['a'] AS "a""#, r#"['a'] AS "b""#],
+    );
+    // A key the row's map does not have: its own NULL.
+    has(
+        "UNWIND [{a: 1}, {b: 2}] AS m RETURN m.a AS a",
+        &[r#"['a'] AS "a""#],
+    );
+    has(
+        "MATCH (u:User) WITH collect({a: u.name}) AS ms UNWIND ms AS m RETURN m.a AS a",
+        &[r#"['a'] AS "a""#],
+    );
 }
 
 /// S8d: the schema of the composite-id walks: accounts by `(bank, num)`.
