@@ -1,33 +1,45 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "metadata": {
-    "timestamp": "2026-11-24T18:50:05+00:00",
+    "timestamp": "2026-11-26T04:28:21+00:00",
     "label": "sf1",
-    "url": "http://localhost:7475",
+    "url": "http://localhost:7476",
     "schema": "ldbc_snb",
     "iterations": 5,
     "warmup": 1,
     "timeout_seconds": 300.0,
-    "commit": "6c3a958c",
-    "python": "3.15.2",
-    "platform": "macOS-27.2.1-arm64-arm-64bit-Mach-O"
+    "server_version": "0.6.8-dev",
+    "harness_commit": "47b21a92",
+    "python": "3.14.4",
+    "platform": "Linux-7.0.0-43-generic-x86_64-with-glibc2.43",
+    "clickhouse": "25.8.11",
+    "memory_profile": "default-unlimited",
+    "schema_file": "benchmarks/ldbc_snb/schemas/ldbc_snb_complete.yaml",
+    "host": "Linux, 32 cores, 121 GB",
+    "data": "LDBC datagen 0.5.1 SF1 (composite-projected-fk)",
+    "run_order": "canonical, except bi-17 last: its timeout leaves ClickHouse busy for a while and slows the next query",
+    "orphan_cleanup": "queries still running 1 s after the 300 s timeout were killed in ClickHouse"
   },
   "summary": {
     "total": 41,
-    "passed": 29,
-    "failed": 12,
+    "passed": 33,
+    "empty": 0,
+    "failed": 8,
     "by_category": {
       "IS": {
         "total": 7,
-        "passed": 6
+        "passed": 7,
+        "empty": 0
       },
       "IC": {
         "total": 14,
-        "passed": 12
+        "passed": 13,
+        "empty": 0
       },
       "BI": {
         "total": 20,
-        "passed": 11
+        "passed": 13,
+        "empty": 0
       }
     }
   },
@@ -38,21 +50,21 @@
       "status": "pass",
       "runs": 5,
       "rows": 1,
-      "min_ms": 4.71,
-      "median_ms": 5.08,
-      "max_ms": 5.88,
+      "min_ms": 5.74,
+      "median_ms": 5.79,
+      "max_ms": 8.24,
       "error": null
     },
     {
       "id": "short-2",
       "category": "IS",
-      "status": "fail",
-      "runs": 0,
-      "rows": null,
-      "min_ms": null,
-      "median_ms": null,
-      "max_ms": null,
-      "error": "HTTP 500: Executor error: I/O error while reading results: bad response: {\"exception\": \"Code: 241. DB::Exception: Query memory limit exceeded: would use 2.80 GiB (attempt to allocate chunk of 4.08 MiB bytes), maximum: 2.79 GiB: While executing FillingRightJoinSide. (MEMORY_LIMIT_EXCEEDED) (version 25.8.11.66 (official build))\"}"
+      "status": "pass",
+      "runs": 5,
+      "rows": 10,
+      "min_ms": 1691.05,
+      "median_ms": 1702.75,
+      "max_ms": 1706.5,
+      "error": null
     },
     {
       "id": "short-3",
@@ -60,9 +72,9 @@
       "status": "pass",
       "runs": 5,
       "rows": 18,
-      "min_ms": 6.59,
-      "median_ms": 7.43,
-      "max_ms": 11.03,
+      "min_ms": 4.61,
+      "median_ms": 5.43,
+      "max_ms": 7.92,
       "error": null
     },
     {
@@ -71,9 +83,9 @@
       "status": "pass",
       "runs": 5,
       "rows": 1,
-      "min_ms": 4.19,
-      "median_ms": 4.53,
-      "max_ms": 4.77,
+      "min_ms": 5.99,
+      "median_ms": 6.28,
+      "max_ms": 6.81,
       "error": null
     },
     {
@@ -82,9 +94,9 @@
       "status": "pass",
       "runs": 5,
       "rows": 1,
-      "min_ms": 5.54,
-      "median_ms": 6.03,
-      "max_ms": 6.29,
+      "min_ms": 57.14,
+      "median_ms": 60.97,
+      "max_ms": 66.51,
       "error": null
     },
     {
@@ -92,10 +104,10 @@
       "category": "IS",
       "status": "pass",
       "runs": 5,
-      "rows": 0,
-      "min_ms": 1.64,
-      "median_ms": 1.72,
-      "max_ms": 2.11,
+      "rows": 1,
+      "min_ms": 919.43,
+      "median_ms": 943.87,
+      "max_ms": 981.74,
       "error": null
     },
     {
@@ -104,9 +116,9 @@
       "status": "pass",
       "runs": 5,
       "rows": 2,
-      "min_ms": 92.81,
-      "median_ms": 98.14,
-      "max_ms": 109.84,
+      "min_ms": 189.48,
+      "median_ms": 199.34,
+      "max_ms": 206.56,
       "error": null
     },
     {
@@ -115,9 +127,9 @@
       "status": "pass",
       "runs": 5,
       "rows": 7,
-      "min_ms": 295.45,
-      "median_ms": 297.27,
-      "max_ms": 299.51,
+      "min_ms": 1878.38,
+      "median_ms": 1882.37,
+      "max_ms": 1909.85,
       "error": null
     },
     {
@@ -126,21 +138,21 @@
       "status": "pass",
       "runs": 5,
       "rows": 20,
-      "min_ms": 116.83,
-      "median_ms": 135.77,
-      "max_ms": 143.23,
+      "min_ms": 92.72,
+      "median_ms": 104.73,
+      "max_ms": 113.4,
       "error": null
     },
     {
       "id": "complex-3",
       "category": "IC",
-      "status": "fail",
-      "runs": 0,
-      "rows": null,
-      "min_ms": null,
-      "median_ms": null,
-      "max_ms": null,
-      "error": "HTTP 400: Not supported: a node or relationship as a value (in a list, collect(), CASE \u2026)"
+      "status": "pass",
+      "runs": 5,
+      "rows": 20,
+      "min_ms": 301.0,
+      "median_ms": 310.09,
+      "max_ms": 315.38,
+      "error": null
     },
     {
       "id": "complex-4",
@@ -148,9 +160,9 @@
       "status": "pass",
       "runs": 5,
       "rows": 10,
-      "min_ms": 48.97,
-      "median_ms": 53.31,
-      "max_ms": 63.34,
+      "min_ms": 36.41,
+      "median_ms": 37.37,
+      "max_ms": 38.97,
       "error": null
     },
     {
@@ -159,9 +171,9 @@
       "status": "pass",
       "runs": 5,
       "rows": 20,
-      "min_ms": 857.88,
-      "median_ms": 896.47,
-      "max_ms": 946.14,
+      "min_ms": 1195.14,
+      "median_ms": 1241.48,
+      "max_ms": 1274.08,
       "error": null
     },
     {
@@ -170,9 +182,9 @@
       "status": "pass",
       "runs": 5,
       "rows": 10,
-      "min_ms": 494.81,
-      "median_ms": 503.88,
-      "max_ms": 514.2,
+      "min_ms": 784.45,
+      "median_ms": 803.62,
+      "max_ms": 828.33,
       "error": null
     },
     {
@@ -181,9 +193,9 @@
       "status": "pass",
       "runs": 5,
       "rows": 20,
-      "min_ms": 166.57,
-      "median_ms": 192.63,
-      "max_ms": 207.4,
+      "min_ms": 144.65,
+      "median_ms": 150.59,
+      "max_ms": 159.65,
       "error": null
     },
     {
@@ -192,9 +204,9 @@
       "status": "pass",
       "runs": 5,
       "rows": 20,
-      "min_ms": 151.76,
-      "median_ms": 172.92,
-      "max_ms": 230.2,
+      "min_ms": 119.82,
+      "median_ms": 121.71,
+      "max_ms": 130.58,
       "error": null
     },
     {
@@ -203,9 +215,9 @@
       "status": "pass",
       "runs": 5,
       "rows": 20,
-      "min_ms": 570.34,
-      "median_ms": 592.88,
-      "max_ms": 604.21,
+      "min_ms": 855.32,
+      "median_ms": 860.15,
+      "max_ms": 877.03,
       "error": null
     },
     {
@@ -214,9 +226,9 @@
       "status": "pass",
       "runs": 5,
       "rows": 10,
-      "min_ms": 349.51,
-      "median_ms": 380.3,
-      "max_ms": 411.8,
+      "min_ms": 220.1,
+      "median_ms": 225.9,
+      "max_ms": 235.23,
       "error": null
     },
     {
@@ -224,10 +236,10 @@
       "category": "IC",
       "status": "pass",
       "runs": 5,
-      "rows": 0,
-      "min_ms": 5.68,
-      "median_ms": 6.08,
-      "max_ms": 6.8,
+      "rows": 10,
+      "min_ms": 20.7,
+      "median_ms": 22.09,
+      "max_ms": 22.79,
       "error": null
     },
     {
@@ -236,9 +248,9 @@
       "status": "pass",
       "runs": 5,
       "rows": 17,
-      "min_ms": 135.43,
-      "median_ms": 151.53,
-      "max_ms": 159.82,
+      "min_ms": 111.27,
+      "median_ms": 113.51,
+      "max_ms": 117.51,
       "error": null
     },
     {
@@ -247,9 +259,9 @@
       "status": "pass",
       "runs": 5,
       "rows": 1,
-      "min_ms": 63.27,
-      "median_ms": 64.09,
-      "max_ms": 68.19,
+      "min_ms": 71.72,
+      "median_ms": 74.82,
+      "max_ms": 76.01,
       "error": null
     },
     {
@@ -268,10 +280,10 @@
       "category": "BI",
       "status": "pass",
       "runs": 5,
-      "rows": 12,
-      "min_ms": 76.57,
-      "median_ms": 82.61,
-      "max_ms": 90.13,
+      "rows": 21,
+      "min_ms": 98.97,
+      "median_ms": 99.63,
+      "max_ms": 105.8,
       "error": null
     },
     {
@@ -280,9 +292,9 @@
       "status": "pass",
       "runs": 5,
       "rows": 77,
-      "min_ms": 104.19,
-      "median_ms": 110.75,
-      "max_ms": 114.94,
+      "min_ms": 110.65,
+      "median_ms": 115.79,
+      "max_ms": 124.56,
       "error": null
     },
     {
@@ -290,10 +302,10 @@
       "category": "BI",
       "status": "pass",
       "runs": 5,
-      "rows": 0,
-      "min_ms": 2.24,
-      "median_ms": 2.56,
-      "max_ms": 2.7,
+      "rows": 20,
+      "min_ms": 796.48,
+      "median_ms": 809.12,
+      "max_ms": 830.04,
       "error": null
     },
     {
@@ -313,21 +325,21 @@
       "status": "pass",
       "runs": 5,
       "rows": 100,
-      "min_ms": 757.89,
-      "median_ms": 772.36,
-      "max_ms": 776.22,
+      "min_ms": 296.25,
+      "median_ms": 309.61,
+      "max_ms": 326.85,
       "error": null
     },
     {
       "id": "bi-6",
       "category": "BI",
-      "status": "fail",
-      "runs": 0,
-      "rows": null,
-      "min_ms": null,
-      "median_ms": null,
-      "max_ms": null,
-      "error": "HTTP 500: Executor error: I/O error while reading results: bad response: {\"exception\": \"Code: 241. DB::Exception: Query memory limit exceeded: would use 2.80 GiB (attempt to allocate chunk of 4.13 MiB bytes), maximum: 2.79 GiB: While executing FillingRightJoinSide. (MEMORY_LIMIT_EXCEEDED) (version 25.8.11.66 (official build))\"}"
+      "status": "pass",
+      "runs": 5,
+      "rows": 100,
+      "min_ms": 1466.14,
+      "median_ms": 1476.64,
+      "max_ms": 1493.73,
+      "error": null
     },
     {
       "id": "bi-7",
@@ -335,31 +347,31 @@
       "status": "pass",
       "runs": 5,
       "rows": 100,
-      "min_ms": 201.94,
-      "median_ms": 223.62,
-      "max_ms": 244.93,
+      "min_ms": 160.28,
+      "median_ms": 166.96,
+      "max_ms": 168.11,
       "error": null
     },
     {
       "id": "bi-8",
       "category": "BI",
-      "status": "fail",
-      "runs": 0,
-      "rows": null,
-      "min_ms": null,
-      "median_ms": null,
-      "max_ms": null,
-      "error": "HTTP 500: Executor error: I/O error while reading results: bad response: {\"exception\": \"Code: 241. DB::Exception: Query memory limit exceeded: would use 2.80 GiB (attempt to allocate chunk of 4.50 MiB bytes), maximum: 2.79 GiB: While executing FillingRightJoinSide. (MEMORY_LIMIT_EXCEEDED) (version 25.8.11.66 (official build))\"}"
+      "status": "pass",
+      "runs": 5,
+      "rows": 100,
+      "min_ms": 16078.24,
+      "median_ms": 16212.43,
+      "max_ms": 16514.16,
+      "error": null
     },
     {
       "id": "bi-9",
       "category": "BI",
       "status": "pass",
       "runs": 5,
-      "rows": 0,
-      "min_ms": 2.59,
-      "median_ms": 3.07,
-      "max_ms": 3.32,
+      "rows": 100,
+      "min_ms": 1181.38,
+      "median_ms": 1235.06,
+      "max_ms": 1260.4,
       "error": null
     },
     {
@@ -379,9 +391,9 @@
       "status": "pass",
       "runs": 5,
       "rows": 1,
-      "min_ms": 3.07,
-      "median_ms": 3.36,
-      "max_ms": 5.75,
+      "min_ms": 85.94,
+      "median_ms": 91.01,
+      "max_ms": 93.18,
       "error": null
     },
     {
@@ -389,32 +401,32 @@
       "category": "BI",
       "status": "pass",
       "runs": 5,
-      "rows": 1,
-      "min_ms": 3.89,
-      "median_ms": 4.26,
-      "max_ms": 10.75,
+      "rows": 557,
+      "min_ms": 876.45,
+      "median_ms": 892.19,
+      "max_ms": 928.71,
       "error": null
     },
     {
       "id": "bi-13",
       "category": "BI",
-      "status": "fail",
-      "runs": 0,
-      "rows": null,
-      "min_ms": null,
-      "median_ms": null,
-      "max_ms": null,
-      "error": "HTTP 400: Not supported: a node or relationship as a value (in a list, collect(), CASE \u2026)"
+      "status": "pass",
+      "runs": 5,
+      "rows": 57,
+      "min_ms": 3531.12,
+      "median_ms": 3575.34,
+      "max_ms": 6169.83,
+      "error": null
     },
     {
       "id": "bi-14",
       "category": "BI",
       "status": "pass",
       "runs": 5,
-      "rows": 0,
-      "min_ms": 7.56,
-      "median_ms": 7.77,
-      "max_ms": 12.7,
+      "rows": 100,
+      "min_ms": 4883.98,
+      "median_ms": 4898.18,
+      "max_ms": 4969.36,
       "error": null
     },
     {
@@ -440,25 +452,14 @@
       "error": "HTTP 400: Query syntax error: Parsing Failure: OpenCypherParsingError { errors: [(\"CALL {\\n  WITH paramTagX, paramDateX\\n  MATCH (person1:Person)<-[:HAS_CREATOR]-(message1:Message)-[:HAS_TAG]->(tag:Tag {name: paramTagX})\\n  WHERE date(message1.creationDate) = date(paramDateX)\\n  OPTIONAL MATCH (person1)-[:KNOWS]-(person2:Person)<-[:HAS_CREATOR]-(message2:Message)-[:HAS_TAG]->(tag)\\n  WHERE date(message2.creationDate) = date(paramDateX)\\n  WITH person1, count(DISTINCT message1) AS cm, count(DISTINCT person2) AS cp2\\n  WHERE cp2 <= $maxKnowsLimit\\n  RETURN person1, cm\\n}\\nWITH person1, collect({letter: paramLetter, messageCount: cm}) AS results\\nWHERE size(results) = 2\\nRETURN\\n  person1.id,\\n  [r IN results WHERE r.letter = 'A' | r.messageCount][0] AS messageCountA,\\n  [r IN results WHERE r.letter = 'B' | r.messageCount][0] AS messageCountB\\nORDER BY messageCountA + messageCountB DESC, person1.id ASC\\nLIMIT 20\", \"Unexpected tokens after query\"), (\"CALL {\\n  WITH paramTagX, paramDateX\\n  MATCH (person1:Person)<-[:HAS_CREATOR]-(message1:Message)-[:HAS_TAG]->(tag:Tag {name: paramTagX})\\n  WHERE date(message1.creationDate) = date(paramDateX)\\n  OPTIONAL MATCH (person1)-[:KNOWS]-(person2:Person)<-[:HAS_CREATOR]-(message2:Message)-[:HAS_TAG]->(tag)\\n  WHERE date(message2.creationDate) = date(paramDateX)\\n  WITH person1, count(DISTINCT message1) AS cm, count(DISTINCT person2) AS cp2\\n  WHERE cp2 <= $maxKnowsLimit\\n  RETURN person1, cm\\n}\\nWITH person1, collect({letter: paramLetter, messageCount: cm}) AS results\\nWHERE size(results) = 2\\nRETURN\\n  person1.id,\\n  [r IN results WHERE r.letter = 'A' | r.messageCount][0] AS messageCountA,\\n  [r IN results WHERE r.letter = 'B' | r.messageCount][0] AS messageCountB\\nORDER BY messageCountA + messageCountB DESC, person1.id ASC\\nLIMIT 20\", \"Unparsed input\")] }. Check Cypher syntax before proceeding."
     },
     {
-      "id": "bi-17",
-      "category": "BI",
-      "status": "pass",
-      "runs": 5,
-      "rows": 0,
-      "min_ms": 2.46,
-      "median_ms": 2.66,
-      "max_ms": 2.88,
-      "error": null
-    },
-    {
       "id": "bi-18",
       "category": "BI",
       "status": "pass",
       "runs": 5,
       "rows": 20,
-      "min_ms": 84.27,
-      "median_ms": 86.13,
-      "max_ms": 88.39,
+      "min_ms": 92.77,
+      "median_ms": 93.78,
+      "max_ms": 95.87,
       "error": null
     },
     {
@@ -482,6 +483,17 @@
       "median_ms": null,
       "max_ms": null,
       "error": "HTTP 400: Query syntax error: Parsing Failure: OpenCypherParsingError { errors: [(\"\\nWITH person1.id AS person1Id, totalCost AS totalWeight\\nORDER BY totalWeight ASC\\nWITH collect({person1Id: person1Id, totalWeight: totalWeight}) AS results\\nUNWIND results AS result\\nWITH result.person1Id AS person1Id, result.totalWeight AS totalWeight\\nWHERE totalWeight = results[0].totalWeight\\nRETURN person1Id, totalWeight\\nORDER BY person1Id ASC\\nLIMIT 20\", \"Unexpected tokens after query\"), (\"WITH person1.id AS person1Id, totalCost AS totalWeight\\nORDER BY totalWeight ASC\\nWITH collect({person1Id: person1Id, totalWeight: totalWeight}) AS results\\nUNWIND results AS result\\nWITH result.person1Id AS person1Id, result.totalWeight AS totalWeight\\nWHERE totalWeight = results[0].totalWeight\\nRETURN person1Id, totalWeight\\nORDER BY person1Id ASC\\nLIMIT 20\", \"Unparsed input\")] }. Check Cypher syntax before proceeding."
+    },
+    {
+      "id": "bi-17",
+      "category": "BI",
+      "status": "fail",
+      "runs": 0,
+      "rows": null,
+      "min_ms": null,
+      "median_ms": null,
+      "max_ms": null,
+      "error": "HTTP 408: Request Timeout"
     }
   ]
 }
