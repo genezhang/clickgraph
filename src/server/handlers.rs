@@ -1411,6 +1411,7 @@ async fn query_handler_inner(
                 // the cached template, and the total and execution times are
                 // this call's real ones.
                 metrics.sql_queries_count = 1;
+                metrics.result_rows = extract_result_count(&resp);
                 record_cache_hit(
                     &mut metrics,
                     &payload.query,
@@ -2042,11 +2043,16 @@ async fn execute_cte_queries(
             }
         }
         // Wrap results in an object with "results" key for consistency with Neo4j format
+        let row_count = rows.len();
         let response_obj = serde_json::json!({
             "results": rows
         });
 
-        Ok(Json(response_obj).into_response())
+        let mut response = Json(response_obj).into_response();
+        // Carried to `query_handler` for `clickgraph_result_rows_total`; the
+        // body is JSON, so counting it there would mean parsing it again.
+        response.extensions_mut().insert(ResultRowCount(row_count));
+        Ok(response)
     }
 }
 
@@ -2750,13 +2756,17 @@ fn translate_cypher_to_sql(
     )
 }
 
-fn extract_result_count(_response: &axum::response::Response) -> Option<usize> {
-    // TODO: Implement proper result count extraction
-    // This would require either:
-    // 1. Modifying the query execution to track row counts
-    // 2. Parsing the response body (complex with streaming)
-    // For now, we return None
-    None
+/// Number of result rows a response carries, when its builder knows it.
+/// `execute_cte_queries` inserts this into a JSON response so `query_handler`
+/// records `clickgraph_result_rows_total` without parsing the body.
+#[derive(Clone, Copy)]
+struct ResultRowCount(usize);
+
+fn extract_result_count(response: &axum::response::Response) -> Option<usize> {
+    response
+        .extensions()
+        .get::<ResultRowCount>()
+        .map(|count| count.0)
 }
 
 // Schema discovery endpoints
@@ -2939,4 +2949,17 @@ pub async fn draft_handler(
         "yaml": yaml,
         "message": "Review and edit the YAML before loading with /schemas/load"
     })))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn result_row_count_survives_into_the_response() {
+        let mut response = Json(serde_json::json!({"results": [1, 2, 3]})).into_response();
+        assert_eq!(extract_result_count(&response), None);
+        response.extensions_mut().insert(ResultRowCount(3));
+        assert_eq!(extract_result_count(&response), Some(3));
+    }
 }
