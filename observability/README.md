@@ -47,7 +47,7 @@ Cypher text in each span. Query text is never included by default.
 `X-ClickHouse-Summary` header, which fills `clickgraph_clickhouse_read_rows_total`
 and `clickgraph_clickhouse_read_bytes_total`. It is off by default; without it the
 **ClickHouse rows/s** panel and the `read` line of **ClickHouse bytes/s** stay at 0.
-The value must be `true` (not `1`).
+It accepts `true`/`false`, `1`/`0`, `yes`/`no` and `on`/`off`.
 
 Then send a few queries, for example through the MCP server or:
 

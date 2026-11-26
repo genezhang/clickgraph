@@ -904,7 +904,7 @@ Vendors mount the OTLP path wherever they like, so set `CLICKGRAPH_OTLP_ENDPOINT
 | `CLICKGRAPH_SLOW_QUERY_CAPACITY` | `128` | Ring buffer size (≤10000) |
 | `CLICKGRAPH_SLOW_QUERY_THRESHOLD_MS` | `0` | Only ring queries ≥ this many ms (0 = all) |
 | `CLICKGRAPH_METRICS_QUERY_PREVIEW` | `false` | Retain truncated query text in the ring (JSON only) |
-| `CLICKGRAPH_METRICS_CH_SUMMARY` | `false` | Capture true `X-ClickHouse-Summary` stats (remote mode; opt-in) |
+| `CLICKGRAPH_METRICS_CH_SUMMARY` | `false` | Capture true `X-ClickHouse-Summary` stats (remote mode; opt-in). Accepts `true/false`, `1/0`, `yes/no`, `on/off` |
 
 ---
 
