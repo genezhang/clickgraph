@@ -11613,3 +11613,47 @@ fn a_list_of_scalars_of_unproven_type_is_ordered_by_the_element_key_1491() {
         assert!(!keyed(q), "{q}");
     }
 }
+
+#[test]
+fn a_correlated_call_is_inlined_on_the_outer_rows() {
+    let q = "MATCH (u:User) CALL { WITH u RETURN u.user_id AS id } \
+             RETURN u.name AS name, id";
+    has(
+        q,
+        &[
+            "WITH with_w1 AS ( SELECT v0.user_id AS \"v1__user_id\", \
+             v0.full_name AS \"p2_v1_name\", v0.user_id AS \"p2_v1_user_id\" \
+             FROM test_integration.users_test AS v0 )",
+            "with_w2 AS ( SELECT w1.p2_v1_user_id AS \"v2\", \
+             w1.v1__user_id AS \"v3__user_id\", w1.p2_v1_name AS \"p2_v3_name\" \
+             FROM with_w1 AS w1 )",
+            "SELECT w2.p2_v3_name AS \"name\", w2.v2 AS \"id\" FROM with_w2 AS w2",
+        ],
+    );
+    // Not a CTE of its own cross joined: the body is part of this plan.
+    assert!(!squash(&sql(q)).contains("with_call"), "{}", sql(q));
+}
+
+#[test]
+fn a_correlated_call_groups_by_the_outer_row() {
+    let q = "UNWIND [1, 2] AS x CALL { WITH x RETURN count(*) AS c } RETURN x, c";
+    // `x` is carried into the body's RETURN, so it is the grouping key: one
+    // count per outer row, not one count over both.
+    has(
+        q,
+        &["with_w3 AS ( SELECT count(*) AS \"v2\", w2.v1 AS \"v3\" \
+           FROM with_w2 AS w2 GROUP BY w2.v1 )"],
+    );
+}
+
+#[test]
+fn a_comprehension_reads_a_collected_maps_keys() {
+    has(
+        "WITH collect({letter: 'A', messageCount: 1}) AS results \
+         RETURN [r IN results WHERE r.letter = 'A' | r.messageCount][0] AS m",
+        &[
+            "arrayFilter(v2 -> v2['letter'] = 'A', w1.v0)",
+            "arrayMap(v1 -> v1['messageCount'],",
+        ],
+    );
+}

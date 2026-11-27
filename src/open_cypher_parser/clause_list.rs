@@ -26,8 +26,9 @@
 //!   MATCH or WITH.
 //! * RETURN takes ORDER BY, SKIP/OFFSET, LIMIT in that order and ends the
 //!   query; a query ends with RETURN, an updating clause or CALL.
-//! * `CALL { <query> }` is an uncorrelated subquery; a leading importing
-//!   `WITH` and a UNION body are later slices.
+//! * `CALL { <query> }` whose body opens `WITH <outer names>` reads the outer
+//!   rows: the body's clauses are part of the enclosing plan, its RETURN is a
+//!   carrying WITH, and a UNION body is a later slice.
 
 use nom::bytes::complete::{tag, tag_no_case};
 use nom::character::complete::{char, multispace0};
@@ -88,7 +89,8 @@ pub enum Clause<'a> {
 }
 
 /// `CALL { <query> }`. Only a returning subquery (its body ends in RETURN);
-/// importing `WITH`, a UNION body and writes are later slices.
+/// `c.query.clauses` may open with an importing `WITH`. A UNION body and
+/// writes are later slices.
 #[derive(Debug, PartialEq, Clone)]
 pub struct CallSubqueryClause<'a> {
     pub query: ClauseQuery<'a>,

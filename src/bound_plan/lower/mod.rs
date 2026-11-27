@@ -2053,9 +2053,12 @@ impl<'s> Lowerer<'s> {
                 self.relation(input)?;
                 // The body is a query of its own: lower it to its final
                 // SELECT, then read that as a CTE cross joined to the rows.
+                // Only an uncorrelated body comes here: one importing outer
+                // names is bound inline (the binder's `CALL` arm), so its
+                // nodes, maps and grouping stay in this plan.
                 // shortcut: uncorrelated, so one evaluation answers every
                 // input row; a non-deterministic call in the body is drawn
-                // once. Upgrade with correlated bodies (the importing WITH).
+                // once.
                 let stmt = BoundStatement {
                     plan: (**plan).clone(),
                     bindings: self.bindings.to_vec(),

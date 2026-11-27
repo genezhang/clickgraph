@@ -105,11 +105,55 @@ fn a_call_subquery_may_return_values_only() {
 }
 
 #[test]
-fn an_importing_with_in_a_call_subquery_is_not_bound_yet() {
-    assert!(matches!(
-        bind("MATCH (n:User) CALL { WITH n RETURN n.user_id AS id } RETURN id"),
-        Err(BindError::Unsupported(_))
-    ));
+fn an_importing_with_correlates_the_call_body() {
+    let s = ok("MATCH (n:User) CALL { WITH n RETURN n.user_id AS id } RETURN id");
+    let BoundOp::Project { input, .. } = &s.plan else {
+        panic!("{:?}", s.plan)
+    };
+    // The body's RETURN is a carrying WITH in the enclosing plan, not a
+    // BoundOp::Call with a CTE of its own.
+    assert!(matches!(&**input, BoundOp::Project { .. }), "{input:?}");
+    assert!(!has_call(&s.plan), "{:?}", s.plan);
+}
+
+/// Whether a CALL operator is anywhere in the plan.
+fn has_call(op: &BoundOp) -> bool {
+    match op {
+        BoundOp::Call { .. } => true,
+        BoundOp::Match { input, .. }
+        | BoundOp::Unwind { input, .. }
+        | BoundOp::Project { input, .. }
+        | BoundOp::Sort { input, .. }
+        | BoundOp::Filter { input, .. }
+        | BoundOp::Skip { input, .. }
+        | BoundOp::Limit { input, .. } => has_call(input),
+        BoundOp::Union { arms, .. } => arms.iter().any(has_call),
+        BoundOp::Unit => false,
+    }
+}
+
+#[test]
+fn a_correlated_call_returns_a_whole_node() {
+    // bi-16's shape: the body returns `person1`, which the outer WITH reads.
+    let s = ok("MATCH (n:User) CALL { WITH n RETURN n } RETURN n.name AS name");
+    let last = named(&s, "n").pop().expect("n");
+    assert!(
+        matches!(last.kind, BindingKind::Node { .. }),
+        "{:?}",
+        last.kind
+    );
+}
+
+#[test]
+fn a_correlated_call_returns_map_keys() {
+    ok("MATCH (n:User) CALL { WITH n RETURN {id: n.user_id} AS m } RETURN m.id AS id");
+}
+
+#[test]
+fn a_correlated_call_keeps_the_outer_names_after_it() {
+    // The body does not return `y`, but the outer scope keeps it.
+    ok("UNWIND [1, 2] AS x WITH x, x * 2 AS y \
+        CALL { WITH x RETURN count(*) AS c } RETURN x, y, c");
 }
 
 #[test]
