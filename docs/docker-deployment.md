@@ -55,7 +55,11 @@ docker-compose logs -f clickgraph
 | `CLICKGRAPH_BOLT_PORT` | `7687` | Bolt protocol port |
 | `CLICKGRAPH_BOLT_ENABLED` | `true` | Enable/disable Bolt protocol |
 | `CLICKGRAPH_MAX_CTE_DEPTH` | `100` | Max recursion depth for variable-length paths |
+| `CLICKGRAPH_QUERY_TIMEOUT_SECS` | `300` | Per-request timeout in seconds (`0` = none) |
+| `CLICKGRAPH_NEO4J_COMPAT_MODE` | `false` | Masquerade as Neo4j for Neo4j Browser / graph-notebook |
 | `RUST_LOG` | `info` | Logging level (error/warn/info/debug/trace) |
+
+A command-line flag (`docker run … --http-port 9000`) beats its variable. See [configuration.md](configuration.md#environment-variables) for the full list.
 
 #### ClickHouse Connection (Required)
 
