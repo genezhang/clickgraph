@@ -88,7 +88,7 @@ cargo run --bin brahmand
 
 ## Environment Variables
 
-Every server option can also be set by an environment variable (or a `.env` file in the working directory, which is read first). A command-line flag beats its variable, and a variable beats the default:
+Every server option except `--disable-bolt` (use `CLICKGRAPH_BOLT_ENABLED=false`), `--daemon` and `--log-level` can also be set by an environment variable, or by a line in a `.env` file in the working directory (read first). A command-line flag beats its variable, and a variable beats the default:
 
 | Variable | Flag | Default |
 |----------|------|---------|
@@ -106,7 +106,9 @@ Every server option can also be set by an environment variable (or a `.env` file
 | `CLICKGRAPH_MAX_REQUEST_BODY_BYTES` | `--max-request-body-bytes` | `1048576` |
 | `CLICKGRAPH_MAX_CONCURRENT_QUERIES` | `--max-concurrent-queries` | `64` (`0` = unlimited) |
 
-A boolean takes `true/false`, `1/0`, `yes/no` or `on/off`. A value that does not parse stops the start with an error.
+A boolean takes `true/false`, `1/0`, `yes/no` or `on/off`. A value that does not parse, or is empty, stops the start with an error. A boolean flag takes no value, so a variable set to `true` is switched off by unsetting it, not by a flag (`--bolt-enabled false` is the one exception).
+
+**Kubernetes:** a Service named `clickgraph` makes Kubernetes put `CLICKGRAPH_PORT=tcp://<ip>:<port>` in the pods of its namespace. That is not a port, so a `CLICKGRAPH_PORT` or `CLICKGRAPH_BOLT_PORT` of that form is ignored (with a note on stderr); set the variable in the pod spec, or set `enableServiceLinks: false`, to configure the port.
 
 ```bash
 # ClickHouse connection (required)

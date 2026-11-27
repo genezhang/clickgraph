@@ -116,7 +116,33 @@ impl From<Cli> for config::CliConfig {
     }
 }
 
+/// Kubernetes puts `<SERVICE>_PORT=tcp://<ip>:<port>` in the environment of every
+/// pod of a namespace, for each Service in it (`enableServiceLinks`, on by default),
+/// and a pod's environment beats the image's `ENV`. A Service named `clickgraph`
+/// (the usual release name) therefore gives its pod `CLICKGRAPH_PORT=tcp://10.0.0.5:7475`,
+/// and a Service named `clickgraph-bolt` gives it `CLICKGRAPH_BOLT_PORT=...`. That is
+/// not a port: reading it as one would stop the start. Such a value is dropped.
+fn ignore_kubernetes_service_links() {
+    for var in ["CLICKGRAPH_PORT", "CLICKGRAPH_BOLT_PORT"] {
+        if let Ok(value) = std::env::var(var) {
+            if value.starts_with("tcp://") {
+                eprintln!(
+                    "note: ignoring {var}={value}, a Kubernetes service link and not a port; \
+                     set {var} (or `enableServiceLinks: false`) to configure it"
+                );
+                std::env::remove_var(var);
+            }
+        }
+    }
+}
+
 fn main() {
+    // Before the runtime exists (no other thread reads the environment yet): `.env`
+    // is loaded first, so its `CLICKGRAPH_*` lines reach the flags below the way the
+    // shell's do, and a Kubernetes service link is dropped. A flag still beats both.
+    dotenvy::dotenv().ok();
+    ignore_kubernetes_service_links();
+
     // Build tokio runtime with larger worker thread stacks to handle
     // deep recursive logical plan traversal (e.g., bidirectional + WITH chains).
     // Default 128 MB covers all known query patterns; override via CLICKGRAPH_THREAD_STACK_MB.
@@ -130,9 +156,6 @@ fn main() {
 }
 
 async fn async_main() {
-    // Load `.env` before parsing, so the `CLICKGRAPH_*` variables in it reach the
-    // flags below the same way the shell's do (a flag still beats a variable).
-    dotenvy::dotenv().ok();
     let cli = Cli::parse();
 
     // Initialize logger - use --log-level value as default, RUST_LOG env var overrides
@@ -275,14 +298,25 @@ mod tests {
             ("no", false),
             ("off", false),
         ] {
-            std::env::set_var("CLICKGRAPH_VALIDATE_SCHEMA", value);
-            std::env::set_var("CLICKGRAPH_BOLT_ENABLED", value);
+            for var in [
+                "CLICKGRAPH_VALIDATE_SCHEMA",
+                "CLICKGRAPH_BOLT_ENABLED",
+                "CLICKGRAPH_NEO4J_COMPAT_MODE",
+                "CLICKGRAPH_EMBEDDED",
+            ] {
+                std::env::set_var(var, value);
+            }
             let c = parse(&[]).unwrap();
+            assert_eq!(c.validate_schema, expected, "VALIDATE_SCHEMA={value}");
+            assert_eq!(c.bolt_enabled, expected, "BOLT_ENABLED={value}");
+            assert_eq!(c.neo4j_compat_mode, expected, "NEO4J_COMPAT_MODE={value}");
+            assert_eq!(c.embedded, expected, "EMBEDDED={value}");
+            // The procedures that report the Neo4j identity read the same spellings.
             assert_eq!(
-                c.validate_schema, expected,
-                "CLICKGRAPH_VALIDATE_SCHEMA={value}"
+                clickgraph::config::neo4j_compat_mode_env(),
+                expected,
+                "dbms.* reading NEO4J_COMPAT_MODE={value}"
             );
-            assert_eq!(c.bolt_enabled, expected, "CLICKGRAPH_BOLT_ENABLED={value}");
         }
 
         // A value that is not valid stops the start instead of being ignored.
@@ -293,6 +327,22 @@ mod tests {
         assert!(parse(&[]).is_err(), "a port of `not-a-port`");
         std::env::set_var("CLICKGRAPH_PORT", "70000");
         assert!(parse(&[]).is_err(), "a port above 65535");
+        // A Kubernetes service link (`<SERVICE>_PORT=tcp://ip:port`) is not a port.
+        std::env::set_var("CLICKGRAPH_PORT", "tcp://10.96.0.5:7475");
+        std::env::set_var("CLICKGRAPH_BOLT_PORT", "tcp://10.96.0.6:7687");
+        assert!(parse(&[]).is_err(), "a service link read as a port");
+        ignore_kubernetes_service_links();
+        let c = parse(&[]).unwrap();
+        assert_eq!(
+            (c.http_port, c.bolt_port),
+            (7475, 7687),
+            "the defaults apply"
+        );
+        std::env::set_var("CLICKGRAPH_PORT", "7991");
+        ignore_kubernetes_service_links();
+        assert_eq!(parse(&[]).unwrap().http_port, 7991, "a real port is kept");
+        std::env::remove_var("CLICKGRAPH_BOLT_PORT");
+
         // An empty variable is not "unset": it stops the start too, like
         // `ServerConfig::from_env()`, instead of silently taking the default.
         std::env::set_var("CLICKGRAPH_PORT", "");

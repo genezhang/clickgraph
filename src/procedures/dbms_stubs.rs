@@ -78,9 +78,7 @@ pub fn list_functions(_schema: &GraphSchema) -> ProcedureResult {
 /// kernelVersion, kernelStartTime, edition, ...). Empty/zero values are fine
 /// for fields we don't track — Browser tolerates them.
 pub fn info(_schema: &GraphSchema) -> ProcedureResult {
-    let compat = std::env::var("CLICKGRAPH_NEO4J_COMPAT_MODE")
-        .map(|v| v == "true" || v == "1")
-        .unwrap_or(false);
+    let compat = crate::config::neo4j_compat_mode_env();
     let (name, version) = if compat {
         ("Neo4j Kernel".to_string(), "5.8.0".to_string())
     } else {

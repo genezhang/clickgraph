@@ -446,6 +446,23 @@ fn parse_env_flag(key: &str, default: bool) -> Result<bool, ConfigError> {
     }
 }
 
+/// Whether `CLICKGRAPH_NEO4J_COMPAT_MODE` is on, spelled the way the
+/// `--neo4j-compat-mode` flag's variable is (`true`/`1`/`yes`/`on`, also `t`/`y`,
+/// case-insensitively). `dbms.components()` and `dbms.info()` read it here, so
+/// they agree with the server's Neo4j masquerade (`ServerConfig::neo4j_compat_mode`)
+/// for every spelling the flag accepts: with `=on` the one said "Neo4j" and the
+/// other "ClickGraph", which is the "Invalid version" failure Neo4j Browser shows.
+pub fn neo4j_compat_mode_env() -> bool {
+    env::var("CLICKGRAPH_NEO4J_COMPAT_MODE")
+        .map(|v| {
+            matches!(
+                v.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "t" | "yes" | "y" | "on"
+            )
+        })
+        .unwrap_or(false)
+}
+
 /// How runtime schema registrations survive restarts
 /// (`CLICKGRAPH_SCHEMA_PERSISTENCE`, spec: `docs/design/SCHEMA_PERSISTENCE.md`).
 ///
