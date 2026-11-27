@@ -193,7 +193,23 @@ impl Lowerer<'_> {
         if k.contains('.') {
             return None;
         }
-        let keys = self.map_keys.get(&v)?;
+        let Some(keys) = self.map_keys.get(&v) else {
+            // A comprehension's parameter: an element of a list of maps. Its
+            // keys are read off the lambda's parameter, as UNWIND's are off
+            // the unwound column (bi-16).
+            let local = self.local_kinds.borrow();
+            let Some(Kind::Map(keys)) = local.get(&v) else {
+                return None;
+            };
+            let key = keys.iter().any(|(key, _)| key == k);
+            if !key {
+                return Some(RenderExpr::Literal(Literal::Null));
+            }
+            return Some(RenderExpr::ArraySubscript {
+                array: Box::new(RenderExpr::Raw(v.name())),
+                index: Box::new(RenderExpr::Literal(Literal::String(k.to_string()))),
+            });
+        };
         Some(
             keys.iter()
                 .find(|(key, _)| key == k)

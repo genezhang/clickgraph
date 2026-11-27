@@ -1162,6 +1162,72 @@ fn free_standing_order_skip_limit() {
 }
 
 #[test]
+fn an_uncorrelated_call_joins_its_body() {
+    // Its body is one query of its own, read as a CTE and cross joined.
+    has(
+        "CALL { RETURN 1 AS x } RETURN x",
+        &[
+            "WITH with_call_1 AS ( SELECT 1 AS \"x\" )",
+            "SELECT call_1.x AS \"x\" FROM with_call_1 AS call_1",
+        ],
+    );
+    has(
+        "MATCH (u:User) CALL { RETURN 1 AS one } RETURN u.name AS name, one",
+        &[
+            "SELECT v0.full_name AS \"name\", call_1.one AS \"one\"",
+            "FROM test_integration.users_test AS v0 CROSS JOIN with_call_1 AS call_1",
+        ],
+    );
+    // The outputs are values of the outer rows.
+    has(
+        "CALL { RETURN 1 AS x } RETURN x + 1 AS y",
+        &["call_1.x + 1 AS \"y\""],
+    );
+}
+
+#[test]
+fn a_call_body_returns_plain_values_only() {
+    // `id()` is a value to the binder, but its column is a node id, which
+    // Bolt encodes; carrying it through as a plain value would lose that.
+    let err = translate_bound_plan(
+        "CALL { MATCH (u:User) RETURN id(u) AS i } RETURN i",
+        &social(),
+        &ReadOptions::default(),
+    )
+    .unwrap_err();
+    assert!(err.contains("only plain values"), "{err}");
+}
+
+#[test]
+fn a_call_body_is_a_full_query() {
+    has(
+        "CALL { MATCH (u:User) RETURN count(u) AS c } RETURN c",
+        &[
+            "WITH with_call_1 AS ( SELECT count(v0.user_id) AS \"c\" \
+             FROM test_integration.users_test AS v0 )",
+            "SELECT call_1.c AS \"c\" FROM with_call_1 AS call_1",
+        ],
+    );
+    // Its own WITH keeps the names of its CTEs before the CALL's.
+    has(
+        "CALL { MATCH (u:User) WITH u RETURN u.user_id AS id } RETURN id",
+        &[
+            "WITH with_w1 AS",
+            "with_call_2 AS (",
+            "FROM with_call_2 AS call_2",
+        ],
+    );
+    // Two CALLs are two relations.
+    has(
+        "CALL { RETURN 1 AS x } CALL { RETURN 2 AS y } RETURN x, y",
+        &[
+            "WITH with_call_1 AS ( SELECT 1 AS \"x\" ), with_call_2 AS ( SELECT 2 AS \"y\" )",
+            "FROM with_call_1 AS call_1 CROSS JOIN with_call_2 AS call_2",
+        ],
+    );
+}
+
+#[test]
 fn constants_need_no_column() {
     has(
         "WITH 1 AS x RETURN x",
@@ -11546,4 +11612,48 @@ fn a_list_of_scalars_of_unproven_type_is_ordered_by_the_element_key_1491() {
     ] {
         assert!(!keyed(q), "{q}");
     }
+}
+
+#[test]
+fn a_correlated_call_is_inlined_on_the_outer_rows() {
+    let q = "MATCH (u:User) CALL { WITH u RETURN u.user_id AS id } \
+             RETURN u.name AS name, id";
+    has(
+        q,
+        &[
+            "WITH with_w1 AS ( SELECT v0.user_id AS \"v1__user_id\", \
+             v0.full_name AS \"p2_v1_name\", v0.user_id AS \"p2_v1_user_id\" \
+             FROM test_integration.users_test AS v0 )",
+            "with_w2 AS ( SELECT w1.p2_v1_user_id AS \"v2\", \
+             w1.v1__user_id AS \"v3__user_id\", w1.p2_v1_name AS \"p2_v3_name\" \
+             FROM with_w1 AS w1 )",
+            "SELECT w2.p2_v3_name AS \"name\", w2.v2 AS \"id\" FROM with_w2 AS w2",
+        ],
+    );
+    // Not a CTE of its own cross joined: the body is part of this plan.
+    assert!(!squash(&sql(q)).contains("with_call"), "{}", sql(q));
+}
+
+#[test]
+fn a_correlated_call_groups_by_the_outer_row() {
+    let q = "UNWIND [1, 2] AS x CALL { WITH x RETURN count(*) AS c } RETURN x, c";
+    // `x` is carried into the body's RETURN, so it is the grouping key: one
+    // count per outer row, not one count over both.
+    has(
+        q,
+        &["with_w3 AS ( SELECT count(*) AS \"v2\", w2.v1 AS \"v3\" \
+           FROM with_w2 AS w2 GROUP BY w2.v1 )"],
+    );
+}
+
+#[test]
+fn a_comprehension_reads_a_collected_maps_keys() {
+    has(
+        "WITH collect({letter: 'A', messageCount: 1}) AS results \
+         RETURN [r IN results WHERE r.letter = 'A' | r.messageCount][0] AS m",
+        &[
+            "arrayFilter(v2 -> v2['letter'] = 'A', w1.v0)",
+            "arrayMap(v1 -> v1['messageCount'],",
+        ],
+    );
 }

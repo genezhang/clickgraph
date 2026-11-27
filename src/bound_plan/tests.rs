@@ -62,7 +62,8 @@ fn matches(op: &BoundOp) -> Vec<&BoundOp> {
             | BoundOp::Sort { input, .. }
             | BoundOp::Filter { input, .. }
             | BoundOp::Skip { input, .. }
-            | BoundOp::Limit { input, .. } => cur = input,
+            | BoundOp::Limit { input, .. }
+            | BoundOp::Call { input, .. } => cur = input,
             BoundOp::Union { .. } => break,
         }
     }
@@ -71,6 +72,100 @@ fn matches(op: &BoundOp) -> Vec<&BoundOp> {
 }
 
 // ------------------------------------------------------------------ scope
+
+#[test]
+fn a_call_subquery_returns_its_values_to_the_outer_scope() {
+    let s = ok("CALL { RETURN 1 AS x } RETURN x");
+    let all = named(&s, "x");
+    assert_eq!(all.len(), 2, "the subquery's x and the outer RETURN's x");
+    let BoundOp::Project { input, .. } = &s.plan else {
+        panic!("{:?}", s.plan)
+    };
+    let BoundOp::Call { plan, outputs, .. } = &**input else {
+        panic!("{input:?}")
+    };
+    assert_eq!(outputs, &[("x".to_string(), all[0].id)]);
+    assert!(matches!(&**plan, BoundOp::Project { .. }), "{plan:?}");
+}
+
+#[test]
+fn a_call_subquery_cannot_return_an_outer_name() {
+    assert_eq!(
+        bind("MATCH (n:User) CALL { RETURN 1 AS n } RETURN n"),
+        Err(BindError::AlreadyDeclared("n".to_string()))
+    );
+}
+
+#[test]
+fn a_call_subquery_may_return_values_only() {
+    assert!(matches!(
+        bind("CALL { MATCH (p:Post) RETURN p AS p } RETURN p"),
+        Err(BindError::Unsupported(_))
+    ));
+}
+
+#[test]
+fn an_importing_with_correlates_the_call_body() {
+    let s = ok("MATCH (n:User) CALL { WITH n RETURN n.user_id AS id } RETURN id");
+    let BoundOp::Project { input, .. } = &s.plan else {
+        panic!("{:?}", s.plan)
+    };
+    // The body's RETURN is a carrying WITH in the enclosing plan, not a
+    // BoundOp::Call with a CTE of its own.
+    assert!(matches!(&**input, BoundOp::Project { .. }), "{input:?}");
+    assert!(!has_call(&s.plan), "{:?}", s.plan);
+}
+
+/// Whether a CALL operator is anywhere in the plan.
+fn has_call(op: &BoundOp) -> bool {
+    match op {
+        BoundOp::Call { .. } => true,
+        BoundOp::Match { input, .. }
+        | BoundOp::Unwind { input, .. }
+        | BoundOp::Project { input, .. }
+        | BoundOp::Sort { input, .. }
+        | BoundOp::Filter { input, .. }
+        | BoundOp::Skip { input, .. }
+        | BoundOp::Limit { input, .. } => has_call(input),
+        BoundOp::Union { arms, .. } => arms.iter().any(has_call),
+        BoundOp::Unit => false,
+    }
+}
+
+#[test]
+fn a_correlated_call_returns_a_whole_node() {
+    // bi-16's shape: the body returns `person1`, which the outer WITH reads.
+    let s = ok("MATCH (n:User) CALL { WITH n RETURN n } RETURN n.name AS name");
+    let last = named(&s, "n").pop().expect("n");
+    assert!(
+        matches!(last.kind, BindingKind::Node { .. }),
+        "{:?}",
+        last.kind
+    );
+}
+
+#[test]
+fn a_correlated_call_returns_map_keys() {
+    ok("MATCH (n:User) CALL { WITH n RETURN {id: n.user_id} AS m } RETURN m.id AS id");
+}
+
+#[test]
+fn a_correlated_call_keeps_the_outer_names_after_it() {
+    // The body does not return `y`, but the outer scope keeps it.
+    ok("UNWIND [1, 2] AS x WITH x, x * 2 AS y \
+        CALL { WITH x RETURN count(*) AS c } RETURN x, y, c");
+}
+
+#[test]
+fn a_call_subquery_is_uncorrelated() {
+    assert_eq!(
+        bind(
+            "MATCH (n:User) CALL { MATCH (m:Post) WHERE m.title = n.name \
+             RETURN m.title AS t } RETURN t"
+        ),
+        Err(BindError::UndefinedVariable("n".to_string()))
+    );
+}
 
 #[test]
 fn a_name_rebound_after_with_is_a_new_variable() {
