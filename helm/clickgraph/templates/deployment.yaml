@@ -18,9 +18,16 @@ spec:
       {{- include "clickgraph.selectorLabels" . | nindent 6 }}
   template:
     metadata:
-      {{- with .Values.podAnnotations }}
+      {{- if or .Values.metrics.enabled .Values.podAnnotations }}
       annotations:
+        {{- if .Values.metrics.enabled }}
+        prometheus.io/scrape: "true"
+        prometheus.io/port: {{ .Values.service.http.port | quote }}
+        prometheus.io/path: "/metrics"
+        {{- end }}
+        {{- with .Values.podAnnotations }}
         {{- toYaml . | nindent 8 }}
+        {{- end }}
       {{- end }}
       labels:
         {{- include "clickgraph.selectorLabels" . | nindent 8 }}
@@ -45,10 +52,13 @@ spec:
         - name: bolt
           containerPort: {{ .Values.service.bolt.port }}
           protocol: TCP
-        - name: metrics
-          containerPort: {{ .Values.service.metrics.port }}
-          protocol: TCP
         env:
+        # Keep the listeners on the ports this chart publishes. Placed before
+        # the user's `env` so an entry there can still override them.
+        - name: CLICKGRAPH_PORT
+          value: {{ .Values.service.http.port | quote }}
+        - name: CLICKGRAPH_BOLT_PORT
+          value: {{ .Values.service.bolt.port | quote }}
         - name: CLICKHOUSE_URL
           value: {{ include "clickgraph.clickhouseUrl" . | quote }}
         {{- if .Values.clickhouse.external.enabled }}

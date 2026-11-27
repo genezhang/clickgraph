@@ -15,9 +15,5 @@ spec:
     targetPort: bolt
     protocol: TCP
     name: bolt
-  - port: {{ .Values.service.metrics.port }}
-    targetPort: metrics
-    protocol: TCP
-    name: metrics
   selector:
     {{- include "clickgraph.selectorLabels" . | nindent 4 }}

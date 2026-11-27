@@ -382,9 +382,6 @@ spec:
         - name: bolt
           containerPort: 7687
           protocol: TCP
-        - name: metrics
-          containerPort: 9090
-          protocol: TCP
         
         env:
         - name: RUST_LOG
@@ -491,10 +488,6 @@ spec:
   - name: bolt
     port: 7687
     targetPort: bolt
-    protocol: TCP
-  - name: metrics
-    port: 9090
-    targetPort: metrics
     protocol: TCP
   selector:
     app: clickgraph
@@ -615,15 +608,13 @@ env:
     value: "7475"
   - name: CLICKGRAPH_BOLT_PORT
     value: "7687"
-  - name: HTTP_ENABLED
-    value: "true"
-  - name: BOLT_ENABLED
+  - name: CLICKGRAPH_BOLT_ENABLED
     value: "true"
   
   # Query execution
-  - name: MAX_RECURSION_DEPTH
+  - name: CLICKGRAPH_MAX_CTE_DEPTH
     value: "100"
-  - name: QUERY_TIMEOUT_SECS
+  - name: CLICKGRAPH_QUERY_TIMEOUT_SECS
     value: "60"
   
   # Logging
@@ -889,14 +880,14 @@ spec:
     - protocol: TCP
       port: 7687
   
-  # Allow ingress from Prometheus
+  # Allow ingress from Prometheus (metrics are served on the HTTP port)
   - from:
     - namespaceSelector:
         matchLabels:
           name: monitoring
     ports:
     - protocol: TCP
-      port: 9090
+      port: 7475
   
   egress:
   # Allow egress to ClickHouse
