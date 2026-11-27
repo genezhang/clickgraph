@@ -453,7 +453,7 @@ def test_main_rejects_a_bad_meta_before_touching_the_server(tmp_path, capsys):
     assert "KEY=VALUE" in capsys.readouterr().err
 
 
-def test_main_warns_that_clickhouse_may_still_run_a_timed_out_query(
+def test_main_notes_that_a_timed_out_query_was_cancelled(
     fake_server, tmp_path, capsys
 ):
     url, handler = fake_server
@@ -465,4 +465,4 @@ def test_main_warns_that_clickhouse_may_still_run_a_timed_out_query(
     ])
 
     assert code == 0
-    assert "ClickHouse may still be running" in capsys.readouterr().err
+    assert "asked ClickHouse to cancel it" in capsys.readouterr().err
