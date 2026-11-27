@@ -221,6 +221,10 @@ mod tests {
         assert_eq!(c.max_request_body_bytes, 1_048_576);
         assert_eq!(c.max_concurrent_queries, 64);
 
+        // The boolean flags still take no value on the command line.
+        let c = parse(&["--validate-schema", "--neo4j-compat-mode", "--embedded"]).unwrap();
+        assert!(c.validate_schema && c.neo4j_compat_mode && c.embedded);
+
         // Variables.
         for (var, value) in [
             ("CLICKGRAPH_HOST", "127.0.0.1"),
