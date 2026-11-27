@@ -289,6 +289,11 @@ mod tests {
         assert!(parse(&[]).is_err(), "a port of `not-a-port`");
         std::env::set_var("CLICKGRAPH_PORT", "70000");
         assert!(parse(&[]).is_err(), "a port above 65535");
+        // An empty variable is not "unset": it stops the start too, like
+        // `ServerConfig::from_env()`, instead of silently taking the default.
+        std::env::set_var("CLICKGRAPH_PORT", "");
+        assert!(parse(&[]).is_err(), "an empty port");
+        assert_eq!(parse(&["--http-port", "7000"]).unwrap().http_port, 7000);
 
         clear();
     }
