@@ -446,6 +446,7 @@ impl Query<'_> {
             grouped_paths: HashSet::new(),
             graph_values: HashMap::new(),
             map_keys: HashMap::new(),
+            dynamic_values: HashSet::new(),
             list_nulls: HashMap::new(),
             held_items: RefCell::new(HashMap::new()),
             no_column_kinds: std::cell::Cell::new(false),
@@ -1566,6 +1567,11 @@ struct Lowerer<'s> {
     /// Map values the segment's CTE carries with each key's value (S11m):
     /// a map literal a WITH projected; each is also in `values`.
     map_keys: HashMap<VarId, MapKeys>,
+    /// Values a map's `Dynamic` entry was read into: their column's storage
+    /// type is not the kind `kinds` gives, so a later ORDER BY / GROUP BY
+    /// still needs the key ([`Self::reads_dynamic_map_key`]). Kept across
+    /// segments: `WITH m.a AS a` drops `m` (and its keys) from `map_keys`.
+    dynamic_values: HashSet<VarId>,
     /// When each list value the segment's CTE carries is NULL, and the
     /// list held so (`null_list.rs`): its `{v}__null` and `{v}__held`
     /// columns (`None`: never NULL). A list not here is not known to be
@@ -7209,6 +7215,19 @@ impl<'s> Lowerer<'s> {
             };
             let e = match mixed_key {
                 Some(key) => RenderExpr::Raw(key(&render_expr_to_sql_plain(&e))),
+                // A map's value is its `Dynamic` entry, which ClickHouse
+                // refuses in an order key (Code 44).
+                None if self.options.dialect.is_clickhouse()
+                    && self.reads_dynamic_map_key(&k.expr) =>
+                {
+                    match current_function_mapper()
+                        .lists()
+                        .and_then(|lists| lists.value_order)
+                    {
+                        Some(key) => RenderExpr::Raw(key(&render_expr_to_sql_plain(&e))),
+                        None => e,
+                    }
+                }
                 None => e,
             };
             // A key reading an item of a DISTINCT's group: any one of the
@@ -7252,6 +7271,70 @@ impl<'s> Lowerer<'s> {
             .into_iter()
             .filter(|o| !is_constant(&o.expression))
             .collect())
+    }
+
+    /// Whether `e` reads a key of a map whose value is the map's `Dynamic`
+    /// entry: ClickHouse refuses one in an ORDER BY, GROUP BY or DISTINCT key
+    /// (Code 44). A map key a WITH projected as its own typed column is not
+    /// one; a projected item is followed to the expression it was projected
+    /// from.
+    fn reads_dynamic_map_key(&self, e: &LogicalExpr) -> bool {
+        fn dynamic(e: &RenderExpr) -> bool {
+            matches!(
+                e,
+                RenderExpr::ArraySubscript { index, .. }
+                    if matches!(index.as_ref(), RenderExpr::Literal(Literal::String(_)))
+            )
+        }
+        fn visit(e: &LogicalExpr, lower: &Lowerer, seen: &mut HashSet<VarId>) -> bool {
+            match e {
+                LogicalExpr::TableAlias(crate::query_planner::logical_expr::TableAlias(n)) => {
+                    let Some(v) = parse_var(n).filter(|v| seen.insert(*v)) else {
+                        return false;
+                    };
+                    // Its segment has closed (the map that held the key is
+                    // gone from `map_keys`), but the value is still a
+                    // `Dynamic`.
+                    lower.dynamic_values.contains(&v)
+                        || lower
+                            .projected
+                            .get(&v)
+                            .is_some_and(|p| visit(p, lower, seen))
+                }
+                LogicalExpr::PropertyAccessExp(pa) => {
+                    let PropertyValue::Column(p) = &pa.column else {
+                        return false;
+                    };
+                    parse_var(&pa.table_alias.0)
+                        .and_then(|v| lower.map_key(v, p))
+                        .is_some_and(|e| dynamic(&e))
+                }
+                LogicalExpr::ArraySubscript { array, index } => {
+                    let LogicalExpr::Literal(crate::query_planner::logical_expr::Literal::String(
+                        k,
+                    )) = index.as_ref()
+                    else {
+                        return crate::bound_plan::expr::children(e)
+                            .into_iter()
+                            .any(|c| visit(c, lower, seen));
+                    };
+                    match array.as_ref() {
+                        LogicalExpr::TableAlias(
+                            crate::query_planner::logical_expr::TableAlias(n),
+                        ) => parse_var(n)
+                            .and_then(|v| lower.map_key(v, k))
+                            .is_some_and(|e| dynamic(&e)),
+                        // `ms[0]['a']`: a map inside a list (each map's value
+                        // is a `Dynamic`).
+                        _ => true,
+                    }
+                }
+                _ => crate::bound_plan::expr::children(e)
+                    .into_iter()
+                    .any(|c| visit(c, lower, seen)),
+            }
+        }
+        visit(e, self, &mut HashSet::new())
     }
 
     /// Whether list `e` has one known element type that ClickHouse orders
@@ -7564,7 +7647,18 @@ impl<'s> Lowerer<'s> {
                     self.kind(&it.expr),
                     unwind::Kind::List(inner) if !matches!(*inner, unwind::Kind::Element(_))
                 );
-            let map_key = match (self.holds_maps(&it.expr) || value_list) && !it.aggregate {
+            // A map's value is a `Dynamic` entry, which ClickHouse refuses in
+            // a GROUP BY or DISTINCT key too (Code 44). Remember it for the
+            // clauses after the segment: the map (and its keys) may be gone
+            // by then.
+            let dynamic_key = self.reads_dynamic_map_key(&it.expr);
+            if dynamic_key && !it.aggregate {
+                self.dynamic_values.insert(it.var);
+            }
+            let dynamic_key = dynamic_key && self.options.dialect.is_clickhouse();
+            let map_key = match (self.holds_maps(&it.expr) || value_list || dynamic_key)
+                && !it.aggregate
+            {
                 true => match current_function_mapper().cypher_union() {
                     Some(u) => Some(RenderExpr::Raw((u.distinct_key)(
                         &render_expr_to_sql_plain(held.as_ref().unwrap_or(&e)),
@@ -9858,7 +9952,9 @@ fn projected_items(op: &BoundOp) -> HashMap<VarId, &LogicalExpr> {
             BoundOp::Project { input, projection } => {
                 walk(input, out);
                 for it in &projection.items {
-                    out.insert(it.var, &it.expr);
+                    // The first projection of a variable defines it; a later
+                    // pass-through (`WITH m.a AS a RETURN a`) reads itself.
+                    out.entry(it.var).or_insert(&it.expr);
                 }
             }
             BoundOp::Match { input, .. }

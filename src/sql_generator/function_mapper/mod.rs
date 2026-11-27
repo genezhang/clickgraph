@@ -522,6 +522,11 @@ pub(crate) struct Lists {
     /// (#1491). Its elements order as Neo4j orders values (type rank, then
     /// the value in its own type) — never by their text alone.
     pub mixed_order: Option<fn(&str) -> String>,
+    /// The `ORDER BY` key of the value `{0}` whose type is not one
+    /// ClickHouse orders (a map's `Dynamic` value); `None` when the dialect
+    /// sorts such a value as it is. The value orders as a list's element
+    /// does: Neo4j's type rank, then the value in its own type (#1491).
+    pub value_order: Option<fn(&str) -> String>,
     /// The list column `{0}` of a LEFT JOIN, empty on a row that joined no
     /// row (a pattern comprehension that matches nothing); `None` when the
     /// column already is.
