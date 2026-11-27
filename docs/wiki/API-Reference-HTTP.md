@@ -910,6 +910,21 @@ Vendors mount the OTLP path wherever they like, so set `CLICKGRAPH_OTLP_ENDPOINT
 
 ## Error Handling
 
+### Query Timeout
+
+With `--query-timeout-secs` set (default 300, `0` = no timeout), a request that runs longer
+answers `408 Request Timeout`. ClickGraph also sends ClickHouse `KILL QUERY` for that
+request's `query_id`, so the ClickHouse query stops instead of continuing in the
+background. Every read query carries a `query_id` and, when the timeout is set,
+`max_execution_time`; a query that finishes normally, or that ClickHouse itself
+rejected, sends no KILL, while a transport failure still tries one (the query may
+be running). The limit applies to Bolt too: Bolt had no timeout before, and a Bolt
+client now sees ClickHouse's `TIMEOUT_EXCEEDED` error
+(`Neo.DatabaseError.Statement.ExecutionFailed`) rather than HTTP 408. `0` turns
+both off. The KILL targets the cluster node that received the query when
+`CLICKHOUSE_CLUSTER` discovers the cluster; with a single load-balancer URL it
+goes to the balancer and may reach a different replica.
+
 ### Error Response Format
 
 All errors return JSON with an `error` field:

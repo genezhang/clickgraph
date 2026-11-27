@@ -11,16 +11,18 @@
 //!   path is executed via a direct HTTP request so the `X-ClickHouse-Summary`
 //!   response header (read_rows / read_bytes / elapsed) — which the `clickhouse`
 //!   crate drops — can be captured. The request uses the SAME settings as the
-//!   crate client (`RoleConnectionPool::http_endpoint` →
+//!   crate client (`RoleConnectionPool::get_client_and_endpoint` →
 //!   `ConnectionConfig::standard_options`) so results are identical.
 
 use async_trait::async_trait;
 use bytes::Bytes;
 use serde_json::Value;
 use std::sync::Arc;
+use std::time::Duration;
+use uuid::Uuid;
 
 use super::{ExecutorError, QueryExecutor};
-use crate::server::connection_pool::RoleConnectionPool;
+use crate::server::connection_pool::{ChHttpEndpoint, RoleConnectionPool};
 use crate::server::metrics::{record_ch_network_bytes, record_ch_summary};
 
 /// SQL executor that delegates to a remote ClickHouse server via HTTP.
@@ -35,6 +37,10 @@ pub struct RemoteClickHouseExecutor {
     /// Reusable HTTP client for the Phase B summary path (shares a connection
     /// pool). Only used when `ch_summary` is set.
     http: reqwest::Client,
+    /// Server request timeout. Sent to ClickHouse as `max_execution_time` so a
+    /// read query stops even if this process dies before it can send a KILL.
+    /// 0 = no ClickHouse-side limit.
+    query_timeout_secs: u64,
 }
 
 impl RemoteClickHouseExecutor {
@@ -47,7 +53,13 @@ impl RemoteClickHouseExecutor {
             pool,
             ch_summary,
             http: reqwest::Client::new(),
+            query_timeout_secs: 0,
         }
+    }
+
+    pub fn with_query_timeout(mut self, query_timeout_secs: u64) -> Self {
+        self.query_timeout_secs = query_timeout_secs;
+        self
     }
 
     /// Phase B: execute a SELECT via direct HTTP and capture
@@ -58,7 +70,8 @@ impl RemoteClickHouseExecutor {
         sql: &str,
         role: Option<&str>,
     ) -> Result<Vec<Value>, ExecutorError> {
-        let ep = self.pool.http_endpoint(role);
+        let (_, ep) = self.pool.get_client_and_endpoint(role).await;
+        let query_id = Uuid::new_v4().to_string();
 
         // Compose the URL exactly as the crate would: database + standard
         // options as query params, plus JSONEachRow output and
@@ -74,8 +87,13 @@ impl RemoteClickHouseExecutor {
             }
             q.append_pair("default_format", "JSONEachRow");
             q.append_pair("wait_end_of_query", "1");
+            q.append_pair("query_id", &query_id);
+            if self.query_timeout_secs > 0 {
+                q.append_pair("max_execution_time", &self.query_timeout_secs.to_string());
+            }
         }
 
+        let mut cancel = CancelOnDrop::new(self.http.clone(), ep.clone(), query_id);
         let resp = self
             .http
             .post(url)
@@ -99,6 +117,7 @@ impl RemoteClickHouseExecutor {
             .bytes()
             .await
             .map_err(|e| ExecutorError::Io(format!("reading response body: {e}")))?;
+        cancel.disarm();
         if !status.is_success() {
             let text = String::from_utf8_lossy(&body);
             log::error!("ClickHouse query failed. SQL was:\n{sql}\nError: {text}");
@@ -118,6 +137,112 @@ impl RemoteClickHouseExecutor {
             rows.push(value);
         }
         Ok(rows)
+    }
+}
+
+/// Cancels one ClickHouse query when its Rust future is dropped before the
+/// response completes. The server's HTTP timeout drops the handler future, and
+/// ClickHouse does not stop a query when the client closes the connection
+/// (`cancel_http_readonly_queries_on_client_close` defaults to 0).
+struct CancelOnDrop {
+    http: reqwest::Client,
+    endpoint: ChHttpEndpoint,
+    query_id: String,
+    armed: bool,
+}
+
+impl CancelOnDrop {
+    fn new(http: reqwest::Client, endpoint: ChHttpEndpoint, query_id: String) -> Self {
+        Self {
+            http,
+            endpoint,
+            query_id,
+            armed: true,
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for CancelOnDrop {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        let http = self.http.clone();
+        let endpoint = self.endpoint.clone();
+        let query_id = self.query_id.clone();
+        match tokio::runtime::Handle::try_current() {
+            Ok(handle) => {
+                handle.spawn(async move {
+                    kill_query(&http, &endpoint, &query_id).await;
+                });
+            }
+            Err(_) => log::warn!(
+                "ClickHouse query {} was abandoned, and no Tokio runtime is available to cancel it",
+                query_id
+            ),
+        }
+    }
+}
+
+/// Send `KILL QUERY ... ASYNC` for an abandoned query. A read-only user can
+/// cancel its own query by ID without the `KILL QUERY` privilege. Failures are
+/// logged, not returned: the caller is already unwinding.
+async fn kill_query(http: &reqwest::Client, ep: &ChHttpEndpoint, query_id: &str) {
+    let mut url = match reqwest::Url::parse(&ep.url) {
+        Ok(url) => url,
+        Err(e) => {
+            log::warn!(
+                "cannot cancel ClickHouse query {}: invalid URL: {}",
+                query_id,
+                e
+            );
+            return;
+        }
+    };
+    {
+        let mut q = url.query_pairs_mut();
+        q.append_pair("database", &ep.database);
+        for (name, value) in &ep.options {
+            q.append_pair(name, value);
+        }
+    }
+    // No `kill_throw_if_noop`: ClickHouse 25.8 rejects it as an unknown
+    // setting, and `ASYNC` is already a no-op when the query has finished.
+    let sql = format!("KILL QUERY WHERE query_id = '{}' ASYNC", query_id);
+    let result = tokio::time::timeout(
+        Duration::from_secs(5),
+        http.post(url)
+            .header("X-ClickHouse-User", &ep.user)
+            .header("X-ClickHouse-Key", &ep.password)
+            .body(sql)
+            .send(),
+    )
+    .await;
+    match result {
+        Ok(Ok(resp)) if !resp.status().is_success() => {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            log::warn!(
+                "ClickHouse query {} was abandoned but could not be cancelled: HTTP {}: {}",
+                query_id,
+                status,
+                body
+            );
+        }
+        Ok(Ok(_)) => {}
+        Ok(Err(e)) => log::warn!(
+            "ClickHouse query {} was abandoned but could not be cancelled: {}",
+            query_id,
+            e
+        ),
+        Err(_) => log::warn!(
+            "ClickHouse query {} was abandoned; the cancel request timed out",
+            query_id
+        ),
     }
 }
 
@@ -167,9 +292,16 @@ fn record_summary_header(header: &str) {
 async fn drain_cursor(
     mut cursor: clickhouse::query::BytesCursor,
     sql: &str,
+    cancel: &mut CancelOnDrop,
 ) -> Result<Vec<u8>, ExecutorError> {
     let mut buf: Vec<u8> = Vec::new();
     while let Some(chunk) = cursor.next().await.map_err(|e| {
+        // ClickHouse answered with an exception, so the query is already over:
+        // a KILL would be pointless. Any other error (a broken connection, a
+        // read that timed out) may leave the query running, so it stays armed.
+        if matches!(e, clickhouse::error::Error::BadResponse(_)) {
+            cancel.disarm();
+        }
         log::error!("ClickHouse read failed. SQL was:\n{}\nError: {}", sql, e);
         ExecutorError::Io(e.to_string())
     })? {
@@ -191,15 +323,26 @@ impl QueryExecutor for RemoteClickHouseExecutor {
         if self.ch_summary {
             return self.execute_json_via_http(sql, role).await;
         }
-        let client = self.pool.get_client(role).await;
-        let cursor = client
+        let (client, ep) = self.pool.get_client_and_endpoint(role).await;
+        let query_id = Uuid::new_v4().to_string();
+        let mut query = client
             .query(&escape_question_marks(sql))
-            .fetch_bytes("JSONEachRow")
-            .map_err(|e| {
-                log::error!("ClickHouse query failed. SQL was:\n{}\nError: {}", sql, e);
-                ExecutorError::QueryFailed(e.to_string())
-            })?;
-        let buf = drain_cursor(cursor, sql).await?;
+            .with_option("query_id", query_id.as_str());
+        if self.query_timeout_secs > 0 {
+            query = query.with_option("max_execution_time", self.query_timeout_secs.to_string());
+        }
+        let cursor = query.fetch_bytes("JSONEachRow").map_err(|e| {
+            log::error!("ClickHouse query failed. SQL was:\n{}\nError: {}", sql, e);
+            ExecutorError::QueryFailed(e.to_string())
+        })?;
+        let mut cancel = CancelOnDrop::new(self.http.clone(), ep, query_id);
+        let buf = match drain_cursor(cursor, sql, &mut cancel).await {
+            Ok(buf) => {
+                cancel.disarm();
+                buf
+            }
+            Err(e) => return Err(e),
+        };
 
         let mut rows = Vec::new();
         for line in buf.split(|&b| b == b'\n') {
@@ -221,15 +364,26 @@ impl QueryExecutor for RemoteClickHouseExecutor {
         format: &str,
         role: Option<&str>,
     ) -> Result<String, ExecutorError> {
-        let client = self.pool.get_client(role).await;
-        let cursor = client
+        let (client, ep) = self.pool.get_client_and_endpoint(role).await;
+        let query_id = Uuid::new_v4().to_string();
+        let mut query = client
             .query(&escape_question_marks(sql))
-            .fetch_bytes(format)
-            .map_err(|e| {
-                log::error!("ClickHouse query failed. SQL was:\n{}\nError: {}", sql, e);
-                ExecutorError::QueryFailed(e.to_string())
-            })?;
-        let buf = drain_cursor(cursor, sql).await?;
+            .with_option("query_id", query_id.as_str());
+        if self.query_timeout_secs > 0 {
+            query = query.with_option("max_execution_time", self.query_timeout_secs.to_string());
+        }
+        let cursor = query.fetch_bytes(format).map_err(|e| {
+            log::error!("ClickHouse query failed. SQL was:\n{}\nError: {}", sql, e);
+            ExecutorError::QueryFailed(e.to_string())
+        })?;
+        let mut cancel = CancelOnDrop::new(self.http.clone(), ep, query_id);
+        let buf = match drain_cursor(cursor, sql, &mut cancel).await {
+            Ok(buf) => {
+                cancel.disarm();
+                buf
+            }
+            Err(e) => return Err(e),
+        };
 
         let mut text = String::from_utf8(buf).map_err(|e| ExecutorError::Parse(e.to_string()))?;
         // Preserve the previous behaviour of joining lines without a trailing
@@ -245,6 +399,8 @@ impl QueryExecutor for RemoteClickHouseExecutor {
 mod tests {
     use super::*;
     use crate::server::metrics::{current_ch_stats, with_ch_stats_scope};
+    use wiremock::matchers::{body_string_contains, method};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
 
     #[test]
     fn escape_question_marks_doubles_every_literal_question_mark() {
@@ -363,5 +519,244 @@ mod tests {
         assert_eq!(stats.read_rows, Some(5));
         assert_eq!(stats.read_bytes, Some(0));
         assert_eq!(stats.elapsed_ns, Some(0));
+    }
+
+    async fn pool_for(server: &MockServer) -> Arc<RoleConnectionPool> {
+        Arc::new(
+            RoleConnectionPool::new_with_params(&server.uri(), "default", "", None, None, 10)
+                .await
+                .expect("pool"),
+        )
+    }
+
+    /// The `clickhouse` crate puts read queries up to 8 KiB in the URL and
+    /// longer ones in the body. Use a longer statement so the mock can match
+    /// the body.
+    fn long_select() -> String {
+        format!("SELECT 1 /* {} */", "x".repeat(9000))
+    }
+
+    fn query_id_of(request: &wiremock::Request) -> String {
+        request
+            .url
+            .query_pairs()
+            .find(|(name, _)| name == "query_id")
+            .map(|(_, value)| value.into_owned())
+            .expect("request carries a query_id")
+    }
+
+    async fn wait_for_request(
+        server: &MockServer,
+        predicate: impl Fn(&wiremock::Request) -> bool,
+    ) -> wiremock::Request {
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                if let Some(requests) = server.received_requests().await {
+                    if let Some(request) = requests.into_iter().find(|r| predicate(r)) {
+                        return request;
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("request did not arrive")
+    }
+
+    #[tokio::test]
+    async fn dropped_query_sends_kill_with_id_and_execution_limit() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(body_string_contains("SELECT 1"))
+            .respond_with(ResponseTemplate::new(200).set_delay(Duration::from_secs(5)))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(body_string_contains("KILL QUERY"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+
+        let executor = Arc::new(
+            RemoteClickHouseExecutor::with_ch_summary(pool_for(&server).await, false)
+                .with_query_timeout(2),
+        );
+        let run = executor.clone();
+        let task = tokio::spawn(async move { run.execute_json(&long_select(), None).await });
+
+        let query = wait_for_request(&server, |r| {
+            String::from_utf8_lossy(&r.body).contains("SELECT 1")
+        })
+        .await;
+        let query_string = query.url.query().unwrap_or("");
+        assert!(query_string.contains("query_id="), "{query_string}");
+        assert!(
+            query_string.contains("max_execution_time=2"),
+            "{query_string}"
+        );
+
+        task.abort();
+        let _ = task.await;
+
+        let kill = wait_for_request(&server, |r| {
+            String::from_utf8_lossy(&r.body).contains("KILL QUERY")
+        })
+        .await;
+        assert!(
+            String::from_utf8_lossy(&kill.body).contains(&query_id_of(&query)),
+            "the KILL targets a different query id: {}",
+            String::from_utf8_lossy(&kill.body)
+        );
+    }
+
+    #[tokio::test]
+    async fn dropped_summary_query_sends_kill() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(body_string_contains("SELECT 1"))
+            .respond_with(ResponseTemplate::new(200).set_delay(Duration::from_secs(5)))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(body_string_contains("KILL QUERY"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+
+        let executor = Arc::new(
+            RemoteClickHouseExecutor::with_ch_summary(pool_for(&server).await, true)
+                .with_query_timeout(2),
+        );
+        let run = executor.clone();
+        let task = tokio::spawn(async move { run.execute_json(&long_select(), None).await });
+
+        let query = wait_for_request(&server, |r| {
+            String::from_utf8_lossy(&r.body).contains("SELECT 1")
+        })
+        .await;
+        let query_string = query.url.query().unwrap_or("");
+        assert!(query_string.contains("query_id="), "{query_string}");
+        assert!(
+            query_string.contains("max_execution_time=2"),
+            "{query_string}"
+        );
+
+        task.abort();
+        let _ = task.await;
+
+        let kill = wait_for_request(&server, |r| {
+            String::from_utf8_lossy(&r.body).contains("KILL QUERY")
+        })
+        .await;
+        assert!(
+            String::from_utf8_lossy(&kill.body).contains(&query_id_of(&query)),
+            "the KILL targets a different query id: {}",
+            String::from_utf8_lossy(&kill.body)
+        );
+    }
+
+    #[tokio::test]
+    async fn completed_query_is_not_killed() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(body_string_contains("SELECT 1"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("{\"x\":1}\n"))
+            .mount(&server)
+            .await;
+
+        let executor = RemoteClickHouseExecutor::with_ch_summary(pool_for(&server).await, false)
+            .with_query_timeout(2);
+        let rows = executor.execute_json(&long_select(), None).await.unwrap();
+        assert_eq!(rows.len(), 1);
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let requests = server.received_requests().await.unwrap_or_default();
+        assert!(!requests
+            .iter()
+            .any(|r| String::from_utf8_lossy(&r.body).contains("KILL QUERY")));
+    }
+
+    #[tokio::test]
+    async fn completed_summary_query_is_not_killed() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(body_string_contains("SELECT 1"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("{\"x\":1}\n"))
+            .mount(&server)
+            .await;
+
+        let executor = RemoteClickHouseExecutor::with_ch_summary(pool_for(&server).await, true)
+            .with_query_timeout(2);
+        let rows = executor.execute_json(&long_select(), None).await.unwrap();
+        assert_eq!(rows.len(), 1);
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let requests = server.received_requests().await.unwrap_or_default();
+        assert!(!requests
+            .iter()
+            .any(|r| String::from_utf8_lossy(&r.body).contains("KILL QUERY")));
+    }
+
+    /// A query ClickHouse itself rejected is over: the guard must not send a
+    /// KILL for it, on either path.
+    #[tokio::test]
+    async fn rejected_query_is_not_killed() {
+        for ch_summary in [false, true] {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(body_string_contains("SELECT 1"))
+                .respond_with(
+                    ResponseTemplate::new(500).set_body_string(
+                        "Code: 47. DB::Exception: Unknown identifier `nonexistent`",
+                    ),
+                )
+                .mount(&server)
+                .await;
+
+            let executor =
+                RemoteClickHouseExecutor::with_ch_summary(pool_for(&server).await, ch_summary)
+                    .with_query_timeout(2);
+            assert!(executor.execute_json(&long_select(), None).await.is_err());
+
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            let requests = server.received_requests().await.unwrap_or_default();
+            assert!(
+                !requests
+                    .iter()
+                    .any(|r| String::from_utf8_lossy(&r.body).contains("KILL QUERY")),
+                "summary={ch_summary}: a rejected query was killed"
+            );
+        }
+    }
+
+    /// A transport failure may leave the query running, so the guard still
+    /// sends the KILL.
+    #[tokio::test]
+    async fn transport_failure_still_sends_kill() {
+        let server = MockServer::start().await;
+        // The body is shorter than the declared length: reading it fails.
+        Mock::given(method("POST"))
+            .and(body_string_contains("SELECT 1"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-length", "9999")
+                    .set_body_string("{\"x\":1}\n"),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(body_string_contains("KILL QUERY"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+
+        let executor = RemoteClickHouseExecutor::with_ch_summary(pool_for(&server).await, false)
+            .with_query_timeout(2);
+        assert!(executor.execute_json(&long_select(), None).await.is_err());
+
+        wait_for_request(&server, |r| {
+            String::from_utf8_lossy(&r.body).contains("KILL QUERY")
+        })
+        .await;
     }
 }
