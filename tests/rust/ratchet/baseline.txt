@@ -31,7 +31,7 @@ dialect	databricks	src/graph_catalog/databricks_probe.rs	26
 dialect	databricks	src/graph_catalog/expression_parser.rs	4
 dialect	databricks	src/graph_catalog/mod.rs	4
 dialect	databricks	src/graph_catalog/schema_types.rs	8
-dialect	databricks	src/main.rs	8
+dialect	databricks	src/main.rs	9
 dialect	databricks	src/query_planner/logical_expr/ast_conversion.rs	1
 dialect	databricks	src/server/bolt_protocol/result_transformer.rs	7
 dialect	databricks	src/server/handlers.rs	23

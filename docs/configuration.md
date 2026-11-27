@@ -82,12 +82,33 @@ cargo run --bin brahmand
 | `--bolt-host <HOST>` | Bolt server bind address | `0.0.0.0` |
 | `--bolt-port <PORT>` | Bolt server port | `7687` |
 | `--disable-bolt` | Disable Bolt protocol server | false (Bolt enabled by default) |
+| `--bolt-enabled <BOOL>` | Enable or disable the Bolt server (`--disable-bolt` wins) | `true` |
 | `--help` | Show help message | - |
 | `--version` | Show version information | - |
 
 ## Environment Variables
 
-ClickGraph also supports environment variable configuration for backwards compatibility:
+Every server option except `--disable-bolt` (use `CLICKGRAPH_BOLT_ENABLED=false`), `--daemon` and `--log-level` can also be set by an environment variable, or by a line in a `.env` file in the working directory (read first). A command-line flag beats its variable, and a variable beats the default:
+
+| Variable | Flag | Default |
+|----------|------|---------|
+| `CLICKGRAPH_HOST` | `--http-host` | `0.0.0.0` |
+| `CLICKGRAPH_PORT` | `--http-port` | `7475` |
+| `CLICKGRAPH_BOLT_HOST` | `--bolt-host` | `0.0.0.0` |
+| `CLICKGRAPH_BOLT_PORT` | `--bolt-port` | `7687` |
+| `CLICKGRAPH_BOLT_ENABLED` | `--bolt-enabled <BOOL>` (and `--disable-bolt`, which always wins) | `true` |
+| `CLICKGRAPH_MAX_CTE_DEPTH` | `--max-cte-depth` | `100` |
+| `CLICKGRAPH_VALIDATE_SCHEMA` | `--validate-schema` | `false` |
+| `CLICKGRAPH_NEO4J_COMPAT_MODE` | `--neo4j-compat-mode` | `false` |
+| `CLICKGRAPH_EMBEDDED` | `--embedded` | `false` |
+| `CLICKGRAPH_DATABRICKS` | `--databricks` | `false` |
+| `CLICKGRAPH_QUERY_TIMEOUT_SECS` | `--query-timeout-secs` | `300` (`0` = no timeout) |
+| `CLICKGRAPH_MAX_REQUEST_BODY_BYTES` | `--max-request-body-bytes` | `1048576` |
+| `CLICKGRAPH_MAX_CONCURRENT_QUERIES` | `--max-concurrent-queries` | `64` (`0` = unlimited) |
+
+A boolean takes `true/false`, `1/0`, `yes/no` or `on/off`. A value that does not parse, or is empty, stops the start with an error. A boolean flag takes no value, so a variable set to `true` is switched off by unsetting it, not by a flag (`--bolt-enabled false` is the one exception).
+
+**Kubernetes:** a Service named `clickgraph` makes Kubernetes put `CLICKGRAPH_PORT=tcp://<ip>:<port>` in the pods of its namespace. That is not a port, so a `CLICKGRAPH_PORT` or `CLICKGRAPH_BOLT_PORT` of that form is ignored (with a note on stderr); set the variable in the pod spec, or set `enableServiceLinks: false`, to configure the port.
 
 ```bash
 # ClickHouse connection (required)
@@ -97,17 +118,13 @@ export CLICKHOUSE_PASSWORD="test_pass"
 export CLICKHOUSE_DATABASE="brahmand"
 
 # Server configuration (optional)
-export CLICKGRAPH_HOST="0.0.0.0"              # HTTP host
 export CLICKGRAPH_PORT="7475"                 # HTTP port
-export CLICKGRAPH_BOLT_HOST="0.0.0.0"         # Bolt host
 export CLICKGRAPH_BOLT_PORT="7687"            # Bolt port
 export CLICKGRAPH_BOLT_ENABLED="true"         # Enable/disable Bolt
 
 # Schema configuration (required)
 export GRAPH_CONFIG_PATH="./schemas/my_schema.yaml"
 ```
-
-**Note**: Command-line arguments take precedence over environment variables.
 
 ## Schema Configuration
 

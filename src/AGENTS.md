@@ -119,10 +119,14 @@ Uses `clap` for CLI argument parsing:
 - CTE depth range (1-1000)
 
 **Configuration sources** (in priority order):
-1. CLI arguments (`from_cli()`)
-2. Environment variables (`from_env()`)
-3. YAML file (`from_yaml_file()`)
-4. Default values
+1. CLI flags
+2. Environment variables (and a `.env` read first) - the `clickgraph` binary reads them
+   through clap's `env = "CLICKGRAPH_*"` on each flag (`main.rs`), so a flag beats a variable
+3. Default values
+
+`ServerConfig::from_env()` (below) is the library entry `server::run()`'s reading of the same
+variables; the binary does not call it. Keep the two lists in step: a variable added to one
+needs its flag in `main.rs`, or it is ignored by the binary (#1592: it was).
 
 **Environment variables**:
 | Variable | Default | Maps to |
@@ -134,6 +138,11 @@ Uses `clap` for CLI argument parsing:
 | `CLICKGRAPH_BOLT_ENABLED` | `true` | `bolt_enabled` |
 | `CLICKGRAPH_MAX_CTE_DEPTH` | `100` | `max_cte_depth` |
 | `CLICKGRAPH_VALIDATE_SCHEMA` | `false` | `validate_schema` |
+| `CLICKGRAPH_NEO4J_COMPAT_MODE` | `false` | `neo4j_compat_mode` |
+| `CLICKGRAPH_EMBEDDED` / `CLICKGRAPH_DATABRICKS` | `false` | `embedded` / `databricks` |
+| `CLICKGRAPH_QUERY_TIMEOUT_SECS` | `300` | `query_timeout_secs` |
+| `CLICKGRAPH_MAX_REQUEST_BODY_BYTES` | `1048576` | `max_request_body_bytes` |
+| `CLICKGRAPH_MAX_CONCURRENT_QUERIES` | `64` | `max_concurrent_queries` |
 | `CLICKGRAPH_THREAD_STACK_MB` | `128` | Tokio worker thread stack size (MB). Increase for complex queries in debug builds. |
 
 **Error handling**: Uses `thiserror` with `ConfigError` enum covering env var errors,
@@ -142,7 +151,7 @@ parse errors, and validation errors.
 ## Critical Invariants
 
 ### 1. Bolt Enabled by Default
-The CLI uses `--disable-bolt` (inverted flag). `bolt_enabled = !cli.disable_bolt`.
+The CLI has `--disable-bolt` (inverted flag) and `--bolt-enabled <BOOL>` (`CLICKGRAPH_BOLT_ENABLED`). `bolt_enabled = cli.bolt_enabled && !cli.disable_bolt`: `--disable-bolt` always wins, because the Dockerfile sets `CLICKGRAPH_BOLT_ENABLED=true`.
 The config struct stores the positive `bolt_enabled: bool`.
 
 ### 2. Module Declaration Order

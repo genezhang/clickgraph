@@ -27,9 +27,7 @@ pub fn execute(
     // applies a strict Neo4j semver parser that rejects suffixes like
     // `-dev`, so reporting `ClickGraph/0.6.6-dev` surfaces as
     // "Failed to check Neo4j version. Invalid version: ".
-    let compat = std::env::var("CLICKGRAPH_NEO4J_COMPAT_MODE")
-        .map(|v| v == "true" || v == "1")
-        .unwrap_or(false);
+    let compat = crate::config::neo4j_compat_mode_env();
 
     let mut record = HashMap::new();
     if compat {
