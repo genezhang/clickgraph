@@ -20,8 +20,8 @@
 //! CTE), and the next rows are ordered by that number, then by the
 //! element's position.
 //!
-//! A node, relationship or path in the list is `Unsupported` (S7e lists),
-//! as is a property of the element (a map).
+//! A node, relationship or path in the list is `Unsupported` (S7e lists);
+//! a map's keys are carried, so `m.k` reads its value.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
@@ -957,6 +957,10 @@ impl<'s> Lowerer<'s> {
             _ => e,
         };
         let element = kind.element();
+        let map_keys = match &element {
+            Kind::Map(keys) => Some(keys.clone()),
+            _ => None,
+        };
         let list = match kind {
             Kind::List(_) => e,
             // The list of the value, or of none when it is NULL.
@@ -1024,7 +1028,26 @@ impl<'s> Lowerer<'s> {
             self.from = Some(table_ref(spelling.one_row.to_string(), ONE_ROW));
             self.emitted.push(ONE_ROW.to_string());
         }
+        // The element's keys, read off the column the next segment sees: a
+        // missing key is NULL (the maps are `Dynamic`).
+        let map_base = map_keys.as_ref().map(|_| col_at(&alias, &var.name()));
         self.close_segment(body, exports, alias)?;
+        if let (Some(keys), Some(base)) = (map_keys, map_base) {
+            self.map_keys.insert(
+                var,
+                keys.iter()
+                    .map(|(k, _)| {
+                        (
+                            k.clone(),
+                            RenderExpr::ArraySubscript {
+                                array: Box::new(base.clone()),
+                                index: Box::new(RenderExpr::Literal(Literal::String(k.clone()))),
+                            },
+                        )
+                    })
+                    .collect(),
+            );
+        }
         self.one_row = false;
         Ok(())
     }
