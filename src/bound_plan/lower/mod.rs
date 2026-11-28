@@ -401,7 +401,7 @@ impl Query<'_> {
         let BoundOp::Project { input, projection } = op else {
             return unsupported("internal: a query that does not end in RETURN");
         };
-        let mut l = self.lowerer(ctes);
+        let mut l = self.lowerer(op, ctes);
         let lowered = l
             .relation(input)
             .and_then(|()| l.finish_relation())
@@ -423,7 +423,8 @@ impl Query<'_> {
     }
 
     /// A lowerer of this query, continuing the CTEs `ctes` (taken).
-    fn lowerer(&self, ctes: &mut Vec<Cte>) -> Lowerer<'_> {
+    fn lowerer(&self, op: &BoundOp, ctes: &mut Vec<Cte>) -> Lowerer<'_> {
+        let demands = order_demands(op);
         Lowerer {
             schema: self.schema,
             bindings: &self.stmt.bindings,
@@ -465,7 +466,8 @@ impl Query<'_> {
             projected: projected_items(&self.stmt.plan),
             unwound_lists: unwound_lists(&self.stmt.plan),
             as_values: self.as_values.clone(),
-            ordered_unwinds: ordered_unwinds(&self.stmt.plan),
+            ordered_unwinds: demands.unwinds,
+            first_seen_projections: demands.first_seen,
             numbers: HashSet::new(),
             id_values: HashMap::new(),
             composite_id_vars: HashSet::new(),
@@ -1624,8 +1626,12 @@ struct Lowerer<'s> {
     /// RETURN items returned as values ([`Query::as_values`]).
     as_values: BTreeSet<String>,
     /// The UNWINDs (by variable) whose elements a later clause takes in
-    /// order ([`ordered_unwinds`]).
+    /// order ([`order_demands`]).
     ordered_unwinds: HashSet<VarId>,
+    /// The DISTINCT / aggregating projections (by their first item's
+    /// variable) whose first-seen order a later clause relies on
+    /// ([`order_demands`]).
+    first_seen_projections: HashSet<VarId>,
     /// Sort-key columns (as SQL) that are numbers the lowering made: a
     /// row's number, an element's position. Never NULL; sorted ascending,
     /// they need no numbering of their own for `collect()`
@@ -1916,6 +1922,15 @@ fn select(expression: RenderExpr, alias: &str) -> SelectItem {
     }
 }
 
+/// `min(e)`: the first input row's number in a group (DISTINCT / aggregation
+/// keeps its input's first-seen order in Neo4j).
+fn min_of(e: &RenderExpr) -> RenderExpr {
+    RenderExpr::AggregateFnCall(crate::render_plan::render_expr::AggregateFnCall {
+        name: "min".to_string(),
+        args: vec![e.clone()],
+    })
+}
+
 /// What a projection or a SKIP / LIMIT puts in its SELECT.
 #[derive(Default)]
 struct Body {
@@ -1930,6 +1945,10 @@ struct Body {
     order_by: Vec<OrderByItem>,
     /// The output rows have an order the SQL does not keep ([`RowOrder::Lost`]).
     order_lost: bool,
+    /// A DISTINCT's first-seen order key (`min(row_number)`): `render` groups
+    /// by the distinct items instead of selecting DISTINCT, and leaves this
+    /// expression out of the GROUP BY.
+    first_seen: Option<RenderExpr>,
     /// DISTINCT also by these unreturned expressions (an element's identity).
     distinct_keys: Vec<RenderExpr>,
     /// Columns (by name) whose value follows from the others' and is not
@@ -7312,6 +7331,7 @@ impl<'s> Lowerer<'s> {
         &mut self,
         p: &Projection,
         cte: Option<&str>,
+        first_seen: Option<RenderExpr>,
     ) -> Result<(Body, Exports<'s>, Vec<ResultColumn>), LowerError> {
         let aggregating = p.aggregates();
         // What each item is, for this projection's ORDER BY / WHERE (and the
@@ -7788,22 +7808,36 @@ impl<'s> Lowerer<'s> {
             false => self.sort_keys(&p.order_by, &items_env, None)?,
         };
         // Without its own ORDER BY, a projection keeps the order of its input
-        // rows. The SQL keeps it only for a plain projection; after DISTINCT or
-        // aggregation it is lost, so a SKIP / LIMIT relying on it is refused.
+        // rows. A plain projection passes it on. After DISTINCT or
+        // aggregation, Neo4j keeps the first-seen order; where a later clause
+        // reads it, the input rows were numbered and the groups are ordered
+        // by their first row's number. Otherwise the order is lost, so a
+        // SKIP / LIMIT relying on it is refused.
         if body.order_by.is_empty() {
-            let paged = p.skip.is_some() || p.limit.is_some();
-            match &self.order {
-                RowOrder::Keys(keys) if !aggregating && !p.distinct => {
-                    body.order_by = keys.clone();
+            if let Some(number) = first_seen {
+                let first = min_of(&number);
+                if body.distinct && !aggregating {
+                    body.first_seen = Some(first.clone());
                 }
-                RowOrder::Unordered => {}
-                RowOrder::Keys(_) | RowOrder::Lost => {
-                    if paged {
-                        return unsupported(
-                            "SKIP / LIMIT over ordered rows after DISTINCT, aggregation or UNWIND",
-                        );
+                body.order_by = vec![OrderByItem {
+                    expression: first,
+                    order: OrderByOrder::Asc,
+                }];
+            } else {
+                let paged = p.skip.is_some() || p.limit.is_some();
+                match &self.order {
+                    RowOrder::Keys(keys) if !aggregating && !p.distinct => {
+                        body.order_by = keys.clone();
                     }
-                    body.order_lost = true;
+                    RowOrder::Unordered => {}
+                    RowOrder::Keys(_) | RowOrder::Lost => {
+                        if paged {
+                            return unsupported(
+                                "SKIP / LIMIT over ordered rows after DISTINCT, aggregation or UNWIND",
+                            );
+                        }
+                        body.order_lost = true;
+                    }
                 }
             }
         }
@@ -8513,6 +8547,44 @@ impl<'s> Lowerer<'s> {
             .contains(&render_expr_to_sql_plain(&k.expression))
     }
 
+    /// A DISTINCT / aggregating projection whose first-seen order a later
+    /// clause reads: the number of the input row that comes first in each
+    /// output row's group. Numbers the input rows when they are not numbered
+    /// yet (a CTE, as `collect()` does).
+    fn first_seen_row_number(&mut self, p: &Projection) -> Result<Option<RenderExpr>, LowerError> {
+        let marked = p
+            .items
+            .first()
+            .is_some_and(|i| self.first_seen_projections.contains(&i.var));
+        if !marked || !p.order_by.is_empty() || !(p.distinct || p.aggregates()) {
+            return Ok(None);
+        }
+        let RowOrder::Keys(keys) = &self.order else {
+            return Ok(None);
+        };
+        // Already numbered in order (a `collect()`, an UNWIND's elements).
+        if let [one] = keys.as_slice() {
+            if self.is_number(one) {
+                return Ok(Some(one.expression.clone()));
+            }
+        }
+        self.number_rows()?;
+        let RowOrder::Keys(keys) = &self.order else {
+            return unsupported("internal: numbered rows in no order");
+        };
+        let Some(one) = keys.first() else {
+            return Ok(None);
+        };
+        let number = one.expression.clone();
+        if self.is_unordered_number(one) {
+            // The first-seen order is as arbitrary as the numbering it reads.
+            let first = min_of(&number);
+            self.unordered_numbers
+                .insert(render_expr_to_sql_plain(&first));
+        }
+        Ok(Some(number))
+    }
+
     /// A WITH: the rows so far become a CTE whose columns are the WITH's
     /// output scope, and a new segment reads from it.
     fn with(&mut self, p: &Projection) -> Result<(), LowerError> {
@@ -8520,8 +8592,9 @@ impl<'s> Lowerer<'s> {
         let collects_by_any = self.collect_by_any;
         // After the rows are numbered for `collect` (a CTE).
         self.projection_subqueries(p)?;
+        let first_seen = self.first_seen_row_number(p)?;
         let alias = self.next_cte_alias();
-        let (body, exports, _) = self.projection_body(p, Some(&alias))?;
+        let (body, exports, _) = self.projection_body(p, Some(&alias), first_seen)?;
         if collects_by_any {
             self.unstable.insert(format!("with_{alias}"));
         }
@@ -8815,9 +8888,10 @@ impl<'s> Lowerer<'s> {
         }
         self.order_collect(p)?;
         self.projection_subqueries(p)?;
+        let first_seen = self.first_seen_row_number(p)?;
         // The final SELECT is read once: its lists keep their order.
         self.final_items = true;
-        let projected = self.projection_body(p, None);
+        let projected = self.projection_body(p, None, first_seen);
         self.final_items = false;
         let (body, _, shape) = projected?;
         Ok((self.render(body), shape))
@@ -8950,16 +9024,22 @@ impl<'s> Lowerer<'s> {
         let mut distinct = body.distinct;
         let mut grouped = body.grouped;
         let mut select = body.select;
+        let first_seen = body.first_seen.clone();
         let determined = |i: &SelectItem| {
             i.col_alias
                 .as_ref()
                 .is_some_and(|a| body.determined.contains(&a.0))
         };
-        if distinct && (!body.distinct_keys.is_empty() || select.iter().any(determined)) {
+        if distinct
+            && (first_seen.is_some()
+                || !body.distinct_keys.is_empty()
+                || select.iter().any(determined))
+        {
             // DISTINCT by the returned columns and keys that are not returned:
             // a GROUP BY of both (a plain projection, so no aggregate).
             // (A column that is any one of its group's values — a sort key
-            // of a list item, `null_list.rs` — is no key.)
+            // of a list item, `null_list.rs` — is no key; the first-seen
+            // order key is an aggregate of the group.)
             let any_of_group = current_function_mapper()
                 .cypher_union()
                 .map(|u| (u.any)("").trim_end_matches(')').to_string());
@@ -8970,6 +9050,7 @@ impl<'s> Lowerer<'s> {
             group_by = select
                 .iter()
                 .filter(|i| !determined(i) && !aggregate(&i.expression))
+                .filter(|i| first_seen.as_ref() != Some(&i.expression))
                 .map(|i| i.expression.clone())
                 .chain(body.distinct_keys)
                 .collect();
@@ -9897,18 +9978,30 @@ fn unwound_lists(op: &BoundOp) -> HashMap<VarId, &LogicalExpr> {
     out
 }
 
-/// The UNWINDs (by variable) whose output order a later clause relies on,
-/// with no ORDER BY between: a SKIP / LIMIT or a `collect()`. Over rows in
-/// no order such an UNWIND numbers them first (in any order), so each
-/// row's elements stay together in list order, as Neo4j returns them;
-/// other UNWINDs leave their rows in no order.
-fn ordered_unwinds(op: &BoundOp) -> HashSet<VarId> {
-    fn walk(op: &BoundOp, relied: bool, out: &mut HashSet<VarId>) {
+/// What the lowering must number because a later clause relies on its order,
+/// with no ORDER BY between: the UNWINDs whose output order a SKIP / LIMIT
+/// or a `collect()` reads, and the DISTINCT / aggregating projections whose
+/// first-seen order one reads (each by its first item's variable).
+///
+/// Over rows in no order such an UNWIND numbers them first (in any order),
+/// so each row's elements stay together in list order, as Neo4j returns
+/// them; other UNWINDs leave their rows in no order. A DISTINCT or an
+/// aggregation keeps its input's first-seen order in Neo4j; where a later
+/// clause reads it, the input rows are numbered and the groups ordered by
+/// their first row's number.
+#[derive(Default)]
+struct OrderDemands {
+    unwinds: HashSet<VarId>,
+    first_seen: HashSet<VarId>,
+}
+
+fn order_demands(op: &BoundOp) -> OrderDemands {
+    fn walk(op: &BoundOp, relied: bool, out: &mut OrderDemands) {
         match op {
             BoundOp::Unit => {}
             BoundOp::Unwind { input, var, .. } => {
                 if relied {
-                    out.insert(*var);
+                    out.unwinds.insert(*var);
                 }
                 walk(input, relied, out);
             }
@@ -9923,6 +10016,18 @@ fn ordered_unwinds(op: &BoundOp) -> HashSet<VarId> {
                     .any(|i| calls_aggregate(&i.expr, "collect"));
                 let paged = projection.skip.is_some() || projection.limit.is_some();
                 let relies = collects || (projection.order_by.is_empty() && (relied || paged));
+                // This projection's own first-seen order is read by a later
+                // clause (not only by its own `collect()`, which reads its
+                // input's) or by its own SKIP / LIMIT.
+                let output_relied = projection.order_by.is_empty() && relied;
+                if projection.order_by.is_empty()
+                    && (projection.distinct || projection.aggregates())
+                    && (output_relied || paged)
+                {
+                    if let Some(first) = projection.items.first() {
+                        out.first_seen.insert(first.var);
+                    }
+                }
                 walk(input, relies, out);
             }
             BoundOp::Sort { input, .. } => walk(input, false, out),
@@ -9933,7 +10038,7 @@ fn ordered_unwinds(op: &BoundOp) -> HashSet<VarId> {
             BoundOp::Union { arms, .. } => arms.iter().for_each(|a| walk(a, false, out)),
         }
     }
-    let mut out = HashSet::new();
+    let mut out = OrderDemands::default();
     walk(op, false, &mut out);
     out
 }

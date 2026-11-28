@@ -622,7 +622,8 @@ The binder walks the clause list once, keeping the *current scope*:
     values by that number (`groupArrayIf((n, x), x IS NOT NULL)`, sorted,
     then the values). `collect(DISTINCT x)` keeps each value where it first
     occurs. Over rows in an order the SQL lost (after DISTINCT or an
-    aggregation) it is still not lowered.
+    aggregation), the DISTINCT / aggregation is numbered first-seen first
+    (§3), and the values are sorted by that number as above.
   - **`DISTINCT` in an aggregate.** The parser reads `DISTINCT` as a
     prefix operator of the argument's first operand (`collect(DISTINCT a >
     1)` as `(DISTINCT a) > 1`). The binder moves it to the whole argument,
@@ -2734,11 +2735,13 @@ slice that will handle it.
       exported key columns (`__o{i}`). A later SKIP / LIMIT, WITH or RETURN
       without its own ORDER BY reads the rows in that order, so `WITH n
       ORDER BY n WITH n LIMIT 2` keeps the first two. DISTINCT and
-      aggregation keep their input's first-seen order in Neo4j, which the SQL
-      does not; the order is then marked lost, and a later SKIP / LIMIT
-      without its own ORDER BY is not lowered. `collect()` over ordered rows
-      is not lowered either (the list would need the order kept inside the
-      aggregate), whatever the projection's own ORDER BY.
+      aggregation keep their input's first-seen order in Neo4j. Where a
+      later SKIP / LIMIT or `collect()` reads it, the input rows are
+      numbered in that order and each group is ordered by its first row's
+      number; a DISTINCT becomes a GROUP BY of its items. Only a projection
+      whose order is read is numbered; otherwise the order is marked lost.
+      `collect()` over ordered rows numbers them first and sorts its values
+      by the number (S7e1).
     - An aggregating WITH whose grouping items leave no GROUP BY key (all
       constant, or an element that matches nothing) still has per-group
       semantics: no row on an empty input (`HAVING count(*) > 0`).
@@ -3995,9 +3998,8 @@ slice that will handle it.
   (S2), and 6 are bind errors Neo4j also gives. The others, in sub-slices:
   path list functions (S11a); `count()` of a carried list (S11b, #1375);
   lists of lists of nodes / relationships (`collect(nodes(p))`); `label()`, `id()` outside a RETURN item and
-  ORDER BY an `id()` item; ordered SKIP / LIMIT after DISTINCT, aggregation
-  or UNWIND; undeclared properties of a node embedded in edge tables;
-  pattern predicates inside list comprehensions (#629); and errors where
+  ORDER BY an `id()` item; undeclared properties of a node embedded in edge
+  tables; pattern predicates inside list comprehensions (#629); and errors where
   Neo4j refuses (a property of a variable-length relationship's list, a
   shortestPath from a node to itself, composite ids paired in another
   column order). Then the deletion PRs (§7 row 11).
@@ -4179,16 +4181,19 @@ slice that will handle it.
     position, as after ordered rows. Other UNWINDs are unchanged (no
     window), as are UNWINDs followed by a MATCH (which leaves its rows in
     no order). `collect()` sorts by the lowering's own numbers directly
-    (`Lowerer::numbers`), with no second numbering. Still refused:
-    SKIP / LIMIT or `collect()` relying on the first-seen order of a
-    DISTINCT or an aggregation of ordered rows (no corpus query); and a
-    plan that reads more than once a CTE whose rows depend on that
-    numbering (`unwind::reject_rereads_of_numbered_rows`: ClickHouse numbers
-    the rows anew on each read, so an OPTIONAL MATCH's or a subquery's
-    drive or a path's seed over rows a LIMIT took, or a `collect()` listed,
-    would disagree with the other read). Those fall back to legacy, as
-    before S11g; the general class (an unordered LIMIT, tied ORDER BY or
-    `collect()` order read twice) is #1395.
+    (`Lowerer::numbers`), with no second numbering. A DISTINCT or an
+    aggregation whose first-seen order a later SKIP / LIMIT or `collect()`
+    reads is numbered the same way: the input rows get a number, each group
+    is ordered by its first row's number (`min`), and a DISTINCT becomes a
+    GROUP BY of its items (`Lowerer::first_seen_row_number`,
+    `order_demands`). Only a projection whose order is read is numbered.
+    Still refused: a plan that reads more than once a CTE whose rows depend
+    on that numbering (`unwind::reject_rereads_of_numbered_rows`: ClickHouse
+    numbers the rows anew on each read, so an OPTIONAL MATCH's or a
+    subquery's drive or a path's seed over rows a LIMIT took, or a
+    `collect()` listed, would disagree with the other read). Those fall back
+    to legacy, as before S11g; the general class (an unordered LIMIT, tied
+    ORDER BY or `collect()` order read twice) is #1395.
     - Acceptance: generated shapes against Neo4j whose answer is the same
       for every order Neo4j may return (each user's list `[10k+1, 10k+2]`:
       a LIMIT's rows are one list's prefix, `collect()` per row keeps list

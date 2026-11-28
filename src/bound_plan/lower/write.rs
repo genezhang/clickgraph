@@ -67,7 +67,7 @@ fn identities_over(
         stable: false,
     };
     let mut ctes = Vec::new();
-    let mut l = query.lowerer(&mut ctes);
+    let mut l = query.lowerer(&stmt.plan, &mut ctes);
     l.relation(&stmt.plan)?;
     l.finish_relation()?;
     let Some(mut ids) = l.identity(var)? else {
@@ -140,7 +140,7 @@ fn records_over(
         stable: false,
     };
     let mut ctes = Vec::new();
-    let mut l = query.lowerer(&mut ctes);
+    let mut l = query.lowerer(&stmt.plan, &mut ctes);
     l.relation(&stmt.plan).map_err(Err)?;
     l.finish_relation().map_err(Err)?;
     for e in exprs {
@@ -257,7 +257,7 @@ pub fn lower_write_value(
         stable: false,
     };
     let mut ctes = Vec::new();
-    let mut l = query.lowerer(&mut ctes);
+    let mut l = query.lowerer(&stmt.plan, &mut ctes);
     l.scans.insert(
         var,
         Scan::Node {
