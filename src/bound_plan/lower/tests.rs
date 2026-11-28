@@ -1140,9 +1140,15 @@ fn rows_keep_their_order_until_a_match_or_an_aggregation() {
              w2.p2_v1_name), NOT isNull(w2.p2_v1_name)))) AS \"names\" FROM with_w2 AS w2",
         ],
     );
-    not_lowered(
+    // DISTINCT keeps the order as first seen, numbered for its LIMIT.
+    has(
         "MATCH (a:User) WITH a ORDER BY a.name WITH DISTINCT a.country AS c LIMIT 2 RETURN c",
-        "SKIP / LIMIT over ordered rows after DISTINCT, aggregation or UNWIND",
+        &[
+            r#"row_number() OVER (ORDER BY w1.__o0 ASC) AS "__cg_row""#,
+            r#"minOrNull(w2.__cg_row) AS "__o0""#,
+            "GROUP BY w2.p2_v1_country",
+            "ORDER BY minOrNull(w2.__cg_row) ASC LIMIT 2)",
+        ],
     );
 }
 
@@ -1204,24 +1210,64 @@ fn an_order_the_sql_cannot_keep_is_not_relied_on() {
             "FROM with_w3 AS w3 ORDER BY w3.__o0 ASC",
         ],
     );
-    // DISTINCT and aggregation keep their input's first-seen order in Neo4j;
-    // the SQL does not, so a later LIMIT or collect cannot rely on it.
-    not_lowered(
+    // DISTINCT and aggregation keep their input's first-seen order in Neo4j.
+    // Where a later clause reads it, the input rows are numbered and each
+    // group ordered by its first row's number.
+    has(
         "MATCH (a:User) WITH a ORDER BY a.name DESC WITH DISTINCT a.country AS c \
          WITH c LIMIT 3 RETURN c",
-        "SKIP / LIMIT over ordered rows after DISTINCT, aggregation or UNWIND",
+        &[
+            r#"row_number() OVER (ORDER BY w1.__o0 DESC NULLS FIRST) AS "__cg_row""#,
+            r#"minOrNull(w2.__cg_row) AS "__o0""#,
+            "GROUP BY w2.p2_v1_country",
+            "ORDER BY w3.__o0 ASC LIMIT 3)",
+        ],
     );
-    not_lowered(
+    has(
         "MATCH (a:User) WITH a ORDER BY a.name DESC WITH DISTINCT a \
          WITH collect(a.name) AS l RETURN l",
-        "collect() over rows in an order the SQL does not keep",
+        &[
+            r#"minOrNull(w2.__cg_row) AS "__o0""#,
+            "GROUP BY w2.v1__user_id, w2.p2_v1_name",
+            r#"row_number() OVER (ORDER BY w3.__o0 ASC) AS "__cg_row""#,
+            "arraySort(t -> t.1, groupArrayIf((w4.__cg_row, w4.p2_v2_name)",
+        ],
     );
-    not_lowered(
+    has(
         "MATCH (a:User) ORDER BY a.name WITH DISTINCT a.country AS c LIMIT 2 RETURN c",
-        "SKIP / LIMIT over ordered rows after DISTINCT, aggregation or UNWIND",
+        &[
+            r#"row_number() OVER (ORDER BY v0.full_name ASC) AS "__cg_row""#,
+            "GROUP BY w1.p2_v0_country",
+            "ORDER BY minOrNull(w1.__cg_row) ASC LIMIT 2)",
+        ],
     );
-    // An unordered final RETURN does not rely on it.
-    sql("MATCH (a:User) WITH a ORDER BY a.name WITH DISTINCT a.country AS c RETURN c");
+    // A final RETURN's DISTINCT and an aggregation with a LIMIT read it too.
+    has(
+        "MATCH (a:User) WITH a ORDER BY a.name RETURN DISTINCT a.country AS c LIMIT 2",
+        &[
+            r#"row_number() OVER (ORDER BY w1.__o0 ASC) AS "__cg_row""#,
+            "GROUP BY w2.p2_v1_country",
+            "ORDER BY minOrNull(w2.__cg_row) ASC LIMIT 2",
+        ],
+    );
+    has(
+        "MATCH (a:User) WITH a ORDER BY a.name WITH a.country AS c, count(*) AS k \
+         LIMIT 2 RETURN c, k",
+        &[
+            r#"minOrNull(w2.__cg_row) AS "__o0""#,
+            "GROUP BY w2.p2_v1_country",
+            "ORDER BY minOrNull(w2.__cg_row) ASC LIMIT 2)",
+        ],
+    );
+    // Nothing reads the order: no numbering.
+    let unordered = squash(&sql(
+        "MATCH (a:User) WITH a ORDER BY a.name WITH DISTINCT a.country AS c RETURN c",
+    ));
+    assert!(!unordered.contains("__cg_row"), "{unordered}");
+    let aggregated = squash(&sql(
+        "MATCH (a:User) WITH a ORDER BY a.name WITH a.country AS c, count(*) AS k RETURN c, k",
+    ));
+    assert!(!aggregated.contains("__cg_row"), "{aggregated}");
     // A MATCH ends the order, so nothing is lost.
     sql(
         "MATCH (a:User) WITH a ORDER BY a.name MATCH (a)-[:FOLLOWS]->(b:User) \
