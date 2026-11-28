@@ -11647,6 +11647,51 @@ fn a_correlated_call_groups_by_the_outer_row() {
 }
 
 #[test]
+fn a_call_subquery_with_union_lowers_to_a_union_of_its_arms() {
+    let q = "UNWIND [1, 2] AS x CALL { WITH x RETURN x AS y UNION ALL WITH x RETURN x + 10 AS y } \
+             RETURN y";
+    has(
+        q,
+        &[
+            "with_w7 AS ( SELECT w3.__cg_w3_c0 AS \"__cg_c0\", 0 AS \"__cg_arm\"",
+            "UNION ALL",
+            "with_call_union_8 AS ( SELECT w7.__cg_c0 AS \"y\"",
+            "SELECT call_union_8.y AS \"y\" FROM with_call_union_8 AS call_union_8",
+        ],
+    );
+    // The enclosing plan can aggregate a value: the arms' common type, not
+    // a `Dynamic`.
+    has(
+        "UNWIND [1, 2] AS x CALL { WITH x RETURN x AS y UNION ALL WITH x RETURN x + 10 AS y } \
+         RETURN sum(y) AS s",
+        &["sum(call_union_"],
+    );
+    assert!(!squash(&sql(q)).contains("'Dynamic'"), "{}", sql(q));
+}
+
+#[test]
+fn a_call_subquery_with_union_returns_a_whole_node() {
+    has(
+        "MATCH (u:User) WITH u LIMIT 1 \
+         CALL { WITH u RETURN u UNION ALL WITH u RETURN u } RETURN u.name AS name",
+        &["AS \"u.name\"", "FROM with_call_union_"],
+    );
+}
+
+#[test]
+fn a_call_subquery_with_union_refuses_what_it_cannot_lower() {
+    not_lowered(
+        "UNWIND [1, 2] AS x CALL { WITH x UNWIND [1, 2] AS y RETURN count(*) AS c \
+         UNION ALL WITH x RETURN 0 AS c } RETURN c",
+        "aggregates over several outer rows",
+    );
+    not_lowered(
+        "UNWIND [1, 2] AS x CALL { WITH x RETURN x AS y UNION WITH x RETURN x AS y } RETURN y",
+        "UNION (not ALL) over several outer rows",
+    );
+}
+
+#[test]
 fn a_comprehension_reads_a_collected_maps_keys() {
     has(
         "WITH collect({letter: 'A', messageCount: 1}) AS results \

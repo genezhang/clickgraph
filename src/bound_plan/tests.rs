@@ -157,6 +157,109 @@ fn a_correlated_call_keeps_the_outer_names_after_it() {
 }
 
 #[test]
+fn a_call_subquery_with_union_binds_each_arm_on_the_outer_rows() {
+    let s = ok(
+        "UNWIND [1, 2] AS x CALL { WITH x RETURN x AS y UNION ALL WITH x RETURN x + 10 AS y } \
+         RETURN y",
+    );
+    let BoundOp::Project { input, .. } = &s.plan else {
+        panic!("{:?}", s.plan)
+    };
+    let BoundOp::Union {
+        arms,
+        arm_columns,
+        all,
+    } = &**input
+    else {
+        panic!("{input:?}")
+    };
+    assert!(*all);
+    assert_eq!(arms.len(), 2);
+    assert_eq!(arm_columns.len(), 2);
+    // The UNION's column is the first arm's `y`, which the outer RETURN reads.
+    let y = named(&s, "y");
+    assert_eq!(y.len(), 3, "one y per arm and the outer RETURN's");
+    assert_eq!(arm_columns[0], vec![y[0].id]);
+}
+
+#[test]
+fn a_call_subquery_with_union_matches_columns_by_name() {
+    ok("UNWIND [1] AS x CALL { WITH x RETURN x AS y, x + 1 AS z \
+        UNION ALL WITH x RETURN x + 2 AS z, x AS y } RETURN y, z");
+    assert!(matches!(
+        bind(
+            "UNWIND [1] AS x CALL { WITH x RETURN x AS y UNION ALL WITH x RETURN x AS z } \
+             RETURN y"
+        ),
+        Err(BindError::Invalid(m)) if m.contains("same return column names")
+    ));
+    assert_eq!(
+        bind(
+            "UNWIND [1] AS x CALL { WITH x RETURN x AS y UNION ALL WITH x RETURN x AS y \
+             UNION WITH x RETURN x AS y } RETURN y"
+        ),
+        Err(BindError::Invalid(
+            "Invalid combination of UNION and UNION ALL".to_string()
+        ))
+    );
+}
+
+#[test]
+fn a_call_subquery_with_union_replaces_the_outer_scope() {
+    // Narrower than Neo4j: after the CALL only the UNION's columns are in
+    // scope, so an outer name must be returned by every arm.
+    assert_eq!(
+        bind(
+            "UNWIND [1, 2] AS x CALL { WITH x RETURN x AS y UNION ALL WITH x RETURN x AS y } \
+             RETURN x"
+        ),
+        Err(BindError::UndefinedVariable("x".to_string()))
+    );
+}
+
+#[test]
+fn a_call_subquery_with_union_imports_outer_names() {
+    assert!(matches!(
+        bind("UNWIND [1] AS x CALL { RETURN 1 AS y UNION ALL RETURN 2 AS y } RETURN y"),
+        Err(BindError::Unsupported(m)) if m.contains("does not import outer names")
+    ));
+}
+
+#[test]
+fn a_call_subquery_with_union_aggregates_per_outer_row() {
+    // One outer row (a `collect`): the arm may aggregate without returning
+    // an outer name.
+    ok("UNWIND [1, 2] AS x WITH collect(x) AS xs \
+        CALL { WITH xs UNWIND xs AS x RETURN count(*) AS c UNION ALL WITH xs RETURN 0 AS c } \
+        RETURN c");
+    // Several: such an arm would fold them together.
+    assert!(matches!(
+        bind(
+            "UNWIND [1, 2] AS x CALL { WITH x UNWIND [1, 2] AS y RETURN count(*) AS c \
+             UNION ALL WITH x RETURN 0 AS c } RETURN c"
+        ),
+        Err(BindError::Unsupported(m)) if m.contains("aggregates over several outer rows")
+    ));
+}
+
+#[test]
+fn a_call_subquery_with_union_distinct_needs_one_outer_row() {
+    // UNION (not ALL) de-duplicates across the rows of every outer row's
+    // evaluation, which this lowering cannot do.
+    assert!(matches!(
+        bind(
+            "UNWIND [1, 2] AS x CALL { WITH x RETURN x AS y UNION WITH x RETURN x AS y } \
+             RETURN y"
+        ),
+        Err(BindError::Unsupported(m)) if m.contains("UNION (not ALL) over several outer rows")
+    ));
+    // One outer row: no rows to de-duplicate across.
+    ok("UNWIND [1, 2] AS x WITH collect(x) AS xs \
+        CALL { WITH xs UNWIND xs AS x RETURN x AS y UNION WITH xs UNWIND xs AS x RETURN x AS y } \
+        RETURN y");
+}
+
+#[test]
 fn a_call_subquery_is_uncorrelated() {
     assert_eq!(
         bind(

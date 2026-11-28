@@ -11,7 +11,9 @@
 //! * A column of values may hold values of different types in different
 //!   arms, as in Cypher, so each arm's value is read as a value of any type
 //!   (`CypherUnion::any_type`): ClickHouse's common type of `Bool` and
-//!   `UInt8` is `Bool`, which turns `5` into `true`. A node or relationship
+//!   `UInt8` is `Bool`, which turns `5` into `true`. A statement's own UNION
+//!   reads its values so; a `CALL { }` body's leaves the arms' common type,
+//!   which the enclosing plan can aggregate. A node or relationship
 //!   (its columns), a graph value and an `id()` must be of one label / type
 //!   in every arm (otherwise the UNION is not lowered), and keep their
 //!   columns' types.
@@ -78,6 +80,13 @@ pub(super) fn lower(
     arms: &[BoundOp],
     arm_columns: &[Vec<VarId>],
     all: bool,
+    // The CTE names before this UNION's (a `CALL { }` body's, whose arms
+    // continue the CTEs already lowered).
+    first_cte: usize,
+    // Read each value column as `Dynamic` (a statement's own UNION, whose
+    // rows are returned) or leave the arms' common type (a `CALL { }` body's,
+    // whose rows the enclosing plan aggregates, orders or groups).
+    dynamic_values: bool,
 ) -> Result<Lowered, LowerError> {
     let mut as_values = q.as_values.clone();
     loop {
@@ -92,7 +101,7 @@ pub(super) fn lower(
         };
         // Only the last pass's CTEs are the plan's.
         q.unstable.borrow_mut().clear();
-        match lower_arms(&q, arms, arm_columns, all)? {
+        match lower_arms(&q, arms, arm_columns, all, first_cte, dynamic_values)? {
             Pass::Lowered(lowered) => return Ok(*lowered),
             Pass::AsValues(names) => {
                 if names.is_subset(&as_values) {
@@ -116,6 +125,8 @@ fn lower_arms(
     arms: &[BoundOp],
     arm_columns: &[Vec<VarId>],
     all: bool,
+    first_cte: usize,
+    dynamic_values: bool,
 ) -> Result<Pass, LowerError> {
     let Some(spelling) = current_function_mapper().cypher_union() else {
         return unsupported("UNION in this SQL dialect");
@@ -173,7 +184,7 @@ fn lower_arms(
             }
             same_kinds(first, &shape)?;
         }
-        let alias = format!("w{}", ctes.len() + 1);
+        let alias = format!("w{}", first_cte + ctes.len() + 1);
         let mut items: HashMap<String, SelectItem> = HashMap::new();
         for i in std::mem::take(&mut plan.select.items) {
             let Some(a) = i.col_alias.clone() else {
@@ -293,7 +304,7 @@ fn lower_arms(
             .enumerate()
             .map(|(n, kind)| {
                 let column = col_at(a, &format!("__cg_{a}_c{n}"));
-                let e = if **kind == ResultKind::Value {
+                let e = if **kind == ResultKind::Value && dynamic_values {
                     RenderExpr::Raw((spelling.any_type)(&render_expr_to_sql_plain(&column)))
                 } else {
                     column
@@ -323,7 +334,7 @@ fn lower_arms(
             ..empty_plan()
         });
     }
-    let u = format!("w{}", ctes.len() + 1);
+    let u = format!("w{}", first_cte + ctes.len() + 1);
     ctes.push(Cte::new(
         format!("with_{u}"),
         CteContent::Structured(Box::new(RenderPlan {

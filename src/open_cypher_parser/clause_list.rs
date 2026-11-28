@@ -89,11 +89,11 @@ pub enum Clause<'a> {
 }
 
 /// `CALL { <query> }`. Only a returning subquery (its body ends in RETURN);
-/// `c.query.clauses` may open with an importing `WITH`. A UNION body and
-/// writes are later slices.
+/// its first arm may open with an importing `WITH`. Writes are a later
+/// slice.
 #[derive(Debug, PartialEq, Clone)]
 pub struct CallSubqueryClause<'a> {
-    pub query: ClauseQuery<'a>,
+    pub query: ClauseStatement<'a>,
 }
 
 /// `WITH [DISTINCT] items | * [, items] [ORDER BY] [SKIP] [LIMIT] [WHERE]`.
@@ -253,9 +253,15 @@ fn parse_call_subquery(input: &'_ str) -> ClauseResult<'_> {
     let (input, _) = ws(tag("CALL")).parse(input)?;
     // Not a subquery: the procedure parser gets its turn.
     let (input, _) = ws(char('{')).parse(input)?;
-    let (input, query) = cut(parse_clause_query).parse(input)?;
+    let (input, first) = cut(parse_clause_query).parse(input)?;
+    let (input, unions) = many0(parse_union_arm).parse(input)?;
     let (input, _) = cut(ws(char('}'))).parse(input)?;
-    Ok((input, Clause::CallSubquery(CallSubqueryClause { query })))
+    Ok((
+        input,
+        Clause::CallSubquery(CallSubqueryClause {
+            query: ClauseStatement { first, unions },
+        }),
+    ))
 }
 
 fn parse_with_projection(input: &'_ str) -> ClauseResult<'_> {
