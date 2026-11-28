@@ -225,6 +225,14 @@ pub enum BoundOp {
         expr: LogicalExpr,
         var: VarId,
     },
+    /// `CALL { <query> }`: the body `plan` (ending in RETURN) is evaluated
+    /// once per input row; its `outputs` (name, binding) join the scope.
+    /// This slice's body reads no outer variable.
+    Call {
+        input: Box<BoundOp>,
+        plan: Box<BoundOp>,
+        outputs: Vec<(String, VarId)>,
+    },
     Project {
         input: Box<BoundOp>,
         projection: Projection,

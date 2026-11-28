@@ -344,7 +344,7 @@ fn lower_pass(
         all,
     } = &stmt.plan
     {
-        let lowered = union::lower(&query, arms, arm_columns, *all)?;
+        let lowered = union::lower(&query, arms, arm_columns, *all, 0, true)?;
         return Ok((lowered, unstable.take()));
     }
     let mut ctes = Vec::new();
@@ -2044,7 +2044,197 @@ impl<'s> Lowerer<'s> {
                 self.filters.push(e);
                 Ok(())
             }
-            BoundOp::Union { .. } => unsupported("UNION (S7)"),
+            BoundOp::Union {
+                arms,
+                arm_columns,
+                all,
+            } => self.lower_union(arms, arm_columns, *all),
+            BoundOp::Call {
+                input,
+                plan,
+                outputs,
+            } => {
+                self.relation(input)?;
+                // The body is a query of its own: lower it to its final
+                // SELECT, then read that as a CTE cross joined to the rows.
+                // Only an uncorrelated body comes here: one importing outer
+                // names is bound inline (the binder's `CALL` arm), so its
+                // nodes, maps and grouping stay in this plan.
+                // shortcut: uncorrelated, so one evaluation answers every
+                // input row; a non-deterministic call in the body is drawn
+                // once.
+                let stmt = BoundStatement {
+                    plan: (**plan).clone(),
+                    bindings: self.bindings.to_vec(),
+                    columns: Vec::new(),
+                    subqueries: self.subqueries.to_vec(),
+                };
+                let unstable = RefCell::new(BTreeSet::new());
+                let query = Query {
+                    stmt: &stmt,
+                    schema: self.schema,
+                    options: self.options,
+                    demand: &self.demand,
+                    as_values: BTreeSet::new(),
+                    unstable: &unstable,
+                    stable: self.stable,
+                };
+                let mut ctes = std::mem::take(&mut self.ctes);
+                let arm = query.lower(plan, &mut ctes);
+                self.ctes = ctes;
+                self.unstable.extend(unstable.take());
+                let arm = arm?;
+                let n = self.ctes.len() + 1;
+                let name = format!("with_call_{n}");
+                let alias = format!("call_{n}");
+                self.ctes.push(Cte::new(
+                    name.clone(),
+                    CteContent::Structured(Box::new(arm.plan)),
+                    false,
+                ));
+                if self.from.is_none() {
+                    self.from = Some(table_ref(name, &alias));
+                    self.emitted = vec![alias.clone()];
+                } else {
+                    self.joins.push(join(name, &alias));
+                    self.emitted.push(alias.clone());
+                }
+                self.order = RowOrder::Unordered;
+                self.one_row = false;
+                for (output, var) in outputs {
+                    let Some(shape) = arm.shape.iter().find(|c| &c.name == output) else {
+                        return unsupported(format!("internal: CALL output `{output}`"));
+                    };
+                    let [(_, column)] = shape.columns.as_slice() else {
+                        return unsupported("internal: a CALL output of several columns");
+                    };
+                    if shape.kind != ResultKind::Value {
+                        return unsupported(format!(
+                            "a CALL {{ }} subquery returning `{output}` (only plain values)"
+                        ));
+                    }
+                    self.values.insert(*var, col_at(&alias, column));
+                }
+                Ok(())
+            }
+        }
+    }
+
+    /// A UNION in the middle of a plan: a `CALL { }` body's arms. Each arm
+    /// was bound on the rows before it, so lowering the arms as a query of
+    /// their own carries those rows in each arm; the UNION's rows become this
+    /// segment's relation. Only values and whole nodes are read after it.
+    fn lower_union(
+        &mut self,
+        arms: &[BoundOp],
+        arm_columns: &[Vec<VarId>],
+        all: bool,
+    ) -> Result<(), LowerError> {
+        let stmt = BoundStatement {
+            plan: BoundOp::Unit,
+            bindings: self.bindings.to_vec(),
+            columns: Vec::new(),
+            subqueries: self.subqueries.to_vec(),
+        };
+        let unstable = RefCell::new(BTreeSet::new());
+        let query = Query {
+            stmt: &stmt,
+            schema: self.schema,
+            options: self.options,
+            demand: &self.demand,
+            as_values: BTreeSet::new(),
+            unstable: &unstable,
+            stable: self.stable,
+        };
+        // The arms' CTEs name themselves after the ones already lowered.
+        let lowered = union::lower(&query, arms, arm_columns, all, self.ctes.len(), false)?;
+        self.unstable.extend(unstable.take());
+        let mut plan = lowered.plan;
+        self.ctes.extend(std::mem::take(&mut plan.ctes.0));
+        let n = self.ctes.len() + 1;
+        let name = format!("with_call_union_{n}");
+        let alias = format!("call_union_{n}");
+        self.ctes.push(Cte::new(
+            name.clone(),
+            CteContent::Structured(Box::new(plan)),
+            false,
+        ));
+        let _ = self.swap_segment(Segment::default());
+        self.grouped_with = None;
+        self.emitted = vec![alias.clone()];
+        self.from = Some(table_ref(name, &alias));
+        self.order = RowOrder::Unordered;
+        self.one_row = false;
+        let Some(vars) = arm_columns.first() else {
+            return unsupported("internal: a UNION with no arms");
+        };
+        for (col, var) in lowered.shape.iter().zip(vars) {
+            self.adopt_union_column(&alias, col, *var)?;
+        }
+        Ok(())
+    }
+
+    /// Read a UNION column after it: a value, or a whole node whose id
+    /// columns it returns. A relationship or graph value is not read after a
+    /// `CALL { }` body's UNION yet.
+    fn adopt_union_column(
+        &mut self,
+        alias: &str,
+        col: &ResultColumn,
+        var: VarId,
+    ) -> Result<(), LowerError> {
+        match &col.kind {
+            ResultKind::Value => {
+                let [(_, column)] = col.columns.as_slice() else {
+                    return unsupported("internal: a UNION value of several columns");
+                };
+                self.values.insert(var, col_at(alias, column));
+                Ok(())
+            }
+            ResultKind::Node { label } => {
+                let Some(schema) = self.schema.node_schema_opt(label) else {
+                    return unsupported(format!("internal: no schema for `{label}`"));
+                };
+                let mut props = HashMap::new();
+                for (key, column) in &col.columns {
+                    if schema.property_mappings.contains_key(key) {
+                        props.insert(key.clone(), col_at(alias, column));
+                    }
+                }
+                let mut physical = HashMap::new();
+                for c in schema.id_physical_columns() {
+                    let Some((_, column)) = col.columns.iter().find(|(key, _)| {
+                        schema
+                            .property_mappings
+                            .get(key)
+                            .is_some_and(|pv| pv.raw() == c)
+                    }) else {
+                        return unsupported(format!(
+                            "a CALL {{ }} subquery with UNION returning `{}` without its id \
+                             column `{c}`",
+                            col.name
+                        ));
+                    };
+                    physical.insert(c, column.clone());
+                }
+                self.scans.insert(
+                    var,
+                    Scan::Node {
+                        schema,
+                        label: label.clone(),
+                        at: At::Exported {
+                            alias: alias.to_string(),
+                            physical,
+                            props,
+                        },
+                    },
+                );
+                Ok(())
+            }
+            _ => unsupported(format!(
+                "a CALL {{ }} subquery with UNION returning `{}` (only values and whole nodes)",
+                col.name
+            )),
         }
     }
 
@@ -9466,6 +9656,10 @@ fn constraint_reads(stmt: &BoundStatement, schema: &GraphSchema) -> Vec<LogicalE
             | BoundOp::Filter { input, .. }
             | BoundOp::Skip { input, .. }
             | BoundOp::Limit { input, .. } => walk(input, out),
+            BoundOp::Call { input, plan, .. } => {
+                walk(input, out);
+                walk(plan, out);
+            }
             BoundOp::Union { arms, .. } => arms.iter().for_each(|a| walk(a, out)),
             BoundOp::Unit => {}
         }
@@ -9562,6 +9756,10 @@ pub(crate) fn op_exprs<'a>(op: &'a BoundOp, out: &mut Vec<&'a LogicalExpr>) {
             out.push(predicate);
         }
         BoundOp::Skip { input, .. } | BoundOp::Limit { input, .. } => op_exprs(input, out),
+        BoundOp::Call { input, plan, .. } => {
+            op_exprs(input, out);
+            op_exprs(plan, out);
+        }
         BoundOp::Union { arms, .. } => arms.iter().for_each(|a| op_exprs(a, out)),
     }
 }
@@ -9604,6 +9802,10 @@ fn demand(stmt: &BoundStatement, extra: &[LogicalExpr]) -> HashMap<VarId, BTreeS
             | BoundOp::Filter { input, .. }
             | BoundOp::Skip { input, .. }
             | BoundOp::Limit { input, .. } => pass_through(input, out),
+            BoundOp::Call { input, plan, .. } => {
+                pass_through(input, out);
+                pass_through(plan, out);
+            }
             BoundOp::Union { arms, .. } => arms.iter().for_each(|a| pass_through(a, out)),
             BoundOp::Unit => {}
         }
@@ -9634,6 +9836,10 @@ fn demand(stmt: &BoundStatement, extra: &[LogicalExpr]) -> HashMap<VarId, BTreeS
             | BoundOp::Filter { input, .. }
             | BoundOp::Skip { input, .. }
             | BoundOp::Limit { input, .. } => keyed(input, out),
+            BoundOp::Call { input, plan, .. } => {
+                keyed(input, out);
+                keyed(plan, out);
+            }
             BoundOp::Union { arms, .. } => arms.iter().for_each(|a| keyed(a, out)),
             BoundOp::Unit => {}
         }
@@ -9645,11 +9851,35 @@ fn demand(stmt: &BoundStatement, extra: &[LogicalExpr]) -> HashMap<VarId, BTreeS
         demand.entry(v).or_default().insert(prop.to_string());
     };
     // A node or relationship a final RETURN (the statement's, or a UNION
-    // arm's) returns whole: every property (`v.*` is a property ref).
-    let finals = match &stmt.plan {
-        BoundOp::Union { arms, .. } => arms.iter().collect(),
-        op => vec![op],
-    };
+    // arm's, including a `CALL { }` body's) returns whole: every property
+    // (`v.*` is a property ref).
+    fn union_arms<'a>(op: &'a BoundOp, out: &mut Vec<&'a BoundOp>) {
+        match op {
+            BoundOp::Union { arms, .. } => {
+                for arm in arms {
+                    out.push(arm);
+                    union_arms(arm, out);
+                }
+            }
+            BoundOp::Project { input, .. }
+            | BoundOp::Match { input, .. }
+            | BoundOp::Unwind { input, .. }
+            | BoundOp::Sort { input, .. }
+            | BoundOp::Filter { input, .. }
+            | BoundOp::Skip { input, .. }
+            | BoundOp::Limit { input, .. } => union_arms(input, out),
+            BoundOp::Call { input, plan, .. } => {
+                union_arms(input, out);
+                union_arms(plan, out);
+            }
+            BoundOp::Unit => {}
+        }
+    }
+    let mut finals: Vec<&BoundOp> = Vec::new();
+    if !matches!(&stmt.plan, BoundOp::Union { .. }) {
+        finals.push(&stmt.plan);
+    }
+    union_arms(&stmt.plan, &mut finals);
     for op in finals {
         let BoundOp::Project { projection, .. } = op else {
             continue;
@@ -9845,6 +10075,10 @@ fn element_contexts(op: &BoundOp) -> Vec<&LogicalExpr> {
         | BoundOp::Filter { input, .. }
         | BoundOp::Skip { input, .. }
         | BoundOp::Limit { input, .. } => element_contexts(input),
+        BoundOp::Call { input, plan, .. } => element_contexts(input)
+            .into_iter()
+            .chain(element_contexts(plan))
+            .collect(),
         BoundOp::Union { arms, .. } => arms.iter().flat_map(element_contexts).collect(),
     }
 }
@@ -9867,6 +10101,10 @@ fn projected_items(op: &BoundOp) -> HashMap<VarId, &LogicalExpr> {
             | BoundOp::Filter { input, .. }
             | BoundOp::Skip { input, .. }
             | BoundOp::Limit { input, .. } => walk(input, out),
+            BoundOp::Call { input, plan, .. } => {
+                walk(input, out);
+                walk(plan, out);
+            }
             BoundOp::Union { arms, .. } => arms.iter().for_each(|a| walk(a, out)),
         }
     }
@@ -9890,6 +10128,10 @@ fn unwound_lists(op: &BoundOp) -> HashMap<VarId, &LogicalExpr> {
             | BoundOp::Filter { input, .. }
             | BoundOp::Skip { input, .. }
             | BoundOp::Limit { input, .. } => walk(input, out),
+            BoundOp::Call { input, plan, .. } => {
+                walk(input, out);
+                walk(plan, out);
+            }
             BoundOp::Union { arms, .. } => arms.iter().for_each(|a| walk(a, out)),
         }
     }
@@ -9930,6 +10172,11 @@ fn ordered_unwinds(op: &BoundOp) -> HashSet<VarId> {
             // A MATCH leaves its rows in no order (`Lowerer::relation`).
             BoundOp::Match { input, .. } => walk(input, false, out),
             BoundOp::Filter { input, .. } => walk(input, relied, out),
+            // Its body is evaluated once per input row; its rows are joined.
+            BoundOp::Call { input, plan, .. } => {
+                walk(input, false, out);
+                walk(plan, false, out);
+            }
             BoundOp::Union { arms, .. } => arms.iter().for_each(|a| walk(a, false, out)),
         }
     }
@@ -10027,6 +10274,10 @@ fn pattern_parts(op: &BoundOp) -> Vec<&PatternPart> {
         | BoundOp::Filter { input, .. }
         | BoundOp::Skip { input, .. }
         | BoundOp::Limit { input, .. } => pattern_parts(input),
+        BoundOp::Call { input, plan, .. } => pattern_parts(input)
+            .into_iter()
+            .chain(pattern_parts(plan))
+            .collect(),
         BoundOp::Union { arms, .. } => arms.iter().flat_map(pattern_parts).collect(),
     }
 }

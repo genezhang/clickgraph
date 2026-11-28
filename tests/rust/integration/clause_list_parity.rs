@@ -26,6 +26,8 @@ struct Part<'a> {
     /// list cannot, so a legacy query with one shows up as a disagreement.
     dangling_where: Option<WhereClause<'a>>,
     calls: Vec<CallClause<'a>>,
+    /// The legacy grammar has no CALL subquery, so any here is a disagreement.
+    call_subqueries: usize,
     creates: Vec<CreateClause<'a>>,
     sets: Vec<SetClause<'a>>,
     removes: Vec<RemoveClause<'a>>,
@@ -126,6 +128,7 @@ fn clause_canon<'a>(q: &ClauseQuery<'a>) -> Canon<'a> {
             Clause::OptionalMatch(o) => part.reading.push(ReadingClause::OptionalMatch(o.clone())),
             Clause::Unwind(u) => part.unwinds.push(u.clone()),
             Clause::Call(c) => part.calls.push(c.clone()),
+            Clause::CallSubquery(_) => part.call_subqueries += 1,
             Clause::Create(c) => part.creates.push(c.clone()),
             Clause::Set(s) => part.sets.push(s.clone()),
             Clause::Remove(r) => part.removes.push(r.clone()),
@@ -270,6 +273,7 @@ fn kinds(cypher: &str) -> Result<Vec<&'static str>, String> {
             Clause::OptionalMatch(_) => "OPTIONAL MATCH",
             Clause::Unwind(_) => "UNWIND",
             Clause::Call(_) => "CALL",
+            Clause::CallSubquery(_) => "CALL {",
             Clause::With(w) => {
                 if w.order_by.is_none()
                     && w.skip.is_none()
@@ -386,6 +390,34 @@ fn neo4j_rejected_clause_orders() {
         assert!(kinds(q).is_err(), "must be rejected: {q}");
     }
     assert!(kinds("MATCH (n) RETURN n;").is_ok());
+}
+
+#[test]
+fn call_subquery_clauses_parse() {
+    assert_eq!(
+        kinds("CALL { RETURN 1 AS x } RETURN x"),
+        Ok(vec!["CALL {", "RETURN"])
+    );
+    assert_eq!(
+        kinds(
+            "MATCH (n:User) CALL { MATCH (m:Post) RETURN m.title AS t } \
+             RETURN n, t"
+        ),
+        Ok(vec!["MATCH", "CALL {", "RETURN"])
+    );
+    // A CALL subquery nests.
+    assert_eq!(
+        kinds("CALL { CALL { RETURN 1 AS x } RETURN x } RETURN x"),
+        Ok(vec!["CALL {", "RETURN"])
+    );
+    // An empty or unclosed body is a syntax error.
+    assert!(kinds("CALL { } RETURN 1").is_err());
+    assert!(kinds("CALL { RETURN 1 AS x").is_err());
+    // The procedure CALL still parses as itself.
+    assert_eq!(
+        kinds("CALL db.labels() YIELD label RETURN label"),
+        Ok(vec!["CALL", "RETURN"])
+    );
 }
 
 #[test]

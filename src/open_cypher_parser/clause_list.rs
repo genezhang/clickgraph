@@ -26,10 +26,13 @@
 //!   MATCH or WITH.
 //! * RETURN takes ORDER BY, SKIP/OFFSET, LIMIT in that order and ends the
 //!   query; a query ends with RETURN, an updating clause or CALL.
+//! * `CALL { <query> }` whose body opens `WITH <outer names>` reads the outer
+//!   rows: the body's clauses are part of the enclosing plan, its RETURN is a
+//!   carrying WITH, and a UNION body is a later slice.
 
 use nom::bytes::complete::{tag, tag_no_case};
-use nom::character::complete::multispace0;
-use nom::combinator::opt;
+use nom::character::complete::{char, multispace0};
+use nom::combinator::{cut, opt};
 use nom::multi::many0;
 use nom::{IResult, Parser};
 
@@ -69,6 +72,8 @@ pub enum Clause<'a> {
     OptionalMatch(OptionalMatchClause<'a>),
     Unwind(UnwindClause<'a>),
     Call(CallClause<'a>),
+    /// `CALL { <query> }`: an uncorrelated subquery (the first slice).
+    CallSubquery(CallSubqueryClause<'a>),
     With(WithProjection<'a>),
     /// A free-standing ORDER BY (not part of a WITH or RETURN).
     OrderBy(OrderByClause<'a>),
@@ -81,6 +86,14 @@ pub enum Clause<'a> {
     Set(SetClause<'a>),
     Remove(RemoveClause<'a>),
     Delete(DeleteClause<'a>),
+}
+
+/// `CALL { <query> }`. Only a returning subquery (its body ends in RETURN);
+/// its first arm may open with an importing `WITH`. Writes are a later
+/// slice.
+#[derive(Debug, PartialEq, Clone)]
+pub struct CallSubqueryClause<'a> {
+    pub query: ClauseStatement<'a>,
 }
 
 /// `WITH [DISTINCT] items | * [, items] [ORDER BY] [SKIP] [LIMIT] [WHERE]`.
@@ -204,7 +217,7 @@ type ClauseResult<'a> = IResult<&'a str, Clause<'a>, OpenCypherParsingError<'a>>
 /// parser (`nom::Err::Failure`, from `cut`) propagates; a plain `Error` means
 /// "not this clause" and the next one is tried.
 fn parse_clause(input: &'_ str) -> ClauseResult<'_> {
-    let parsers: [fn(&str) -> ClauseResult<'_>; 13] = [
+    let parsers: [fn(&str) -> ClauseResult<'_>; 14] = [
         // OPTIONAL MATCH before MATCH, as in the legacy parser.
         |i| {
             optional_match_clause::parse_optional_match_clause(i)
@@ -212,6 +225,8 @@ fn parse_clause(input: &'_ str) -> ClauseResult<'_> {
         },
         |i| match_clause::parse_match_clause(i).map(|(r, c)| (r, Clause::Match(c))),
         |i| unwind_clause::parse_unwind_clause(i).map(|(r, c)| (r, Clause::Unwind(c))),
+        // Before the procedure CALL, whose name parser would reject `{`.
+        parse_call_subquery,
         |i| call_clause::parse_call_clause(i).map(|(r, c)| (r, Clause::Call(c))),
         parse_with_projection,
         |i| order_by_clause::parse_order_by_clause(i).map(|(r, c)| (r, Clause::OrderBy(c))),
@@ -232,6 +247,21 @@ fn parse_clause(input: &'_ str) -> ClauseResult<'_> {
     Err(nom::Err::Error(OpenCypherParsingError {
         errors: vec![(input, "Expected a clause")],
     }))
+}
+
+fn parse_call_subquery(input: &'_ str) -> ClauseResult<'_> {
+    let (input, _) = ws(tag("CALL")).parse(input)?;
+    // Not a subquery: the procedure parser gets its turn.
+    let (input, _) = ws(char('{')).parse(input)?;
+    let (input, first) = cut(parse_clause_query).parse(input)?;
+    let (input, unions) = many0(parse_union_arm).parse(input)?;
+    let (input, _) = cut(ws(char('}'))).parse(input)?;
+    Ok((
+        input,
+        Clause::CallSubquery(CallSubqueryClause {
+            query: ClauseStatement { first, unions },
+        }),
+    ))
 }
 
 fn parse_with_projection(input: &'_ str) -> ClauseResult<'_> {

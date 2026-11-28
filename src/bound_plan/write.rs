@@ -162,6 +162,7 @@ fn return_sql(
             | BoundOp::Unwind { input, .. }
             | BoundOp::Sort { input, .. }
             | BoundOp::Filter { input, .. } => pages(input),
+            BoundOp::Call { input, plan, .. } => pages(input) || pages(plan),
             BoundOp::Union { arms, .. } => arms.iter().any(pages),
             BoundOp::Unit => false,
         }
@@ -486,6 +487,10 @@ fn definitions<'e>(
         | BoundOp::Skip { input, .. }
         | BoundOp::Limit { input, .. }
         | BoundOp::Filter { input, .. } => definitions(input, out),
+        BoundOp::Call { input, plan, .. } => {
+            definitions(input, out);
+            definitions(plan, out);
+        }
         BoundOp::Union { .. } | BoundOp::Unit => {}
     }
 }

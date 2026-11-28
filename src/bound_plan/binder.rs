@@ -34,8 +34,8 @@
 //!   not allowed to introduce new variables"). A WITH's WHERE that reads a
 //!   subquery and only projected names is a `Filter` after the projection.
 //!
-//! CALL and updating clauses are `BindError::NotARead`. Not bound yet
-//! (`BindError::Unsupported`): property-map parameters, re-matching a bound
+//! A standalone CALL and updating clauses are `BindError::NotARead`. Not bound
+//! yet (`BindError::Unsupported`): property-map parameters, re-matching a bound
 //! variable-length relationship list, the same relationship variable twice in
 //! one MATCH, a value-typed variable (list element, `coalesce(a, b)`) used as
 //! a node or relationship, and a subquery expression inside a comprehension,
@@ -50,6 +50,9 @@ use crate::open_cypher_parser::ast::{
     RelationshipPattern, UnionType,
 };
 use crate::open_cypher_parser::clause_list::{Clause, ClauseQuery, ClauseStatement};
+
+/// A bound clause list: its plan, final scope, and a RETURN's columns.
+type BoundClauses = (BoundOp, Scope, Vec<(String, VarId)>);
 use crate::query_planner::logical_expr::{
     LogicalExpr, Operator as LogicalOperator, OperatorApplication, ScalarFnCall, TableAlias,
 };
@@ -75,6 +78,11 @@ pub fn bind_statement(
         created: Vec::new(),
     };
     let (first_plan, first_cols) = b.bind_query(&stmt.first)?;
+    if first_cols.is_empty() {
+        return Err(BindError::Unsupported(
+            "a query ending in CALL (no RETURN)".to_string(),
+        ));
+    }
     if stmt.unions.is_empty() {
         return Ok(BoundStatement {
             plan: first_plan,
@@ -267,8 +275,43 @@ impl Binder {
         &mut self,
         q: &ClauseQuery<'_>,
     ) -> Result<(BoundOp, Vec<(String, VarId)>), BindError> {
-        let mut scope = Scope::default();
-        let mut op = BoundOp::Unit;
+        let (op, _, columns) = self.bind_clauses(q, None)?;
+        Ok((op, columns))
+    }
+
+    /// Walk `q`'s clauses from `inline` (a correlated `CALL { }` body: the
+    /// outer scope and plan it reads) or from an empty plan. Returns the plan,
+    /// the final scope, and a final RETURN's columns.
+    fn bind_clauses(
+        &mut self,
+        q: &ClauseQuery<'_>,
+        inline: Option<(Scope, BoundOp)>,
+    ) -> Result<BoundClauses, BindError> {
+        // A correlated body reads the outer rows and keeps the outer names in
+        // scope through every projection: they are grouping keys when the body
+        // aggregates, so each outer row is one body evaluation.
+        let carry = inline.as_ref().map(|(scope, _)| {
+            scope
+                .entries()
+                .iter()
+                .map(|(name, _)| name.clone())
+                .collect()
+        });
+        self.bind_clauses_from(q, inline, carry)
+    }
+
+    /// [`Self::bind_clauses`] with the names every projection carries: a
+    /// `CALL { }` body's outer names, or none (one arm of a UNION body).
+    fn bind_clauses_from(
+        &mut self,
+        q: &ClauseQuery<'_>,
+        inline: Option<(Scope, BoundOp)>,
+        carry: Option<Vec<String>>,
+    ) -> Result<BoundClauses, BindError> {
+        let (mut scope, mut op) = match inline {
+            Some((scope, op)) => (scope, op),
+            None => (Scope::default(), BoundOp::Unit),
+        };
         // A write statement's updating clauses end it (S13).
         let mut wrote = false;
         for (idx, clause) in q.clauses.iter().enumerate() {
@@ -361,6 +404,7 @@ impl Binder {
                         skip: w.skip.as_ref().map(|s| s.skip_item),
                         limit: w.limit.as_ref().map(|l| l.limit_item),
                         filter: w.where_clause.as_ref().map(|wc| &wc.conditions),
+                        carry: carry.clone().unwrap_or_default(),
                     };
                     let (projection, out_scope, after) = self.bind_projection(&raw, &scope, idx)?;
                     op = BoundOp::Project {
@@ -407,8 +451,22 @@ impl Binder {
                         skip: r.skip.as_ref().map(|s| s.skip_item),
                         limit: r.limit.as_ref().map(|l| l.limit_item),
                         filter: None,
+                        carry: carry.clone().unwrap_or_default(),
                     };
-                    let (projection, out_scope, _) = self.bind_projection(&raw, &scope, idx)?;
+                    let (mut projection, out_scope, _) = self.bind_projection(&raw, &scope, idx)?;
+                    if carry.is_some() {
+                        // The body's RETURN ends inside the enclosing plan:
+                        // a carrying WITH the outer clauses continue from.
+                        projection.kind = ProjectionKind::With;
+                        return Ok((
+                            BoundOp::Project {
+                                input: Box::new(op),
+                                projection,
+                            },
+                            out_scope,
+                            Vec::new(),
+                        ));
+                    }
                     let columns = projection
                         .items
                         .iter()
@@ -420,6 +478,7 @@ impl Binder {
                             input: Box::new(op),
                             projection,
                         },
+                        out_scope,
                         columns,
                     ));
                 }
@@ -459,16 +518,215 @@ impl Binder {
                     }
                 }
                 Clause::Call(_) => return Err(BindError::NotARead("CALL")),
+                Clause::CallSubquery(c) => {
+                    if self.writes.is_some() {
+                        return Err(BindError::Unsupported(
+                            "a CALL { } subquery in a write statement".to_string(),
+                        ));
+                    }
+                    // A leading WITH of outer names imports them (the
+                    // deprecated form the LDBC queries use).
+                    let imports =
+                        c.query
+                            .first
+                            .clauses
+                            .first()
+                            .is_some_and(|clause| match clause {
+                                Clause::With(w) => w.items.iter().any(|i| {
+                                    matches!(&i.expression, Expression::Variable(v)
+                                    if scope.lookup(v).is_some())
+                                }),
+                                _ => false,
+                            });
+                    if !c.query.unions.is_empty() {
+                        if !imports {
+                            return Err(BindError::Unsupported(
+                                "a CALL { } subquery with UNION that does not import outer \
+                                 names"
+                                    .to_string(),
+                            ));
+                        }
+                        let (body, body_scope) = self.bind_union_body(&c.query, scope, op)?;
+                        op = body;
+                        scope = body_scope;
+                    } else if imports {
+                        // Inline the body on the outer rows: its leading WITH
+                        // is a projection over them and its RETURN becomes a
+                        // carrying WITH. No CTE export, so a whole node or map
+                        // keeps its kind. shortcut: every outer name stays
+                        // readable inside the body, not only the imported ones;
+                        // Neo4j refuses the others.
+                        let (body, body_scope, _) =
+                            self.bind_clauses(&c.query.first, Some((scope, op)))?;
+                        op = body;
+                        scope = body_scope;
+                    } else {
+                        // A fresh scope: the body reads no outer variable.
+                        let (plan, outputs) = self.bind_query(&c.query.first)?;
+                        if outputs.is_empty() {
+                            return Err(BindError::Invalid(
+                                "A CALL { } subquery must conclude with RETURN".to_string(),
+                            ));
+                        }
+                        for (name, v) in &outputs {
+                            if !matches!(self.binding(*v).kind, BindingKind::Value) {
+                                return Err(BindError::Unsupported(format!(
+                                    "a CALL {{ }} subquery returning `{name}` (only values)"
+                                )));
+                            }
+                            if scope.lookup(name).is_some() {
+                                return Err(BindError::AlreadyDeclared(name.clone()));
+                            }
+                        }
+                        for (name, v) in &outputs {
+                            scope.insert(name, *v);
+                        }
+                        op = BoundOp::Call {
+                            input: Box::new(op),
+                            plan: Box::new(plan),
+                            outputs,
+                        };
+                    }
+                }
                 Clause::Create(_) | Clause::Set(_) | Clause::Remove(_) | Clause::Delete(_) => {
                     return Err(BindError::NotARead("updating clause"))
                 }
             }
         }
         if wrote {
-            return Ok((op, Vec::new()));
+            return Ok((op, scope, Vec::new()));
+        }
+        if carry.is_some() {
+            return Err(BindError::Invalid(
+                "A CALL { } subquery must conclude with RETURN".to_string(),
+            ));
         }
         // The clause-list parser guarantees a final RETURN / CALL / update.
         Err(BindError::Unsupported("query without RETURN".to_string()))
+    }
+
+    /// Bind the arms of a `CALL { }` body's UNION on the outer rows: each arm
+    /// reads them and returns its columns. The UNION's columns are the first
+    /// arm's, and its rows replace the outer ones: an outer name a later
+    /// clause needs must be returned by every arm.
+    fn bind_union_body(
+        &mut self,
+        q: &ClauseStatement<'_>,
+        scope: Scope,
+        input: BoundOp,
+    ) -> Result<(BoundOp, Scope), BindError> {
+        let all = matches!(q.unions[0].0, UnionType::All);
+        if q.unions
+            .iter()
+            .any(|(t, _)| matches!(t, UnionType::All) != all)
+        {
+            return Err(BindError::Invalid(
+                "Invalid combination of UNION and UNION ALL".to_string(),
+            ));
+        }
+        // Each arm is lowered once over all outer rows at once, not once per
+        // row: an arm that aggregates without an outer name among its
+        // grouping keys would fold the rows together, and UNION (not ALL)
+        // de-duplicates across them. Both need one outer row.
+        let single = Self::at_most_one_row(&input);
+        if !all && !single {
+            return Err(BindError::Unsupported(
+                "a CALL { } subquery with UNION (not ALL) over several outer rows".to_string(),
+            ));
+        }
+        let mut first: Option<Vec<(String, VarId)>> = None;
+        let mut arms = Vec::new();
+        let mut arm_columns = Vec::new();
+        for arm in std::iter::once(&q.first).chain(q.unions.iter().map(|(_, q)| q)) {
+            let (plan, _, cols) =
+                self.bind_clauses_from(arm, Some((scope.clone(), input.clone())), None)?;
+            if let Some(p) = Self::final_projection(&plan) {
+                let groups_outer = p
+                    .items
+                    .iter()
+                    .any(|i| !i.aggregate && scope.entries().iter().any(|(_, v)| *v == i.var));
+                if p.aggregates() && !groups_outer && !single {
+                    return Err(BindError::Unsupported(
+                        "a CALL { } subquery with UNION whose arm aggregates over several \
+                         outer rows without returning an outer name"
+                            .to_string(),
+                    ));
+                }
+            }
+            let Some(names) = &first else {
+                arm_columns.push(cols.iter().map(|(_, v)| *v).collect());
+                first = Some(cols);
+                arms.push(plan);
+                continue;
+            };
+            // Matched by name, in the first arm's order.
+            let aligned: Option<Vec<VarId>> = names
+                .iter()
+                .map(|(n, _)| cols.iter().find(|(m, _)| m == n).map(|(_, v)| *v))
+                .collect();
+            match aligned {
+                Some(vars) if cols.len() == names.len() => arm_columns.push(vars),
+                _ => {
+                    return Err(BindError::Invalid(
+                        "All sub queries in an UNION must have the same return column names"
+                            .to_string(),
+                    ))
+                }
+            }
+            arms.push(plan);
+        }
+        let columns = first.unwrap_or_default();
+        if columns.is_empty() {
+            return Err(BindError::Invalid(
+                "A CALL { } subquery must conclude with RETURN".to_string(),
+            ));
+        }
+        let mut out = Scope::default();
+        for (name, var) in &columns {
+            out.insert(name, *var);
+        }
+        Ok((
+            BoundOp::Union {
+                arms,
+                arm_columns,
+                all,
+            },
+            out,
+        ))
+    }
+
+    /// The RETURN a `CALL { }` arm ends in (under its SKIP / LIMIT).
+    fn final_projection(op: &BoundOp) -> Option<&Projection> {
+        match op {
+            BoundOp::Project { projection, .. } => Some(projection),
+            BoundOp::Sort { input, .. }
+            | BoundOp::Skip { input, .. }
+            | BoundOp::Limit { input, .. } => Self::final_projection(input),
+            _ => None,
+        }
+    }
+
+    /// Whether `op` has at most one row, whatever rows its input has.
+    fn at_most_one_row(op: &BoundOp) -> bool {
+        match op {
+            BoundOp::Unit => true,
+            // An aggregation with no grouping key is one row; a projection
+            // with LIMIT 1 (or over at most one row) is at most one.
+            BoundOp::Project { input, projection } => {
+                projection.limit.is_some_and(|l| l <= 1)
+                    || (projection.aggregates() && !projection.items.iter().any(|i| !i.aggregate))
+                    || Self::at_most_one_row(input)
+            }
+            BoundOp::Filter { input, .. }
+            | BoundOp::Sort { input, .. }
+            | BoundOp::Skip { input, .. } => Self::at_most_one_row(input),
+            BoundOp::Limit { input, count } => *count <= 1 || Self::at_most_one_row(input),
+            // A cross join: one row iff each side has one.
+            BoundOp::Call { input, plan, .. } => {
+                Self::at_most_one_row(input) && Self::at_most_one_row(plan)
+            }
+            BoundOp::Match { .. } | BoundOp::Unwind { .. } | BoundOp::Union { .. } => false,
+        }
     }
 
     /// An updating clause of a write statement (`bind_write_statement`): its
@@ -827,6 +1085,22 @@ impl Binder {
             }
         }
         items.extend(explicit);
+        // A correlated CALL body keeps the outer names visible (and, when
+        // aggregating, groups by them): one body evaluation per outer row.
+        for name in &raw.carry {
+            if items.iter().any(|i| &i.name == name) {
+                continue;
+            }
+            let Some(var) = input.lookup(name) else {
+                continue;
+            };
+            items.push(ProjItem {
+                var,
+                name: name.clone(),
+                expr: LogicalExpr::TableAlias(TableAlias(var.name())),
+                aggregate: false,
+            });
+        }
         let aggregating = items.iter().any(|i| i.aggregate);
         // Bare variables projected without aggregation (grouping keys when
         // aggregating), by generated name -> the item.
@@ -1209,6 +1483,8 @@ struct RawProjection<'q, 'a> {
     skip: Option<i64>,
     limit: Option<i64>,
     filter: Option<&'q Expression<'a>>,
+    /// Outer names a correlated CALL body keeps through its projections.
+    carry: Vec<String>,
 }
 
 // ------------------------------------------------------------------ patterns
